@@ -17,6 +17,8 @@ internal sealed class AppSettings
     public bool AutoLaunch { get; set; }
     public bool AutoInjectAfterLaunch { get; set; } = true;
     public bool WatchForAcStart { get; set; } = true;
+    public bool InjectAllRunningClients { get; set; } = true;
+    public string LoggingLevel { get; set; } = "Info";
     public List<string> EnabledPluginIds { get; set; } = [];
     public List<string> PluginDllPaths { get; set; } = [];
     public List<LaunchServerProfile> ServerProfiles { get; set; } = [];

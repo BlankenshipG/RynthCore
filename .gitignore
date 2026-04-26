@@ -42,3 +42,5 @@ scratch/
 # Installer build artifacts
 installer/staging/
 installer/Output/
+# Prior bundle installers archived on version bump (see installer/previous-release/last-built-version.txt)
+installer/previous-release/*.exe

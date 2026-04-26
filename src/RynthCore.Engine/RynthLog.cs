@@ -20,43 +20,50 @@ internal static class RynthLog
     /// <summary>D3D9 subsystem: vtable, EndScene, bootstrapper, matrix capture, nav3D.</summary>
     internal static void D3D9(string msg)
     {
-        if (D3D9Enabled) Write(msg);
+        if (D3D9Enabled) WriteAt(EntryPoint.EngineLogLevel.Info, msg);
     }
 
     /// <summary>Compatibility hooks: SmartBox, client objects, combat, movement, vitals, chat, etc.</summary>
     internal static void Compat(string msg)
     {
-        if (CompatEnabled) Write(msg);
+        if (CompatEnabled) WriteAt(EntryPoint.EngineLogLevel.Info, msg);
     }
 
     /// <summary>ImGui rendering: context, DX9 backend, Win32 input, shell.</summary>
     internal static void Render(string msg)
     {
-        if (RenderEnabled) Write(msg);
+        if (RenderEnabled) WriteAt(EntryPoint.EngineLogLevel.Info, msg);
     }
 
     /// <summary>Plugin system: loader, manager, lifecycle callbacks.</summary>
     internal static void Plugin(string msg)
     {
-        if (PluginEnabled) Write(msg);
+        if (PluginEnabled) WriteAt(EntryPoint.EngineLogLevel.Info, msg);
     }
 
     /// <summary>UI / Avalonia overlay subsystem.</summary>
     internal static void UI(string msg)
     {
-        if (UIEnabled) Write(msg);
+        if (UIEnabled) WriteAt(EntryPoint.EngineLogLevel.Info, msg);
     }
 
-    /// <summary>Verbose-only log (any category). Only written when VerboseLogging is on.</summary>
+    /// <summary>Debug-level log (any category).</summary>
     internal static void Verbose(string msg)
     {
-        if (EntryPoint.VerboseLogging) Write(msg);
+        WriteAt(EntryPoint.EngineLogLevel.Debug, msg);
     }
 
-    /// <summary>Always-on log for critical / uncategorised messages.</summary>
-    internal static void Info(string msg) => Write(msg);
+    internal static void Trace(string msg) => WriteAt(EntryPoint.EngineLogLevel.Trace, msg);
+    internal static void Debug(string msg) => WriteAt(EntryPoint.EngineLogLevel.Debug, msg);
+    internal static void Info(string msg) => WriteAt(EntryPoint.EngineLogLevel.Info, msg);
+    internal static void Warning(string msg) => WriteAt(EntryPoint.EngineLogLevel.Warning, msg);
+    internal static void Error(string msg) => WriteAt(EntryPoint.EngineLogLevel.Error, msg);
 
     // ── Sink ─────────────────────────────────────────────────────────────
 
-    private static void Write(string message) => EntryPoint.Log(message);
+    private static void WriteAt(EntryPoint.EngineLogLevel level, string message)
+    {
+        if (EntryPoint.ShouldLog(level))
+            EntryPoint.Log(message);
+    }
 }

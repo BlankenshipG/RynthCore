@@ -79,6 +79,9 @@ internal static class PluginLoader
     /// </summary>
     public static void Unload(LoadedPlugin plugin)
     {
+        // Release managed thunks first so the module ref-count can drop to zero on FreeLibrary.
+        plugin.ClearResolvedDelegates();
+
         if (plugin.ModuleHandle != IntPtr.Zero)
         {
             FreeLibrary(plugin.ModuleHandle);

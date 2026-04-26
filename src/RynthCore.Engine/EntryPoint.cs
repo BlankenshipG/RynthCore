@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Collections.Generic;
 using ImGuiNET;
+using RynthCore;
 using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.D3D9;
 using RynthCore.Engine.Plugins;
@@ -21,7 +22,8 @@ namespace RynthCore.Engine;
 
 public static class EntryPoint
 {
-    internal const string BuildStamp = "2026-03-30-v54-patternscan";
+    // Human-readable build label for logs; bump when shipping a new RynthBundle or notable engine change.
+    internal const string BuildStamp = "2026-04-23-v61-bundle-0411-runtime-detection-fix";
     private const int MaxRecentLogLines = 256;
     private static int _initialized;
     private static bool _imGuiResolverConfigured;
@@ -29,7 +31,19 @@ public static class EntryPoint
     private static readonly object LogLock = new();
     private static readonly Queue<string> RecentLogLines = new();
 
-    /// <summary>Set true to enable verbose startup logging (hook ready messages, plugin lifecycle, etc.).</summary>
+    internal enum EngineLogLevel
+    {
+        Error = 0,
+        Warning = 1,
+        Info = 2,
+        Debug = 3,
+        Trace = 4
+    }
+
+    /// <summary>Active engine logging threshold loaded from engine settings.</summary>
+    internal static EngineLogLevel LoggingLevel = EngineLogLevel.Info;
+
+    /// <summary>Legacy convenience flag used by existing verbose call sites.</summary>
     internal static bool VerboseLogging = false;
 
     /// <summary>Set by ImGuiController once the game window is confirmed. Read by AvaloniaOverlay.</summary>
@@ -43,8 +57,15 @@ public static class EntryPoint
 
         try
         {
+            LoggingLevel = ParseLoggingLevel(EngineSettings.LoggingLevel);
+            VerboseLogging = LoggingLevel >= EngineLogLevel.Debug;
             RynthLog.Info($"RynthCoreInit called (build {BuildStamp}) - spawning init thread...");
+            RynthLog.Info($"Engine logging level: {LoggingLevel}");
             CrashLogger.Install();
+            // MultiClientHooks installs MinHook-based detours immediately. P/Invoke resolves
+            // minhook.x86.dll before InitWorker runs — preload from the engine directory so
+            // LoadLibrary succeeds (avoids false "multi-client hook failed" when the DLL exists).
+            TryPreloadMinHookForEarlyInit();
             RunInitStep("early multi-client hooks", MultiClientHooks.Initialize);
 
             var thread = new Thread(InitWorker)
@@ -84,6 +105,33 @@ public static class EntryPoint
             return null;
 
         return Path.GetDirectoryName(new string(buffer, 0, (int)length));
+    }
+
+    /// <summary>
+    /// Loads MinHook on the RynthCoreInit thread so <see cref="MultiClientHooks.Initialize"/> can
+    /// call <see cref="Hooking.MinHook"/> P/Invokes without relying on the default DLL search path
+    /// (which often resolves against the AC client directory, not <c>Runtime\</c>).
+    /// </summary>
+    private static void TryPreloadMinHookForEarlyInit()
+    {
+        try
+        {
+            string? engineDir = GetEngineDirectory();
+            if (string.IsNullOrEmpty(engineDir))
+            {
+                RynthLog.Info("Early MinHook preload skipped: could not resolve engine directory.");
+                return;
+            }
+
+            if (PreloadNativeDll(engineDir, "minhook.x86.dll"))
+                RynthLog.Verbose($"Early MinHook preload OK (engine dir: {engineDir})");
+            else
+                RynthLog.Info($"Early MinHook preload failed: minhook.x86.dll not found beside engine ({engineDir}).");
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Info($"Early MinHook preload exception: {ex.Message}");
+        }
     }
 
     private static bool PreloadNativeDll(string engineDir, string dllName)
@@ -347,10 +395,8 @@ public static class EntryPoint
                 while (RecentLogLines.Count > MaxRecentLogLines)
                     RecentLogLines.Dequeue();
 
-                string logPath = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-                    "RynthCore.log");
-                File.AppendAllText(logPath, line + "\n");
+                // 10 MB roll + 10 per local day, archives under Desktop\RynthLogs\ (RynthCore.DesktopLog)
+                DesktopRollingLog.AppendLine(DesktopRollingLog.StemEngine, line);
             }
         }
         catch
@@ -360,8 +406,24 @@ public static class EntryPoint
 
     internal static void LogVerbose(string message)
     {
-        if (VerboseLogging)
+        if (ShouldLog(EngineLogLevel.Debug))
             Log(message);
+    }
+
+    internal static bool ShouldLog(EngineLogLevel level) => level <= LoggingLevel;
+
+    private static EngineLogLevel ParseLoggingLevel(string? configuredLevel)
+    {
+        if (string.IsNullOrWhiteSpace(configuredLevel))
+            return EngineLogLevel.Info;
+
+        string normalized = configuredLevel.Trim();
+        if (string.Equals(normalized, "Verbose", StringComparison.OrdinalIgnoreCase))
+            return EngineLogLevel.Debug;
+
+        return Enum.TryParse(normalized, ignoreCase: true, out EngineLogLevel parsed)
+            ? parsed
+            : EngineLogLevel.Info;
     }
 
     internal static string[] GetRecentLogLines()

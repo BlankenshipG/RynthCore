@@ -57,4 +57,43 @@ internal sealed class LoadedPlugin
     public bool Failed { get; set; }
     public string DisplayName { get; set; } = "";
     public string VersionString { get; set; } = "";
+
+    /// <summary>
+    /// Drops managed delegates wrapping exports so the native module can fully unload after
+    /// the host calls FreeLibrary (hot-reload / rescan).
+    /// </summary>
+    internal void ClearResolvedDelegates()
+    {
+        Init = null;
+        Shutdown = null;
+        GetName = null;
+        GetVersion = null;
+        OnLoginComplete = null;
+        OnUIInitialized = null;
+        OnBusyCountIncremented = null;
+        OnBusyCountDecremented = null;
+        OnSelectedTargetChange = null;
+        OnCombatModeChange = null;
+        OnSmartBoxEventPtr = IntPtr.Zero;
+        OnSmartBoxEvent = null;
+        OnDeleteObject = null;
+        OnCreateObject = null;
+        OnUpdateObjectPtr = IntPtr.Zero;
+        OnUpdateObject = null;
+        OnUpdateObjectInventory = null;
+        OnViewObjectContents = null;
+        OnStopViewingObjectContents = null;
+        OnVendorOpen = null;
+        OnVendorClose = null;
+        OnUpdateHealthPtr = IntPtr.Zero;
+        OnUpdateHealth = null;
+        OnChatWindowTextPtr = IntPtr.Zero;
+        OnChatWindowText = null;
+        OnChatBarEnter = null;
+        OnBarAction = null;
+        OnEnchantmentAdded = null;
+        OnEnchantmentRemoved = null;
+        Tick = null;
+        Render = null;
+    }
 }

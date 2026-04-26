@@ -285,6 +285,15 @@
                     <CheckBox x:Name="SkipLoginLogosCheckBox" Content="Skip login logos" />
                     <CheckBox x:Name="AutoInjectAfterLaunchCheckBox" Content="Auto inject after launch" />
                     <CheckBox x:Name="WatchForAcStartCheckBox" Content="Watch for AC start" />
+                    <CheckBox x:Name="InjectAllRunningAcCheckBox" Content="Inject all running AC sessions" />
+                    <TextBlock Text="Logging level" Foreground="#EAF0F4" Margin="0,4,0,0" />
+                    <ComboBox x:Name="LoggingLevelComboBox" SelectedIndex="0">
+                      <ComboBoxItem Content="Error" />
+                      <ComboBoxItem Content="Warning" />
+                      <ComboBoxItem Content="Info" />
+                      <ComboBoxItem Content="Debug" />
+                      <ComboBoxItem Content="Trace" />
+                    </ComboBox>
                     <Button x:Name="SaveBehaviorButton"
                             Content="Save Launch Behavior"
                             HorizontalAlignment="Left" />
@@ -302,7 +311,7 @@
                     <Button x:Name="InjectRunningAcButton" Content="Inject Into Running AC" Margin="0,0,8,8" />
                     <Button x:Name="RefreshSessionsButton" Content="Refresh Sessions" Margin="0,0,8,8" />
                   </WrapPanel>
-                  <TextBlock Text="Manual inject targets the first detected acclient.exe session."
+                  <TextBlock Text="Manual inject target scope follows the 'Inject all running AC sessions' launch behavior toggle."
                              TextWrapping="Wrap"
                              Foreground="#9AA8B3" />
                 </StackPanel>

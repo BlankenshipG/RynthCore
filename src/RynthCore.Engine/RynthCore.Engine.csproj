@@ -30,11 +30,17 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\RynthCore.DesktopLog\RynthCore.DesktopLog.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
     <PackageReference Include="Avalonia" Version="11.2.3" />
     <PackageReference Include="Avalonia.Desktop" Version="11.2.3" />
     <PackageReference Include="Avalonia.Skia" Version="11.2.3" />
     <PackageReference Include="Avalonia.Themes.Simple" Version="11.2.3" />
+    <!-- Overrides Avalonia.FreeDesktop transitive Tmds.DBus.Protocol (NU1903 / GHSA-xrw6-gwf8-vvr9). -->
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
   </ItemGroup>
 
   <ItemGroup>
@@ -44,6 +50,10 @@
 
   <!-- Prevent trimmer from removing ImGui.NET's DllImport methods -->
   <!-- Root Avalonia assemblies so the AOT trimmer keeps them intact -->
+  <ItemGroup>
+    <TrimmerRootAssembly Include="RynthCore.DesktopLog" />
+  </ItemGroup>
+
   <ItemGroup>
     <TrimmerRootAssembly Include="ImGui.NET" />
     <TrimmerRootAssembly Include="Avalonia" />
@@ -62,38 +72,19 @@
     <BundledSupportDll Include="Native\minhook.x86.dll" />
   </ItemGroup>
 
+  <!-- Single ImGui native beside the engine: EntryPoint tries Runtime\RynthCore.cimgui.dll first (see EntryPoint.GetImGuiNativeCandidates). -->
   <Target Name="CopyBundledNativeDlls" AfterTargets="Build">
-    <Copy
-      SourceFiles="@(BundledNativeDll)"
-      DestinationFiles="@(BundledNativeDll->'$(OutputPath)Native\%(Filename)%(Extension)')"
-      SkipUnchangedFiles="true" />
-    <Copy
-      SourceFiles="@(BundledNativeDll)"
-      DestinationFiles="@(BundledNativeDll->'$(OutputPath)Native\RynthCore.%(Filename)%(Extension)')"
-      SkipUnchangedFiles="true" />
-    <Copy
-      SourceFiles="@(BundledNativeDll)"
-      DestinationFiles="@(BundledNativeDll->'$(OutputPath)%(Filename)%(Extension)')"
-      SkipUnchangedFiles="true" />
     <Copy
       SourceFiles="@(BundledNativeDll)"
       DestinationFiles="@(BundledNativeDll->'$(OutputPath)RynthCore.%(Filename)%(Extension)')"
       SkipUnchangedFiles="true" />
+    <!-- ImGui.NET / publish may still emit plain cimgui.dll or Native\ copies; keep one prefixed name next to the engine. -->
+    <Delete Files="$(OutputPath)cimgui.dll" Condition="Exists('$(OutputPath)cimgui.dll')" />
+    <Delete Files="$(OutputPath)Native\cimgui.dll" Condition="Exists('$(OutputPath)Native\cimgui.dll')" />
+    <Delete Files="$(OutputPath)Native\RynthCore.cimgui.dll" Condition="Exists('$(OutputPath)Native\RynthCore.cimgui.dll')" />
   </Target>
 
   <Target Name="CopyBundledNativeDllsToPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
-    <Copy
-      SourceFiles="@(BundledNativeDll)"
-      DestinationFiles="@(BundledNativeDll->'$(PublishDir)Native\%(Filename)%(Extension)')"
-      SkipUnchangedFiles="true" />
-    <Copy
-      SourceFiles="@(BundledNativeDll)"
-      DestinationFiles="@(BundledNativeDll->'$(PublishDir)Native\RynthCore.%(Filename)%(Extension)')"
-      SkipUnchangedFiles="true" />
-    <Copy
-      SourceFiles="@(BundledNativeDll)"
-      DestinationFiles="@(BundledNativeDll->'$(PublishDir)%(Filename)%(Extension)')"
-      SkipUnchangedFiles="true" />
     <Copy
       SourceFiles="@(BundledNativeDll)"
       DestinationFiles="@(BundledNativeDll->'$(PublishDir)RynthCore.%(Filename)%(Extension)')"
@@ -102,6 +93,13 @@
       SourceFiles="@(BundledSupportDll)"
       DestinationFiles="@(BundledSupportDll->'$(PublishDir)%(Filename)%(Extension)')"
       SkipUnchangedFiles="true" />
+  </Target>
+
+  <!-- Run after the full publish graph so package/ILC drops of cimgui.dll are removed last. -->
+  <Target Name="DedupePublishedCimguiCopies" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
+    <Delete Files="$(PublishDir)cimgui.dll" Condition="Exists('$(PublishDir)cimgui.dll')" />
+    <Delete Files="$(PublishDir)Native\cimgui.dll" Condition="Exists('$(PublishDir)Native\cimgui.dll')" />
+    <Delete Files="$(PublishDir)Native\RynthCore.cimgui.dll" Condition="Exists('$(PublishDir)Native\RynthCore.cimgui.dll')" />
   </Target>
 
   <Target Name="CopyBundledSupportDlls" AfterTargets="Build">

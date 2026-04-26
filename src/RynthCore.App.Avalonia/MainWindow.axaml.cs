@@ -75,6 +75,8 @@ internal partial class MainWindow : Window
         _serverStatusTimer.Start();
         Closing += (_, _) => SaveWindowLayout();
         AppendActivity("Avalonia launcher preview ready.");
+        // One-line host/runtime sidecar check (full detail in Desktop RynthCore-Launcher.log).
+        AppendActivity(LauncherHostDiagnostics.BuildActivitySummaryLine());
         _ = RefreshServerStatusesAsync();
     }
 
@@ -152,6 +154,8 @@ internal partial class MainWindow : Window
         AutoLaunchHeaderCheckBox.IsChecked = _settings.AutoLaunch;
         AutoInjectAfterLaunchCheckBox.IsChecked = _settings.AutoInjectAfterLaunch;
         WatchForAcStartCheckBox.IsChecked = _settings.WatchForAcStart;
+        InjectAllRunningAcCheckBox.IsChecked = _settings.InjectAllRunningClients;
+        SetLoggingLevelSelection(_settings.LoggingLevel);
     }
 
     private void BuildPluginLoadout()
@@ -722,12 +726,18 @@ internal partial class MainWindow : Window
         _settings.AutoLaunch = AutoLaunchHeaderCheckBox.IsChecked == true;
         _settings.AutoInjectAfterLaunch = AutoInjectAfterLaunchCheckBox.IsChecked == true;
         _settings.WatchForAcStart = WatchForAcStartCheckBox.IsChecked == true;
+        _settings.InjectAllRunningClients = InjectAllRunningAcCheckBox.IsChecked == true;
+        _settings.LoggingLevel = GetSelectedLoggingLevel();
         _settings.EnabledPluginIds = GetSelectedPluginIds().ToList();
         if (_settings.EnabledPluginIds.Count == 0)
             _settings.EnabledPluginIds.Add("rynthcore-engine");
         SaveSettings();
+        SyncPluginPathsToEngineSettings();
         if (appendActivity)
+        {
+            AppendActivity($"Logging level saved: {_settings.LoggingLevel}.");
             AppendActivity("Launch behavior saved.");
+        }
     }
 
     private void SaveAutoLaunchPreference()
@@ -844,7 +854,11 @@ internal partial class MainWindow : Window
 
                 LaunchServerProfile? contextServer = ResolveServerForAccount(account);
                 string accountKey = BuildAccountKey(account.AccountName);
-                if (!string.IsNullOrWhiteSpace(accountKey) && activeAccountKeys.Contains(accountKey))
+                bool allowMultipleClients = _settings.AllowMultipleClients;
+                // In single-client mode, keep one active session per account to avoid accidental duplicate launches.
+                if (!allowMultipleClients &&
+                    !string.IsNullOrWhiteSpace(accountKey) &&
+                    activeAccountKeys.Contains(accountKey))
                 {
                     string serverLabel = contextServer?.DisplayName ?? "the configured server";
                     AppendActivity($"Skipped {account.DisplayName}: account '{account.AccountName}' already has a running session on {serverLabel}.");
@@ -1111,6 +1125,7 @@ internal partial class MainWindow : Window
                 foreach (string p in _pluginDllPaths)
                     w.WriteStringValue(p);
                 w.WriteEndArray();
+                w.WriteString("LoggingLevel", GetSelectedLoggingLevel());
                 w.WriteEndObject();
             }
             File.WriteAllBytes(engineSettingsPath, ms.ToArray());
@@ -1156,18 +1171,28 @@ internal partial class MainWindow : Window
         try
         {
             SetOperationState(true);
-            Process target = targets.OrderBy(process => process.Id).First();
-            AppendActivity($"Applying selected loadout to running AC (PID {target.Id}).");
+            IReadOnlyList<Process> orderedTargets = targets.OrderBy(process => process.Id).ToList();
+            bool injectAllSessions = InjectAllRunningAcCheckBox.IsChecked == true;
+            IReadOnlyList<Process> targetsToInject = injectAllSessions
+                ? orderedTargets
+                : [orderedTargets[0]];
+            AppendActivity(injectAllSessions
+                ? $"Applying selected loadout to {targetsToInject.Count} running AC session(s)."
+                : $"Applying selected loadout to first running AC session (PID {targetsToInject[0].Id}).");
 
-            InjectionResult result = await Task.Run(() => _injector.InjectIntoProcess(target, enginePath, AppendActivity));
-            if (result.Success)
+            foreach (Process target in targetsToInject)
             {
-                _launchedSessionPids.Add(target.Id);
-                AppendActivity($"Injection complete for PID {target.Id}.");
-            }
-            else
-            {
-                AppendActivity($"Injection failed: {result.Summary}");
+                AppendActivity($"Injecting running AC (PID {target.Id}).");
+                InjectionResult result = await Task.Run(() => _injector.InjectIntoProcess(target, enginePath, AppendActivity));
+                if (result.Success)
+                {
+                    _launchedSessionPids.Add(target.Id);
+                    AppendActivity($"Injection complete for PID {target.Id}.");
+                }
+                else
+                {
+                    AppendActivity($"Injection failed for PID {target.Id}: {result.Summary}");
+                }
             }
         }
         catch (Exception ex)
@@ -1179,6 +1204,38 @@ internal partial class MainWindow : Window
             SetOperationState(false);
             RefreshSessionState();
         }
+    }
+
+    private string GetSelectedLoggingLevel()
+    {
+        return LoggingLevelComboBox.SelectedItem is ComboBoxItem item
+            ? item.Content?.ToString() ?? "Info"
+            : "Info";
+    }
+
+    private void SetLoggingLevelSelection(string? loggingLevel)
+    {
+        string desiredLevel = string.IsNullOrWhiteSpace(loggingLevel) ? "Info" : loggingLevel.Trim();
+        if (LoggingLevelComboBox.Items == null)
+        {
+            LoggingLevelComboBox.SelectedIndex = 0;
+            return;
+        }
+
+        foreach (object? item in LoggingLevelComboBox.Items)
+        {
+            if (item is not ComboBoxItem comboItem)
+                continue;
+
+            string candidate = comboItem.Content?.ToString() ?? string.Empty;
+            if (!string.Equals(candidate, desiredLevel, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            LoggingLevelComboBox.SelectedItem = comboItem;
+            return;
+        }
+
+        LoggingLevelComboBox.SelectedIndex = 0;
     }
 
     private void OnPrimarySelectionChanged()

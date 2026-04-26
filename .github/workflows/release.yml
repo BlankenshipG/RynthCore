@@ -76,7 +76,8 @@ jobs:
         $parent = Split-Path "$env:GITHUB_WORKSPACE" -Parent
         & "$env:GITHUB_WORKSPACE\installer\Build-Installer.ps1" `
             -RynthSuiteRoot "$parent\RynthSuite" `
-            -Version "${{ steps.ver.outputs.version }}"
+            -Version "${{ steps.ver.outputs.version }}" `
+            -SkipUbRythai
 
     # ── Tag (manual dispatch only — tag-push already has a tag) ───────────────
     - name: Create tag (manual dispatch)
@@ -94,11 +95,11 @@ jobs:
       with:
         tag_name: ${{ steps.ver.outputs.tag }}
         name: RynthCore ${{ steps.ver.outputs.tag }}
-        files: installer/Output/RynthCore-Setup.exe
+        files: installer/Output/RynthBundle-Setup-${{ steps.ver.outputs.version }}.exe
         body: |
           ## Installation
 
-          1. Download **RynthCore-Setup.exe** below and run it
+          1. Download **RynthBundle-Setup-${{ steps.ver.outputs.version }}.exe** below and run it
           2. Start Asheron's Call and log in to your character
           3. Open **RynthCore** from the Start Menu or Desktop shortcut
           4. Click **Inject Running AC** in the launcher

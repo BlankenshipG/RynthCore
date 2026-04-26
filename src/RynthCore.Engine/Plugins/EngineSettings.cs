@@ -13,6 +13,7 @@ internal static class EngineSettings
         "engine.json");
 
     private static List<string> _pluginPaths = new();
+    private static string _loggingLevel = "Info";
     private static bool _loaded;
 
     public static IReadOnlyList<string> PluginPaths
@@ -21,6 +22,15 @@ internal static class EngineSettings
         {
             EnsureLoaded();
             return _pluginPaths;
+        }
+    }
+
+    public static string LoggingLevel
+    {
+        get
+        {
+            EnsureLoaded();
+            return _loggingLevel;
         }
     }
 
@@ -66,6 +76,14 @@ internal static class EngineSettings
                         _pluginPaths.Add(val);
                 }
             }
+
+            if (doc.RootElement.TryGetProperty("LoggingLevel", out var loggingLevelElement) &&
+                loggingLevelElement.ValueKind == JsonValueKind.String)
+            {
+                string? configuredLevel = loggingLevelElement.GetString();
+                if (!string.IsNullOrWhiteSpace(configuredLevel))
+                    _loggingLevel = configuredLevel;
+            }
         }
         catch (Exception ex)
         {
@@ -88,6 +106,7 @@ internal static class EngineSettings
                 foreach (string p in _pluginPaths)
                     w.WriteStringValue(p);
                 w.WriteEndArray();
+                w.WriteString("LoggingLevel", _loggingLevel);
                 w.WriteEndObject();
             }
             File.WriteAllBytes(SettingsPath, ms.ToArray());

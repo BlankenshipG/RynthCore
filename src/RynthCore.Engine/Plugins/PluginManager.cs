@@ -1501,6 +1501,18 @@ internal static class PluginManager
         var loaded = PluginLoader.LoadAll(_pluginsDir, _shadowRootDir, _loadGeneration);
         _plugins.AddRange(loaded);
 
+        // Track DLL file names and canonical paths already staged this generation. Extra paths
+        // often repeat the same plugin as under Runtime\Plugins (e.g. RynthCore.Plugin.RynthAi.dll
+        // in both); a second File.Copy to the same shadow file name fails while the first copy
+        // is still mapped ("used by another process") and breaks hot-reload ordering for later DLLs.
+        var loadedBasenames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var loadedCanonicalPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in loaded)
+        {
+            loadedBasenames.Add(p.FileName);
+            TryAddCanonicalPath(loadedCanonicalPaths, p.SourceFilePath);
+        }
+
         // Extra DLL paths from engine settings
         var extraPaths = EngineSettings.PluginPaths;
         for (int i = 0; i < extraPaths.Count; i++)
@@ -1511,10 +1523,48 @@ internal static class PluginManager
                 RynthLog.Plugin($"PluginManager: Extra plugin not found: {dllPath}");
                 continue;
             }
+
+            string baseName = Path.GetFileName(dllPath);
+            if (loadedBasenames.Contains(baseName))
+            {
+                RynthLog.Plugin($"PluginManager: Skipping extra plugin (same file name already loaded from plugins directory or earlier extra path): {dllPath}");
+                continue;
+            }
+
+            if (TryGetCanonicalPath(dllPath, out string extraCanon) && loadedCanonicalPaths.Contains(extraCanon))
+            {
+                RynthLog.Plugin($"PluginManager: Skipping extra plugin (same resolved path already loaded): {dllPath}");
+                continue;
+            }
+
             RynthLog.Plugin($"PluginManager: Loading extra plugin: {dllPath}");
             var plugin = PluginLoader.LoadSingle(dllPath, _shadowRootDir, _loadGeneration);
             if (plugin != null)
+            {
                 _plugins.Add(plugin);
+                loadedBasenames.Add(plugin.FileName);
+                TryAddCanonicalPath(loadedCanonicalPaths, plugin.SourceFilePath);
+            }
+        }
+    }
+
+    private static void TryAddCanonicalPath(HashSet<string> set, string path)
+    {
+        if (TryGetCanonicalPath(path, out string canon))
+            set.Add(canon);
+    }
+
+    private static bool TryGetCanonicalPath(string path, out string canonical)
+    {
+        try
+        {
+            canonical = Path.GetFullPath(path);
+            return true;
+        }
+        catch
+        {
+            canonical = string.Empty;
+            return false;
         }
     }
 
