@@ -729,6 +729,16 @@ internal static class ItemsPanel
     }
 
     // ── Plugin binding ────────────────────────────────────────────────────────
+    // RL loads fresh plugin copies without unloading the old ones: drop the
+    // exports bound below so the next poll re-binds to the live copy.
+    static ItemsPanel() => PluginManager.PluginsUnloaded += () =>
+    {
+        _getItemsJson = null;
+        _setItemsJson = null;
+        _addSelectedWeapon = null;
+        _addSelectedConsumable = null;
+    };
+
     private static void TryBind()
     {
         var plugin = PluginManager.Plugins.FirstOrDefault(

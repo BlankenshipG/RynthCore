@@ -1296,6 +1296,14 @@ internal static class SettingsPanel
     //  Plugin bridge
     // =========================================================================
 
+    // RL loads fresh plugin copies without unloading the old ones: drop the
+    // exports bound below so the next poll re-binds to the live copy.
+    static SettingsPanel() => PluginManager.PluginsUnloaded += () =>
+    {
+        _getSettingsJson = null;
+        _setSettingsJson = null;
+    };
+
     private static void TryBind()
     {
         var plugin = PluginManager.Plugins.FirstOrDefault(

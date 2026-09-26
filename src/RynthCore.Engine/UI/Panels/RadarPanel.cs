@@ -1319,6 +1319,13 @@ internal static partial class RadarPanel
     }
 
     // ── Plugin export binding ───────────────────────────────────────────────
+    // RL loads fresh plugin copies without unloading the old ones: drop the
+    // exports bound below so the next poll re-binds to the live copy.
+    static RadarPanel() => PluginManager.PluginsUnloaded += () =>
+    {
+        _getRadarSnapshot = null;
+    };
+
     private static void TryBind()
     {
         if (_getRadarSnapshot != null) return;

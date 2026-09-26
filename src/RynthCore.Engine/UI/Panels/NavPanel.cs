@@ -552,6 +552,14 @@ internal static class NavPanel
     //  Plugin bridge
     // =========================================================================
 
+    // RL loads fresh plugin copies without unloading the old ones: drop the
+    // exports bound below so the next poll re-binds to the live copy.
+    static NavPanel() => PluginManager.PluginsUnloaded += () =>
+    {
+        _getNavJson = null;
+        _sendNavCommand = null;
+    };
+
     private static void TryBind()
     {
         var plugin = PluginManager.Plugins.FirstOrDefault(

@@ -955,6 +955,14 @@ internal static class MonstersPanel
     }
 
     // ── Plugin export binding ───────────────────────────────────────────────
+    // RL loads fresh plugin copies without unloading the old ones: drop the
+    // exports bound below so the next poll re-binds to the live copy.
+    static MonstersPanel() => PluginManager.PluginsUnloaded += () =>
+    {
+        _getMonstersJson = null;
+        _setMonstersJson = null;
+    };
+
     private static void TryBind()
     {
         var plugin = PluginManager.Plugins.FirstOrDefault(

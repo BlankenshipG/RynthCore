@@ -58,6 +58,22 @@ internal static class MonsterDamagePanel
     private static SetJsonFn? _setMonsters;   // RynthPluginSetMonstersJson  (write-back, whole rules array)
     private static VoidFn?    _clearStats;    // RynthPluginClearMonsterStats (master reset)
 
+    // RL loads fresh plugin copies without unloading the old ones: drop the
+    // exports bound below so the next poll re-binds to the live copy.
+    static MonsterDamagePanel() => PluginManager.PluginsUnloaded += () =>
+    {
+        _getJson = null;
+        _setHp = null;
+        _delRow = null;
+        _getWeapons = null;
+        _setWeapon = null;
+        _setOffhand = null;
+        _getMonsters = null;
+        _setMonsters = null;
+        _clearStats = null;
+        _setDefaultWeapon = null;
+    };
+
     private static void TryBind()
     {
         if (_getJson != null) return;

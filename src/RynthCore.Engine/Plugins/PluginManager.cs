@@ -254,6 +254,15 @@ internal static class PluginManager
     private static string _shadowRootDir = "";
 
     public static IReadOnlyList<LoadedPlugin> Plugins => _plugins;
+
+    /// <summary>
+    /// Raised after every plugin has been shut down and removed (RL / rescan, engine
+    /// shutdown). Unload never FreeLibrary's a NativeAOT plugin, so an export bound
+    /// before a reload stays callable — into the shut-down copy. Panels that cache
+    /// plugin exports drop them here; their next poll re-binds to the fresh copy.
+    /// Raised on the pump thread.
+    /// </summary>
+    public static event Action? PluginsUnloaded;
     public static bool IsRescanQueued => _rescanRequested;
     public static string PluginDirectory => _pluginsDir;
     public static IReadOnlyList<string> ExtraPluginPaths => EngineSettings.PluginPaths;
@@ -2191,6 +2200,9 @@ internal static class PluginManager
 
         _plugins.Clear();
         PublishPluginsRenderSnapshot();
+
+        try { PluginsUnloaded?.Invoke(); }
+        catch (Exception ex) { RynthLog.Plugin($"PluginManager: PluginsUnloaded handler threw: {ex.Message}"); }
     }
 
     private static void DispatchUIInitializedToLoadedPlugins()

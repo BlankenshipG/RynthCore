@@ -267,6 +267,15 @@ internal static class RynthVisionPanel
 
     // ── Plugin binding ────────────────────────────────────────────────────────
 
+    // RL loads fresh plugin copies without unloading the old ones: drop the
+    // exports bound below so the next poll re-binds to the live copy.
+    static RynthVisionPanel() => PluginManager.PluginsUnloaded += () =>
+    {
+        _getSettings = null;
+        _setSettings = null;
+        _inspect = null;
+    };
+
     private static void TryBind()
     {
         LoadedPlugin? plugin = PluginManager.Plugins.FirstOrDefault(

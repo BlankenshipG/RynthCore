@@ -199,6 +199,25 @@ $rootCleanup = @(
 )
 
 if (-not $SkipLauncher) {
+    # Same pre-flight for the launcher payload: a running RynthCore.exe holds its
+    # Avalonia DLLs, and the copy failing on one of them used to abort the deploy
+    # AFTER Runtime\ below had been wiped (2026-09-26) — no engine until a redeploy.
+    $launcherLocked = @()
+    foreach ($f in Get-ChildItem -LiteralPath $launcherPublish -File) {
+        $target = Join-Path $Destination $f.Name
+        if ($f.Name -eq "RynthCore.App.Avalonia.exe") { $target = Join-Path $Destination "RynthCore.exe" }
+        if (-not (Test-Path -LiteralPath $target)) { continue }
+        try {
+            $s = [System.IO.File]::Open($target, 'Open', 'ReadWrite', 'None')
+            $s.Close()
+        } catch {
+            $launcherLocked += $target
+        }
+    }
+    if ($launcherLocked.Count -gt 0) {
+        throw ("Deploy aborted BEFORE touching anything - $($launcherLocked.Count) launcher file(s) are locked (close the RynthCore launcher, or pass -SkipLauncher):`n  " + ($launcherLocked -join "`n  "))
+    }
+
     foreach ($name in $rootCleanup) {
         $target = Join-Path $Destination $name
         if (Test-Path -LiteralPath $target) {

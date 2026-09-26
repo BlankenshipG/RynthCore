@@ -1481,6 +1481,14 @@ internal static class MetaPanel
     //  Plugin bridge
     // =========================================================================
 
+    // RL loads fresh plugin copies without unloading the old ones: drop the
+    // exports bound below so the next poll re-binds to the live copy.
+    static MetaPanel() => PluginManager.PluginsUnloaded += () =>
+    {
+        _getMetaJson = null;
+        _sendMetaCommand = null;
+    };
+
     private static void TryBind()
     {
         var plugin = PluginManager.Plugins.FirstOrDefault(

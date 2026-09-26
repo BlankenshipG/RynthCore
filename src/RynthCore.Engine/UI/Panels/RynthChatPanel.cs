@@ -1194,6 +1194,15 @@ internal static class RynthChatPanel
 
     internal static bool FloatingSelectionActive => _selDragging;
 
+    // RL loads fresh plugin copies without unloading the old ones: drop the
+    // exports bound below so the next poll re-binds to the live copy.
+    static RynthChatPanel() => PluginManager.PluginsUnloaded += () =>
+    {
+        _getScrollbackJson = null;
+        _sendLine = null;
+        _lastSeq = 0;   // the fresh copy's scrollback numbers from 1 again
+    };
+
     private static void TryBind()
     {
         LoadedPlugin? plugin = PluginManager.Plugins.FirstOrDefault(

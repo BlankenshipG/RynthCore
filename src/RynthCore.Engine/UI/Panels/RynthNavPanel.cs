@@ -200,6 +200,18 @@ internal static class RynthNavPanel
     }
 
     // ── Plugin binding ──────────────────────────────────────────────────────────
+    // RL loads fresh plugin copies without unloading the old ones: drop the
+    // exports bound below so the next poll re-binds to the live copy.
+    static RynthNavPanel() => PluginManager.PluginsUnloaded += () =>
+    {
+        _getStatus = null;
+        _loadTile = null;
+        _testQuery = null;
+        _preview = null;
+        _move = null;
+        _goto = null;
+    };
+
     private static void TryBind()
     {
         LoadedPlugin? plugin = PluginManager.Plugins.FirstOrDefault(
