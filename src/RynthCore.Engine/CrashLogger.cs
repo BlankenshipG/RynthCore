@@ -1,0 +1,455 @@
+// ============================================================================
+//  RynthCore.Engine - CrashLogger.cs
+//  Installs a Win32 Vectored Exception Handler so that an AV (uncatchable in
+//  NativeAOT) is logged with the faulting address + module BEFORE the process
+//  dies. Without this, silent AVs leave us guessing which call crashed.
+// ============================================================================
+
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+namespace RynthCore.Engine;
+
+internal static class CrashLogger
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct EXCEPTION_RECORD
+    {
+        public uint ExceptionCode;
+        public uint ExceptionFlags;
+        public IntPtr ExceptionRecord;
+        public IntPtr ExceptionAddress;
+        public uint NumberParameters;
+        // ExceptionInformation[15] follows — not needed for our logging
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct EXCEPTION_POINTERS
+    {
+        public IntPtr ExceptionRecord;   // EXCEPTION_RECORD*
+        public IntPtr ContextRecord;     // CONTEXT*
+    }
+
+    private delegate int VectoredHandler(IntPtr exceptionInfo);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr AddVectoredExceptionHandler(uint first, VectoredHandler handler);
+
+    private delegate int UnhandledExceptionFilter(IntPtr exceptionInfo);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr SetUnhandledExceptionFilter(UnhandledExceptionFilter handler);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint GetModuleFileNameW(IntPtr hModule, char[] lpFilename, uint nSize);
+
+    [DllImport("psapi.dll", SetLastError = true)]
+    private static extern bool GetModuleInformation(IntPtr hProcess, IntPtr hModule, out MODULEINFO lpmodinfo, uint cb);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetModuleHandleExW(uint dwFlags, IntPtr lpModuleName, out IntPtr phModule);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr VirtualQuery(IntPtr lpAddress, out MEMORY_BASIC_INFORMATION lpBuffer, IntPtr dwLength);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MODULEINFO
+    {
+        public IntPtr lpBaseOfDll;
+        public uint SizeOfImage;
+        public IntPtr EntryPoint;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MEMORY_BASIC_INFORMATION
+    {
+        public IntPtr BaseAddress;
+        public IntPtr AllocationBase;
+        public uint AllocationProtect;
+        public IntPtr RegionSize;
+        public uint State;
+        public uint Protect;
+        public uint Type;
+    }
+
+    private const uint MEM_COMMIT    = 0x00001000;
+    private const uint PAGE_NOACCESS = 0x00000001;
+    private const uint PAGE_GUARD    = 0x00000100;
+
+    // x86 CONTEXT field offsets (verified against winnt.h _CONTEXT layout).
+    // FloatSave occupies 112 bytes between the Dr* registers and SegGs.
+    private const int CTX_OFF_EDI = 156;
+    private const int CTX_OFF_ESI = 160;
+    private const int CTX_OFF_EBX = 164;
+    private const int CTX_OFF_EDX = 168;
+    private const int CTX_OFF_ECX = 172;
+    private const int CTX_OFF_EAX = 176;
+    private const int CTX_OFF_EBP = 180;
+    private const int CTX_OFF_EIP = 184;
+    private const int CTX_OFF_ESP = 196;
+
+    // GetModuleHandleEx flags
+    private const uint GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS  = 0x00000004;
+    private const uint GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT = 0x00000002;
+
+    // Exception codes worth logging — skip the noisy breakpoints / single-steps.
+    private const uint EXCEPTION_ACCESS_VIOLATION         = 0xC0000005;
+    private const uint EXCEPTION_ILLEGAL_INSTRUCTION      = 0xC000001D;
+    private const uint EXCEPTION_PRIV_INSTRUCTION         = 0xC0000096;
+    private const uint EXCEPTION_INT_DIVIDE_BY_ZERO       = 0xC0000094;
+    private const uint EXCEPTION_STACK_OVERFLOW           = 0xC00000FD;
+
+    // Return values for VectoredHandler
+    private const int EXCEPTION_CONTINUE_SEARCH   = 0;
+
+    // Pin the delegate so it isn't GC'd while Windows holds the function pointer.
+    private static VectoredHandler? _handler;
+    private static UnhandledExceptionFilter? _suefHandler;
+    private static bool _installed;
+    // Once-per-process latch; first interesting AV wins.
+    private static int _crashLogged;
+    // First-chance trace counter: dump exception code + addr for the first
+    // N exceptions we observe regardless of "interesting" filter, so we can
+    // confirm VEH is even firing during a real crash.
+    private static int _firstChanceTraceCount;
+    private const int FirstChanceTraceLimit = 20;
+
+    public static void Install()
+    {
+        if (_installed) return;
+
+        // ── DO NOT install the managed VEH / SUEF (proven fatal 2026-05-16) ──
+        // AddVectoredExceptionHandler(CALL_FIRST, managed-delegate) registers a
+        // NativeAOT *managed reverse-P/Invoke* that the OS invokes for EVERY
+        // first-chance SEH exception process-wide — including the many that AC,
+        // d3d9.dll and Avalonia raise-and-handle internally in normal
+        // operation. On an AC-owned thread (render/EndScene) where the runtime
+        // can't safely attach/trap (mid-render, mid-GC), that transition
+        // fail-fasts in RhpReversePInvokeAttachOrTrapThread2 — exactly the
+        // 2026-05-16 10:13 dump (CrashLogger.VectoredHandler is literally on
+        // the fail-fast stack, EndScene→OverlayTextureRenderer.UploadFrame).
+        // It also does GC-capable managed work (Marshal.PtrToStructure,
+        // RynthLog) inside exception dispatch. Same fatal class as the removed
+        // RaiseFailFastException hook. Across the entire multi-session crash
+        // investigation this handler produced ZERO usable crash logs — every
+        // real crash either overflowed past the stack reservation (bypassing
+        // VEH) or the VEH's own transition fail-fasted. It is pure liability:
+        // it converts first-chance exceptions AC would otherwise handle into
+        // guaranteed fail-fast process death. SUEF has the same managed-
+        // callback hazard and also never produced a usable log. Both removed.
+        // External crash capture (procdump -ma -t) replaced this diagnostic.
+        try
+        {
+            _installed = true;
+            RynthLog.Info("CrashLogger: managed VEH/SUEF intentionally NOT installed (fatal in NativeAOT-injected acclient — see code comment).");
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Info($"CrashLogger: install failed {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// SetUnhandledExceptionFilter target — runs only when no other handler
+    /// catches the exception. Same dump as the VEH path, but explicitly
+    /// labeled so we know which path produced the log.
+    /// </summary>
+    private static int OnUnhandledException(IntPtr pExceptionInfo)
+    {
+        try
+        {
+            RynthLog.Error("==== SUEF (last-chance unhandled) FIRED ====");
+            ProcessException(pExceptionInfo, sourceTag: "SUEF");
+        }
+        catch
+        {
+        }
+        // EXCEPTION_CONTINUE_SEARCH (0) lets WER take over (which on this
+        // box doesn't seem to be configured to log either, but we've at
+        // least written our banner now).
+        return 0;
+    }
+
+    private static int OnVectoredException(IntPtr pExceptionInfo)
+    {
+        ProcessException(pExceptionInfo, sourceTag: "VEH");
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    /// <summary>
+    /// Shared exception handling — called from both the VEH (first-chance)
+    /// and SUEF (last-chance) paths. Tagged with which path observed it so
+    /// we can tell whether VEH is even running during a real crash.
+    /// </summary>
+    private static void ProcessException(IntPtr pExceptionInfo, string sourceTag)
+    {
+        try
+        {
+            EXCEPTION_POINTERS ep = Marshal.PtrToStructure<EXCEPTION_POINTERS>(pExceptionInfo);
+            EXCEPTION_RECORD er = Marshal.PtrToStructure<EXCEPTION_RECORD>(ep.ExceptionRecord);
+
+            // First-chance trace (capped). Logs every SEH exception we observe
+            // for the first N times, regardless of whether it's "interesting".
+            // This proves VEH is firing and lets us see codes we may want to
+            // start treating as fatal.
+            int traceN = Interlocked.Increment(ref _firstChanceTraceCount);
+            if (traceN <= FirstChanceTraceLimit)
+            {
+                RynthLog.Info($"[{sourceTag}] fc#{traceN} code=0x{er.ExceptionCode:X8} addr=0x{er.ExceptionAddress.ToInt64():X8} flags=0x{er.ExceptionFlags:X}");
+            }
+
+            // Only log genuinely fatal categories. Normal operation throws SEH
+            // exceptions (C++ 0xE06D7363, CLR 0xE0434352, etc.) we should ignore.
+            bool interesting =
+                er.ExceptionCode == EXCEPTION_ACCESS_VIOLATION ||
+                er.ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION ||
+                er.ExceptionCode == EXCEPTION_PRIV_INSTRUCTION ||
+                er.ExceptionCode == EXCEPTION_INT_DIVIDE_BY_ZERO ||
+                er.ExceptionCode == EXCEPTION_STACK_OVERFLOW;
+
+            if (!interesting)
+                return;
+
+            string module = ResolveModule(er.ExceptionAddress, out IntPtr moduleBase);
+
+            // Historically we returned EXCEPTION_CONTINUE_SEARCH whenever the
+            // faulting address didn't resolve to a module — to suppress the
+            // flood of speculative-null-deref AVs that .NET Framework's CLR
+            // (used by Decal-injected managed plugins) generates as part of
+            // normal nullable reads. Problem: that filter ALSO suppressed
+            // genuine fatal AVs whose target address is NULL, in freed heap,
+            // or in JIT'd code — which is most of what actually kills AC.
+            // We only enable the filter when Decal is loaded; otherwise we
+            // log every interesting AV unconditionally and let the once-per-
+            // process latch (added below) keep the log readable.
+            if (moduleBase == IntPtr.Zero && Compatibility.DecalDetection.IsDecalLoaded)
+                return;
+
+            // Once-per-process latch: log the first interesting fault, then
+            // stop logging subsequent AVs to keep the log focused on the
+            // root cause. The process is going to die anyway, and tail
+            // SEH unwind frequently re-raises the same fault several times.
+            if (Interlocked.Exchange(ref _crashLogged, 1) != 0)
+                return;
+
+            long rva = moduleBase != IntPtr.Zero
+                ? er.ExceptionAddress.ToInt64() - moduleBase.ToInt64()
+                : 0;
+
+            string codeName = er.ExceptionCode switch
+            {
+                EXCEPTION_ACCESS_VIOLATION    => "ACCESS_VIOLATION",
+                EXCEPTION_ILLEGAL_INSTRUCTION => "ILLEGAL_INSTRUCTION",
+                EXCEPTION_PRIV_INSTRUCTION    => "PRIV_INSTRUCTION",
+                EXCEPTION_INT_DIVIDE_BY_ZERO  => "DIVIDE_BY_ZERO",
+                EXCEPTION_STACK_OVERFLOW      => "STACK_OVERFLOW",
+                _                             => "UNKNOWN",
+            };
+
+            RynthLog.Info("================================================================");
+            RynthLog.Error($"==== CRASH ({codeName}) [{sourceTag}]  build={EntryPoint.BuildStamp}  initCount={EntryPoint.InitCount}  thread={Environment.CurrentManagedThreadId}");
+            RynthLog.Info(
+                $"  code=0x{er.ExceptionCode:X8}  addr=0x{er.ExceptionAddress.ToInt64():X8}  " +
+                $"module={ShortModule(module)}  base=0x{moduleBase.ToInt64():X8}  rva=0x{rva:X}");
+
+            // Decode AV operation from ExceptionInformation[0..1] (first param =
+            // 0 read / 1 write / 8 DEP, second param = faulting data address).
+            // Only available when NumberParameters >= 2; safe to read the two
+            // dwords directly past the fixed EXCEPTION_RECORD header.
+            if (er.ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er.NumberParameters >= 2)
+            {
+                int infoOffset = Marshal.SizeOf<EXCEPTION_RECORD>();
+                uint avKind = (uint)Marshal.ReadInt32(ep.ExceptionRecord, infoOffset);
+                IntPtr avAddr = (IntPtr)Marshal.ReadInt32(ep.ExceptionRecord, infoOffset + 4);
+                string kind = avKind switch { 0 => "read", 1 => "write", 8 => "DEP", _ => $"?{avKind}" };
+                RynthLog.Info($"  AV kind={kind}  faultAddr=0x{avAddr.ToInt64():X8}");
+            }
+
+            DumpContext(ep.ContextRecord);
+            RynthLog.Info("================================================================");
+        }
+        catch
+        {
+            // Logging must not throw — we're in an exception handler.
+        }
+    }
+
+    /// <summary>
+    /// Reads the x86 CONTEXT* and emits register dump + EBP-frame walk + ESP
+    /// sweep. EBP frames cover compilers that preserve frame pointers (most
+    /// managed/CLR/NativeAOT frames); the ESP sweep is the fallback for
+    /// FPO-optimized native code (cimgui, acclient) where return addresses
+    /// still sit on the stack but EBP is repurposed.
+    /// </summary>
+    /// <summary>
+    /// Reused by MainThreadHangWatchdog: format a captured x86 CONTEXT* (from
+    /// GetThreadContext on a suspended thread) as a register dump + stack walk.
+    /// </summary>
+    internal static void DumpExternalContext(IntPtr ctx, string tag) => DumpContext(ctx, tag);
+
+    private static void DumpContext(IntPtr ctx) => DumpContext(ctx, "CRASH");
+
+    /// <summary>module+RVA for a code address, or &lt;unknown&gt; — used by the
+    /// hang watchdog for cheap per-sample eip summaries.</summary>
+    internal static string ResolveCodeAddr(IntPtr addr)
+    {
+        try
+        {
+            string m = ResolveModule(addr, out IntPtr b);
+            return b != IntPtr.Zero ? $"{ShortModule(m)}+0x{addr.ToInt64() - b.ToInt64():X}" : "<unknown>";
+        }
+        catch { return "<err>"; }
+    }
+
+    private static void DumpContext(IntPtr ctx, string tag)
+    {
+        if (ctx == IntPtr.Zero) return;
+
+        uint eip, eax, ebx, ecx, edx, esi, edi, ebp, esp;
+        try
+        {
+            eip = (uint)Marshal.ReadInt32(ctx, CTX_OFF_EIP);
+            eax = (uint)Marshal.ReadInt32(ctx, CTX_OFF_EAX);
+            ebx = (uint)Marshal.ReadInt32(ctx, CTX_OFF_EBX);
+            ecx = (uint)Marshal.ReadInt32(ctx, CTX_OFF_ECX);
+            edx = (uint)Marshal.ReadInt32(ctx, CTX_OFF_EDX);
+            esi = (uint)Marshal.ReadInt32(ctx, CTX_OFF_ESI);
+            edi = (uint)Marshal.ReadInt32(ctx, CTX_OFF_EDI);
+            ebp = (uint)Marshal.ReadInt32(ctx, CTX_OFF_EBP);
+            esp = (uint)Marshal.ReadInt32(ctx, CTX_OFF_ESP);
+        }
+        catch
+        {
+            return;
+        }
+
+        RynthLog.Info(
+            $"{tag} regs: eip=0x{eip:X8} eax=0x{eax:X8} ebx=0x{ebx:X8} ecx=0x{ecx:X8} " +
+            $"edx=0x{edx:X8} esi=0x{esi:X8} edi=0x{edi:X8}");
+        RynthLog.Info($"{tag} regs: ebp=0x{ebp:X8} esp=0x{esp:X8}");
+
+        WalkEbpFrames((IntPtr)ebp);
+        SweepStack((IntPtr)esp);
+    }
+
+    private static void WalkEbpFrames(IntPtr startEbp)
+    {
+        try
+        {
+            IntPtr cur = startEbp;
+            for (int frame = 0; frame < 16; frame++)
+            {
+                if (!IsReadable(cur, 8)) break;
+                IntPtr nextEbp = (IntPtr)Marshal.ReadInt32(cur);
+                IntPtr ret    = (IntPtr)Marshal.ReadInt32(cur, 4);
+                if (ret == IntPtr.Zero) break;
+
+                string mod = ResolveModule(ret, out IntPtr modBase);
+                if (modBase != IntPtr.Zero)
+                {
+                    long fr = ret.ToInt64() - modBase.ToInt64();
+                    RynthLog.Info($"  ebp[{frame:D2}] ret=0x{ret.ToInt64():X8} {ShortModule(mod)}+0x{fr:X}");
+                }
+                else
+                {
+                    RynthLog.Info($"  ebp[{frame:D2}] ret=0x{ret.ToInt64():X8} <unknown>");
+                }
+
+                // Stop if next frame pointer doesn't look like a higher stack address.
+                long delta = nextEbp.ToInt64() - cur.ToInt64();
+                if (delta <= 0 || delta > 0x100000) break;
+                cur = nextEbp;
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// Reads up to 96 dwords from ESP and logs each value that lands inside a
+    /// loaded module. For an indirect-call AV, [esp] is the return address into
+    /// the caller — usually the first hit identifies the bad call site.
+    /// </summary>
+    private static void SweepStack(IntPtr startEsp)
+    {
+        const int sweepDwords = 96;
+        try
+        {
+            int hits = 0;
+            for (int i = 0; i < sweepDwords; i++)
+            {
+                IntPtr addr = (IntPtr)(startEsp.ToInt64() + i * 4);
+                if (!IsReadable(addr, 4)) break;
+                IntPtr v = (IntPtr)Marshal.ReadInt32(addr);
+                if (v == IntPtr.Zero) continue;
+
+                string mod = ResolveModule(v, out IntPtr modBase);
+                if (modBase == IntPtr.Zero) continue;
+
+                long fr = v.ToInt64() - modBase.ToInt64();
+                RynthLog.Info($"  esp+0x{i*4:X3}: 0x{v.ToInt64():X8} {ShortModule(mod)}+0x{fr:X}");
+
+                if (++hits >= 24) break;  // cap to keep log readable
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static bool IsReadable(IntPtr addr, int bytes)
+    {
+        try
+        {
+            if (VirtualQuery(addr, out MEMORY_BASIC_INFORMATION mbi, (IntPtr)Marshal.SizeOf<MEMORY_BASIC_INFORMATION>()) == IntPtr.Zero)
+                return false;
+            if (mbi.State != MEM_COMMIT) return false;
+            if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) return false;
+
+            // Make sure the requested range doesn't cross out of the committed region.
+            long endRequested = addr.ToInt64() + bytes;
+            long endRegion = mbi.BaseAddress.ToInt64() + mbi.RegionSize.ToInt64();
+            return endRequested <= endRegion;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string ShortModule(string fullPath)
+    {
+        if (string.IsNullOrEmpty(fullPath)) return "<?>";
+        int slash = fullPath.LastIndexOfAny(new[] { '\\', '/' });
+        return slash >= 0 ? fullPath.Substring(slash + 1) : fullPath;
+    }
+
+    private static string ResolveModule(IntPtr address, out IntPtr moduleBase)
+    {
+        moduleBase = IntPtr.Zero;
+        try
+        {
+            if (!GetModuleHandleExW(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    address, out IntPtr hModule) || hModule == IntPtr.Zero)
+            {
+                return "<unknown>";
+            }
+
+            moduleBase = hModule;
+            char[] buf = new char[512];
+            uint len = GetModuleFileNameW(hModule, buf, (uint)buf.Length);
+            if (len == 0) return "<noname>";
+            return new string(buf, 0, (int)len);
+        }
+        catch
+        {
+            return "<resolve-failed>";
+        }
+    }
+}

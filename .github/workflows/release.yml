@@ -1,0 +1,189 @@
+name: Build & Release
+
+# Trigger manually (Actions tab → Run workflow) or automatically on version tags.
+# For a manual release: go to Actions → Build & Release → Run workflow, enter version.
+# For an automated release: push a tag: git tag v0.3 && git push origin v0.3
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g. 0.3) — creates tag v<version>'
+        required: true
+        default: '0.3'
+      rynthsuite_ref:
+        description: 'RynthSuite ref to build against (tag/branch/SHA). Blank = matching version tag, else default branch.'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    permissions:
+      contents: write   # needed to create releases
+
+    steps:
+    # ── Checkout both repos ────────────────────────────────────────────────────
+    # RynthCore is checked out to $GITHUB_WORKSPACE (e.g. D:\a\RynthCore\RynthCore).
+    # RynthSuite must be a *sibling* of RynthCore so that the csproj project
+    # references (..\..\..\RynthCore\src\...) resolve correctly — they assume
+    # both repos live under a common parent directory, matching the local
+    # C:\Projects\RynthCore + C:\Projects\RynthSuite convention.
+    - name: Checkout RynthCore
+      uses: actions/checkout@v4
+
+    # Pin the sibling to the matching version tag so a tagged release is
+    # REPRODUCIBLE (otherwise it builds against whatever RynthSuite main is at
+    # build time — PluginContractVersion skew is one push away). Falls back to
+    # the default branch (with a CI warning) if the matching tag doesn't exist
+    # yet, e.g. a manual dispatch before RynthSuite is tagged.
+    - name: Checkout RynthSuite (sibling, pinned)
+      shell: pwsh
+      run: |
+        $parent = Split-Path "$env:GITHUB_WORKSPACE" -Parent
+        $dest   = "$parent\RynthSuite"
+        if ("${{ github.event_name }}" -eq "push") { $want = "${{ github.ref_name }}" }
+        else { $want = "v${{ github.event.inputs.version }}" }
+        $override = "${{ github.event.inputs.rynthsuite_ref }}"
+        if ($override) { $want = $override }
+        Write-Host "Cloning RynthSuite to: $dest (pin target: $want)"
+        # If RynthSuite is private, set a GH_PAT secret and use the token URL:
+        # git clone https://x-access-token:${{ secrets.GH_PAT }}@github.com/tombohar/RynthSuite.git $dest
+        git clone https://github.com/tombohar/RynthSuite.git $dest
+        if ($LASTEXITCODE -ne 0) { throw "git clone RynthSuite failed" }
+        git -C $dest fetch --tags --quiet
+        if ($want -and (git -C $dest rev-parse --verify --quiet "$want^{commit}")) {
+          git -C $dest checkout --quiet $want
+          if ($LASTEXITCODE -ne 0) { throw "checkout RynthSuite $want failed" }
+          Write-Host "RynthSuite pinned to: $want"
+        } else {
+          Write-Host "::warning::RynthSuite ref '$want' not found; building against default branch HEAD (NOT reproducible)"
+        }
+        Write-Host "RynthSuite at commit: $(git -C $dest rev-parse HEAD)"
+
+    # ── Toolchain ─────────────────────────────────────────────────────────────
+    - name: Setup .NET 10
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Install Inno Setup 6
+      run: choco install innosetup --yes --no-progress
+      shell: pwsh
+
+    - name: Setup Python (for validation gates)
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    # ── Validation gates (fail the release before building if any trips) ───────
+    # Gate 1: off-thread AC-mutator check — guards the off-thread-mutation AV
+    #   class (the root of the 2026-06 crash week). Pure source scan, no binary.
+    # Gate 2: LootSdk golden tests — 60+ assertions on the loot-profile parser
+    #   that ships in the bundled plugin (run against the pinned RynthSuite).
+    # Gate 3 (pe_pattern CHECK) is LOCAL-ONLY: it needs the 1.4 GB acclient.exe
+    #   that CI doesn't have, so it runs as a pre-deploy gate in Deploy-RynthCore.ps1.
+    - name: Validation gates
+      shell: pwsh
+      run: |
+        $parent = Split-Path "$env:GITHUB_WORKSPACE" -Parent
+        Write-Host "== Gate 1: off-thread AC-mutator check =="
+        python "$env:GITHUB_WORKSPACE\tools\check_offthread_mutators.py"
+        if ($LASTEXITCODE -ne 0) { throw "off-thread mutator gate FAILED — an AC mutator is reachable off the main thread" }
+
+        Write-Host "== Gate 2: LootSdk golden tests =="
+        dotnet run --project "$parent\RynthSuite\Tools\RynthCore.LootSdkTests\RynthCore.LootSdkTests.csproj" -c Release
+        if ($LASTEXITCODE -ne 0) { throw "LootSdk golden tests FAILED" }
+
+        Write-Host "== Gate 3: pe_pattern CHECK — LOCAL ONLY =="
+        Write-Host "  (skipped in CI: needs the 1.4 GB acclient.exe; runs pre-deploy via Deploy-RynthCore.ps1)"
+
+    # ── Determine version ──────────────────────────────────────────────────────
+    - name: Resolve version
+      id: ver
+      shell: pwsh
+      run: |
+        if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+          $v = "${{ github.event.inputs.version }}"
+        } else {
+          $v = "${{ github.ref_name }}".TrimStart('v')
+        }
+        echo "version=$v" >> $env:GITHUB_OUTPUT
+        echo "tag=v$v"    >> $env:GITHUB_OUTPUT
+        Write-Host "Building version: $v"
+
+    # ── Build installer ────────────────────────────────────────────────────────
+    - name: Build installer
+      shell: pwsh
+      run: |
+        $issFile = "$env:GITHUB_WORKSPACE\installer\RynthCore.iss"
+        $lineCount = (Get-Content $issFile).Count
+        Write-Host "RynthCore.iss line count: $lineCount  (commit: $(git rev-parse HEAD))"
+        $parent = Split-Path "$env:GITHUB_WORKSPACE" -Parent
+        & "$env:GITHUB_WORKSPACE\installer\Build-Installer.ps1" `
+            -RynthSuiteRoot "$parent\RynthSuite" `
+            -Version "${{ steps.ver.outputs.version }}"
+
+    # ── Tag (manual dispatch only — tag-push already has a tag) ───────────────
+    - name: Create tag (manual dispatch)
+      if: github.event_name == 'workflow_dispatch'
+      shell: pwsh
+      run: |
+        git config user.name  "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag "${{ steps.ver.outputs.tag }}" -m "Release ${{ steps.ver.outputs.tag }}"
+        git push origin "${{ steps.ver.outputs.tag }}"
+
+    # ── GitHub Release ─────────────────────────────────────────────────────────
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.ver.outputs.tag }}
+        name: RynthCore ${{ steps.ver.outputs.tag }}
+        files: installer/Output/RynthCore-Setup.exe
+        body: |
+          ## Installation
+
+          1. Download **RynthCore-Setup.exe** below and run it
+          2. Open **RynthCore** from the Start Menu or Desktop shortcut
+
+          ---
+
+          ## ⚠ Important first-time setup
+
+          ### 1. Second AC client install (required for multi-client coexistence)
+
+          If you also play Asheron's Call through ThwargLauncher or another launcher, you **must** keep a separate copy of the AC client for RynthCore launches. Otherwise the two stacks fight over the same DAT files and one of them will fail with "cannot access the data files."
+
+          Run this once in PowerShell:
+
+          ```powershell
+          robocopy "C:\Turbine\Asheron's Call" "C:\Games\RynthCore\AcClient" /E /MT:8 /NFL /NDL /NJH /NJS /NP /XF "acclient_*.log" "acclient.log"
+          ```
+
+          Then in the RynthCore launcher, set **AC Client Path** to:
+          ```
+          C:\Games\RynthCore\AcClient\acclient.exe
+          ```
+
+          (~1.4 GB extra disk. The two installs share `Documents\Asheron's Call\UserPreferences.ini` so multi-port stays in sync.)
+
+          ### 2. Add the RynthAi plugin (opt-in)
+
+          The installer drops the plugin DLL at `C:\Games\RynthSuite\RynthAi\RynthCore.Plugin.RynthAi.dll`. The engine does **not** auto-scan a Plugins folder. To enable RynthAi:
+
+          - Open the launcher → **Plugins** tab → **Add Plugin DLL**
+          - Browse to `C:\Games\RynthSuite\RynthAi\RynthCore.Plugin.RynthAi.dll`
+          - Launch AC. The RynthAi panel appears inside the AC window.
+
+          Loot, nav, and meta profiles also live under `C:\Games\RynthSuite\RynthAi\`.
+
+          ---
+
+          ## Logs
+
+          - Unified RynthCore log: `C:\Games\RynthCore\Logs\RynthCore.log`
+          - Crash dumps and engine init traces show up there with `[loader]`, `[engine]`, `[plugin]`, and `[compat]` tags.

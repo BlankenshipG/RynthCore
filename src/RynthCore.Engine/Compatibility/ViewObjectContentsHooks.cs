@@ -1,0 +1,129 @@
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+using RynthCore.Engine.Hooking;
+using RynthCore.Engine.Plugins;
+
+namespace RynthCore.Engine.Compatibility;
+
+internal static class ViewObjectContentsHooks
+{
+    private const int ViewObjectContentsVa = 0x005596B0;
+    private const int StopViewingObjectContentsVa = 0x00559770;
+    // Verified unique + lands at 0x005596B0 offline (tools/pe_pattern.py).
+    private static readonly byte?[] ViewObjectContentsPattern =
+    [
+        0x53, 0x8B, 0x5C, 0x24, 0x08, 0x56, 0x57, 0x53,
+        0x8B, 0xF9, 0xE8, null, null, null, null, 0x8B, 0xF0, 0x85
+    ];
+    // Verified unique + lands at 0x00559770 offline (tools/pe_pattern.py).
+    private static readonly byte?[] StopViewingObjectContentsPattern =
+    [
+        0x56, 0x57, 0x8B, 0x7C, 0x24, 0x0C, 0x57, 0x8B,
+        0xF1, 0xE8, null, null, null, null, 0x85, 0xC0, 0x74, 0x07
+    ];
+
+    [UnmanagedFunctionPointer(CallingConvention.ThisCall)]
+    private delegate void ViewObjectContentsDelegate(IntPtr thisPtr, uint objectId, IntPtr newContents);
+
+    [UnmanagedFunctionPointer(CallingConvention.ThisCall)]
+    private delegate void StopViewingObjectContentsDelegate(IntPtr thisPtr, uint objectId);
+
+    private static ViewObjectContentsDelegate? _originalViewObjectContents;
+    private static ViewObjectContentsDelegate? _viewObjectContentsDetour;
+    private static StopViewingObjectContentsDelegate? _originalStopViewingObjectContents;
+    private static StopViewingObjectContentsDelegate? _stopViewingObjectContentsDetour;
+    private static IntPtr _viewTargetAddress;
+    private static IntPtr _stopTargetAddress;
+    private static string _statusMessage = "Not probed yet.";
+    private static int _viewDispatchCount;
+    private static int _stopDispatchCount;
+
+    public static bool IsInstalled { get; private set; }
+    public static string StatusMessage => _statusMessage;
+
+    public static void Initialize()
+    {
+        if (IsInstalled)
+            return;
+
+        if (!AcClientModule.TryReadTextSection(out AcClientTextSection textSection))
+        {
+            _statusMessage = "acclient.exe not available.";
+            return;
+        }
+
+        HookResolver.ResolveResult resolvedView = HookResolver.Resolve(textSection, "ViewContents.ViewObjectContents", ViewObjectContentsPattern, ViewObjectContentsVa);
+        if (!resolvedView.Success)
+        {
+            _statusMessage = $"ACCObjectMaint::ViewObjectContents unresolved (VA 0x{ViewObjectContentsVa:X8}).";
+            RynthLog.Compat($"Compat: view-object-contents hook failed - {_statusMessage}");
+            return;
+        }
+
+        HookResolver.ResolveResult resolvedStop = HookResolver.Resolve(textSection, "ViewContents.StopViewingObjectContents", StopViewingObjectContentsPattern, StopViewingObjectContentsVa);
+        if (!resolvedStop.Success)
+        {
+            _statusMessage = $"ACCObjectMaint::StopViewingObjectContents unresolved (VA 0x{StopViewingObjectContentsVa:X8}).";
+            RynthLog.Compat($"Compat: view-object-contents hook failed - {_statusMessage}");
+            return;
+        }
+
+        try
+        {
+            _viewTargetAddress = resolvedView.Address;
+            _viewObjectContentsDetour = ViewObjectContentsDetour;
+            IntPtr viewDetourPtr = Marshal.GetFunctionPointerForDelegate(_viewObjectContentsDetour);
+            _originalViewObjectContents = Marshal.GetDelegateForFunctionPointer<ViewObjectContentsDelegate>(MinHook.HookCreate(_viewTargetAddress, viewDetourPtr));
+
+            _stopTargetAddress = resolvedStop.Address;
+            _stopViewingObjectContentsDetour = StopViewingObjectContentsDetour;
+            IntPtr stopDetourPtr = Marshal.GetFunctionPointerForDelegate(_stopViewingObjectContentsDetour);
+            _originalStopViewingObjectContents = Marshal.GetDelegateForFunctionPointer<StopViewingObjectContentsDelegate>(MinHook.HookCreate(_stopTargetAddress, stopDetourPtr));
+
+            Thread.MemoryBarrier();
+            MinHook.Enable(_viewTargetAddress);
+            MinHook.Enable(_stopTargetAddress);
+
+            IsInstalled = true;
+            _statusMessage = $"Hooked contents view seams @ 0x{_viewTargetAddress.ToInt32():X8}/0x{_stopTargetAddress.ToInt32():X8}.";
+            RynthLog.Verbose(
+                $"Compat: view-object-contents hooks ready - view=0x{_viewTargetAddress.ToInt32():X8}, stop=0x{_stopTargetAddress.ToInt32():X8}");
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = ex.Message;
+            RynthLog.Compat($"Compat: view-object-contents hook failed - {ex.Message}");
+        }
+    }
+
+    private static void ViewObjectContentsDetour(IntPtr thisPtr, uint objectId, IntPtr newContents)
+    {
+        _originalViewObjectContents!(thisPtr, objectId, newContents);
+        if (objectId == 0)
+            return;
+
+        ClientHelperHooks.NotifyViewObjectContents(objectId);
+
+        int count = Interlocked.Increment(ref _viewDispatchCount);
+        if (count <= 0)
+            RynthLog.Verbose($"Compat: view contents #{count} id=0x{objectId:X8} contents=0x{newContents.ToInt32():X8}");
+
+        PluginManager.QueueViewObjectContents(objectId);
+    }
+
+    private static void StopViewingObjectContentsDetour(IntPtr thisPtr, uint objectId)
+    {
+        _originalStopViewingObjectContents!(thisPtr, objectId);
+        if (objectId == 0)
+            return;
+
+        ClientHelperHooks.NotifyStopViewingObjectContents(objectId);
+
+        int count = Interlocked.Increment(ref _stopDispatchCount);
+        if (count <= 5)
+            RynthLog.Verbose($"Compat: stop view contents #{count} id=0x{objectId:X8}");
+
+        PluginManager.QueueStopViewingObjectContents(objectId);
+    }
+}

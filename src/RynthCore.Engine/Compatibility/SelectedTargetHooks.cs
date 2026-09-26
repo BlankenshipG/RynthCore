@@ -1,0 +1,114 @@
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+using RynthCore.Engine.Hooking;
+using RynthCore.Engine.Plugins;
+
+namespace RynthCore.Engine.Compatibility;
+
+internal static class SelectedTargetHooks
+{
+    private const int SetSelectedObjectVa = 0x0058D110;
+    private const int SelectedIdVa = 0x00871E54;
+
+    // Phase B: resolve s_selected_id's address by code-xref (ret; mov eax,[s_selected_id] =
+    // C3 A1 <addr>), operand at offset 2; the VA stays as fallback. Resolved in Initialize.
+    private static readonly byte?[] PatXrefSelectedId = [ 0xC3, 0xA1, null, null, null, null, 0x89, 0x87 ];
+    private static int _selectedIdAddr = SelectedIdVa;
+
+    /// <summary>
+    /// Reads the AC client's currently-selected target id directly from the
+    /// global. Used by PluginManager.DispatchLoginCompleteToLoadedPlugins to
+    /// re-seed plugins with the live target after a deferred init (events
+    /// fired before <c>_initialized=true</c> are dropped by the queue gate).
+    /// </summary>
+    public static uint ReadCurrentSelectedId() => ReadUInt32(_selectedIdAddr);
+    // Verified unique + lands at 0x0058D110 offline (tools/pe_pattern.py).
+    private static readonly byte?[] SetSelectedObjectPattern =
+    [
+        0x8B, 0x4C, 0x24, 0x08, 0x85, 0xC9, 0xA1, 0x54
+    ];
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void SetSelectedObjectDelegate(uint selectedId, int reselect);
+
+    private static SetSelectedObjectDelegate? _originalSetSelectedObject;
+    private static SetSelectedObjectDelegate? _setSelectedObjectDetour;
+    private static IntPtr _targetAddress;
+    private static string _statusMessage = "Not probed yet.";
+
+    public static bool IsInstalled { get; private set; }
+    public static string StatusMessage => _statusMessage;
+
+    public static void Initialize()
+    {
+        if (IsInstalled)
+            return;
+
+        if (!AcClientModule.TryReadTextSection(out AcClientTextSection textSection))
+        {
+            _statusMessage = "acclient.exe not available.";
+            return;
+        }
+
+        HookResolver.ResolveResult resolved = HookResolver.Resolve(textSection, "SelectedTarget.SetSelectedObject", SetSelectedObjectPattern, SetSelectedObjectVa);
+        if (!resolved.Success)
+        {
+            _statusMessage = $"ACCWeenieObject::SetSelectedObject unresolved (VA 0x{SetSelectedObjectVa:X8}).";
+            RynthLog.Compat($"Compat: selected-target hook failed - {_statusMessage}");
+            return;
+        }
+
+        _selectedIdAddr = HookResolver.ResolveData(textSection, "SelectedTarget.s_selected_id", PatXrefSelectedId, 2, SelectedIdVa).Address.ToInt32();
+
+        try
+        {
+            _targetAddress = resolved.Address;
+            _setSelectedObjectDetour = SetSelectedObjectDetour;
+            IntPtr detourPtr = Marshal.GetFunctionPointerForDelegate(_setSelectedObjectDetour);
+            _originalSetSelectedObject = Marshal.GetDelegateForFunctionPointer<SetSelectedObjectDelegate>(MinHook.HookCreate(_targetAddress, detourPtr));
+            Thread.MemoryBarrier();
+            MinHook.Enable(_targetAddress);
+
+            IsInstalled = true;
+            _statusMessage = $"Hooked ACCWeenieObject::SetSelectedObject @ 0x{_targetAddress.ToInt32():X8}.";
+            RynthLog.Info(
+                $"Compat: selected-target hook ready - SetSelectedObject=0x{_targetAddress.ToInt32():X8}, selectedId=0x{SelectedIdVa:X8}");
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = ex.Message;
+            RynthLog.Compat($"Compat: selected-target hook failed - {ex.Message}");
+        }
+    }
+
+    private static void SetSelectedObjectDetour(uint selectedId, int reselect)
+    {
+        uint previousTargetId = ReadUInt32(_selectedIdAddr);
+
+        try
+        {
+            _originalSetSelectedObject!(selectedId, reselect);
+        }
+        catch (Exception ex)
+        {
+            try { RynthLog.Compat($"Compat: selected-target detour error - {ex.GetType().Name}: {ex.Message}"); } catch { }
+            throw;
+        }
+
+        uint currentTargetId = ReadUInt32(_selectedIdAddr);
+        if (currentTargetId == previousTargetId)
+            return;
+
+        if (Interlocked.Increment(ref _detourLogCount) <= 5)
+            RynthLog.Compat($"Compat: selected-target detour fired (#{_detourLogCount}) - prev=0x{previousTargetId:X8} curr=0x{currentTargetId:X8} reselect={reselect}");
+        PluginManager.QueueSelectedTargetChange(currentTargetId, previousTargetId);
+    }
+
+    private static int _detourLogCount;
+
+    private static uint ReadUInt32(int address)
+    {
+        return unchecked((uint)Marshal.ReadInt32(new IntPtr(address)));
+    }
+}

@@ -1,0 +1,138 @@
+using System;
+using System.Threading;
+
+namespace RynthCore.Engine.Compatibility;
+
+/// <summary>
+/// Writes one short "hb #N" line to the unified log every second from a
+/// background thread. Purpose: when AC dies and no termination hook fires,
+/// the heartbeat gives a hard upper-bound timestamp for when the process
+/// went silent — so external traces (Procmon, Application Event Log,
+/// network captures) can be correlated to the second.
+///
+/// Cheap (one log line / second). Background thread, won't keep the
+/// process alive on its own. One-shot start; safe to call from
+/// pre-resume early-init.
+/// </summary>
+internal static class HeartbeatLogger
+{
+    private const int IntervalMs = 1000;
+    private static int _started;
+    private static int _stopRequested;
+    private static int _exited;
+    private static Thread? _thread;
+
+    public static void Start()
+    {
+        if (Interlocked.CompareExchange(ref _started, 1, 0) != 0)
+            return;
+
+        _thread = new Thread(Run)
+        {
+            Name = "RynthCore.Heartbeat",
+            IsBackground = true,
+            Priority = ThreadPriority.BelowNormal
+        };
+        _thread.Start();
+        RynthLog.Info("HeartbeatLogger: started (1s cadence).");
+    }
+
+    /// <summary>
+    /// Signals the heartbeat thread to exit and waits up to <paramref name="timeoutMs"/>
+    /// for it to do so. Called from EngineLifecycle.Shutdown — without this, the
+    /// thread keeps running past loader FreeLibrary of the engine, executing code
+    /// pages that have been unmapped → CLR exception / FAIL_FAST during hot reload.
+    /// </summary>
+    public static bool StopAndJoin(int timeoutMs = 1500)
+    {
+        if (_thread == null) return true;
+        Interlocked.Exchange(ref _stopRequested, 1);
+
+        long deadline = Environment.TickCount64 + timeoutMs;
+        while (Volatile.Read(ref _exited) == 0 && Environment.TickCount64 < deadline)
+            Thread.Sleep(10);
+
+        bool exited = Volatile.Read(ref _exited) != 0;
+        if (!exited)
+            RynthLog.Info($"HeartbeatLogger: did NOT exit within {timeoutMs}ms.");
+        return exited;
+    }
+
+    private static void Run()
+    {
+        long tick = 0;
+        int lastFrames = 0;
+        int lastPlugTicks = 0;
+        long lastMs = Environment.TickCount64;
+        long startMs = lastMs;
+        try
+        {
+            while (Volatile.Read(ref _stopRequested) == 0)
+            {
+                tick++;
+                // Rich beat: a silent-death log tail now shows WHAT the client
+                // was doing — render rate (0 fps = render dead, process alive),
+                // plugin pump rate (0 = wedged pump), memory trend, and in-world
+                // state — not just "alive at T". All cheap, engine-side reads.
+                try
+                {
+                    long nowMs = Environment.TickCount64;
+                    long dtMs = nowMs - lastMs; if (dtMs <= 0) dtMs = 1;
+                    int frames = MainThreadHangWatchdog.FrameCount;
+                    int plug   = Plugins.PluginManager.TickCount;
+                    int fps = (int)((frames - lastFrames) * 1000L / dtMs);
+                    int pps = (int)((plug - lastPlugTicks) * 1000L / dtMs);
+                    lastFrames = frames; lastPlugTicks = plug; lastMs = nowMs;
+
+                    long wsMb = 0;
+                    try { wsMb = Environment.WorkingSet / (1024 * 1024); } catch { }
+                    int login = 0;
+                    try { login = LoginLifecycleHooks.HasObservedLoginComplete ? 1 : 0; } catch { }
+
+                    // qd = marshalled actions silently dropped (ring full). A
+                    // climbing qd with healthy fps means the consumer phase is
+                    // dead — exactly the silent blackhole class the review found.
+                    long dropped = 0;
+                    try { dropped = AcMainThreadQueue.DroppedCount; } catch { }
+                    // rec = busy reconciles (cast/item-action), fcl = force-clears.
+                    // Soak health: rec climbs during combat/loot; fcl stays flat.
+                    long rec = 0, fcl = 0;
+                    try { rec = BusyCountHooks.ReconcileCount; fcl = BusyCountHooks.ForceClearCount; } catch { }
+                    RynthLog.Info($"hb #{tick} up={(nowMs - startMs) / 1000}s fps={fps} plug={pps}/s ws={wsMb}MB login={login} qd={dropped} rec={rec} fcl={fcl}");
+
+                    // Cache this client's live metrics so the GetEngineStatusJson host bridge can serve
+                    // them to a plugin (the RynthRemote status export). No file write, no networking.
+                    EngineStatusMetrics.UpdateMetrics((nowMs - startMs) / 1000, fps, pps, wsMb,
+                        login == 1, dropped, rec, fcl);
+                }
+                catch { /* never let the heartbeat itself bring anything down */ }
+                // Self-healing: clear a stuck floating-panel click-through
+                // (DockedPanelPointerCaptureActive whose disarm was lost ->
+                // every floating panel left WS_EX_TRANSPARENT). Runs here on
+                // purpose: independent of the input path that strands it.
+                try { RynthCore.Engine.UI.AvaloniaOverlay.WatchdogClearStuckClickThrough(); }
+                catch { /* never let the heartbeat itself bring anything down */ }
+                // Mid-session log rotation (~once/minute): without it a long
+                // soak grows RynthCore.<pid>.log without bound (startup-only
+                // rotation never fires mid-session and is skipped on reload).
+                if (tick % 60 == 0)
+                {
+                    try { LogPaths.RotateIfOversized(); }
+                    catch { /* never let the heartbeat itself bring anything down */ }
+                }
+                // Sleep in short slices so a stop signal is observed within <100ms,
+                // not up to a full IntervalMs after request.
+                int slept = 0;
+                while (slept < IntervalMs && Volatile.Read(ref _stopRequested) == 0)
+                {
+                    try { Thread.Sleep(50); } catch { return; }
+                    slept += 50;
+                }
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _exited, 1);
+        }
+    }
+}

@@ -1,0 +1,408 @@
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Threading;
+using RynthCore.Engine.Compatibility;
+using RynthCore.Engine.Hooking;
+using RynthCore.Engine.ImGuiBackend;
+
+namespace RynthCore.Engine.D3D9;
+
+internal static class EndSceneHook
+{
+    private const int MaxOffscreenSkipLogs = 3;
+    private const int MaxOffscreenSkipsBeforeFallback = 120;
+    private const int OffscreenFallbackDelayMs = 3000;
+    private const int UiInitWarmupFrames = 180;
+
+    // ── FPS Governor — set by plugins via API ───────────────────────
+    internal static bool FpsLimitEnabled;
+    internal static int FpsTargetFocused = 60;
+    internal static int FpsTargetBackground = 30;
+    private static readonly Stopwatch _fpsTimer = Stopwatch.StartNew();
+    private static bool _fpsLimiterLoggedOnce;
+    private static int _fpsDebugCounter;
+    private static long _fpsCounterStart;
+    private static int _fpsCounterFrames;
+
+    /// <summary>
+    /// Last measured EndScene frames-per-second, refreshed once per second.
+    /// Updated whether or not the FPS governor is enabled — UI panels (the
+    /// RynthAi footer) read this for a live frame-rate display. Volatile
+    /// because writes happen on the AC pump thread and reads happen on the
+    /// Avalonia dispatcher thread (10 Hz panel tick); double-word atomic on
+    /// x86 and we don't need a tear-free guarantee on this value.
+    /// </summary>
+    internal static volatile float MeasuredFps;
+    private static long _liveFpsCounterStart;
+    private static int _liveFpsCounterFrames;
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint lpdwProcessId);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentProcessId();
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int EndSceneDelegate(IntPtr pDevice);
+
+    private static EndSceneDelegate? _originalEndScene;
+    private static EndSceneDelegate? _hookDelegate;
+    private static IntPtr _endSceneAddr;
+    private static bool _installed;
+    private static int _frameCount;
+    private static int _renderCount;
+    private static int _skipCount;
+    private static int _uiFrameCount;
+    private static bool _offscreenFilterDisabled;
+    private static bool _uiActivated;
+    private static bool _warmupLogged;
+    private static long _installTick;
+    private static long _firstOffscreenTick;
+    private static string _installSource = "uninitialized";
+
+    public static void Install()
+    {
+        Install("fallback-vtable");
+    }
+
+    public static void Install(string installSource)
+    {
+        if (_installed)
+            return;
+
+        ResetInstallState(installSource);
+
+        // Vtable discovery uses a NULLREF device to avoid GPU contention
+        // with the game's render thread. Retry once on failure.
+        const int maxAttempts = 2;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            RynthLog.D3D9($"EndSceneHook: Discovering D3D9 vtable (attempt {attempt}/{maxAttempts})...");
+
+            if (attempt > 1)
+                System.Threading.Thread.Sleep(500);
+
+            IntPtr[]? vtable = D3D9VTable.GetDeviceVTable();
+            if (vtable != null)
+            {
+                IntPtr endSceneAddress = vtable[DeviceVTableIndex.EndScene];
+                RynthLog.D3D9($"EndSceneHook: EndScene @ 0x{endSceneAddress:X8}");
+                InstallFromEndSceneAddress(endSceneAddress);
+                return;
+            }
+
+            RynthLog.D3D9($"EndSceneHook: Vtable discovery returned null on attempt {attempt}.");
+        }
+
+        RynthLog.D3D9("EndSceneHook: FAILED - could not discover vtable after all attempts.");
+    }
+
+    public static void InstallFromDevice(IntPtr pDevice)
+    {
+        if (_installed)
+            return;
+
+        if (pDevice == IntPtr.Zero)
+        {
+            RynthLog.D3D9("EndSceneHook: Real-device install skipped because the device pointer was null.");
+            return;
+        }
+
+        ResetInstallState("real-device");
+
+        IntPtr deviceVTable = Marshal.ReadIntPtr(pDevice);
+        IntPtr endSceneAddress = Marshal.ReadIntPtr(deviceVTable, DeviceVTableIndex.EndScene * IntPtr.Size);
+        RynthLog.D3D9($"EndSceneHook: Using real D3D9 device 0x{pDevice:X8}; EndScene @ 0x{endSceneAddress:X8}");
+        InstallFromEndSceneAddress(endSceneAddress);
+    }
+
+    public static void InstallFromAddress(IntPtr endSceneAddress, string installSource)
+    {
+        if (_installed)
+            return;
+
+        if (endSceneAddress == IntPtr.Zero)
+        {
+            RynthLog.D3D9("EndSceneHook: Address install skipped because EndScene was null.");
+            return;
+        }
+
+        ResetInstallState(installSource);
+        RynthLog.D3D9($"EndSceneHook: Using explicit EndScene address 0x{endSceneAddress:X8} from {installSource}.");
+        InstallFromEndSceneAddress(endSceneAddress);
+    }
+
+    public static bool IsInstalled()
+    {
+        return _installed;
+    }
+
+    public static int GetRenderCount()
+    {
+        return _renderCount;
+    }
+
+    public static void Uninstall()
+    {
+        if (!_installed)
+            return;
+
+        // Order is critical: disable the detour FIRST so AC's render thread
+        // stops entering our code, then drain in-flight calls, THEN tear down
+        // ImGui. If we destroyed the context first, an in-flight EndScene call
+        // would assert on `GImGui != NULL`.
+        int status = MinHook.MH_DisableHook(_endSceneAddr);
+        RynthLog.D3D9($"EndSceneHook: Disable = {MinHook.StatusString(status)}");
+
+        // Let the render thread return through the trampoline.
+        Thread.Sleep(80);
+
+        EngineFrameController.Shutdown();
+
+        status = MinHook.MH_RemoveHook(_endSceneAddr);
+        RynthLog.D3D9($"EndSceneHook: Remove = {MinHook.StatusString(status)}");
+
+        _installed = false;
+        _originalEndScene = null;
+        _offscreenFilterDisabled = false;
+    }
+
+    private static void ResetInstallState(string installSource)
+    {
+        _installSource = installSource;
+        _frameCount = 0;
+        _renderCount = 0;
+        _skipCount = 0;
+        _uiFrameCount = 0;
+        _offscreenFilterDisabled = false;
+        _uiActivated = false;
+        _warmupLogged = false;
+        _installTick = Environment.TickCount64;
+        _firstOffscreenTick = 0;
+    }
+
+    private static void InstallFromEndSceneAddress(IntPtr endSceneAddress)
+    {
+        _endSceneAddr = endSceneAddress;
+
+        _hookDelegate = new EndSceneDelegate(EndSceneDetour);
+        IntPtr hookPtr = Marshal.GetFunctionPointerForDelegate(_hookDelegate);
+
+        try
+        {
+            _originalEndScene = Marshal.GetDelegateForFunctionPointer<EndSceneDelegate>(MinHook.HookCreate(_endSceneAddr, hookPtr));
+            Thread.MemoryBarrier();
+            MinHook.Enable(_endSceneAddr);
+            _installed = true;
+
+            RynthLog.D3D9($"EndSceneHook: INSTALLED successfully via {_installSource}.");
+        }
+        catch (Exception ex)
+        {
+            RynthLog.D3D9($"EndSceneHook: MinHook failed - {ex.Message}");
+        }
+    }
+
+    private static int EndSceneDetour(IntPtr pDevice)
+    {
+        // Liveness beacon for MainThreadHangWatchdog — this detour runs on AC's
+        // main/render thread every frame (even with the ImGui backend disabled),
+        // so a stalled beat means the main thread is wedged. Must never throw.
+        try { MainThreadHangWatchdog.MainThreadBeat(); } catch { }
+        try
+        {
+            if (!_offscreenFilterDisabled && !DX9Backend.IsRenderingToBackBuffer(pDevice))
+            {
+                if (_firstOffscreenTick == 0)
+                    _firstOffscreenTick = Environment.TickCount64;
+
+                if (_skipCount < MaxOffscreenSkipLogs)
+                    RynthLog.D3D9("EndSceneHook: Skipping offscreen EndScene pass.");
+                _skipCount++;
+
+                long offscreenElapsedMs = Environment.TickCount64 - _firstOffscreenTick;
+                if (_skipCount < MaxOffscreenSkipsBeforeFallback && offscreenElapsedMs < OffscreenFallbackDelayMs)
+                    return _originalEndScene!(pDevice);
+
+                _offscreenFilterDisabled = true;
+                RynthLog.D3D9($"EndSceneHook: Falling back to unfiltered EndScene after {_skipCount} skipped offscreen pass(es) over {offscreenElapsedMs}ms.");
+            }
+
+            _renderCount++;
+            _frameCount++;
+
+            // Per-frame chatbox visibility assertion (no-op unless plugin enables suppression).
+            try { ChatHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
+            // Per-frame retail-radar visibility assertion (no-op unless plugin enables suppression).
+            try { RadarHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
+            // Per-frame retail-powerbar visibility assertion (no-op unless plugin enables suppression).
+            try { PowerbarHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
+
+            if (_renderCount == 1 && _offscreenFilterDisabled && _skipCount > 0)
+            {
+                long installElapsedMs = Environment.TickCount64 - _installTick;
+                RynthLog.D3D9($"EndSceneHook: First render after offscreen fallback ({_skipCount} skip(s), {installElapsedMs}ms since install).");
+            }
+
+            if (_renderCount == 1 && _skipCount > 0)
+                RynthLog.D3D9($"EndSceneHook: First backbuffer frame after skipping {_skipCount} offscreen pass(es).");
+
+            // On first backbuffer frame, verify we hooked the right function by
+            // reading the device's own vtable.  A mismatch means the module scan
+            // found an internal/proxy vtable, not the one the game's device uses.
+            if (_renderCount == 1)
+            {
+                IntPtr deviceVtable = Marshal.ReadIntPtr(pDevice);
+                IntPtr actualEndScene = Marshal.ReadIntPtr(deviceVtable, DeviceVTableIndex.EndScene * IntPtr.Size);
+                bool match = actualEndScene == _endSceneAddr;
+                RynthLog.D3D9($"EndSceneHook: Device vtable EndScene=0x{actualEndScene:X8}, hooked=0x{_endSceneAddr:X8} — {(match ? "MATCH" : "MISMATCH")}");
+
+                if (!match && actualEndScene != IntPtr.Zero)
+                {
+                    // Deep-audit finding #8 (2026-06-18): the old sequence
+                    // disabled+REMOVED the old hook (freeing the trampoline
+                    // _originalEndScene points at) BEFORE attempting the new
+                    // install. If the new MH_CreateHook then threw,
+                    // _originalEndScene was never reassigned — it still bound
+                    // the now-freed trampoline — yet the code force-set
+                    // _installed=true and this function's bottom called
+                    // through it: a use-after-free. Fixed order: only remove
+                    // the OLD hook after the NEW one is confirmed installed;
+                    // on failure, re-enable the OLD hook and keep using its
+                    // still-valid trampoline instead of a dangling one.
+                    RynthLog.D3D9("EndSceneHook: Rehooking at the device's actual EndScene address.");
+                    IntPtr oldAddr = _endSceneAddr;
+                    EndSceneDelegate? oldOriginal = _originalEndScene;
+                    MinHook.MH_DisableHook(oldAddr);
+
+                    InstallFromEndSceneAddress(actualEndScene);
+                    if (_installed)
+                    {
+                        // New hook confirmed live — safe to free the old
+                        // trampoline now.
+                        MinHook.MH_RemoveHook(oldAddr);
+                        return _originalEndScene!(pDevice);
+                    }
+
+                    RynthLog.D3D9("EndSceneHook: Rehook failed — restoring original hook.");
+                    // New install failed (InstallFromEndSceneAddress leaves
+                    // _installed=false on failure). Restore the OLD hook
+                    // rather than trust a dangling delegate.
+                    _endSceneAddr = oldAddr;
+                    _originalEndScene = oldOriginal;
+                    MinHook.Enable(oldAddr);
+                    _installed = true;
+                }
+            }
+
+            if (!_uiActivated)
+            {
+                if (!_warmupLogged)
+                {
+                    RynthLog.D3D9($"EndSceneHook: Backbuffer detected. Warming up {UiInitWarmupFrames} frame(s) before UI init.");
+                    _warmupLogged = true;
+                }
+
+                if (_renderCount < UiInitWarmupFrames)
+                    return _originalEndScene!(pDevice);
+
+                _uiActivated = true;
+                RynthLog.D3D9("EndSceneHook: Warmup complete - initializing ImGui.");
+            }
+
+            // EngineFrameController.OnEndScene runs the always-on engine work
+            // (matrix capture, plugin tick, nav rendering, pending action drains)
+            // every frame. The EnableImGuiBackend gate moved INSIDE the
+            // controller so it scopes only the ImGui-specific block; this call
+            // site no longer needs to gate it.
+            EngineFrameController.OnEndScene(pDevice);
+            _uiFrameCount++;
+
+            if (_uiFrameCount == 60 && RynthCore.Engine.Plugins.EngineSettings.EnableImGuiBackend)
+                RynthLog.D3D9("EndSceneHook: 60 UI frames - ImGui is stable.");
+            if (_renderCount == UiInitWarmupFrames && !RynthCore.Engine.Plugins.EngineSettings.EnableImGuiBackend)
+                RynthLog.D3D9("EndSceneHook: ImGui backend disabled via engine.json (EnableImGuiBackend=false). Always-on engine work still runs; only ImGui draw calls are skipped.");
+
+            // Avalonia compositor: independent of ImGui. Reads the latest
+            // Avalonia surface from OverlaySurfaceBridge and blits it as a
+            // fullscreen alpha-blended quad onto AC's back buffer. Runs every
+            // frame regardless of EnableImGuiBackend so the Avalonia overlay
+            // is visible even when ImGui per-frame work is disabled. Driven
+            // here exclusively — EngineFrameController.OnEndScene intentionally
+            // does NOT call it (avoids double-blit / TryConsume races).
+            try
+            {
+                OverlayTextureRenderer.Render(pDevice);
+            }
+            catch (Exception ovEx)
+            {
+                if (_uiFrameCount < 30)
+                    RynthLog.D3D9($"EndSceneHook: OverlayTextureRenderer.Render error: {ovEx.GetType().Name}: {ovEx.Message}");
+            }
+        }
+        catch (Exception ex)
+        {
+            if (_uiFrameCount < 30)
+                RynthLog.D3D9($"EndSceneHook: Frame {_frameCount} error: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+        }
+
+        // ── Always-on FPS measurement for UI footer ──────────────────
+        // Runs whether or not the governor is enabled so the RynthAi
+        // footer can show a live FPS even when the user hasn't capped.
+        // Cheap: one increment + a once-per-second division.
+        _liveFpsCounterFrames++;
+        long liveNow = Environment.TickCount64;
+        if (_liveFpsCounterStart == 0) _liveFpsCounterStart = liveNow;
+        long liveElapsed = liveNow - _liveFpsCounterStart;
+        if (liveElapsed >= 1000)
+        {
+            MeasuredFps = (float)(_liveFpsCounterFrames * 1000.0 / liveElapsed);
+            _liveFpsCounterFrames = 0;
+            _liveFpsCounterStart = liveNow;
+        }
+
+        // ── FPS Governor (matches proven NexSuite2 pattern) ─────────
+        if (FpsLimitEnabled)
+        {
+            IntPtr fgWnd = GetForegroundWindow();
+            // Focused when AC itself is foreground, OR when any window belonging
+            // to our process is foreground (covers DComp overlay, any Avalonia
+            // child window, etc.). PID comparison is reliable regardless of how
+            // the owner chain was established (GWL_HWNDPARENT vs CreateWindow).
+            GetWindowThreadProcessId(fgWnd, out uint fgPid);
+            bool isFocused = fgWnd != IntPtr.Zero &&
+                (fgWnd == Win32Backend.GameHwnd || fgPid == GetCurrentProcessId());
+            int targetFps = isFocused ? FpsTargetFocused : FpsTargetBackground;
+            double minFrameMs = 1000.0 / Math.Max(targetFps, 1);
+
+            while (_fpsTimer.Elapsed.TotalMilliseconds < minFrameMs)
+                Thread.Sleep(isFocused ? 0 : 1);
+            _fpsTimer.Restart();
+
+            if (!_fpsLimiterLoggedOnce)
+            {
+                _fpsLimiterLoggedOnce = true;
+                RynthLog.D3D9($"EndSceneHook: FPS governor active — max={FpsTargetFocused} focused, max={FpsTargetBackground} background, gameHwnd=0x{Win32Backend.GameHwnd.ToInt64():X}");
+            }
+
+            // Periodic FPS measurement — log every 60 seconds
+            _fpsCounterFrames++;
+            long now = Environment.TickCount64;
+            if (_fpsCounterStart == 0) _fpsCounterStart = now;
+            long elapsedMs = now - _fpsCounterStart;
+            if (elapsedMs >= 60_000)
+            {
+                double measuredFps = _fpsCounterFrames * 1000.0 / elapsedMs;
+                RynthLog.D3D9($"EndSceneHook: FPS={measuredFps:F1} (target={targetFps}, {(isFocused ? "focused" : "background")})");
+                _fpsCounterFrames = 0;
+                _fpsCounterStart = now;
+            }
+        }
+
+        return _originalEndScene!(pDevice);
+    }
+}
