@@ -6,9 +6,12 @@
 .DESCRIPTION
     1. Publishes the Avalonia launcher (self-contained, x86)
     2. Publishes RynthCore.Engine (NativeAOT, x86 -- ~2 min)
-    3. Publishes RynthCore.Plugin.RynthAi (NativeAOT, x86)
-    4. Stages all output under installer\staging\app\
-    5. Invokes ISCC.exe to produce installer\Output\RynthCore-Setup.exe
+    3. Publishes RynthCore.Loader (NativeAOT, x86) -- the DLL the launcher injects
+    4. Publishes RynthCore.Plugin.RynthAi (NativeAOT, x86)
+    5. Publishes the Loot Editor
+    6. Stages all output under installer\staging\app\, plus the hand-built
+       RynthCore.SehTrampoline.dll, and checks every required runtime file is there
+    7. Invokes ISCC.exe to produce installer\Output\RynthCore-Setup.exe
 
 .PARAMETER Configuration
     Build configuration. Default: Release
@@ -46,18 +49,20 @@ if (-not $RynthSuiteRoot) {
 
 $LauncherProject   = "$RepoRoot\src\RynthCore.App.Avalonia\RynthCore.App.Avalonia.csproj"
 $EngineProject     = "$RepoRoot\src\RynthCore.Engine\RynthCore.Engine.csproj"
-$PluginProject     = "$RynthSuiteRoot\Plugins\RynthCore.Plugin.RynthAi\RynthCore.Plugin.RynthAi.csproj"
+$LoaderProject     = "$RepoRoot\src\RynthCore.Loader\RynthCore.Loader.csproj"
+$PluginProject    = "$RynthSuiteRoot\Plugins\RynthCore.Plugin.RynthAi\RynthCore.Plugin.RynthAi.csproj"
 $LootEditorProject = "$RynthSuiteRoot\Tools\RynthCore.LootEditor\RynthCore.LootEditor.csproj"
 
 $LauncherPublish   = "$RepoRoot\src\RynthCore.App.Avalonia\bin\$Configuration\net10.0-windows7.0\win-x86\publish"
 $EnginePublish     = "$RepoRoot\src\RynthCore.Engine\bin\$Configuration\net10.0-windows\win-x86\publish"
-$PluginPublish     = "$RynthSuiteRoot\Plugins\RynthCore.Plugin.RynthAi\bin\$Configuration\net10.0-windows\win-x86\publish"
+$LoaderPublish     = "$RepoRoot\src\RynthCore.Loader\bin\$Configuration\net10.0-windows\win-x86\publish"
+$PluginPublish    = "$RynthSuiteRoot\Plugins\RynthCore.Plugin.RynthAi\bin\$Configuration\net10.0-windows\win-x86\publish"
 $LootEditorPublish = "$RynthSuiteRoot\Tools\RynthCore.LootEditor\bin\$Configuration\net10.0\win-x86\publish"
 
 $StagingDir  = "$ScriptDir\staging\app"
 
 # ── Validate projects ───────────────────────────────────────────────────────
-foreach ($p in @($LauncherProject, $EngineProject, $PluginProject, $LootEditorProject)) {
+foreach ($p in @($LauncherProject, $EngineProject, $LoaderProject, $PluginProject, $LootEditorProject)) {
     if (-not (Test-Path $p)) {
         throw "Project not found: $p`nUpdate paths in Build-Installer.ps1 if your repo layout differs."
     }
@@ -66,25 +71,31 @@ foreach ($p in @($LauncherProject, $EngineProject, $PluginProject, $LootEditorPr
 if (-not $SkipBuild) {
     # ── 1. Launcher (self-contained Avalonia WinExe) ─────────────────────────
     Write-Host ""
-    Write-Host "[1/4] Publishing Launcher (self-contained, x86)..." -ForegroundColor Cyan
+    Write-Host "[1/5] Publishing Launcher (self-contained, x86)..." -ForegroundColor Cyan
     dotnet publish $LauncherProject -c $Configuration -r win-x86 --self-contained true
     if ($LASTEXITCODE -ne 0) { throw "Launcher publish failed (exit $LASTEXITCODE)" }
 
     # ── 2. Engine (NativeAOT — the slow one) ──────────────────────────────────
     Write-Host ""
-    Write-Host "[2/4] Publishing Engine (NativeAOT, ~2 min)..." -ForegroundColor Cyan
+    Write-Host "[2/5] Publishing Engine (NativeAOT, ~2 min)..." -ForegroundColor Cyan
     dotnet publish $EngineProject -c $Configuration
     if ($LASTEXITCODE -ne 0) { throw "Engine publish failed (exit $LASTEXITCODE)" }
 
-    # ── 3. Plugin (NativeAOT) ─────────────────────────────────────────────────
+    # ── 3. Loader (NativeAOT, small) ──────────────────────────────────────────
     Write-Host ""
-    Write-Host "[3/4] Publishing Plugin (NativeAOT)..." -ForegroundColor Cyan
+    Write-Host "[3/5] Publishing Loader (NativeAOT)..." -ForegroundColor Cyan
+    dotnet publish $LoaderProject -c $Configuration
+    if ($LASTEXITCODE -ne 0) { throw "Loader publish failed (exit $LASTEXITCODE)" }
+
+    # ── 4. Plugin (NativeAOT) ─────────────────────────────────────────────────
+    Write-Host ""
+    Write-Host "[4/5] Publishing Plugin (NativeAOT)..." -ForegroundColor Cyan
     dotnet publish $PluginProject -c $Configuration
     if ($LASTEXITCODE -ne 0) { throw "Plugin publish failed (exit $LASTEXITCODE)" }
 
-    # ── 4. Loot Editor (self-contained Avalonia tool) ─────────────────────────
+    # ── 5. Loot Editor (self-contained Avalonia tool) ─────────────────────────
     Write-Host ""
-    Write-Host "[4/4] Publishing Loot Editor (self-contained, x86)..." -ForegroundColor Cyan
+    Write-Host "[5/5] Publishing Loot Editor (self-contained, x86)..." -ForegroundColor Cyan
     dotnet publish $LootEditorProject -c $Configuration -r win-x86 --self-contained true
     if ($LASTEXITCODE -ne 0) { throw "Loot Editor publish failed (exit $LASTEXITCODE)" }
 }
@@ -120,6 +131,26 @@ foreach ($file in (Get-ChildItem "$EnginePublish" -File)) {
     Copy-Item $file.FullName "$StagingDir\Runtime\$($file.Name)" -Force
 }
 
+# Loader — the DLL the launcher injects (EngineInjectionService.EngineDllName); it
+# maps RynthCore.Engine.dll and provides hot-reload. Without it a fresh install's
+# launcher can't auto-find an engine to inject.
+$loaderDll = "$LoaderPublish\RynthCore.Loader.dll"
+if (-not (Test-Path $loaderDll)) { throw "Loader DLL not found at: $loaderDll" }
+Copy-Item $loaderDll "$StagingDir\Runtime\" -Force
+
+# SEH trampoline — hand-built native DLL (native\SehTrampoline\Build-SehTrampoline.ps1),
+# NOT part of the engine publish output. Without it SehTrampoline.IsAvailable stays
+# false and CombatActionHooks.CastSpell fails closed on every targeted cast, which
+# includes self-buffs (the plugin passes the player id): the bot says "Casting: X"
+# and nothing happens. Same missing/stale checks as scripts\Deploy-RynthCore.ps1.
+$sehDll = "$RepoRoot\native\SehTrampoline\bin\RynthCore.SehTrampoline.dll"
+$sehSrc = "$RepoRoot\native\SehTrampoline\SehTrampoline.c"
+if (-not (Test-Path $sehDll)) { throw "SEH trampoline not found at: $sehDll`nBuild it with native\SehTrampoline\Build-SehTrampoline.ps1" }
+if ((Test-Path $sehSrc) -and (Get-Item $sehSrc).LastWriteTime -gt (Get-Item $sehDll).LastWriteTime) {
+    throw "RynthCore.SehTrampoline.dll is STALE (SehTrampoline.c is newer). Rebuild with native\SehTrampoline\Build-SehTrampoline.ps1"
+}
+Copy-Item $sehDll "$StagingDir\Runtime\" -Force
+
 # Engine Native subfolder
 if (Test-Path "$EnginePublish\Native") {
     foreach ($file in (Get-ChildItem "$EnginePublish\Native" -File)) {
@@ -146,6 +177,20 @@ foreach ($dir in (Get-ChildItem "$LootEditorPublish" -Directory)) {
     # Drop pdbs from copied subdirs
     Get-ChildItem "$StagingDir\Tools\LootEditor\$($dir.Name)" -Recurse -File -Filter '*.pdb' | Remove-Item -Force
 }
+
+# Everything a working install needs. The 2026-09-25 public installer went out
+# without the Loader and the SEH trampoline because nothing checked.
+$required = @(
+    "$StagingDir\RynthCore.exe",
+    "$StagingDir\Runtime\RynthCore.Loader.dll",
+    "$StagingDir\Runtime\RynthCore.Engine.dll",
+    "$StagingDir\Runtime\RynthCore.SehTrampoline.dll",
+    "$StagingDir\Runtime\minhook.x86.dll",
+    "$StagingDir\Runtime\cimgui.dll",
+    "$pluginStagingDir\RynthAi\RynthCore.Plugin.RynthAi.dll"
+)
+$missing = @($required | Where-Object { -not (Test-Path $_) })
+if ($missing.Count -gt 0) { throw "Staging is missing required files:`n  $($missing -join "`n  ")" }
 
 # Report staged sizes
 $engineDll = "$StagingDir\Runtime\RynthCore.Engine.dll"
