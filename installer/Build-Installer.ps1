@@ -51,6 +51,11 @@ if ($Version) {
     $release = [int]$p[0] * 1000000 + [int]$p[1] * 10000 + [int]$p[2] * 100 + [int]$p[3]
 }
 
+# Stamp every build with the release, so the launcher, the engine log and the in-game
+# Status panel show it (RynthCore.App.BuildVersion); the SDK appends the git commit.
+$VersionArgs = @()
+if ($Version) { $VersionArgs = @("-p:Version=$Version") }
+
 $ScriptDir    = $PSScriptRoot
 $RepoRoot     = Split-Path $ScriptDir -Parent          # e.g. C:\Projects\RynthCore
 $ProjectsRoot = Split-Path $RepoRoot -Parent           # e.g. C:\Projects
@@ -85,31 +90,31 @@ if (-not $SkipBuild) {
     # ── 1. Launcher (self-contained Avalonia WinExe) ─────────────────────────
     Write-Host ""
     Write-Host "[1/5] Publishing Launcher (self-contained, x86)..." -ForegroundColor Cyan
-    dotnet publish $LauncherProject -c $Configuration -r win-x86 --self-contained true
+    dotnet publish $LauncherProject -c $Configuration -r win-x86 --self-contained true @VersionArgs
     if ($LASTEXITCODE -ne 0) { throw "Launcher publish failed (exit $LASTEXITCODE)" }
 
     # ── 2. Engine (NativeAOT — the slow one) ──────────────────────────────────
     Write-Host ""
     Write-Host "[2/5] Publishing Engine (NativeAOT, ~2 min)..." -ForegroundColor Cyan
-    dotnet publish $EngineProject -c $Configuration
+    dotnet publish $EngineProject -c $Configuration @VersionArgs
     if ($LASTEXITCODE -ne 0) { throw "Engine publish failed (exit $LASTEXITCODE)" }
 
     # ── 3. Loader (NativeAOT, small) ──────────────────────────────────────────
     Write-Host ""
     Write-Host "[3/5] Publishing Loader (NativeAOT)..." -ForegroundColor Cyan
-    dotnet publish $LoaderProject -c $Configuration
+    dotnet publish $LoaderProject -c $Configuration @VersionArgs
     if ($LASTEXITCODE -ne 0) { throw "Loader publish failed (exit $LASTEXITCODE)" }
 
     # ── 4. Plugin (NativeAOT) ─────────────────────────────────────────────────
     Write-Host ""
     Write-Host "[4/5] Publishing Plugin (NativeAOT)..." -ForegroundColor Cyan
-    dotnet publish $PluginProject -c $Configuration
+    dotnet publish $PluginProject -c $Configuration @VersionArgs
     if ($LASTEXITCODE -ne 0) { throw "Plugin publish failed (exit $LASTEXITCODE)" }
 
     # ── 5. Loot Editor (self-contained Avalonia tool) ─────────────────────────
     Write-Host ""
     Write-Host "[5/5] Publishing Loot Editor (self-contained, x86)..." -ForegroundColor Cyan
-    dotnet publish $LootEditorProject -c $Configuration -r win-x86 --self-contained true
+    dotnet publish $LootEditorProject -c $Configuration -r win-x86 --self-contained true @VersionArgs
     if ($LASTEXITCODE -ne 0) { throw "Loot Editor publish failed (exit $LASTEXITCODE)" }
 }
 

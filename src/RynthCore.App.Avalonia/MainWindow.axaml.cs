@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -146,6 +147,7 @@ internal partial class MainWindow : Window
         _serverStatusTimer.Tick += async (_, _) => await RefreshServerStatusesAsync();
         _serverStatusTimer.Start();
         Closing += (_, _) => SaveWindowLayout();
+        ShowVersion();
         AppendActivity("Avalonia launcher preview ready.");
         _ = RefreshServerStatusesAsync();
         _updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync();
@@ -333,10 +335,11 @@ internal partial class MainWindow : Window
         {
             string capturedPath = dllPath;
             string pluginName = Path.GetFileNameWithoutExtension(dllPath);
+            string pluginVersion = BuildVersion.OfFile(dllPath);
 
             var checkBox = new CheckBox
             {
-                Content = pluginName,
+                Content = pluginVersion.Length > 0 ? $"{pluginName}   {pluginVersion}" : pluginName,
                 IsChecked = !disabledSet.Contains(capturedPath)
             };
             checkBox.IsCheckedChanged += (_, _) => OnUserPluginEnabledChanged(capturedPath, checkBox);
@@ -1705,6 +1708,19 @@ internal partial class MainWindow : Window
         }
     }
 
+    // ── Version ───────────────────────────────────────────────────────────────
+
+    /// <summary>Launcher version under the title; the engine's (Runtime\) in its tooltip and the log.</summary>
+    private void ShowVersion()
+    {
+        string launcher = BuildVersion.Format(typeof(MainWindow).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion);
+        string engine = BuildVersion.OfFile(Path.Combine(AppContext.BaseDirectory, "Runtime", "RynthCore.Engine.dll"));
+        HeaderVersionText.Text = launcher;
+        ToolTip.SetTip(HeaderVersionText, $"Launcher {launcher}\nEngine {(engine.Length > 0 ? engine : "not found")}");
+        AppendActivity($"RynthCore launcher {launcher}, engine {(engine.Length > 0 ? engine : "not found")}.");
+    }
+
     // ── Updates (RynthUpdater) ────────────────────────────────────────────────
     // Plugins swap in place and never touch a running bot; the core installer runs only
     // with every RynthCore client closed. Nothing here ever triggers a reload (RL).
@@ -1773,8 +1789,10 @@ internal partial class MainWindow : Window
             _pluginsUpdatedThisSession.Add(done);
             AppendActivity($"Plugin updated: {done}. Running clients keep their version; it loads the next time AC starts.");
         }
-        // Re-check so the panel reflects the files now on disk.
+        // Re-check so the panel reflects the files now on disk, and redraw the plugin
+        // rows so they show the new versions.
         _updateCheck = await _updater.CheckAsync(_pluginDllPaths.ToList());
+        BuildPluginLoadout();
     }
 
     private void ShowUpdateState()

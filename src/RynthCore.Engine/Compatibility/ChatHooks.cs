@@ -59,7 +59,17 @@ internal static class ChatHooks
     public static bool IsInstalled => _hookInstalled;
     public static string StatusMessage => _statusMessage;
 
-    public static bool SuppressOriginalChat;
+    public static bool SuppressOriginalChat;   // the user's "Hide retail chat" option
+
+    /// <summary>RynthChat's panel is on screen (set by RynthChatPanel).</summary>
+    public static volatile bool ChatPanelShown;
+
+    /// <summary>
+    /// RynthChat is standing in for the retail chat: its panel is open AND "Hide retail chat"
+    /// is on. Only then is the retail chatbox hidden and Enter routed to RynthChat — whichever
+    /// chat is visible gets Enter.
+    /// </summary>
+    public static bool RynthChatOwnsChat => SuppressOriginalChat && ChatPanelShown;
 
     public static IntPtr GmMainChatInstance => _gmMainChatInstance;
 
@@ -119,7 +129,11 @@ internal static class ChatHooks
         catch (Exception ex) { try { RynthLog.Compat($"ChatHooks: Listen original threw {ex.GetType().Name}: {ex.Message}"); } catch { } throw; }
     }
 
-    private static bool _isHiddenAsserted;
+    // Starts true so the first tick asserts the setting either way: after an engine reload
+    // the previous generation may have left the chatbox hidden, and a fresh "false" here
+    // would never show it again even with "Hide retail chat" off. SetVisible(true) on a
+    // visible chatbox is a no-op.
+    private static bool _isHiddenAsserted = true;
 
     public static unsafe void TickHide()
     {
@@ -130,7 +144,7 @@ internal static class ChatHooks
         if (inst == IntPtr.Zero) return;
         if (_uiElementSetVisibleAddress == IntPtr.Zero) return;
 
-        if (SuppressOriginalChat)
+        if (RynthChatOwnsChat)
         {
             try
             {
@@ -155,6 +169,6 @@ internal static class ChatHooks
     public static void ResetCachedInstance()
     {
         _gmMainChatInstance = IntPtr.Zero;
-        _isHiddenAsserted = false;
+        _isHiddenAsserted = true;   // re-assert on the next instance, as at start-up
     }
 }

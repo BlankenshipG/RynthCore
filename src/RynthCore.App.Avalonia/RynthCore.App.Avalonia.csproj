@@ -38,6 +38,7 @@
     <Compile Include="..\RynthCore.App\CharacterCacheStore.cs" Link="Shared\CharacterCacheStore.cs" />
     <Compile Include="..\RynthCore.App\LaunchContextStore.cs" Link="Shared\LaunchContextStore.cs" />
     <Compile Include="..\RynthCore.App\SessionStateStore.cs" Link="Shared\SessionStateStore.cs" />
+    <Compile Include="..\RynthCore.App\BuildVersion.cs" Link="Shared\BuildVersion.cs" />
     <Compile Include="..\RynthCore.App\AppSettings.cs" Link="Shared\AppSettings.cs" />
     <Compile Include="..\RynthCore.App\AppSettingsStore.cs" Link="Shared\AppSettingsStore.cs" />
     <Compile Include="..\RynthCore.App\PluginDefinition.cs" Link="Shared\PluginDefinition.cs" />

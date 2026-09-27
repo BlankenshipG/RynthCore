@@ -493,6 +493,12 @@ internal static class PluginLoader
             if (strPtr != IntPtr.Zero)
                 plugin.VersionString = Marshal.PtrToStringAnsi(strPtr) ?? "";
         }
+        // The DLL's version resource is stamped at release time with the release and commit;
+        // the plugins' own RynthPluginVersion strings are hand-written and never change.
+        string fileVersion = RynthCore.App.BuildVersion.OfFile(
+            plugin.SourceFilePath.Length > 0 ? plugin.SourceFilePath : plugin.FilePath);
+        if (fileVersion.Length > 0)
+            plugin.VersionString = fileVersion;
 
         string ver = string.IsNullOrEmpty(plugin.VersionString) ? "" : $" v{plugin.VersionString}";
         string caps = BuildCapsList(plugin);

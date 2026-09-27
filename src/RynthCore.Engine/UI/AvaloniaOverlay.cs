@@ -1263,7 +1263,9 @@ internal class RynthOverlayWindow : Window
 
         var stack = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Margin = new Thickness(8, 4) };
         _barStack = stack;
-        stack.Children.Add(new TextBlock { Text = "RC", FontWeight = FontWeight.Bold, Foreground = Brushes.LightGreen, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0,0,10,0) });
+        var rcLabel = new TextBlock { Text = "RC", FontWeight = FontWeight.Bold, Foreground = Brushes.LightGreen, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0,0,10,0) };
+        ToolTip.SetTip(rcLabel, $"RynthCore {EntryPoint.BuildStamp}");   // plugins: Status panel
+        stack.Children.Add(rcLabel);
 
         var barSuppressed = new HashSet<string> { "Monsters", "Settings", "Nav", "Meta", "Items" };
         foreach (var p in registeredPanels)

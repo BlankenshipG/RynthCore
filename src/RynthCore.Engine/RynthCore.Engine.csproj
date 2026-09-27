@@ -44,6 +44,7 @@
   <ItemGroup>
     <Compile Include="..\RynthCore.App\CharacterCacheStore.cs" Link="Shared\CharacterCacheStore.cs" />
     <Compile Include="..\RynthCore.App\SessionStateStore.cs" Link="Shared\SessionStateStore.cs" />
+    <Compile Include="..\RynthCore.App\BuildVersion.cs" Link="Shared\BuildVersion.cs" />
   </ItemGroup>
 
   <!-- Prevent trimmer from removing ImGui.NET's DllImport methods -->

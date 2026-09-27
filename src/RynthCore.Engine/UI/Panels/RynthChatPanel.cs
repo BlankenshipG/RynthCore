@@ -334,6 +334,27 @@ internal static class RynthChatPanel
         ScrollViewer.SetHorizontalScrollBarVisibility(chatInputBox, ScrollBarVisibility.Disabled);
         ScrollViewer.SetVerticalScrollBarVisibility(chatInputBox, ScrollBarVisibility.Disabled);
 
+        // Tell: start "/tell <selected>, " for the NPC or player selected in the game — quest
+        // NPCs usually haven't spoken to you, so there's no name to click in the scrollback.
+        // Typing "/tell" (or "/t") alone and pressing Enter does the same.
+        var tellButton = new Button
+        {
+            Content = "Tell",
+            FontSize = 10,
+            Height = 22,
+            Padding = new Thickness(8, 0),
+            Margin = new Thickness(0, 1, 2, 1),
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(Color.FromArgb(0xFF, 0x0E, 0x2E, 0x3A)),
+            Foreground = Brushes.White,
+        };
+        ToolTip.SetTip(tellButton, "Select an NPC or player in the game, then click to start /tell <name>, — or type /tell and press Enter.");
+        tellButton.Click += (_, _) => Win32Backend.RequestTellSelected();
+        var inputRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        inputRow.Children.Add(chatInputBox);
+        inputRow.Children.Add(tellButton);
+        Grid.SetColumn(tellButton, 1);
+
         // ── Main layout ────────────────────────────────────────────────
         var mainLayout = new DockPanel
         {
@@ -341,10 +362,10 @@ internal static class RynthChatPanel
         };
         DockPanel.SetDock(tabStrip,    Dock.Top);
         DockPanel.SetDock(searchBox,   Dock.Top);
-        DockPanel.SetDock(chatInputBox, Dock.Bottom);
+        DockPanel.SetDock(inputRow, Dock.Bottom);
         mainLayout.Children.Add(tabStrip);
         mainLayout.Children.Add(searchBox);
-        mainLayout.Children.Add(chatInputBox);
+        mainLayout.Children.Add(inputRow);
         mainLayout.Children.Add(scrollViewer);
 
         // ── "Copied N lines" flash (top-right, above the scrollback) ──
@@ -373,11 +394,14 @@ internal static class RynthChatPanel
 
         var suppressChatCheck = new CheckBox
         {
-            Content    = "Hide retail chat",
+            Content    = "Hide retail chat (Enter types here)",
             IsChecked  = ChatHooks.SuppressOriginalChat,
             FontSize   = 9,
             Foreground = Brushes.White,
         };
+        ToolTip.SetTip(suppressChatCheck,
+            "On: the retail chatbox is hidden and Enter types in RynthChat.\n" +
+            "Off: the retail chatbox is shown and Enter types there; RynthChat keeps showing lines and its Tell button still works.");
         suppressChatCheck.IsCheckedChanged += (_, _) =>
         {
             ChatHooks.SuppressOriginalChat = suppressChatCheck.IsChecked == true;
@@ -783,6 +807,8 @@ internal static class RynthChatPanel
         var defaultBorderBrush = chatInputBox.BorderBrush;
         var activeBorderBrush  = new SolidColorBrush(Color.FromArgb(0xFF, 0xFF, 0xD7, 0x00));
 
+        string defaultWatermark = chatInputBox.Watermark ?? "";
+
         Win32Backend.OnChatCaptureActivated = () =>
         {
             _captureText = "";
@@ -792,8 +818,39 @@ internal static class RynthChatPanel
             {
                 chatInputBox.Text = "";
                 chatInputBox.BorderBrush = activeBorderBrush;
+                chatInputBox.Watermark = defaultWatermark;
             });
         };
+
+        // Start "/tell <selected name>, " and leave the player typing. Game thread only
+        // (Tell button via WM_RYNTHCORE_TELL, or "/tell" alone in OnChatSend), where the
+        // selection and its name read live. Nothing selected → a hint in the input box.
+        bool BeginTellToSelected()
+        {
+            if (!TryGetSelectedTellName(out string name))
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    chatInputBox.Text = "";
+                    chatInputBox.Watermark = "Select an NPC or player in the game first, then Tell.";
+                });
+                return false;
+            }
+            _captureText  = $"/tell {name}, ";
+            _cursorPos    = _captureText.Length;
+            _historyIndex = -1;
+            Win32Backend.ChatCaptureActive = true;   // keep typing: keys now go to this line
+            var (snap, pos) = (_captureText, _cursorPos);
+            Dispatcher.UIThread.Post(() =>
+            {
+                chatInputBox.Text = snap;
+                chatInputBox.CaretIndex = pos;
+                chatInputBox.BorderBrush = activeBorderBrush;
+                chatInputBox.Watermark = defaultWatermark;
+            });
+            return true;
+        }
+        Win32Backend.OnChatTellSelected = () => BeginTellToSelected();
 
         Win32Backend.OnChatChar = c =>
         {
@@ -885,6 +942,17 @@ internal static class RynthChatPanel
         Win32Backend.OnChatSend = () =>
         {
             string text = _captureText.Trim();
+            // "/tell" or "/t" alone addresses the selected NPC or player instead of being
+            // sent (AC would only answer with the usage line).
+            if (text.Equals("/tell", StringComparison.OrdinalIgnoreCase) || text.Equals("/t", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!BeginTellToSelected())
+                {
+                    _captureText = ""; _cursorPos = 0; _historyIndex = -1;
+                    Dispatcher.UIThread.Post(() => chatInputBox.BorderBrush = defaultBorderBrush);
+                }
+                return;
+            }
             _captureText  = "";
             _cursorPos    = 0;
             _historyIndex = -1;
@@ -971,6 +1039,13 @@ internal static class RynthChatPanel
         // apply loaded active-channel to tab button visuals.
         RebuildTabs();
         SelectTab(_activeChannel);
+
+        // Whether RynthChat is on screen decides who owns Enter and whether the retail
+        // chatbox is hidden (ChatHooks.RynthChatOwnsChat). A closed RynthChat used to keep
+        // both: Enter typed into the invisible panel — every key swallowed until Enter or
+        // Escape — and the retail chat stayed hidden, so there was no chat at all.
+        root.AttachedToVisualTree   += (_, _) => SetShown(true);
+        root.DetachedFromVisualTree += (_, _) => SetShown(false);
 
         return root;
     }
@@ -1193,6 +1268,34 @@ internal static class RynthChatPanel
     }
 
     internal static bool FloatingSelectionActive => _selDragging;
+
+    /// <summary>The panel went on or off screen (opened, closed, popped out or back in).</summary>
+    private static void SetShown(bool shown)
+    {
+        ChatHooks.ChatPanelShown = shown;
+        if (!shown && Win32Backend.ChatCaptureActive)
+        {
+            // Abandon a half-typed line rather than keep swallowing keys for a closed panel.
+            Win32Backend.ChatCaptureActive = false;
+            _captureText = "";
+            _cursorPos = 0;
+            _historyIndex = -1;
+        }
+    }
+
+    /// <summary>
+    /// Name of the creature selected in the game — an NPC or another player — for /tell.
+    /// AC's main thread only (the name read is live there). Never yourself, never an item.
+    /// </summary>
+    private static bool TryGetSelectedTellName(out string name)
+    {
+        name = "";
+        uint id = SelectedTargetHooks.ReadCurrentSelectedId();
+        if (id == 0 || id == ClientHelperHooks.GetPlayerId()) return false;
+        const uint ItemTypeCreature = 0x00000010;
+        if (ClientObjectHooks.TryGetItemType(id, out uint flags) && (flags & ItemTypeCreature) == 0) return false;
+        return ClientObjectHooks.TryGetObjectName(id, out name) && !string.IsNullOrWhiteSpace(name);
+    }
 
     // RL loads fresh plugin copies without unloading the old ones: drop the
     // exports bound below so the next poll re-binds to the live copy.

@@ -237,6 +237,19 @@ internal static unsafe class Win32Backend
 
     /// <summary>Custom WM_USER message for deferred chat command dispatch.</summary>
     internal const uint WM_RYNTHCORE_CHAT = 0x0400 + 0x5243; // WM_USER + "RC"
+    // Chat's Tell button (Avalonia UI thread) asks for "/tell <selected>, " to be started;
+    // posted so the selection and its name are read on AC's main thread.
+    internal const uint WM_RYNTHCORE_TELL = 0x0400 + 0x5244;
+
+    /// <summary>Fired on the game thread when the Tell button asks to address the selected object.</summary>
+    public static Action? OnChatTellSelected;
+
+    /// <summary>Callable from any thread: runs <see cref="OnChatTellSelected"/> on AC's main thread.</summary>
+    public static void RequestTellSelected()
+    {
+        if (_gameHwnd != IntPtr.Zero)
+            PostMessage(_gameHwnd, WM_RYNTHCORE_TELL, IntPtr.Zero, IntPtr.Zero);
+    }
 
     /// <summary>The game's main window handle.</summary>
     public static IntPtr GameHwnd => _gameHwnd;
@@ -820,6 +833,11 @@ internal static unsafe class Win32Backend
                 OnChatSend?.Invoke();
                 return IntPtr.Zero;
             }
+            if (msg == WM_RYNTHCORE_TELL)
+            {
+                OnChatTellSelected?.Invoke();
+                return IntPtr.Zero;
+            }
 
             // ── Chat: Enter in-game activates the chat TextBox ───────────
             // Numpad Enter (extended key, lParam bit 24) is reserved for AC functions — never capture it.
@@ -827,7 +845,11 @@ internal static unsafe class Win32Backend
             // panel TextBox this branch otherwise runs BEFORE the text-input
             // forwarding block and hijacks Enter into chat capture — stealing
             // the TextBox's own commit handler and every subsequent keystroke.
-            if (msg == WM_KEYDOWN && (int)wParam == VK_RETURN && !IsExtendedKey(lParam) && !ChatCaptureActive && !AvaloniaTextInputActive)
+            // RynthChatOwnsChat: only while RynthChat is open AND hiding the retail chatbox —
+            // whichever chat is visible gets Enter. Otherwise Enter belongs to AC's own chat,
+            // which used to be unusable whenever RynthChat was installed, even closed.
+            if (msg == WM_KEYDOWN && (int)wParam == VK_RETURN && !IsExtendedKey(lParam) && !ChatCaptureActive && !AvaloniaTextInputActive
+                && RynthCore.Engine.Compatibility.ChatHooks.RynthChatOwnsChat)
             {
                 if (OnChatCaptureActivated != null)
                 {

@@ -22,7 +22,12 @@ namespace RynthCore.Engine;
 
 public static class EntryPoint
 {
-    internal const string BuildStamp = "2026-06-06-resize-nonmodal";
+    /// <summary>
+    /// This engine's version — "2026.9.26.3 (8ca322f)", or "dev (8ca322f)" for an unstamped
+    /// build — read from the DLL's own version resource at init (RynthCore.App.BuildVersion).
+    /// Goes into every log header and crash line, and the in-game Status panel.
+    /// </summary>
+    internal static string BuildStamp { get; private set; } = "unknown";
     private const int MaxRecentLogLines = 256;
     private static int _initialized;
     /// <summary>Init counter the loader passes in lpParam. 1 = cold start,
@@ -84,6 +89,12 @@ public static class EntryPoint
         try
         {
             _initCount = lpParam.ToInt32();
+            try
+            {
+                string version = RynthCore.App.BuildVersion.OfFile(GetEngineModulePath() ?? "");
+                if (version.Length > 0) BuildStamp = version;
+            }
+            catch { }
 
             // Set up the unified log sink BEFORE anything else so all
             // subsequent failures are captured in C:\Games\RynthCore\Logs.
@@ -176,7 +187,11 @@ public static class EntryPoint
     private const uint GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS = 0x00000004;
     private const uint GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT = 0x00000002;
 
-    private static unsafe string? GetEngineDirectory()
+    private static string? GetEngineDirectory() =>
+        GetEngineModulePath() is { } path ? Path.GetDirectoryName(path) : null;
+
+    /// <summary>Full path of the engine DLL actually loaded (the loader's staged copy on hot reload).</summary>
+    private static unsafe string? GetEngineModulePath()
     {
         // Resolve our module by passing the address of a static method
         // compiled into our DLL. `&StaticMethod` yields a direct pointer to
@@ -216,7 +231,7 @@ public static class EntryPoint
         if (length == 0)
             return null;
 
-        return Path.GetDirectoryName(new string(buffer, 0, (int)length));
+        return new string(buffer, 0, (int)length);
     }
 
     /// <summary>

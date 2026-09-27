@@ -117,7 +117,7 @@ foreach ($name in $suitePlugins) {
     Step "Building $name"
     $proj = Join-Path $RynthSuiteRoot "Plugins\RynthCore.Plugin.$name\RynthCore.Plugin.$name.csproj"
     # PublishDir overrides the projects' own (RynthNav/RynthVision publish into the live C:\Games folders).
-    dotnet publish $proj -c Release "-p:PublishDir=$rel\build\$name\" -v q -nologo
+    dotnet publish $proj -c Release "-p:Version=$Version" "-p:PublishDir=$rel\build\$name\" -v q -nologo
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $name" }
     Copy-Item "$rel\build\$name\RynthCore.Plugin.$name.dll" "$rel\plugins\"
 }

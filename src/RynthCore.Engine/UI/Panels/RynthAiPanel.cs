@@ -346,6 +346,17 @@ internal static partial class RynthAiPanel
             Foreground = ColText,
             VerticalAlignment = VerticalAlignment.Center
         });
+        // RynthAi's version (its DLL's version resource), filled by the poll below —
+        // the plugin may load after the panel is built, and changes on a reload.
+        var versionText = new TextBlock
+        {
+            FontSize = 10,
+            Foreground = ColMute,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(8, 2, 0, 0)
+        };
+        int versionPollTicks = 0;
+        titleStack.Children.Add(versionText);
         titleRow.Children.Add(titleStack);
 
         var chipRow = new StackPanel
@@ -836,6 +847,14 @@ internal static partial class RynthAiPanel
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
         timer.Tick += (_, _) =>
         {
+            if (versionPollTicks-- <= 0)   // ~every 2 s; the timer runs at 30 Hz
+            {
+                versionPollTicks = 60;
+                string ver = "";
+                foreach (var p in PluginManager.Plugins)
+                    if (p.DisplayName.Contains("RynthAi", StringComparison.OrdinalIgnoreCase)) { ver = p.VersionString; break; }
+                if (versionText.Text != ver) versionText.Text = ver;
+            }
             if (_getSnapshotJson == null) TryBind();
 
             // TL;DR #7: signal the popout host (if floating) that a new

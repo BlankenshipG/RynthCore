@@ -71,6 +71,9 @@
                      FontSize="24"
                      FontWeight="Bold"
                      Foreground="#26C1A6" />
+          <TextBlock x:Name="HeaderVersionText"
+                     FontSize="11"
+                     Foreground="#9AA8B3" />
           <TextBlock x:Name="HeaderUpdateText"
                      IsVisible="False"
                      FontSize="12"
