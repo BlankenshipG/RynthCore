@@ -38,6 +38,19 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Off
 
+# Release number for release.txt, which the launcher's updater reads
+# (RynthUpdater.InstalledCoreRelease). -Version yyyy.m.d.n → yyyymmddnn; a dev build
+# without -Version records 0 ("unknown", so any published release reads as newer).
+# Checked here, before the builds, so a typo fails in a second rather than at the end.
+$release = 0
+if ($Version) {
+    $p = $Version.Split('.')
+    if ($p.Count -ne 4 -or ($p | Where-Object { $_ -notmatch '^\d+$' }) -or [int]$p[1] -gt 12 -or [int]$p[2] -gt 31 -or [int]$p[3] -gt 99) {
+        throw "-Version must be yyyy.m.d.n (e.g. 2026.9.26.3), got '$Version'"
+    }
+    $release = [int]$p[0] * 1000000 + [int]$p[1] * 10000 + [int]$p[2] * 100 + [int]$p[3]
+}
+
 $ScriptDir    = $PSScriptRoot
 $RepoRoot     = Split-Path $ScriptDir -Parent          # e.g. C:\Projects\RynthCore
 $ProjectsRoot = Split-Path $RepoRoot -Parent           # e.g. C:\Projects
@@ -177,6 +190,9 @@ foreach ($dir in (Get-ChildItem "$LootEditorPublish" -Directory)) {
     # Drop pdbs from copied subdirs
     Get-ChildItem "$StagingDir\Tools\LootEditor\$($dir.Name)" -Recurse -File -Filter '*.pdb' | Remove-Item -Force
 }
+
+# release.txt — which core release this install is ($release, from -Version at the top).
+Set-Content -Path "$StagingDir\release.txt" -Value @($release, $Version) -Encoding ASCII
 
 # Everything a working install needs. The 2026-09-25 public installer went out
 # without the Loader and the SEH trampoline because nothing checked.

@@ -22,6 +22,11 @@ internal sealed class AppSettings
     public int CrashRelaunchWindowMinutes { get; set; } = 5;
     public bool OverrideWindowTitle { get; set; } = true;
 
+    /// When true (default), the launcher installs RynthSuite plugin updates as soon as a
+    /// check finds them. Safe mid-session: running clients keep the version they started
+    /// with; the new one loads on the next AC start. Core updates always ask first.
+    public bool AutoUpdatePlugins { get; set; } = true;
+
     /// When true, the launcher kills any RynthCore-mode acclient.exe it
     /// launched that hasn't reached IsLoggedIn within
     /// <see cref="StuckClientTimeoutSeconds"/>. Catches stuck char-select,

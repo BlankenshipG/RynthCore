@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
@@ -111,6 +112,11 @@ internal partial class MainWindow : Window
     private readonly Dictionary<string, CheckBox> _pluginChecks = [];
     private readonly DispatcherTimer _sessionTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly DispatcherTimer _serverStatusTimer = new() { Interval = TimeSpan.FromSeconds(15) };
+    // Launchers stay open for days on multi-client setups; re-check the update feed now and then.
+    private readonly DispatcherTimer _updateTimer = new() { Interval = TimeSpan.FromHours(6) };
+    private readonly RynthUpdater _updater = new();
+    private RynthUpdater.CheckResult? _updateCheck;
+    private bool _updateBusy;
     private AppSettings _settings = new();
     private bool _operationBusy;
     private bool _autoLaunchPassInFlight;
@@ -142,6 +148,9 @@ internal partial class MainWindow : Window
         Closing += (_, _) => SaveWindowLayout();
         AppendActivity("Avalonia launcher preview ready.");
         _ = RefreshServerStatusesAsync();
+        _updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync();
+        _updateTimer.Start();
+        _ = CheckForUpdatesAsync();
     }
 
     private void WireEvents()
@@ -167,6 +176,15 @@ internal partial class MainWindow : Window
         RefreshSessionsButton.Click += (_, _) => RefreshSessionState();
         ResetOverlayBarButton.Click += (_, _) => ResetOverlayBar();
         AddPluginDllButton.Click += async (_, _) => await AddPluginDllAsync();
+        CheckUpdatesButton.Click += async (_, _) => await CheckForUpdatesAsync();
+        UpdatePluginsButton.Click += async (_, _) => await UpdatePluginsAsync();
+        InstallCoreUpdateButton.Click += async (_, _) => await InstallCoreUpdateAsync();
+        AutoUpdatePluginsCheckBox.IsChecked = _settings.AutoUpdatePlugins;
+        AutoUpdatePluginsCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            _settings.AutoUpdatePlugins = AutoUpdatePluginsCheckBox.IsChecked == true;
+            SaveSettings();
+        };
 
         ServerProfilesList.SelectionChanged += (_, _) => OnPrimarySelectionChanged();
         AccountProfilesList.SelectionChanged += (_, _) => OnPrimarySelectionChanged();
@@ -1686,6 +1704,159 @@ internal partial class MainWindow : Window
             AppendActivity($"Failed to sync plugin paths to engine.json: {ex.Message}");
         }
     }
+
+    // ── Updates (RynthUpdater) ────────────────────────────────────────────────
+    // Plugins swap in place and never touch a running bot; the core installer runs only
+    // with every RynthCore client closed. Nothing here ever triggers a reload (RL).
+
+    private readonly List<string> _pluginsUpdatedThisSession = new();
+
+    private async Task CheckForUpdatesAsync()
+    {
+        if (_updateBusy) return;
+        if (!_updater.IsConfigured)
+        {
+            UpdateStatusText.Text = "Updates aren't set up in this build.";
+            CheckUpdatesButton.IsEnabled = false;
+            return;
+        }
+
+        _updateBusy = true;
+        CheckUpdatesButton.IsEnabled = false;
+        UpdateStatusText.Text = "Checking for updates…";
+        try
+        {
+            _updateCheck = await _updater.CheckAsync(_pluginDllPaths.ToList());
+            if (_settings.AutoUpdatePlugins && _updateCheck.PluginsToUpdate.Any())
+                await ApplyPluginUpdatesAsync();
+            ShowUpdateState();
+        }
+        catch (Exception ex)
+        {
+            UpdateStatusText.Text = $"Update check failed: {ex.Message}";
+            AppendActivity($"Update check failed: {ex.Message}");
+        }
+        finally
+        {
+            _updateBusy = false;
+            CheckUpdatesButton.IsEnabled = true;
+        }
+    }
+
+    private async Task UpdatePluginsAsync()
+    {
+        if (_updateBusy || _updateCheck == null) return;
+        _updateBusy = true;
+        UpdatePluginsButton.IsEnabled = false;
+        try
+        {
+            await ApplyPluginUpdatesAsync();
+            ShowUpdateState();
+        }
+        catch (Exception ex)
+        {
+            UpdateStatusText.Text = $"Plugin update failed: {ex.Message}";
+            AppendActivity($"Plugin update failed: {ex.Message}");
+        }
+        finally
+        {
+            _updateBusy = false;
+            UpdatePluginsButton.IsEnabled = true;
+        }
+    }
+
+    private async Task ApplyPluginUpdatesAsync()
+    {
+        UpdateStatusText.Text = "Updating plugins…";
+        foreach (string done in await _updater.UpdatePluginsAsync(_updateCheck!))
+        {
+            _pluginsUpdatedThisSession.Add(done);
+            AppendActivity($"Plugin updated: {done}. Running clients keep their version; it loads the next time AC starts.");
+        }
+        // Re-check so the panel reflects the files now on disk.
+        _updateCheck = await _updater.CheckAsync(_pluginDllPaths.ToList());
+    }
+
+    private void ShowUpdateState()
+    {
+        if (_updateCheck is not { } c) return;
+        var pending = c.PluginsToUpdate.Select(p => p.Entry.Name).Distinct().ToList();
+        var local = c.Plugins.Where(p => p.State == RynthUpdater.PluginState.LocalBuild)
+                             .Select(p => p.Entry.Name).Distinct().ToList();
+
+        var lines = new List<string>
+        {
+            c.CoreUpdateAvailable
+                ? $"RynthCore {c.Manifest.Core.Version} is available (installed: {FormatRelease(c.InstalledCoreRelease)})."
+                : $"RynthCore is up to date ({FormatRelease(c.InstalledCoreRelease)})."
+        };
+        if (pending.Count > 0) lines.Add($"Plugin updates ready: {string.Join(", ", pending)}.");
+        else if (c.Plugins.Count > 0) lines.Add("Plugins are up to date.");
+        if (_pluginsUpdatedThisSession.Count > 0)
+            lines.Add($"Updated this session: {string.Join(", ", _pluginsUpdatedThisSession)} — loads the next time AC starts.");
+        if (local.Count > 0) lines.Add($"Left alone (newer local builds): {string.Join(", ", local)}.");
+        if ((c.CoreUpdateAvailable || pending.Count > 0) && !string.IsNullOrWhiteSpace(c.Manifest.Notes))
+            lines.Add(c.Manifest.Notes);
+
+        UpdateStatusText.Text = string.Join("\n", lines);
+        UpdatePluginsButton.IsVisible = pending.Count > 0;
+        InstallCoreUpdateButton.IsVisible = c.CoreUpdateAvailable;
+        HeaderUpdateText.IsVisible = c.CoreUpdateAvailable || pending.Count > 0;
+        HeaderUpdateText.Text = c.CoreUpdateAvailable ? $"Update available: {c.Manifest.Core.Version}" : "Plugin updates ready";
+    }
+
+    private async Task InstallCoreUpdateAsync()
+    {
+        if (_updateBusy || _updateCheck is not { CoreUpdateAvailable: true } c) return;
+        int running = RynthCoreClientsRunning();
+        if (running > 0)
+        {
+            UpdateStatusText.Text = $"Close your {running} RynthCore game client(s) first — the update replaces files they have open.";
+            return;
+        }
+
+        _updateBusy = true;
+        InstallCoreUpdateButton.IsEnabled = false;
+        try
+        {
+            UpdateStatusText.Text = $"Downloading RynthCore {c.Manifest.Core.Version}…";
+            string installer = await _updater.DownloadInstallerAsync(c);
+            if (RynthCoreClientsRunning() > 0)
+            {
+                UpdateStatusText.Text = "A RynthCore client started meanwhile — close it, then press Install again.";
+                return;
+            }
+            AppendActivity($"Installing RynthCore {c.Manifest.Core.Version}; the launcher restarts when it's done.");
+            RynthUpdater.RunInstaller(installer);
+            (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown();
+        }
+        catch (Exception ex)
+        {
+            UpdateStatusText.Text = $"RynthCore update failed: {ex.Message}";
+            AppendActivity($"RynthCore update failed: {ex.Message}");
+        }
+        finally
+        {
+            _updateBusy = false;
+            InstallCoreUpdateButton.IsEnabled = true;
+        }
+    }
+
+    private int RynthCoreClientsRunning()
+    {
+        int n = 0;
+        foreach (Process p in Process.GetProcessesByName("acclient"))
+        {
+            try { if (_injector.IsRynthCoreLoaded(p)) n++; }
+            catch { }
+            finally { p.Dispose(); }
+        }
+        return n;
+    }
+
+    /// <summary>2026092603 → "2026.9.26.3" (the installer's -Version); 0 → "unknown".</summary>
+    private static string FormatRelease(int r) =>
+        r <= 0 ? "unknown" : $"{r / 1000000}.{r / 10000 % 100}.{r / 100 % 100}.{r % 100}";
 
     private async Task InjectRunningAcAsync()
     {

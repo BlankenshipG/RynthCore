@@ -71,6 +71,10 @@
                      FontSize="24"
                      FontWeight="Bold"
                      Foreground="#26C1A6" />
+          <TextBlock x:Name="HeaderUpdateText"
+                     IsVisible="False"
+                     FontSize="12"
+                     Foreground="#F2C14E" />
         </StackPanel>
 
         <GridSplitter Grid.Column="2"
@@ -230,6 +234,23 @@
         <TabItem Header="Plugins">
           <ScrollViewer>
             <StackPanel Spacing="12" Margin="6">
+              <Border Background="#132028" CornerRadius="16" Padding="18">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="Updates" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
+                  <TextBlock x:Name="UpdateStatusText"
+                             Text="Not checked yet."
+                             TextWrapping="Wrap"
+                             Foreground="#9AA8B3" />
+                  <WrapPanel Orientation="Horizontal">
+                    <Button x:Name="CheckUpdatesButton" Content="Check for updates" Margin="0,0,8,6" />
+                    <Button x:Name="UpdatePluginsButton" Content="Update plugins" IsVisible="False" Margin="0,0,8,6" />
+                    <Button x:Name="InstallCoreUpdateButton" Content="Install RynthCore update" IsVisible="False" Margin="0,0,8,6" />
+                  </WrapPanel>
+                  <CheckBox x:Name="AutoUpdatePluginsCheckBox"
+                            Content="Update plugins automatically (a running bot keeps its version until AC restarts)"
+                            Foreground="#EAF0F4" />
+                </StackPanel>
+              </Border>
               <Border Background="#132028" CornerRadius="16" Padding="18">
                 <StackPanel Spacing="8">
                   <TextBlock Text="Plugins" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />

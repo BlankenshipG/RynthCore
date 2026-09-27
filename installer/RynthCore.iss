@@ -71,3 +71,24 @@ Name: "{group}\Uninstall RynthCore"; Filename: "{uninstallexe}"
 
 ; Optional Desktop shortcut (created only when the desktopicon task is checked)
 Name: "{autodesktop}\RynthCore"; Filename: "{app}\RynthCore.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+
+[Run]
+; Interactive install: offer to start the launcher on the last page.
+Filename: "{app}\RynthCore.exe"; WorkingDir: "{app}"; Description: "Launch RynthCore"; Flags: nowait postinstall skipifsilent
+; The launcher's updater runs this installer with /SILENT /RELAUNCH after closing itself;
+; bring it back when the upgrade is done.
+Filename: "{app}\RynthCore.exe"; WorkingDir: "{app}"; Flags: nowait runasoriginaluser; Check: CmdLineParamExists('/RELAUNCH')
+
+[Code]
+function CmdLineParamExists(const Value: string): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), Value) = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+end;
