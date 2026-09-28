@@ -42,7 +42,8 @@ internal sealed unsafe class LayeredWindow : IDisposable
     // class because its WndProc points into the unloaded DLL. So bake a
     // per-DLL-load Guid into the name — each engine instance gets a fresh
     // class atom backed by its own WndProc pointer.
-    private static readonly string ClassName = "RynthCoreLayeredPanel_" + Guid.NewGuid().ToString("N");
+    private const string ClassNamePrefix = "RynthCoreLayeredPanel_";
+    private static readonly string ClassName = ClassNamePrefix + Guid.NewGuid().ToString("N");
 
     private const int  WS_POPUP         = unchecked((int)0x80000000);
     private const int  WS_EX_LAYERED    = 0x00080000;
@@ -271,6 +272,68 @@ internal sealed unsafe class LayeredWindow : IDisposable
             return self.OnMessage(msg, wParam, lParam);
 
         return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern int EnumThreadWindows(uint dwThreadId, delegate* unmanaged[Stdcall]<IntPtr, IntPtr, int> lpfn, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassNameW(IntPtr hWnd, char* lpClassName, int nMaxCount);
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    private static int CollectThreadWindow(IntPtr hwnd, IntPtr lParam)
+    {
+        if (GCHandle.FromIntPtr(lParam).Target is List<IntPtr> found)
+            found.Add(hwnd);
+        return 1;
+    }
+
+    /// <summary>
+    /// Destroys panel windows owned by the calling thread.
+    /// Must run on AC's game thread — the panels are created there (see
+    /// FloatingPanelHost's RunOnGameThread) and DestroyWindow only works on
+    /// the owning thread.
+    ///
+    /// Dispose only posts the destroy, and Win32Backend.Shutdown unhooks the
+    /// game WndProc ~1 ms after the overlay stops — usually before the game
+    /// thread gets to the post. AC's own WndProc then drops it, and because
+    /// the engine module is never unloaded the panel lives on: frozen on its
+    /// last frame, deaf to input, and hidden under the next generation's copy
+    /// of it until that one is moved ("two RynthAi windows").
+    ///
+    /// <paramref name="includeThisGeneration"/>=false spares this engine
+    /// load's own windows (class names carry a per-load Guid) and removes only
+    /// ones an earlier load left behind.
+    /// </summary>
+    internal static void DestroyThreadPanelWindows(bool includeThisGeneration)
+    {
+        var found = new List<IntPtr>();
+        GCHandle handle = GCHandle.Alloc(found);
+        try
+        {
+            EnumThreadWindows(GetCurrentThreadId(), &CollectThreadWindow, GCHandle.ToIntPtr(handle));
+        }
+        finally
+        {
+            handle.Free();
+        }
+
+        char* buffer = stackalloc char[128];
+        foreach (IntPtr hwnd in found)
+        {
+            int length = GetClassNameW(hwnd, buffer, 128);
+            if (length <= 0)
+                continue;
+            string className = new(buffer, 0, length);
+            if (!className.StartsWith(ClassNamePrefix, StringComparison.Ordinal))
+                continue;
+            bool thisGeneration = className == ClassName;
+            if (thisGeneration && !includeThisGeneration)
+                continue;
+
+            bool ok = DestroyWindow(hwnd);
+            RynthCore.Engine.RynthLog.Info($"LayeredWindow: DestroyWindow(0x{hwnd.ToInt64():X}) = {ok} — {(thisGeneration ? "still open at shutdown" : "left over from an earlier engine load")}.");
+        }
     }
 
     // ─── Instance state ────────────────────────────────────────────────────

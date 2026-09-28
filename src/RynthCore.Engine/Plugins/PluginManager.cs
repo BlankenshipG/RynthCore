@@ -234,6 +234,11 @@ internal static class PluginManager
     private static SendPluginCommandCallbackDelegate? _sendPluginCommandCallback;
     private static GetObjectDataIdPropertyCallbackDelegate? _getObjectDataIdPropertyCallback;
     private static GetPluginExportJsonCallbackDelegate? _getPluginExportJsonCallback;
+    private static GetVendorInfoCallbackDelegate? _getVendorInfoCallback;
+    private static GetVendorItemsCallbackDelegate? _getVendorItemsCallback;
+    private static VendorBuyCallbackDelegate? _vendorBuyCallback;
+    private static VendorSellCallbackDelegate? _vendorSellCallback;
+    private static GetVendorTradeStatusCallbackDelegate? _getVendorTradeStatusCallback;
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -2394,6 +2399,11 @@ internal static class PluginManager
         _sendPluginCommandCallback ??= SendPluginCommandAction;
         _getObjectDataIdPropertyCallback ??= GetObjectDataIdPropertyAction;
         _getPluginExportJsonCallback ??= GetPluginExportJsonAction;
+        _getVendorInfoCallback ??= GetVendorInfoAction;
+        _getVendorItemsCallback ??= GetVendorItemsAction;
+        _vendorBuyCallback ??= VendorBuyAction;
+        _vendorSellCallback ??= VendorSellAction;
+        _getVendorTradeStatusCallback ??= GetVendorTradeStatusAction;
 
         _api.Version = PluginContractVersion.Current;
         _api.LogFn = Marshal.GetFunctionPointerForDelegate(_logCallback);
@@ -2505,6 +2515,11 @@ internal static class PluginManager
         _api.SendPluginCommandFn = Marshal.GetFunctionPointerForDelegate(_sendPluginCommandCallback);
         _api.GetObjectDataIdPropertyFn = Marshal.GetFunctionPointerForDelegate(_getObjectDataIdPropertyCallback);
         _api.GetPluginExportJsonFn = Marshal.GetFunctionPointerForDelegate(_getPluginExportJsonCallback);
+        _api.GetVendorInfoFn = Marshal.GetFunctionPointerForDelegate(_getVendorInfoCallback);
+        _api.GetVendorItemsFn = Marshal.GetFunctionPointerForDelegate(_getVendorItemsCallback);
+        _api.VendorBuyFn = Marshal.GetFunctionPointerForDelegate(_vendorBuyCallback);
+        _api.VendorSellFn = Marshal.GetFunctionPointerForDelegate(_vendorSellCallback);
+        _api.GetVendorTradeStatusFn = Marshal.GetFunctionPointerForDelegate(_getVendorTradeStatusCallback);
     }
 
     private static void ProbeClientHooks()
@@ -3269,6 +3284,56 @@ internal static class PluginManager
     private static int GetCastBusyStateAction() => CastGate.GetCastBusyState();
 
     private static int GetUseDoneSeqAction() => SmartBoxHooks.GetUseDoneSeq();
+
+    // ── Vendor trading (v67) — see Compatibility/VendorTrade.cs ─────────────
+    // Reads are served from the main-thread snapshot; buy/sell only queue here
+    // (checked against the snapshot) and go out on AC's main thread.
+    private static unsafe int GetVendorInfoAction(VendorInfoNative* info)
+    {
+        try { return VendorTrade.FillInfo(info); }
+        catch { return 0; }
+    }
+
+    private static unsafe int GetVendorItemsAction(VendorItemNative* items, int maxCount)
+    {
+        try { return VendorTrade.FillItems(items, maxCount); }
+        catch { return -1; }
+    }
+
+    private static unsafe uint VendorBuyAction(uint vendorId, VendorTradeEntryNative* entries, int count)
+    {
+        try
+        {
+            if (entries == null || count <= 0 || count > 1000)
+                return VendorTrade.RefuseRequest(true, vendorId, count, entries == null ? "null entry list" : $"bad line count {count}");
+            var ids = new uint[count];
+            var amounts = new int[count];
+            for (int i = 0; i < count; i++)
+            {
+                ids[i] = entries[i].ObjectId;
+                amounts[i] = entries[i].Amount;
+            }
+            return VendorTrade.RequestBuy(vendorId, ids, amounts);
+        }
+        catch { return 0; }
+    }
+
+    private static unsafe uint VendorSellAction(uint vendorId, uint* itemIds, int count)
+    {
+        try
+        {
+            if (itemIds == null || count <= 0 || count > 1000)
+                return VendorTrade.RefuseRequest(false, vendorId, count, itemIds == null ? "null item list" : $"bad line count {count}");
+            return VendorTrade.RequestSell(vendorId, new ReadOnlySpan<uint>(itemIds, count));
+        }
+        catch { return 0; }
+    }
+
+    private static unsafe int GetVendorTradeStatusAction(VendorTradeStatusNative* status)
+    {
+        try { return VendorTrade.FillStatus(status); }
+        catch { return 0; }
+    }
 
     private static void ForceResetBusyCountAction() => BusyCountHooks.ForceResetBusyCount();
 

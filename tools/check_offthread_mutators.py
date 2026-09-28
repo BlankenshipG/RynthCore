@@ -56,6 +56,7 @@ MUTATOR_DELEGATES = {
     "_eventStackableMerge", "_addTextToScroll",
     "_setAutoRun", "_turnToHeading", "_stopCompletely", "_setMotion",
     "_changeCombatMode",
+    "_sendShopEvent",   # VendorTrade: gmVendorUI::SendShopEvent (vendor buy/sell + busy count)
 }
 GATE = "MainThreadGuard.IsOnMainThread"
 ENQUEUE = "AcMainThreadQueue.Enqueue"

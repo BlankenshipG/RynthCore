@@ -268,6 +268,10 @@ internal static class AcMainThreadQueue
         DrainChat();
         DrainChatCommands();
         DrainRequestIds();
+        // Vendor buy/sell: a packet send through the client's own SendShopEvent, not a
+        // motion, so it sits with the non-gesture queues above. Also polls whether the
+        // vendor window is still open. Idle fast path when no vendor is open.
+        try { VendorTrade.MainThreadTick(); } catch { }
 
         int head = _head;                       // only the main thread writes _head
         int tail = Volatile.Read(ref _tail);

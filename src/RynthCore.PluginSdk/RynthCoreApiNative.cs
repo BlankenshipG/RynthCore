@@ -119,4 +119,10 @@ public struct RynthCoreApiNative
     public IntPtr SendPluginCommandFn;     // v64: forward (action,value) to a named plugin's command export
     public IntPtr GetObjectDataIdPropertyFn; // v65: read a PWD DataID property (Icon=8 → _iconID) for inventory icons
     public IntPtr GetPluginExportJsonFn;     // v66: broker any RynthPluginGet*Json export on a named plugin
+    // v67: vendor trading (see VendorTypes.cs / RynthCoreHost vendor section)
+    public IntPtr GetVendorInfoFn;           // int  GetVendorInfo(VendorInfoNative*)
+    public IntPtr GetVendorItemsFn;          // int  GetVendorItems(VendorItemNative*, int maxCount)
+    public IntPtr VendorBuyFn;               // uint VendorBuy(uint vendorId, VendorTradeEntryNative*, int count)
+    public IntPtr VendorSellFn;              // uint VendorSell(uint vendorId, uint* itemIds, int count)
+    public IntPtr GetVendorTradeStatusFn;    // int  GetVendorTradeStatus(VendorTradeStatusNative*)
 }

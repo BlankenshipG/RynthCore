@@ -6,7 +6,7 @@ namespace RynthCore.PluginCore;
 
 public abstract class RynthPluginBase
 {
-    public virtual uint MinimumApiVersion => RynthCoreHost.CurrentApiVersion;
+    public virtual uint MinimumApiVersion => RynthCoreHost.BaselineApiVersion;
 
     protected RynthCoreApiNative Api { get; private set; }
     protected RynthCoreHost Host { get; private set; }

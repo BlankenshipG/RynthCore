@@ -216,6 +216,14 @@ internal static class ClientObjectHooks
     private static DateTime _lastObjectIdentityPrefetchUtc = DateTime.MinValue;
     private static bool _loggedObjectIdentityServe;
     private const int ObjectIdentityPrefetchThrottleMs = 500;
+    // Every id the same walk visited, swapped whole (readers never see a half-built array).
+    private static volatile uint[] _liveObjectIds = Array.Empty<uint>();
+
+    /// <summary>
+    /// Ids of every weenie object the client knew at the last identity snapshot (main-thread
+    /// walk, at most ~0.5 s old). Empty until the first snapshot.
+    /// </summary>
+    public static uint[] LiveObjectIds => _liveObjectIds;
 
     // Position snapshot — mirrors the attackable/identity snapshots, but sampled
     // EVERY EndScene (no throttle) because positions change per-frame. The
@@ -1458,6 +1466,47 @@ internal static class ClientObjectHooks
     }
 
     /// <summary>
+    /// Reads one 4-byte field of an object's PublicWeenieDesc by its offset from the
+    /// start of the PWD (e.g. +56 _type, +60 _value, +96 _stackSize, +116 _burden; layout
+    /// in Chorizite Weenie.cs:1734, same base as <see cref="TryGetObjectOwnershipInfo"/>).
+    /// MAIN THREAD ONLY: off the main thread it returns false without touching AC memory
+    /// (a snapshot-cached weenie pointer can be freed and reused under us). Both ends of
+    /// the read are page-probed, so a bad pointer fails closed instead of faulting.
+    /// Used by vendor trading to read item value/burden for pack items, whose qualities
+    /// pointer is null (so InqInt can't serve them).
+    /// </summary>
+    internal static bool TryReadPwdInt32(uint objectId, int pwdFieldOffset, out int value)
+    {
+        value = 0;
+        if (pwdFieldOffset < 0 || pwdFieldOffset > 172 || (pwdFieldOffset & 3) != 0)
+            return false;
+        if (!MainThreadGuard.IsOnMainThread())
+            return false;
+        if (_getWeenieObject == null)
+        {
+            if (!Probe() || _getWeenieObject == null)
+                return false;
+        }
+        if (_weeniePhysicsObjOffset < 0)
+            return false;
+        try
+        {
+            IntPtr weeniePtr = _getWeenieObject(objectId);
+            if (weeniePtr == IntPtr.Zero)
+                return false;
+            IntPtr fieldAddr = weeniePtr + _weeniePhysicsObjOffset + 4 + pwdFieldOffset;
+            if (!IsReadablePointer(fieldAddr) || !IsReadablePointer(fieldAddr + 3))
+                return false;
+            value = Marshal.ReadInt32(fieldAddr);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Reads PublicWeenieDesc._wcid directly from the weenie struct.
     /// Returns the Weenie Class ID (WCID) for the given object.
     /// Layout: ACCWeenieObject + _phys_obj_offset + 4 = start of PublicWeenieDesc.
@@ -2456,9 +2505,11 @@ internal static class ClientObjectHooks
         {
             var nameSnap = new Dictionary<uint, string>();
             var typeSnap = new Dictionary<uint, uint>();
+            var idSnap = new List<uint>();
 
             int n = CObjectMaintHooks.EnumerateLiveWeenieObjectIds(id =>
             {
+                idSnap.Add(id);
                 if (TryGetObjectName(id, out string nm) && nm.Length > 0)
                     nameSnap[id] = nm;
                 if (TryGetItemType(id, out uint typeFlags))
@@ -2477,6 +2528,7 @@ internal static class ClientObjectHooks
                 foreach (var kv in typeSnap)
                     _objectTypeCache[kv.Key] = kv.Value;
             }
+            _liveObjectIds = idSnap.ToArray();
 
             if (!_loggedObjectIdentityServe)
             {

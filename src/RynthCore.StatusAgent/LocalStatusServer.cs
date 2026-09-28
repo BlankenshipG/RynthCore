@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -74,6 +75,14 @@ internal sealed class LocalStatusServer : IDisposable
 
     public bool TryStart(out string error)
     {
+        // Never serve without a token, loopback included: every route but /healthz is behind it.
+        if (_token == null)
+        {
+            error = "no ServeToken set";
+            Running = false;
+            return false;
+        }
+
         try
         {
             _listener.Start();
@@ -741,12 +750,16 @@ internal sealed class LocalStatusServer : IDisposable
     {
         string? header = req.Headers["Authorization"];
         if (header != null && header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(header.Substring("Bearer ".Length).Trim(), _token, StringComparison.Ordinal))
+            TokenMatches(header.Substring("Bearer ".Length).Trim()))
             return true;
 
         string? q = req.QueryString["token"];
-        return q != null && string.Equals(q, _token, StringComparison.Ordinal);
+        return q != null && TokenMatches(q);
     }
+
+    private bool TokenMatches(string candidate)
+        => _token != null && CryptographicOperations.FixedTimeEquals(
+               Encoding.UTF8.GetBytes(candidate), Encoding.UTF8.GetBytes(_token));
 
     private static void Write(HttpListenerResponse res, int status, string contentType, byte[] body)
     {

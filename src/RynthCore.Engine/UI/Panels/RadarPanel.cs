@@ -1148,10 +1148,11 @@ internal static partial class RadarPanel
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
         };
-        // Tooltip parameter intentionally unused: ToolTip.SetTip() schedules
-        // an Avalonia ToolTip Popup whose hover-enter side effects flash the
-        // entire overlay capture pipeline (a one-frame invalidation that's
-        // very visible against AC's frame). Glyphs are self-descriptive.
+        // Tooltip parameter intentionally unused. It was dropped because a
+        // ToolTip popup used to blank every docked panel (the "panel flash").
+        // Popups are now drawn inside the overlay frame (OverlayPopups, see
+        // AvaloniaOverlay.ThreadMain), so ToolTip.SetTip would be safe here;
+        // the glyphs are self-descriptive, so they stay tooltip-less.
         _ = tooltip;
         // Eat pointer events so they don't bubble through to the radar
         // surface's drag handler beneath.

@@ -111,6 +111,20 @@ internal static class MetaPanel
 
     // Composite condition indices: All=2, Any=3, Not=20
     private static bool IsCompositeCondition(int idx) => idx is 2 or 3 or 20;
+
+    /// <summary>One condition as text, nested ones included: "Not No Monsters Within Dist: 5",
+    /// "Any(Chat Message: …, Navroute Empty)".</summary>
+    private static string CondText(MetaRuleDto c, int depth = 0)
+    {
+        string name = c.Condition >= 0 && c.Condition < ConditionNames.Length
+            ? ConditionNames[c.Condition] : $"Cond({c.Condition})";
+        if (IsCompositeCondition(c.Condition) && c.Children.Count > 0 && depth < MaxSubConditionDepth)
+        {
+            if (c.Condition == 20) return $"Not {CondText(c.Children[0], depth + 1)}";
+            return $"{name}({string.Join(", ", c.Children.Select(x => CondText(x, depth + 1)))})";
+        }
+        return string.IsNullOrEmpty(c.ConditionData) ? name : $"{name}: {c.ConditionData}";
+    }
     // All action index = 4
     private static bool IsAllAction(int idx) => idx == 4;
 
@@ -796,10 +810,7 @@ internal static class MetaPanel
                 string condText;
                 if (IsCompositeCondition(rule.Condition) && rule.Children.Count > 0)
                 {
-                    var first = rule.Children[0];
-                    string fn = first.Condition >= 0 && first.Condition < ConditionNames.Length
-                        ? ConditionNames[first.Condition] : $"Cond({first.Condition})";
-                    string ft = string.IsNullOrEmpty(first.ConditionData) ? fn : $"{fn}: {first.ConditionData}";
+                    string ft = CondText(rule.Children[0]);
                     condText = rule.Children.Count > 1
                         ? $"{condName}: {ft}  (+{rule.Children.Count - 1})"
                         : $"{condName}: {ft}";
@@ -869,9 +880,7 @@ internal static class MetaPanel
                         });
                         foreach (var child in rule.Children)
                         {
-                            string cn = child.Condition >= 0 && child.Condition < ConditionNames.Length
-                                ? ConditionNames[child.Condition] : $"Cond({child.Condition})";
-                            string ct = string.IsNullOrEmpty(child.ConditionData) ? cn : $"{cn}: {child.ConditionData}";
+                            string ct = CondText(child);
                             groupPanel.Children.Add(new TextBlock
                             {
                                 Text = $"     • {ct}", Foreground = ColMute, FontSize = 9,
@@ -1133,7 +1142,9 @@ internal static class MetaPanel
         }
         else
         {
-            BuildSubRuleSection(content, ps, picker, rebuild, r.Children, "Sub-Conditions", isAction: false);
+            BuildSubRuleSection(content, ps, picker, rebuild, r.Children,
+                                r.Condition == 20 ? "Not (one condition):" : "Sub-Conditions", isAction: false,
+                                maxCount: r.Condition == 20 ? 1 : int.MaxValue);
         }
 
         // ── Action ────────────────────────────────────────────────────────────
@@ -1227,9 +1238,14 @@ internal static class MetaPanel
         content.Children.Add(btnRow);
     }
 
+    // Sub-conditions nest: a Not/All/Any sub-condition gets its own indented list below its
+    // row (a Not takes exactly one). They used to be single flat rows, so a Not under an All
+    // had nowhere to say what it negates. Deep enough for anything a meta writes.
+    private const int MaxSubConditionDepth = 4;
+
     private static void BuildSubRuleSection(
         StackPanel content, PanelState ps, PickerState picker, Action rebuild,
-        List<MetaRuleDto> subRules, string label, bool isAction)
+        List<MetaRuleDto> subRules, string label, bool isAction, int depth = 0, int maxCount = int.MaxValue)
     {
         content.Children.Add(new TextBlock
         {
@@ -1255,10 +1271,29 @@ internal static class MetaPanel
                 {
                     if (isAction) sub.Action = idx; else sub.Condition = idx;
                     typeBtn.Content = names[idx];
+                    if (!isAction)
+                    {
+                        // Composite ↔ simple changes the row's shape: redraw it.
+                        if (!IsCompositeCondition(idx)) sub.Children.Clear();
+                        else if (idx == 20 && sub.Children.Count > 1) sub.Children.RemoveRange(1, sub.Children.Count - 1);
+                        rebuild();
+                    }
                 });
             };
             Grid.SetColumn(typeBtn, 0);
             subRow.Children.Add(typeBtn);
+
+            bool nests = !isAction && IsCompositeCondition(sub.Condition) && depth < MaxSubConditionDepth;
+            if (nests)
+            {
+                subRow.Children.Add(new TextBlock
+                {
+                    Text = sub.Condition == 20 ? "(the condition below)" : "(the conditions below)",
+                    Foreground = ColTextDim, FontSize = 9, VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(6, 0, 0, 0),
+                });
+                Grid.SetColumn(subRow.Children[^1], 1);
+            }
 
             var dataBox = new TextBox
             {
@@ -1270,7 +1305,7 @@ internal static class MetaPanel
             };
             dataBox.TextChanged += (_, _) => { if (isAction) sub.ActionData = dataBox.Text ?? ""; else sub.ConditionData = dataBox.Text ?? ""; };
             Grid.SetColumn(dataBox, 1);
-            subRow.Children.Add(dataBox);
+            if (!nests) subRow.Children.Add(dataBox);
 
             var rmBtn = new Button
             {
@@ -1286,7 +1321,18 @@ internal static class MetaPanel
             subRow.Children.Add(rmBtn);
 
             content.Children.Add(subRow);
+
+            if (nests)
+            {
+                var nested = new StackPanel { Margin = new Thickness(14, 0, 0, 2) };
+                string nestedLabel = sub.Condition switch { 20 => "Not:", 2 => "All of:", _ => "Any of:" };
+                BuildSubRuleSection(nested, ps, picker, rebuild, sub.Children, nestedLabel, isAction: false,
+                                    depth + 1, maxCount: sub.Condition == 20 ? 1 : int.MaxValue);
+                content.Children.Add(nested);
+            }
         }
+
+        if (subRules.Count >= maxCount) return;   // a Not already has its one operand
 
         var addSubBtn = new Button
         {

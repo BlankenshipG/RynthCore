@@ -53,6 +53,22 @@ internal static class CharacterCaptureHooks
     private const int AutoLoginDirectFailsBeforeClick = 4;
     private static int _autoLoginPollStarted;
 
+    // Native character-list capture. The 0xF658 packet path is dead (see above),
+    // so ParseAndSaveCharacterList never runs and the launcher's cache
+    // (characters_<server>_<account>.json) was only written by SessionStateRegistry's
+    // login upsert, which records just the launch context's TargetCharacter. An
+    // account launched with no character picked therefore never got a cache file
+    // and its launcher dropdown stayed empty. This poll reads the list straight
+    // from AC's native CharacterSet while char-select is up, whether or not
+    // auto-login is armed. In the world it only checks a managed flag; the native
+    // set is read only in CharacterManagementUI. Logout back to char-select
+    // (LoginLifecycleHooks.ResetObservation) re-arms it, so a new or deleted
+    // character is picked up too. The file is rewritten only when the list changes.
+    private const int CharacterListCapturePollIntervalMs = 500;
+    private static int _characterListCapturePollStarted;
+    private static readonly object CharacterListCaptureLock = new();
+    private static string _lastCharacterListCaptureKey = string.Empty;
+
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [DllImport("user32.dll")]
@@ -86,13 +102,16 @@ internal static class CharacterCaptureHooks
     private static int _autoLoginEverFired;
 
     /// <summary>
-    /// Starts the poll-driven auto-login worker. Call once from InitWorker.
-    /// No-ops if no TargetCharacter is configured in the launch context, or if
-    /// the worker is already running. Safe to call before the client window or
-    /// char-select UI exists — the worker waits for them.
+    /// Starts the character-list capture poll (always) and the poll-driven
+    /// auto-login worker. Call once from InitWorker. Auto-login no-ops if no
+    /// TargetCharacter is configured in the launch context, or if the worker is
+    /// already running. Safe to call before the client window or char-select UI
+    /// exists — both workers wait for them.
     /// </summary>
     public static void Initialize()
     {
+        StartCharacterListCapturePoll();
+
         (_, _, string targetCharacter) = ReadLaunchContext();
         if (string.IsNullOrWhiteSpace(targetCharacter))
         {
@@ -175,6 +194,10 @@ internal static class CharacterCaptureHooks
                     RynthLog.Info($"CharacterCapture: Char-select up — driving direct auto-login for '{targetCharacter}'.");
                 }
 
+                // Save the account's character list before logging on, so the
+                // launcher cache is written even when auto-login is quick.
+                TryCaptureNativeCharacterList();
+
                 // Direct path: read AC's native CharacterSet and call LogOnCharacter.
                 // No packet required. Retries every tick if it didn't take.
                 if (CharacterManagementHooks.TryLogOnCharacter(
@@ -223,6 +246,79 @@ internal static class CharacterCaptureHooks
         finally
         {
             Interlocked.Exchange(ref _autoLoginPollStarted, 0);
+        }
+    }
+
+    private static void StartCharacterListCapturePoll()
+    {
+        if (Interlocked.Exchange(ref _characterListCapturePollStarted, 1) != 0)
+            return;
+
+        var thread = new Thread(CharacterListCapturePollLoop)
+        {
+            Name = "RynthCore.CharacterListCapture",
+            IsBackground = true
+        };
+        thread.Start();
+    }
+
+    private static void CharacterListCapturePollLoop()
+    {
+        try
+        {
+            while (!EngineLifecycle.IsShuttingDown)
+            {
+                Thread.Sleep(CharacterListCapturePollIntervalMs);
+
+                // In the world: no native reads at all.
+                if (LoginLifecycleHooks.HasObservedLoginComplete)
+                    continue;
+
+                if (!CharacterManagementHooks.TryGetCurrentMode(out int mode) || mode != CharacterManagementUIMode)
+                    continue;
+
+                TryCaptureNativeCharacterList();
+            }
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"CharacterCapture: Character-list capture poll crashed - {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _characterListCapturePollStarted, 0);
+        }
+    }
+
+    /// <summary>
+    /// Reads the character list from AC's native CharacterSet (char-select only)
+    /// and saves it to the launcher's character cache for this client's
+    /// account/server. Writes only when the list differs from the last one seen
+    /// in this process. Safe to call from any poll thread.
+    /// </summary>
+    private static void TryCaptureNativeCharacterList()
+    {
+        try
+        {
+            if (!CharacterManagementHooks.TryReadCharacterNames(out List<string> characters))
+                return;
+
+            lock (CharacterListCaptureLock)
+            {
+                string key = string.Join("\n", characters);
+                if (string.Equals(key, _lastCharacterListCaptureKey, StringComparison.Ordinal))
+                    return;
+
+                _lastCharacterListCaptureKey = key;
+                RynthLog.Info($"CharacterCapture: Native character set has {characters.Count} chars: {string.Join(", ", characters)}");
+
+                (string accountName, string serverName, _) = ReadLaunchContext();
+                SaveCharacterList(characters, accountName, serverName);
+            }
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"CharacterCapture: Native character-list capture failed - {ex.Message}");
         }
     }
 
@@ -461,7 +557,7 @@ internal static class CharacterCaptureHooks
             if (!string.IsNullOrWhiteSpace(accountName))
             {
                 CharacterCacheStore.Write(accountName, serverName, characters);
-                RynthLog.Verbose(
+                RynthLog.Info(
                     !string.IsNullOrWhiteSpace(serverName)
                         ? $"CharacterCapture: Saved {characters.Count} chars for '{accountName}' on '{serverName}'."
                         : $"CharacterCapture: Saved {characters.Count} chars for '{accountName}' (no server name in context).");

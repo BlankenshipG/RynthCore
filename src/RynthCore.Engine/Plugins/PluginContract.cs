@@ -596,6 +596,138 @@ internal struct RynthCoreAPI
     /// owned by the target plugin (valid until its next call on that export); copy it immediately. Requires
     /// API v66+. APPENDED-AT-END for ABI safety.</summary>
     public IntPtr GetPluginExportJsonFn;
+
+    // ── Vendor trading (v67) ─────────────────────────────────────────────
+    // Decal's WorldFilter.OpenVendor + Actions.VendorBuyAll/VendorSellAll, as
+    // stateless batch calls. Reads come from a snapshot the engine takes on AC's
+    // main thread when the server's vendor list (ApproachVendor 0x0062) is
+    // opened; buy/sell are queued and sent on AC's main thread through the
+    // client's own gmVendorUI::SendShopEvent (CM_Vendor::Event_Buy/Event_Sell).
+    // See Compatibility/VendorTrade.cs. APPENDED-AT-END for ABI safety.
+
+    /// <summary>Function pointer: int GetVendorInfo(VendorInfoNative* info)
+    /// Fills <paramref>info</paramref> for the vendor that is open right now. Returns 1
+    /// if a vendor is open, 0 if not (info is zeroed). Any thread. Requires API v67+.</summary>
+    public IntPtr GetVendorInfoFn;
+
+    /// <summary>Function pointer: int GetVendorItems(VendorItemNative* items, int maxCount)
+    /// Copies up to maxCount of the open vendor's items. Returns the TOTAL item count
+    /// (call with maxCount=0 to size a buffer), or -1 if no vendor is open. Any thread.
+    /// Requires API v67+.</summary>
+    public IntPtr GetVendorItemsFn;
+
+    /// <summary>Function pointer: uint VendorBuy(uint vendorId, VendorTradeEntryNative* entries, int count)
+    /// Buys (objectId, amount) pairs from the open vendor (vendorId 0 = whichever is open).
+    /// Returns a request id (&gt;0) once the request passes the snapshot checks and is
+    /// queued, or 0 if it was refused (reason in GetVendorTradeStatus and the log).
+    /// Funds, pack slots and burden are checked again on AC's main thread before the
+    /// packet goes out; poll GetVendorTradeStatus for the outcome. One transaction is in
+    /// flight at a time. Requires API v67+.</summary>
+    public IntPtr VendorBuyFn;
+
+    /// <summary>Function pointer: uint VendorSell(uint vendorId, uint* itemIds, int count)
+    /// Sells the player's own items (whole stacks) to the open vendor. Same return and
+    /// status contract as VendorBuy. Requires API v67+.</summary>
+    public IntPtr VendorSellFn;
+
+    /// <summary>Function pointer: int GetVendorTradeStatus(VendorTradeStatusNative* status)
+    /// Fills the state of the most recent VendorBuy/VendorSell request. Returns 1 if a
+    /// request has been made this session, 0 if not. Any thread. Requires API v67+.</summary>
+    public IntPtr GetVendorTradeStatusFn;
+}
+
+// ─── Vendor trading ABI structs (v67) ───────────────────────────────────
+// Blittable, Pack=4, 4-byte fields + fixed ANSI buffers only. Mirrored exactly
+// by RynthCore.PluginSdk/VendorTypes.cs. Never reorder or resize; add new calls
+// instead of growing these.
+
+/// <summary>The open vendor (VendorProfile from ApproachVendor 0x0062). 192 bytes.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal unsafe struct VendorInfoNative
+{
+    public uint VendorId;
+    /// <summary>Bumps every time the server (re)sends the vendor list: on open and after
+    /// each accepted buy/sell. Compare before/after a trade to see the refresh.</summary>
+    public uint Generation;
+    /// <summary>ShopMode passed to gmVendorUI::OpenVendor (raw client value).</summary>
+    public int ShopMode;
+    /// <summary>ITEM_TYPE mask of what the vendor buys.</summary>
+    public uint ItemTypes;
+    public int MinValue;
+    public int MaxValue;
+    public int DealsMagic;
+    /// <summary>Vendor pays value * BuyRate when you sell.</summary>
+    public float BuyRate;
+    /// <summary>Vendor charges value * SellRate when you buy.</summary>
+    public float SellRate;
+    /// <summary>WCID of the vendor's currency; 0 = pyreals.</summary>
+    public uint AltCurrencyWcid;
+    /// <summary>Alt currency count as the server reported it in the vendor list (-1 if none).</summary>
+    public int AltCurrencyServerCount;
+    /// <summary>Alt currency the engine counted in the player's packs (-1 = not counted yet).</summary>
+    public int AltCurrencyHave;
+    /// <summary>Player's pyreals (CoinValue), refreshed on AC's main thread; -1 unknown.</summary>
+    public int PlayerCoins;
+    public int ItemCount;
+    /// <summary>bit0 = trading available (client functions resolved and layout verified),
+    /// bit1 = a transaction is in flight.</summary>
+    public uint Flags;
+    public uint Reserved0;
+    public fixed byte Name[64];
+    public fixed byte AltCurrencyName[64];
+}
+
+/// <summary>One item on the vendor's list (ItemProfile + its PublicWeenieDesc). 120 bytes.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal unsafe struct VendorItemNative
+{
+    public uint ObjectId;
+    public uint Wcid;
+    public uint ItemType;
+    public uint IconId;
+    /// <summary>How many the vendor has; -1 = unlimited.</summary>
+    public int Amount;
+    public int StackSize;
+    public int MaxStackSize;
+    /// <summary>PWD value of the listed stack.</summary>
+    public int Value;
+    /// <summary>Value of one unit (Value / StackSize for stacks).</summary>
+    public int UnitValue;
+    /// <summary>What one unit costs the player here (server rounding; notes at 1.15x).</summary>
+    public int UnitPrice;
+    public int Burden;
+    /// <summary>bit0 unlimited, bit1 stackable, bit2 needs a container slot (pack/foci).</summary>
+    public uint Flags;
+    public uint Reserved0;
+    public uint Reserved1;
+    public fixed byte Name[64];
+}
+
+/// <summary>One buy line: vendor object id + how many.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal struct VendorTradeEntryNative
+{
+    public uint ObjectId;
+    public int Amount;
+}
+
+/// <summary>State of the most recent trade request. 160 bytes.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal unsafe struct VendorTradeStatusNative
+{
+    public uint RequestId;
+    /// <summary>1 queued, 2 sent (waiting for the server), 3 done, 4 refused (never sent).</summary>
+    public int State;
+    /// <summary>With State 3: 1 = server accepted (vendor list re-sent), 2 = server answered
+    /// without re-sending the list (refused: funds/busy/space), 3 = no answer (timed out).</summary>
+    public int Result;
+    public int IsBuy;
+    public uint VendorId;
+    public int EntryCount;
+    /// <summary>Buy: estimated cost (pyreals or alt currency). Sell: estimated payout.</summary>
+    public int Estimate;
+    public uint Reserved0;
+    public fixed byte Message[128];
 }
 
 
@@ -603,7 +735,7 @@ internal struct RynthCoreAPI
 /// <summary>Current API version. Bump when adding fields to RynthCoreAPI.</summary>
 internal static class PluginContractVersion
 {
-    public const uint Current = 66;
+    public const uint Current = 67;
 }
 
 internal static class ClientActionHookFlags
@@ -1055,3 +1187,18 @@ internal unsafe delegate int GetObjectDataIdPropertyCallbackDelegate(uint object
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate IntPtr GetPluginExportJsonCallbackDelegate(IntPtr pluginNameAnsi, IntPtr exportNameAnsi);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetVendorInfoCallbackDelegate(VendorInfoNative* info);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetVendorItemsCallbackDelegate(VendorItemNative* items, int maxCount);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate uint VendorBuyCallbackDelegate(uint vendorId, VendorTradeEntryNative* entries, int count);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate uint VendorSellCallbackDelegate(uint vendorId, uint* itemIds, int count);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetVendorTradeStatusCallbackDelegate(VendorTradeStatusNative* status);

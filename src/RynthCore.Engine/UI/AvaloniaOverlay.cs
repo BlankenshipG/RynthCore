@@ -68,6 +68,19 @@ internal static class AvaloniaOverlay
     // Same slot pattern as radar, for chat's own Ctrl-gated click-through
     // option (live-testing finding 2026-09-02).
     private static PhysicalRect? _chatPanelRect;
+    // Open Flyout / ContextMenu / ComboBox dropdowns, embedded in the overlay
+    // window's OverlayLayer (Win32PlatformOptions.OverlayPopups). They can hang
+    // past their panel's rect, so they're published separately and are always
+    // interactive. ToolTips are left out: they never take clicks.
+    private static PhysicalRect[] _popupRects = Array.Empty<PhysicalRect>();
+
+    /// <summary>
+    /// True while a light-dismiss popup (Flyout, ContextMenu, ComboBox
+    /// dropdown) is open. A click on the game world is never forwarded to
+    /// Avalonia, so its own light-dismiss can't see it; Win32Backend checks
+    /// this and calls <see cref="DismissLightDismissPopups"/> instead.
+    /// </summary>
+    internal static volatile bool HasOpenLightDismissPopup;
 
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
@@ -226,6 +239,13 @@ internal static class AvaloniaOverlay
 
         lock (HitTestLock)
         {
+            // Open popups sit above every panel and are always interactive.
+            foreach (PhysicalRect rect in _popupRects)
+            {
+                if (rect.Contains(gameClientX, gameClientY))
+                    return true;
+            }
+
             foreach (PhysicalRect rect in _panelRects)
             {
                 if (rect.Contains(gameClientX, gameClientY))
@@ -346,6 +366,37 @@ internal static class AvaloniaOverlay
             return;
 
         Dispatcher.UIThread.Post(() => _window?.OnCustomFrameSubmitted(width, height), DispatcherPriority.Render);
+    }
+
+    /// <summary>
+    /// Publish the physical bounds (game client pixels) of every open
+    /// interactive popup in the overlay window's OverlayLayer. Empty = none.
+    /// </summary>
+    internal static void PublishPopupRects(List<(double Left, double Top, double Width, double Height)> rects)
+    {
+        var snapshots = new PhysicalRect[rects.Count];
+        for (int i = 0; i < rects.Count; i++)
+        {
+            snapshots[i] = new PhysicalRect(
+                (int)Math.Round(rects[i].Left),
+                (int)Math.Round(rects[i].Top),
+                (int)Math.Round(rects[i].Left + rects[i].Width),
+                (int)Math.Round(rects[i].Top + rects[i].Height));
+        }
+
+        lock (HitTestLock)
+            _popupRects = snapshots;
+    }
+
+    /// <summary>
+    /// Close every open light-dismiss popup (Flyout, ContextMenu, dropdown).
+    /// Called from the game thread when the user clicks the game world while
+    /// one is open; the click itself still goes to AC.
+    /// </summary>
+    internal static void DismissLightDismissPopups()
+    {
+        HasOpenLightDismissPopup = false;
+        Dispatcher.UIThread.Post(() => _window?.CloseLightDismissPopups(), DispatcherPriority.Input);
     }
 
     internal static void PublishPanelRects(params (double Left, double Top, double Width, double Height)[] rects)
@@ -590,9 +641,11 @@ internal static class AvaloniaOverlay
         _window = null;
         _started = false;
         AvaloniaHwnd = IntPtr.Zero;
+        HasOpenLightDismissPopup = false;
         lock (HitTestLock)
         {
             _panelRects = Array.Empty<PhysicalRect>();
+            _popupRects = Array.Empty<PhysicalRect>();
             _barButtonRects = new Dictionary<string, PhysicalRect>(StringComparer.OrdinalIgnoreCase);
         }
     }
@@ -626,7 +679,19 @@ internal static class AvaloniaOverlay
                 [
                     Win32CompositionMode.RedirectionSurface
                 ],
-                ShouldRenderOnUIThread = true
+                ShouldRenderOnUIThread = true,
+                // Popup flash fix: without this every ToolTip, Flyout,
+                // ContextMenu and ComboBox dropdown opens as its own PopupRoot
+                // TopLevel (a native popup HWND), which the custom producer
+                // path rendered through the overlay's one render target - a
+                // popup-only frame reached the game and every docked panel
+                // vanished until the overlay window drew again. With
+                // OverlayPopups the popups live in the overlay window's
+                // OverlayLayer and are drawn in the same frame as the panels
+                // (no extra HWND, readback or focus change). The software
+                // fallback renders each TopLevel into its own framebuffer, so it
+                // keeps native popups as before.
+                OverlayPopups = UseCustomSkiaBridge,
             };
 
             if (UseCustomSkiaBridge)
@@ -1004,8 +1069,8 @@ internal class RynthOverlayWindow : Window
     // working) but the canvas RTT clips it; the host renders the Border into
     // its own RTT and pushes the pixels to the layered window via
     // UpdateLayeredWindow. This sidesteps OverlaySkiaPlatformGraphics
-    // entirely — the bridge is a singleton with one shared render target,
-    // so a real visible Avalonia Window would thrash that target.
+    // entirely - only the overlay window's render target reaches the game, so
+    // a real Avalonia Window would get a detached target and draw nowhere.
     private readonly Dictionary<string, FloatingPanelHost> _floatingPanels = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Control> _panelContents = new(StringComparer.OrdinalIgnoreCase);
     // Each floating panel parks its chrome Border past the right edge of
@@ -1176,6 +1241,11 @@ internal class RynthOverlayWindow : Window
         };
 
         AvaloniaOverlay.RegisterWindow(this);
+
+        // Popups are embedded in this window's OverlayLayer (OverlayPopups).
+        // Track them for hit-testing, game-world light-dismiss and the
+        // popup-flash diagnostics (see the "Embedded popups" section).
+        InstallPopupTracking();
 
         _captureTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(16), DispatcherPriority.Render, (_, _) =>
         {
@@ -3859,6 +3929,266 @@ internal class RynthOverlayWindow : Window
         AvaloniaOverlay.PublishChatPanelRect(chatRect);
     }
 
+    // ── Embedded popups ────────────────────────────────────────────────────
+    // With Win32PlatformOptions.OverlayPopups every Popup (ToolTip, Flyout,
+    // ContextMenu, ComboBox dropdown) is an OverlayPopupHost inside this
+    // window's OverlayLayer, so it is drawn in the same frame as the docked
+    // panels. Three things still need help from us:
+    //   1. hit-testing - a Flyout/menu can hang past its panel's rect, and
+    //      Win32Backend only forwards clicks that land on published rects;
+    //   2. light-dismiss - a click on the game world never reaches Avalonia;
+    //   3. diagnostics - log whether a popup ever rebuilt the overlay surface
+    //      or got its own TopLevel (the old "panel flash").
+
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+
+    private sealed class PopupTrack
+    {
+        public int Serial;
+        public string Kind = "";
+        public string Host = "";
+        public bool Suppressed;
+        public int SurfaceCreatesAtOpen;
+        public int DetachedTargetsAtOpen;
+    }
+
+    private const int PopupLogNormalLineBudget = 40;
+    private const int PopupLogAnomalyLineBudget = 200;
+    private static RynthOverlayWindow? _popupOwner;
+    private static bool _popupClassHandlerInstalled;
+    private readonly Dictionary<Avalonia.Controls.Primitives.Popup, PopupTrack> _openPopups = new();
+    private int _popupSerial;
+    private int _popupNormalLines;
+    private int _popupAnomalyLines;
+    private bool _popupRectsPublished;
+
+    private void InstallPopupTracking()
+    {
+        _popupOwner = this;
+        if (!_popupClassHandlerInstalled)
+        {
+            _popupClassHandlerInstalled = true;
+            Avalonia.Controls.Primitives.Popup.IsOpenProperty.Changed.AddClassHandler<Avalonia.Controls.Primitives.Popup, bool>(
+                (popup, e) => _popupOwner?.OnAnyPopupIsOpenChanged(popup, e.NewValue.GetValueOrDefault()));
+        }
+
+        // Fires after every layout pass: keeps popup hit rects in step with
+        // Flyout content changes and repositioning. Returns at once when no
+        // popup is open.
+        LayoutUpdated += (_, _) => RefreshPopupHitRects();
+    }
+
+    private void OnAnyPopupIsOpenChanged(Avalonia.Controls.Primitives.Popup popup, bool isOpen)
+    {
+        try
+        {
+            if (isOpen)
+            {
+                if (_openPopups.ContainsKey(popup))
+                    return;
+
+                var track = new PopupTrack
+                {
+                    Serial = ++_popupSerial,
+                    Kind = DescribePopup(popup),
+                    Host = popup.Host?.GetType().Name ?? "none",
+                    SurfaceCreatesAtOpen = OverlaySkiaRenderTarget.SurfaceCreateCount,
+                    DetachedTargetsAtOpen = OverlaySkiaGpuContext.DetachedTargetCount,
+                };
+                _openPopups[popup] = track;
+                UpdateLightDismissFlag();
+
+                // A ToolTip for a control inside a popped-out panel: that
+                // control lives in the off-bounds canvas strip, so the embedded
+                // tooltip would be clamped onto the edge of the in-game overlay,
+                // nowhere near the floating window. Don't show it.
+                if (popup.Child is ToolTip && popup.PlacementTarget is Control tipTarget && !IsInsideOverlayClientArea(tipTarget))
+                {
+                    track.Suppressed = true;
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        try { ToolTip.SetIsOpen(tipTarget, false); } catch { }
+                    }, DispatcherPriority.Send);
+                }
+
+                Dispatcher.UIThread.Post(() =>
+                {
+                    RefreshPopupHitRects();
+                    LogPopupOpened(track);
+                }, DispatcherPriority.Background);
+            }
+            else
+            {
+                if (!_openPopups.Remove(popup, out PopupTrack? track))
+                    return;
+
+                UpdateLightDismissFlag();
+                RefreshPopupHitRects();
+
+                // The old flash rebuilt the overlay surface on the window's next
+                // frame after the popup closed, so check a moment later.
+                DispatcherTimer.RunOnce(() => LogPopupClosed(track), TimeSpan.FromMilliseconds(1000), DispatcherPriority.Background);
+            }
+        }
+        catch (Exception ex)
+        {
+            RynthLog.UI($"OverlayPopup: tracking threw {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static string DescribePopup(Avalonia.Controls.Primitives.Popup popup)
+    {
+        string child = popup.Child?.GetType().Name ?? "empty";
+        string? owner = popup.TemplatedParent?.GetType().Name;
+        return owner != null ? $"{owner}/{child}" : child;
+    }
+
+    private bool IsInsideOverlayClientArea(Control control)
+    {
+        Point? origin = control.TranslatePoint(default, this);
+        if (origin == null)
+            return true;
+
+        double width = Bounds.Width > 0 ? Bounds.Width : Width;
+        double height = Bounds.Height > 0 ? Bounds.Height : Height;
+        return origin.Value.X < width && origin.Value.Y < height &&
+               origin.Value.X + control.Bounds.Width > 0 && origin.Value.Y + control.Bounds.Height > 0;
+    }
+
+    private void UpdateLightDismissFlag()
+    {
+        bool any = false;
+        foreach (Avalonia.Controls.Primitives.Popup popup in _openPopups.Keys)
+        {
+            if (popup.IsLightDismissEnabled)
+            {
+                any = true;
+                break;
+            }
+        }
+
+        AvaloniaOverlay.HasOpenLightDismissPopup = any;
+    }
+
+    /// <summary>
+    /// Close open light-dismiss popups because the user clicked the game world.
+    /// Popup.Close is the same call Avalonia's own light-dismiss makes, so
+    /// Flyout/ContextMenu/ComboBox state stays in sync.
+    /// </summary>
+    internal void CloseLightDismissPopups()
+    {
+        foreach (Avalonia.Controls.Primitives.Popup popup in _openPopups.Keys.ToArray())
+        {
+            if (!popup.IsOpen || !popup.IsLightDismissEnabled)
+                continue;
+
+            try { popup.Close(); }
+            catch (Exception ex) { RynthLog.UI($"OverlayPopup: dismiss threw {ex.GetType().Name}: {ex.Message}"); }
+        }
+
+        UpdateLightDismissFlag();
+    }
+
+    private void RefreshPopupHitRects()
+    {
+        if (_openPopups.Count == 0)
+        {
+            if (_popupRectsPublished)
+            {
+                AvaloniaOverlay.PublishPopupRects(new List<(double, double, double, double)>());
+                _popupRectsPublished = false;
+            }
+            return;
+        }
+
+        float scale = (float)GetEffectiveRenderScale();
+        var rects = new List<(double Left, double Top, double Width, double Height)>(_openPopups.Count);
+        List<Avalonia.Controls.Primitives.Popup>? stale = null;
+        foreach ((Avalonia.Controls.Primitives.Popup popup, PopupTrack track) in _openPopups)
+        {
+            if (!popup.IsOpen)
+            {
+                (stale ??= new()).Add(popup);
+                continue;
+            }
+
+            // ToolTips never take clicks; a click over one must reach AC.
+            if (track.Suppressed || popup.Child is ToolTip)
+                continue;
+
+            // OverlayPopupHost is a control in this window's OverlayLayer. A
+            // native PopupRoot (not expected) would be its own root: skipped.
+            if (popup.Host is not Visual host || !host.IsVisible)
+                continue;
+
+            Point? origin = host.TranslatePoint(default, _desktopCanvas);
+            if (origin == null || host.Bounds.Width <= 0 || host.Bounds.Height <= 0)
+                continue;
+
+            rects.Add((origin.Value.X * scale, origin.Value.Y * scale, host.Bounds.Width * scale, host.Bounds.Height * scale));
+        }
+
+        if (stale != null)
+        {
+            foreach (Avalonia.Controls.Primitives.Popup popup in stale)
+                _openPopups.Remove(popup);
+            UpdateLightDismissFlag();
+        }
+
+        AvaloniaOverlay.PublishPopupRects(rects);
+        _popupRectsPublished = rects.Count > 0;
+    }
+
+    private bool TakePopupLogLine(bool anomaly)
+    {
+        if (anomaly)
+            return _popupAnomalyLines++ < PopupLogAnomalyLineBudget;
+
+        if (_popupNormalLines < PopupLogNormalLineBudget)
+        {
+            _popupNormalLines++;
+            return true;
+        }
+
+        if (_popupNormalLines == PopupLogNormalLineBudget)
+        {
+            _popupNormalLines++;
+            RynthLog.UI("OverlayPopup: normal popup open/close lines muted for this session; anomalies are still logged.");
+        }
+        return false;
+    }
+
+    private void LogPopupOpened(PopupTrack track)
+    {
+        // Expected: host=OverlayPopupHost (drawn in the overlay frame). A
+        // PopupRoot here means a native popup TopLevel - the flash path.
+        bool anomaly = !track.Suppressed && track.Host != "OverlayPopupHost";
+        if (!TakePopupLogLine(anomaly))
+            return;
+
+        IntPtr game = Win32Backend.GameHwnd;
+        string fg = game == IntPtr.Zero ? "?" : GetForegroundWindow() == game ? "game" : "other";
+        RynthLog.UI(
+            $"OverlayPopup: open #{track.Serial} {track.Kind} host={track.Host}" +
+            (track.Suppressed ? " (tooltip of a popped-out panel - not shown)" : "") +
+            $" surfaceCreates={track.SurfaceCreatesAtOpen} detachedTargets={track.DetachedTargetsAtOpen} foreground={fg}.");
+    }
+
+    private void LogPopupClosed(PopupTrack track)
+    {
+        int rebuilds = OverlaySkiaRenderTarget.SurfaceCreateCount - track.SurfaceCreatesAtOpen;
+        int detached = OverlaySkiaGpuContext.DetachedTargetCount - track.DetachedTargetsAtOpen;
+        bool anomaly = rebuilds != 0 || detached != 0;
+        if (!TakePopupLogLine(anomaly))
+            return;
+
+        IntPtr game = Win32Backend.GameHwnd;
+        string fg = game == IntPtr.Zero ? "?" : GetForegroundWindow() == game ? "game" : "other";
+        RynthLog.UI(
+            $"OverlayPopup: close #{track.Serial} {track.Kind} surfaceRebuilds=+{rebuilds} detachedTargets=+{detached} foreground={fg}" +
+            (anomaly ? " - overlay surface was rebuilt or a popup TopLevel appeared (panel flash / resize)." : " - no flash."));
+    }
+
     private void QueueCapture()
     {
         if (AvaloniaOverlay.ShouldUseCustomSkiaProducer || _captureQueued)
@@ -3882,6 +4212,16 @@ internal class RynthOverlayWindow : Window
     /// </summary>
     internal void TickFloatingPanels()
     {
+        // The UI hides between characters: popped-out panels (and a floating bar) are
+        // real windows, so they're hidden outright while not in the world rather than
+        // left sitting over character select. SetShown only acts on a change.
+        bool inWorld = Compatibility.LoginLifecycleHooks.HasObservedLoginComplete;
+        foreach (FloatingPanelHost host in _floatingPanels.Values)
+            host.SetShown(inWorld);
+        _floatingBar?.SetShown(inWorld);
+        if (!inWorld)
+            return;
+
         if (_floatingPanels.Count > 0)
         {
             foreach (FloatingPanelHost host in _floatingPanels.Values)
@@ -3916,9 +4256,11 @@ internal class RynthOverlayWindow : Window
 /// forwarded to the off-screen Avalonia HWND with translated coords so the
 /// panel's buttons/scrollbars/etc. behave the same as when docked.
 ///
-/// This deliberately does NOT use Avalonia's Window — a second Avalonia
-/// top-level routes through OverlaySkiaPlatformGraphics' singleton render
-/// target and thrashes the in-AC capture (the original "flashing" bug).
+/// This deliberately does NOT use Avalonia's Window. A second Avalonia
+/// top-level used to share OverlaySkiaPlatformGraphics' render target and
+/// blank the in-AC capture (the original "flashing" bug); it now gets a
+/// detached target (see OverlaySkiaGpuContext.TryCreateRenderTarget), so it
+/// would draw nowhere at all.
 /// </summary>
 internal sealed unsafe class FloatingPanelHost : IDisposable
 {
@@ -4156,6 +4498,23 @@ internal sealed unsafe class FloatingPanelHost : IDisposable
     /// RynthOverlayWindow's _captureTimer so render and panel state stay in
     /// sync. Skips the heavy work if the panel hasn't been arranged yet.
     /// </summary>
+    // Created shown (the constructor shows the window); SetShown tracks changes from there.
+    private volatile bool _windowShown = true;
+
+    /// <summary>
+    /// Hide or show the popped-out window (the UI hides between characters). Only acts
+    /// on a change; the window belongs to AC's thread, so the call is marshalled there.
+    /// </summary>
+    internal void SetShown(bool shown)
+    {
+        if (_disposed || _layered.Hwnd == IntPtr.Zero || _windowShown == shown) return;
+        _windowShown = shown;
+        ImGuiBackend.Win32Backend.RunOnGameThread(() =>
+        {
+            if (shown) _layered.Show(); else _layered.Hide();
+        });
+    }
+
     public void Tick()
     {
         if (_disposed || _layered.Hwnd == IntPtr.Zero) return;

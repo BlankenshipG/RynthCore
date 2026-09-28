@@ -58,9 +58,9 @@ internal sealed class AgentConfig
     /// netsh urlacl or running elevated). Must end in '/'.</summary>
     [JsonPropertyName("ServePrefix")] public string ServePrefix { get; set; } = "http://127.0.0.1:8740/";
 
-    /// <summary>Optional shared secret. When set, GET /status requires
-    /// <c>Authorization: Bearer &lt;token&gt;</c> or <c>?token=</c>. Empty = open
-    /// (fine for a 127.0.0.1 / private-tailnet bind).</summary>
+    /// <summary>Shared secret, required when <see cref="ServeHttp"/> is on: every route but
+    /// /healthz needs <c>Authorization: Bearer &lt;token&gt;</c> or <c>?token=</c>. Empty =
+    /// the server stays off, on any bind (it can stream the screens and click in them).</summary>
     [JsonPropertyName("ServeToken")] public string ServeToken { get; set; } = "";
 
     /// <summary>When true, also write the latest rollup to

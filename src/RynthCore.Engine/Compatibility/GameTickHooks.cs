@@ -100,6 +100,9 @@ internal static class GameTickHooks
         // wedges before the new generation's EndScene hook installs.
         try { MainThreadHangWatchdog.MainThreadBeatNoFrame(); }
         catch { }
+        // Diag (diag/logoff-origin): 1 Hz sample of the client's own input-idle clock.
+        try { LogoffOriginProbe.SampleIdleOnGameThread(); }
+        catch { }
         // Drain any queued cast BEFORE AC's game-logic tick: SelectItem sets AC's
         // selection and the cast initiates, then THIS SAME UseTime call processes it to
         // completion — mimicking AC's natural input -> UseTime flow. (Draining AFTER the

@@ -190,6 +190,9 @@ public static class EntryPoint
     private static string? GetEngineDirectory() =>
         GetEngineModulePath() is { } path ? Path.GetDirectoryName(path) : null;
 
+    /// <summary>Folder of the loaded engine DLL (Runtime\, or Runtime\.engine_loads\ on a staged load).</summary>
+    internal static string? EngineDirectory => GetEngineDirectory();
+
     /// <summary>Full path of the engine DLL actually loaded (the loader's staged copy on hot reload).</summary>
     private static unsafe string? GetEngineModulePath()
     {
@@ -533,6 +536,7 @@ public static class EntryPoint
             // scenarios where keyboard input isn't reaching AC's chat box.
             Step("chat file dispatcher", ChatFileDispatcher.Start);
             Step("logout lifecycle hooks", LogoutLifecycleHooks.Initialize);
+            Step("logoff origin probe", LogoffOriginProbe.Initialize);
             Step("session state registry", SessionStateRegistry.Initialize);
             Step("UI lifecycle hooks", UiLifecycleHooks.Initialize);
             Step("logo bypass", LogoBypassHooks.Start);

@@ -185,6 +185,44 @@ internal static class CharacterManagementHooks
     }
 
     /// <summary>
+    /// Reads the character names in AC's native CharacterSet, in slot order
+    /// (the order char-select lists them). Read-only: never calls
+    /// LogOnCharacter. Only reads while CharacterManagementUI is the current
+    /// mode, so the native set is never touched in the world. Returns false
+    /// (empty list) when unbound, not at char-select, or the set isn't filled yet.
+    /// </summary>
+    public static bool TryReadCharacterNames(out List<string> names)
+    {
+        names = new List<string>();
+
+        if (!EnsureBound())
+            return false;
+
+        if (!TryGetCurrentMode(out int mode) || mode != CharacterManagementUI)
+            return false;
+
+        IntPtr charSetPtr = GetCharacterSetPointer();
+        if (charSetPtr == IntPtr.Zero)
+            return false;
+
+        for (int index = 0; index < MaxCharacterSlots; index++)
+        {
+            IntPtr identityPtr = _characterSetGetIdentity!(charSetPtr, index);
+            if (identityPtr == IntPtr.Zero)
+                continue;
+
+            string? name = ReadAnsiString(_characterSetGetName!(charSetPtr, index));
+            uint avatarId = _characterSetGetGid!(charSetPtr, index);
+            if (string.IsNullOrWhiteSpace(name) || avatarId == 0)
+                continue;
+
+            names.Add(name.Trim());
+        }
+
+        return names.Count > 0;
+    }
+
+    /// <summary>
     /// Returns the count of populated character slots in AC's native
     /// CharacterSet (slots where GetIdentity returns non-null). Used by the
     /// click fallback in CharacterCaptureHooks when the 0xF658 packet parser

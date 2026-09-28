@@ -98,7 +98,12 @@ internal static class HeartbeatLogger
                     // Soak health: rec climbs during combat/loot; fcl stays flat.
                     long rec = 0, fcl = 0;
                     try { rec = BusyCountHooks.ReconcileCount; fcl = BusyCountHooks.ForceClearCount; } catch { }
-                    RynthLog.Info($"hb #{tick} up={(nowMs - startMs) / 1000}s fps={fps} plug={pps}/s ws={wsMb}MB login={login} qd={dropped} rec={rec} fcl={fcl}");
+                    // idle = the client's own input-idle clock (diag/logoff-origin); the retail
+                    // client logs itself off past InactiveTimeBeforeLogout. Omitted when unknown.
+                    int idle = -1;
+                    try { idle = LogoffOriginProbe.IdleSecondsForHeartbeat; } catch { }
+                    string idleField = idle >= 0 ? $" idle={idle}s" : "";
+                    RynthLog.Info($"hb #{tick} up={(nowMs - startMs) / 1000}s fps={fps} plug={pps}/s ws={wsMb}MB login={login} qd={dropped} rec={rec} fcl={fcl}{idleField}");
 
                     // Cache this client's live metrics so the GetEngineStatusJson host bridge can serve
                     // them to a plugin (the RynthRemote status export). No file write, no networking.

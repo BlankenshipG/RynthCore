@@ -23,6 +23,7 @@ internal static class EngineSettings
     private static bool _enableImGuiBackend = true;
     private static bool _enableHangMinidump = true;
     private static bool _drawCustomVitalBars = true;
+    private static bool _preventIdleLogoff = true;
     private static bool _loaded;
 
     public static IReadOnlyList<string> PluginPaths
@@ -178,6 +179,20 @@ internal static class EngineSettings
         }
     }
 
+    /// <summary>When true (default), the engine keeps the retail client's idle clock fresh
+    /// while in the world, so ClientUISystem::UseTime's 20-minute idle auto-logoff
+    /// (InactiveTimeBeforeLogout) can't log off a character a bot is playing: the bot's
+    /// actions aren't keyboard/mouse input, so the client counted it as idle. Set false in
+    /// engine.json to get the retail behaviour back.</summary>
+    public static bool PreventIdleLogoff
+    {
+        get
+        {
+            EnsureLoaded();
+            return _preventIdleLogoff;
+        }
+    }
+
     public static void AddPluginPath(string path)
     {
         EnsureLoaded();
@@ -287,6 +302,12 @@ internal static class EngineSettings
             {
                 _drawCustomVitalBars = cvbEl.GetBoolean();
             }
+
+            if (doc.RootElement.TryGetProperty("PreventIdleLogoff", out var pilEl) &&
+                (pilEl.ValueKind == JsonValueKind.True || pilEl.ValueKind == JsonValueKind.False))
+            {
+                _preventIdleLogoff = pilEl.GetBoolean();
+            }
         }
         catch (Exception ex)
         {
@@ -319,6 +340,7 @@ internal static class EngineSettings
                 w.WriteBoolean("EnableImGuiBackend", _enableImGuiBackend);
                 w.WriteBoolean("EnableHangMinidump", _enableHangMinidump);
                 w.WriteBoolean("DrawCustomVitalBars", _drawCustomVitalBars);
+                w.WriteBoolean("PreventIdleLogoff", _preventIdleLogoff);
                 w.WriteEndObject();
             }
             File.WriteAllBytes(SettingsPath, ms.ToArray());

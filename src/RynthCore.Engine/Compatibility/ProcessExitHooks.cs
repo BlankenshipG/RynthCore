@@ -424,7 +424,7 @@ internal static class ProcessExitHooks
         }
     }
 
-    private static string ResolveModule(IntPtr address, out int rva)
+    internal static string ResolveModule(IntPtr address, out int rva)
     {
         rva = 0;
         try

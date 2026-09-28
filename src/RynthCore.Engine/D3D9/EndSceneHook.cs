@@ -334,9 +334,13 @@ internal static class EndSceneHook
             // is visible even when ImGui per-frame work is disabled. Driven
             // here exclusively — EngineFrameController.OnEndScene intentionally
             // does NOT call it (avoids double-blit / TryConsume races).
+            // The UI hides between characters: nothing is drawn at character select or
+            // on the way out, and it's back the moment login completes (an engine
+            // reload synthesises login for a player already in the world).
             try
             {
-                OverlayTextureRenderer.Render(pDevice);
+                if (Compatibility.LoginLifecycleHooks.HasObservedLoginComplete)
+                    OverlayTextureRenderer.Render(pDevice);
             }
             catch (Exception ovEx)
             {

@@ -936,6 +936,7 @@ internal static class ClientHelperHooks
                 return false;
 
             RynthLog.Verbose($"Compat: InvokeParser text='{line}'");
+            LogoffOriginProbe.RecordChat("InvokeChatParser", line);
             return ChatCommandDispatcher.Dispatch(line);
         }
         catch (Exception ex)

@@ -338,6 +338,7 @@ internal static class ChatCallbackHooks
         try
         {
             string? line = ReadWidePString(text);
+            LogoffOriginProbe.RecordChat($"AC OutgoingChat src={commandSource}", line);
 
             // Capture the chat-manager 'this' + command source from the live submit
             // so ChatCommandDispatcher can re-invoke this function directly later.
@@ -568,6 +569,7 @@ internal static class ChatCallbackHooks
         foreach (char c in line)
             if (c < 0x20 && c != '\t')
                 return false; // never feed AC control chars
+        LogoffOriginProbe.RecordChat("OutgoingChat direct", line);
 
         try
         {

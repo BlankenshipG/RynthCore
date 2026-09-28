@@ -21,10 +21,14 @@
     RynthCore client is closed.
 
 .EXAMPLE
-    .\Publish-Update.ps1 -Version 2026.9.27.1 -Notes "Arrow crafting covers every head type."
+    .\Publish-Update.ps1 -Version 2026.9.28.1 -Changes "Arrow crafting covers every head type.", "The Tell button works on players too."
 #>
 param(
     [Parameter(Mandatory)][string]$Version,
+    # Release notes for players, one line per change: they become this release's entry in
+    # downloads/rynth/releases.json, which the "What's new" list on aelrynth.com/rynth.html shows.
+    [string[]]$Changes = @(),
+    # Short text the launcher shows next to an available update; defaults to the changes.
     [string]$Notes = "",
     [switch]$DryRun,        # build + sign + verify, upload nothing
     [switch]$AllowDirty,    # publish with uncommitted changes (don't)
@@ -69,6 +73,9 @@ Step "Checking preconditions"
 $p = $Version.Split('.')
 if ($p.Count -ne 4 -or ($p | Where-Object { $_ -notmatch '^\d+$' })) { throw "-Version must be yyyy.m.d.n, got '$Version'" }
 $release = [int]$p[0] * 1000000 + [int]$p[1] * 10000 + [int]$p[2] * 100 + [int]$p[3]
+if ($Changes.Count -eq 0 -and $Notes) { $Changes = @($Notes -split ';\s*' | Where-Object { $_ }) }
+if ($Changes.Count -eq 0) { throw "Give -Changes: the release notes players see on aelrynth.com/rynth.html (one string per change)." }
+if (-not $Notes) { $Notes = $Changes -join " " }
 
 $trusted = [regex]::Matches((Get-Content $TrustFile -Raw), '"([A-Za-z0-9+/=]{80,})"') | ForEach-Object { $_.Groups[1].Value }
 if ($trusted.Count -lt 2) {
@@ -183,6 +190,15 @@ Set-Content "$rel\update.payload.json" ($manifest | ConvertTo-Json -Depth 5) -En
 if (-not (Test-Envelope "$rel\update.json" $trusted)) { throw "Signed feed does not verify against UpdateTrust.cs" }
 Write-Host "  verified against the launcher's trusted keys"
 
+# Release notes: this release on top of the live list (a re-run replaces its own entry).
+$history = @()
+try { $history = @((Invoke-RestMethod "$BaseUrl/releases.json" -TimeoutSec 20).releases) }
+catch [Microsoft.PowerShell.Commands.HttpResponseException] { Write-Host "  no releases.json yet — starting one" }
+$entry = [ordered]@{ version = $Version; date = (Get-Date -Format "yyyy-MM-dd"); changes = @($Changes) }
+$releaseNotes = [ordered]@{ releases = @($entry) + @($history | Where-Object { $_ -and $_.version -ne $Version }) }
+Set-Content "$rel\releases.json" ($releaseNotes | ConvertTo-Json -Depth 5) -Encoding utf8NoBOM
+Write-Host "  releases.json: $($releaseNotes.releases.Count) release(s), $($Changes.Count) change(s) in this one"
+
 if ($DryRun) {
     Write-Host ""; Write-Host "Dry run: release built and signed in $rel; nothing uploaded." -ForegroundColor Yellow
     return
@@ -220,6 +236,11 @@ scp -q "$rel\update.json" "${SshHost}:$RemoteDir/.update.json.new"
 if ($LASTEXITCODE -ne 0) { throw "scp of update.json failed" }
 ssh $SshHost "mv -f '$RemoteDir/.update.json.new' '$RemoteDir/update.json'"
 if ($LASTEXITCODE -ne 0) { throw "Publishing update.json failed" }
+# The release notes follow the feed, so the page never lists a release launchers can't get yet.
+scp -q "$rel\releases.json" "${SshHost}:$RemoteDir/.releases.json.new"
+if ($LASTEXITCODE -ne 0) { throw "scp of releases.json failed" }
+ssh $SshHost "mv -f '$RemoteDir/.releases.json.new' '$RemoteDir/releases.json'"
+if ($LASTEXITCODE -ne 0) { throw "Publishing releases.json failed" }
 
 # ── 5. Verify ────────────────────────────────────────────────────────────────
 Step "Verifying the live feed"
@@ -232,4 +253,4 @@ try {
 
 Write-Host ""
 Write-Host "Published RynthCore $Version (release $release)." -ForegroundColor Green
-Write-Host "Launchers pick it up at their next check. Still by hand: the site text (projects.html) and the public source snapshots."
+Write-Host "Launchers pick it up at their next check, and aelrynth.com/rynth.html lists it. Still by hand: the public source snapshots."

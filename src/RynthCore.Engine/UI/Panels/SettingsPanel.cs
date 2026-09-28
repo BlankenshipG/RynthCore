@@ -61,7 +61,7 @@ internal static class SettingsPanel
 
     private static readonly string[] Tabs =
         { "Display", "UI", "Misc", "Recharge", "Melee Combat", "Spell Combat",
-          "Ranges", "Navigation", "Buffing", "Crafting", "Looting" };
+          "Ranges", "Navigation", "Buffing", "Crafting", "Looting", "Vendoring" };
 
     private static readonly string[] AttackHeights   = { "Low", "Medium", "High" };
     private static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
@@ -93,11 +93,27 @@ internal static class SettingsPanel
         public bool EnableRaycasting { get; set; }
         public bool UseArcs { get; set; }
         public float BowArcVelocity { get; set; } = 25f;
+        public float MissileArcClearance { get; set; } = 0.5f;
+        // Vendoring (RynthAi AutoVendor; defaults match LegacyUiSettings)
+        public bool AutoVendorEnabled { get; set; }
+        public bool AutoVendorEnableBuying { get; set; } = true;
+        public bool AutoVendorEnableSelling { get; set; } = true;
+        public bool AutoVendorTestMode { get; set; } = true;
+        public bool AutoVendorThink { get; set; }
+        public bool AutoVendorShowMerchantInfo { get; set; } = true;
+        public bool AutoVendorOnlyFromMainPack { get; set; }
+        public int AutoVendorTries { get; set; } = 4;
+        public int AutoVendorTriesTime { get; set; } = 5000;
+        public bool LosDebugLog { get; set; }
         public float CrossbowArcVelocity { get; set; } = 40f;
         public float AtlatlArcVelocity { get; set; } = 22f;
         public float MagicArcVelocity { get; set; } = 25f;
         public int BlacklistAttempts { get; set; } = 3;
         public int BlacklistTimeoutSec { get; set; } = 30;
+        // Not shown in this panel, but carried so a save doesn't send them missing:
+        // RynthAi applied the missing value as 0 on every panel click (2026-09-27).
+        public int BlacklistCastSettleMs { get; set; } = 1500;
+        public int MonsterDisengageRange { get; set; }
         public int TargetNoProgressTimeoutSec { get; set; }
         public int GiveQueueIntervalMs { get; set; } = 150;
         // Recharge
@@ -155,6 +171,7 @@ internal static class SettingsPanel
         public float NavDeadZone { get; set; } = 4f;
         public float NavSweepMult { get; set; } = 2.5f;
         public float NavLookaheadYards { get; set; } = 4f;
+        public float NavShortcutYards { get; set; } = 1f;
         public float NavTurnRateDegPerSec { get; set; } = 270f;
         public float NavTier1TurnSpeed { get; set; } = 3f;
         public float PostPortalDelaySec { get; set; } = 4f;
@@ -168,6 +185,7 @@ internal static class SettingsPanel
         public bool EnableBuffing { get; set; } = true;
         public bool RebuffWhenIdle { get; set; }
         public int RebuffSecondsRemaining { get; set; } = 300;
+        public int RebuffTopOffSecondsRemaining { get; set; } = 1200;
         public int BuffMinSkillLevelTier1 { get; set; } = 35;
         public int BuffMinSkillLevelTier2 { get; set; } = 85;
         public int BuffMinSkillLevelTier3 { get; set; } = 135;
@@ -480,6 +498,7 @@ internal static class SettingsPanel
             case 8: BuildBuffingTab(state, panel, picker); break;
             case 9: BuildCraftingTab(state, panel, picker); break;
             case 10: BuildLootingTab(state, panel, picker); break;
+            case 11: BuildVendoringTab(state, panel, picker); break;
         }
     }
 
@@ -558,14 +577,20 @@ internal static class SettingsPanel
         p.Children.Add(SectionHeader("Missile Arc Velocities (m/s)"));
         p.Children.Add(BoolRow("Use Arcs for Missile LoS", state.Data.UseArcs,
             v => { state.Data.UseArcs = v; Push(state); state.Rebuild?.Invoke(); },
-            "When off, all missile LoS checks are linear (eye-to-eye)."));
+            "A missile target must pass both the straight line and the real arrow arc, ceilings included (dungeons too).\nWhen off, all missile LoS checks are linear (eye-to-eye)."));
         if (state.Data.UseArcs)
         {
             p.Children.Add(FloatRow("Bow",      state.Data.BowArcVelocity,      10f, 60f, 0.5f, v => { state.Data.BowArcVelocity = v; Push(state); }, "Bow projectile speed (m/s). Lower = higher arc."));
             p.Children.Add(FloatRow("Crossbow", state.Data.CrossbowArcVelocity, 10f, 80f, 0.5f, v => { state.Data.CrossbowArcVelocity = v; Push(state); }));
             p.Children.Add(FloatRow("Atlatl",   state.Data.AtlatlArcVelocity,   10f, 60f, 0.5f, v => { state.Data.AtlatlArcVelocity = v; Push(state); }));
             p.Children.Add(FloatRow("Magic Arc", state.Data.MagicArcVelocity,   10f, 60f, 0.5f, v => { state.Data.MagicArcVelocity = v; Push(state); }));
+            p.Children.Add(FloatRow("Arc Clearance (m)", state.Data.MissileArcClearance, 0f, 3f, 0.1f,
+                v => { state.Data.MissileArcClearance = MathF.Max(0f, v); Push(state); },
+                "Extra headroom the arc must have at mid-flight. Raise it if arrows still hit ceilings; lower it if reachable mobs get skipped."));
         }
+        p.Children.Add(BoolRow("LoS Debug Log", state.Data.LosDebugLog,
+            v => { state.Data.LosDebugLog = v; Push(state); },
+            "Log each blocked missile target and why (arc peak, where it hits) to the RynthCore log. /ra lostest bow tests the selected mob."));
 
         p.Children.Add(Spacer());
         p.Children.Add(SectionHeader("Monster Blacklist"));
@@ -772,6 +797,9 @@ internal static class SettingsPanel
         p.Children.Add(FloatRow("Lookahead (yd)", state.Data.NavLookaheadYards, 0f, 30f, 0.5f,
             v => { state.Data.NavLookaheadYards = MathF.Max(0f, v); Push(state); },
             "Within this distance of a waypoint, blend the aim point toward the next one to cut corners smoothly. 0 = off."));
+        p.Children.Add(FloatRow("Shortcut Tolerance (yd)", state.Data.NavShortcutYards, 0f, 10f, 0.5f,
+            v => { state.Data.NavShortcutYards = MathF.Max(0f, v); Push(state); },
+            "On reaching a waypoint, skip ahead only past points that all lie within this distance of the straight line to the new target. 0 = visit every waypoint."));
         p.Children.Add(FloatRow("Turn Rate (deg/s)", state.Data.NavTurnRateDegPerSec, 30f, 720f, 15f,
             v => { state.Data.NavTurnRateDegPerSec = v; Push(state); },
             "Legacy / Mode 0 heading-servo max turn speed. Ignored by Tier 1 and Tier 2."));
@@ -804,6 +832,9 @@ internal static class SettingsPanel
         p.Children.Add(IntRow("Rebuff With (seconds left)", state.Data.RebuffSecondsRemaining, 30, 1800, 30,
             v => { state.Data.RebuffSecondsRemaining = v; Push(state); },
             "Recast a self buff when its remaining duration drops below this value.\nDefault 300 (5 minutes). Lower values rebuff more eagerly."));
+        p.Children.Add(IntRow("Also Refresh Under (seconds left)", state.Data.RebuffTopOffSecondsRemaining, 30, 3600, 60,
+            v => { state.Data.RebuffTopOffSecondsRemaining = v; Push(state); },
+            "When a buff is due, also recast every other buff with less than this much time left,\nso they land together. Buffs with more time are left alone. Default 1200 (20 minutes).\nAt or below 'Rebuff With', only the expiring buff is recast."));
 
         p.Children.Add(Spacer());
         p.Children.Add(SectionHeader("Buff Difficulty (Min Buffed Skill)"));
@@ -857,6 +888,43 @@ internal static class SettingsPanel
                 });
             }
         }
+    }
+
+    private static void BuildVendoringTab(PanelState state, StackPanel p, PickerState picker)
+    {
+        p.Children.Add(SectionHeader("AutoVendor"));
+        p.Children.Add(BoolRow("Enabled", state.Data.AutoVendorEnabled,
+            v => { state.Data.AutoVendorEnabled = v; Push(state); },
+            "Buy and sell by a loot profile when a vendor opens (and allow /ub autovendor).\nProfile: <Vendor Name>.utl, else default.utl, in the AutoVendor folder."));
+        p.Children.Add(BoolRow("Test Mode (only print what it would do)", state.Data.AutoVendorTestMode,
+            v => { state.Data.AutoVendorTestMode = v; Push(state); },
+            "Lists what would be bought and sold without trading. Leave this on until the lists look right."));
+        p.Children.Add(BoolRow("Buy", state.Data.AutoVendorEnableBuying,
+            v => { state.Data.AutoVendorEnableBuying = v; Push(state); }));
+        p.Children.Add(BoolRow("Sell", state.Data.AutoVendorEnableSelling,
+            v => { state.Data.AutoVendorEnableSelling = v; Push(state); }));
+        p.Children.Add(BoolRow("Only Sell From Main Pack", state.Data.AutoVendorOnlyFromMainPack,
+            v => { state.Data.AutoVendorOnlyFromMainPack = v; Push(state); }));
+        p.Children.Add(BoolRow("Show Merchant Info", state.Data.AutoVendorShowMerchantInfo,
+            v => { state.Data.AutoVendorShowMerchantInfo = v; Push(state); },
+            "Print the vendor's buy/sell rates and max value when it opens."));
+        p.Children.Add(BoolRow("Think When Finished", state.Data.AutoVendorThink,
+            v => { state.Data.AutoVendorThink = v; Push(state); },
+            "Send 'AutoVendor finished: <vendor>' (and failures) as a /tell to yourself, for metas."));
+
+        p.Children.Add(Spacer());
+        p.Children.Add(SectionHeader("/ub vendor open"));
+        p.Children.Add(IntRow("Tries", state.Data.AutoVendorTries, 1, 20, 1,
+            v => { state.Data.AutoVendorTries = v; Push(state); }));
+        p.Children.Add(IntRow("Time Between Tries (ms)", state.Data.AutoVendorTriesTime, 500, 30000, 250,
+            v => { state.Data.AutoVendorTriesTime = v; Push(state); }));
+
+        p.Children.Add(Spacer());
+        p.Children.Add(new TextBlock
+        {
+            Text = "Never sold: equipped, attuned, bonded, retained, tinkered, imbued, inscribed, rare, zero value, packs, or anything a Keep rule could match.",
+            Foreground = ColMute, FontSize = 10, TextWrapping = Avalonia.Media.TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0),
+        });
     }
 
     private static void BuildLootingTab(PanelState state, StackPanel p, PickerState picker)

@@ -126,7 +126,9 @@ they're all opt-in, so use whichever fits the app you end up building:
      a private mesh like **Tailscale** (phone hits `http://<tailscale-ip>:8740/status`).
      A `+` bind needs a one-time `netsh http add urlacl url=http://+:8740/ user=Everyone`
      (or run the agent elevated).
-   - Set `ServeToken` to require `Authorization: Bearer <token>` (or `?token=`).
+   - `ServeToken` is required: with it empty the server stays off, on any bind.
+     Every route but `/healthz` then needs `Authorization: Bearer <token>` (or `?token=`).
+     Use the same token as your DrakBot remote and one DrakRemote entry shows both.
    - `GET /healthz` returns `ok` for uptime checks.
 3. **File sync.** Leave `WriteAggregateFile: true` and point iCloud/Dropbox/etc.
    at `Logs\status\aggregate.json`; the app reads the synced copy.

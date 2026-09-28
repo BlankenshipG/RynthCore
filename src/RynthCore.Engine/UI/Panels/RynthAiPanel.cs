@@ -487,7 +487,22 @@ internal static partial class RynthAiPanel
 
         rightStack.Children.Add(BuildSelectorRow("Profile:", profileSelector));
         rightStack.Children.Add(BuildSelectorRow("Nav:",     navSelector));
-        rightStack.Children.Add(BuildSelectorRow("Loot:",    lootSelector));
+        // ✎ opens the standalone Loot Editor on the loot profile in use - or, while a
+        // vendor is open, on that vendor's AutoVendor profile (both are .utl files).
+        var lootEditButton = new Button
+        {
+            Content = "✎",
+            FontSize = 10,
+            Padding = new Thickness(5, 0),
+            Margin = new Thickness(3, 0, 0, 0),
+            MinHeight = 0,
+            Background = new SolidColorBrush(Color.FromRgb(0x2D, 0x38, 0x47)),
+            Foreground = ColMute,
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Stretch,
+        };
+        ToolTip.SetTip(lootEditButton, "Edit in the Loot Editor: the loot profile in use, or the open vendor's AutoVendor profile.");
+        rightStack.Children.Add(BuildSelectorRow("Loot:",    lootSelector, lootEditButton));
         rightStack.Children.Add(BuildSelectorRow("Meta:",    metaSelector));
 
         headerGrid.Children.Add(rightStack);
@@ -835,6 +850,12 @@ internal static partial class RynthAiPanel
             ShowPicker(navSelector, snap.NavProfiles, snap.SelectedNavIdx, idx => _selectProfile?.Invoke(0, idx));
         lootSelector.Click += (_, _) =>
             ShowPicker(lootSelector, snap.LootProfiles, snap.SelectedLootIdx, idx => _selectProfile?.Invoke(1, idx));
+        lootEditButton.Click += (_, _) =>
+        {
+            ClosePicker();
+            string path = !string.IsNullOrEmpty(snap.VendorProfilePath) ? snap.VendorProfilePath : snap.CurrentLootPath;
+            LaunchLootEditor(path);
+        };
         metaSelector.Click += (_, _) =>
             ShowPicker(metaSelector, snap.MetaProfiles, snap.SelectedMetaIdx, idx => _selectProfile?.Invoke(2, idx));
 
@@ -1035,11 +1056,11 @@ internal static partial class RynthAiPanel
         return stack;
     }
 
-    private static Grid BuildSelectorRow(string label, Button selector)
+    private static Grid BuildSelectorRow(string label, Button selector, Button? trailing = null)
     {
         var row = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("36,*"),
+            ColumnDefinitions = new ColumnDefinitions(trailing == null ? "36,*" : "36,*,Auto"),
             Margin = new Thickness(0, 0, 0, 0)
         };
         row.Children.Add(new TextBlock
@@ -1051,7 +1072,50 @@ internal static partial class RynthAiPanel
         });
         row.Children.Add(selector);
         Grid.SetColumn(selector, 1);
+        if (trailing != null)
+        {
+            row.Children.Add(trailing);
+            Grid.SetColumn(trailing, 2);
+        }
         return row;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, EntryPoint = "ShellExecuteW")]
+    private static extern IntPtr ShellExecuteW(IntPtr hwnd, string lpOperation, string lpFile,
+        string? lpParameters, string? lpDirectory, int nShowCmd);
+
+    /// <summary>
+    /// Starts the standalone Loot Editor on <paramref name="profilePath"/> (empty = no file).
+    /// The installer puts it in {app}\Tools\LootEditor next to Runtime\, so walk up from the
+    /// engine module (Runtime\ or Runtime\.engine_loads\) to find it. ShellExecute, not
+    /// Process.Start: the Process API is the documented AV hazard inside acclient.exe.
+    /// </summary>
+    private static void LaunchLootEditor(string? profilePath)
+    {
+        try
+        {
+            string? exe = null;
+            string? dir = EntryPoint.EngineDirectory;
+            for (int i = 0; i < 4 && !string.IsNullOrEmpty(dir) && exe == null; i++, dir = System.IO.Path.GetDirectoryName(dir))
+            {
+                string candidate = System.IO.Path.Combine(dir, "Tools", "LootEditor", "RynthCore.LootEditor.exe");
+                if (System.IO.File.Exists(candidate)) exe = candidate;
+            }
+            exe ??= @"C:\Games\RynthCore\Tools\LootEditor\RynthCore.LootEditor.exe";
+            if (!System.IO.File.Exists(exe))
+            {
+                RynthLog.Info($"RynthAiPanel: Loot Editor not found (looked for {exe}).");
+                return;
+            }
+
+            string? args = string.IsNullOrEmpty(profilePath) ? null : $"\"{profilePath}\"";
+            IntPtr r = ShellExecuteW(IntPtr.Zero, "open", exe, args, System.IO.Path.GetDirectoryName(exe), 1 /* SW_SHOWNORMAL */);
+            RynthLog.Info($"RynthAiPanel: Loot Editor {(r.ToInt64() > 32 ? "started" : $"failed to start (code {r.ToInt64()})")}: {exe} {args}");
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Info($"RynthAiPanel: Loot Editor launch threw {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private static Button CreateSelector(string text)
@@ -1507,6 +1571,9 @@ internal static partial class RynthAiPanel
         [JsonPropertyName("metaProfiles")]    public string[] MetaProfiles { get; set; } = Array.Empty<string>();
         [JsonPropertyName("currentNavName")]  public string CurrentNavName { get; set; } = string.Empty;
         [JsonPropertyName("currentLootName")] public string CurrentLootName { get; set; } = string.Empty;
+        [JsonPropertyName("currentLootPath")] public string CurrentLootPath { get; set; } = string.Empty;
+        // Set while a vendor is open: the AutoVendor profile it would use (may not exist yet).
+        [JsonPropertyName("vendorProfilePath")] public string VendorProfilePath { get; set; } = string.Empty;
         [JsonPropertyName("currentMetaName")] public string CurrentMetaName { get; set; } = string.Empty;
         [JsonPropertyName("selectedNavIdx")]  public int SelectedNavIdx { get; set; }
         [JsonPropertyName("selectedLootIdx")] public int SelectedLootIdx { get; set; }

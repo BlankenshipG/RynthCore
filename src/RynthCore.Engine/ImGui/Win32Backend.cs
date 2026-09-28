@@ -78,6 +78,12 @@ internal static unsafe class Win32Backend
     /// finish. wParam carries the HWND to destroy.</summary>
     public const uint WM_RYNTH_DESTROY_HWND = 0x8003;
 
+    /// <summary>Destroys floating-panel HWNDs on the game thread (their owner).
+    /// wParam != 0 includes this engine load's own panels (sent synchronously by
+    /// Shutdown before unhooking); wParam == 0 removes only panels an earlier
+    /// load left behind (posted by Init). See LayeredWindow.DestroyThreadPanelWindows.</summary>
+    public const uint WM_RYNTH_SWEEP_PANELS = 0x8004;
+
     private const int VK_CONTROL = 0x11;
     private const int VK_SHIFT = 0x10;
     private const int VK_MENU = 0x12;  // Alt
@@ -274,6 +280,8 @@ internal static unsafe class Win32Backend
     {
         if (_originalWndProc == IntPtr.Zero || _gameHwnd == IntPtr.Zero)
             return IntPtr.Zero;
+        // Diag (diag/logoff-origin): engine-synthesised input bypasses the subclass.
+        Compatibility.LogoffOriginProbe.RecordWndMsg(msg, wParam, lParam, synthetic: true);
         return CallWindowProcA(_originalWndProc, _gameHwnd, msg, wParam, lParam);
     }
 
@@ -507,6 +515,12 @@ internal static unsafe class Win32Backend
         _initialized = true;
         RynthLog.Render("Win32Backend: Initialized (WndProc subclassed).");
         RynthLog.Render("Win32Backend: UI capture ENABLED by default (Insert to release).");
+
+        // A previous engine load may have left floating panels behind (its
+        // teardown predates the synchronous sweep in Shutdown, or the game
+        // thread was stalled past the timeout) — clear them now, while
+        // sparing this load's own.
+        PostMessage(_gameHwnd, WM_RYNTH_SWEEP_PANELS, IntPtr.Zero, IntPtr.Zero);
         return true;
     }
 
@@ -516,6 +530,16 @@ internal static unsafe class Win32Backend
     public static void Shutdown()
     {
         if (!_initialized) return;
+
+        // Destroy floating panels while our hook can still run on the game
+        // thread. LayeredWindow.Dispose only POSTS its destroy, and the game
+        // thread usually hasn't reached that post by the time we unhook below —
+        // AC's own WndProc then drops it and the panel outlives this engine
+        // load, frozen and unclickable (duplicate RynthAi dashboard after RL).
+        IntPtr swept = SendMessageTimeout(_gameHwnd, WM_RYNTH_SWEEP_PANELS, new IntPtr(1), IntPtr.Zero,
+            SMTO_NORMAL, 2000, out _);
+        if (swept == IntPtr.Zero)
+            RynthLog.Info($"Win32Backend: Shutdown — panel sweep didn't run on the game thread (err={Marshal.GetLastWin32Error()}); the next engine load clears what's left.");
 
         // Restore the original WndProc ONLY if we are still the head of the
         // chain. If something subclassed on top of us after Init (Decal /
@@ -694,6 +718,17 @@ internal static unsafe class Win32Backend
                 catch (Exception ex) { RynthLog.Info($"Win32Backend: WM_RYNTH_DESTROY_HWND threw {ex.GetType().Name}: {ex.Message}"); }
                 return IntPtr.Zero;
             }
+
+            if (msg == WM_RYNTH_SWEEP_PANELS)
+            {
+                try { UI.LayeredWindow.DestroyThreadPanelWindows(includeThisGeneration: wParam != IntPtr.Zero); }
+                catch (Exception ex) { RynthLog.Info($"Win32Backend: WM_RYNTH_SWEEP_PANELS threw {ex.GetType().Name}: {ex.Message}"); }
+                return IntPtr.Zero;
+            }
+
+            // Diag (diag/logoff-origin): ring of recent key/click/focus/close messages,
+            // dumped when the client requests a logoff. Filters first; never throws.
+            Compatibility.LogoffOriginProbe.RecordWndMsg(msg, wParam, lParam, synthetic: false);
 
             // ── User clicked X / Alt+F4 on AC window — tear our overlay down NOW ──
             // AC's own shutdown takes 20-30 s (network logout, save, etc.) before
@@ -885,7 +920,14 @@ internal static unsafe class Win32Backend
                 return IntPtr.Zero;
 
             // ── Avalonia panel hit-test & input forwarding ────────────────
-            if (IsMouseMessage(msg))
+            // Only in the world: between characters the overlay isn't drawn, so its
+            // panels mustn't take clicks meant for character select.
+            bool overlayLive = RynthCore.Engine.Compatibility.LoginLifecycleHooks.HasObservedLoginComplete;
+            if (!overlayLive)
+            {
+                // fall through: AC gets the message
+            }
+            else if (IsMouseMessage(msg))
             {
                 bool handled = TryForwardToAvalonia(msg, wParam, lParam);
                 if (handled)
@@ -1108,6 +1150,16 @@ internal static unsafe class Win32Backend
             {
                 if (msg == WM_LBUTTONUP)
                     _pendingBarButtonTitle = null;
+
+                // An open Flyout / ContextMenu / dropdown is embedded in the
+                // overlay window, but a click on the game world is never
+                // forwarded, so Avalonia's light-dismiss never sees it. Close
+                // it here; the click still goes to AC.
+                if ((msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN)
+                    && AvaloniaOverlay.HasOpenLightDismissPopup)
+                {
+                    AvaloniaOverlay.DismissLightDismissPopups();
+                }
                 return false;
             }
 

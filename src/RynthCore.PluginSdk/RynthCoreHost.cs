@@ -1,11 +1,23 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 namespace RynthCore.PluginSdk;
 
 public readonly unsafe struct RynthCoreHost
 {
-    public const uint CurrentApiVersion = 66;
+    public const uint CurrentApiVersion = 67;
+
+    /// <summary>
+    /// The oldest engine API a plugin built on this SDK loads on by default
+    /// (<see cref="RynthCore.PluginCore.RynthPluginBase.MinimumApiVersion"/>). Players get
+    /// plugin updates automatically but engine updates only when they click, so defaulting
+    /// to <see cref="CurrentApiVersion"/> made every rebuilt plugin refuse the engine most
+    /// players still run. Calls newer than this are version-checked by their wrappers
+    /// (e.g. HasVendorTrade); a plugin that truly needs a newer engine overrides
+    /// MinimumApiVersion. Raise this only with a release that forces the engine update.
+    /// </summary>
+    public const uint BaselineApiVersion = 66;
 
     private readonly RynthCoreApiNative _api;
 
@@ -1445,5 +1457,207 @@ public readonly unsafe struct RynthCoreHost
             Marshal.FreeHGlobal(actionPtr);
             Marshal.FreeHGlobal(valuePtr);
         }
+    }
+
+    // ─── Vendor trading (API v67) ──────────────────────────────────────────
+    // Decal's WorldFilter.OpenVendor + Actions.VendorBuyAll/VendorSellAll shape as
+    // stateless calls (VendorCart adds the Add/Clear list shape on top). Reads come
+    // from a snapshot the engine takes on AC's main thread when the vendor list
+    // arrives. Buy/sell are checked, queued, re-checked on AC's main thread (funds,
+    // pack slots, burden, ownership) and sent through the client's own
+    // gmVendorUI::SendShopEvent. One transaction is in flight at a time: wait for
+    // GetVendorTradeStatus to finish before sending the next batch.
+
+    /// <summary>True when the engine exposes vendor trading (API v67+).</summary>
+    public bool HasVendorTrade => _api.Version >= 67
+                                  && _api.GetVendorInfoFn != IntPtr.Zero && _api.GetVendorItemsFn != IntPtr.Zero
+                                  && _api.VendorBuyFn != IntPtr.Zero && _api.VendorSellFn != IntPtr.Zero
+                                  && _api.GetVendorTradeStatusFn != IntPtr.Zero;
+
+    /// <summary>The vendor that is open right now, or false if none (or pre-v67 engine).</summary>
+    public bool TryGetVendorInfo(out VendorInfo info)
+    {
+        info = null!;
+        if (_api.Version < 67 || _api.GetVendorInfoFn == IntPtr.Zero)
+            return false;
+
+        VendorInfoNative raw;
+        if (((delegate* unmanaged[Cdecl]<VendorInfoNative*, int>)_api.GetVendorInfoFn)(&raw) == 0)
+            return false;
+
+        info = new VendorInfo
+        {
+            VendorId = raw.VendorId,
+            Name = ReadAnsi(raw.Name, 64),
+            Generation = raw.Generation,
+            ShopMode = raw.ShopMode,
+            ItemTypes = raw.ItemTypes,
+            MinValue = raw.MinValue,
+            MaxValue = raw.MaxValue,
+            DealsMagic = raw.DealsMagic != 0,
+            BuyRate = raw.BuyRate,
+            SellRate = raw.SellRate,
+            AltCurrencyWcid = raw.AltCurrencyWcid,
+            AltCurrencyName = ReadAnsi(raw.AltCurrencyName, 64),
+            AltCurrencyServerCount = raw.AltCurrencyServerCount,
+            AltCurrencyHave = raw.AltCurrencyHave,
+            PlayerCoins = raw.PlayerCoins,
+            ItemCount = raw.ItemCount,
+            TradingAvailable = (raw.Flags & 1u) != 0,
+            TradeInFlight = (raw.Flags & 2u) != 0,
+        };
+        return true;
+    }
+
+    /// <summary>The open vendor's items; empty if no vendor is open (or pre-v67 engine).</summary>
+    public VendorItem[] GetVendorItems()
+    {
+        if (_api.Version < 67 || _api.GetVendorItemsFn == IntPtr.Zero)
+            return Array.Empty<VendorItem>();
+
+        var fn = (delegate* unmanaged[Cdecl]<VendorItemNative*, int, int>)_api.GetVendorItemsFn;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            int total = fn(null, 0);
+            if (total <= 0)
+                return Array.Empty<VendorItem>();
+
+            int capacity = total + 8;   // headroom in case the list is re-sent between calls
+            IntPtr buf = Marshal.AllocHGlobal(capacity * sizeof(VendorItemNative));
+            try
+            {
+                VendorItemNative* items = (VendorItemNative*)buf;
+                int now = fn(items, capacity);
+                if (now < 0)
+                    return Array.Empty<VendorItem>();
+                if (now > capacity)
+                    continue;   // grew past the headroom; size again
+
+                var result = new VendorItem[now];
+                for (int i = 0; i < now; i++)
+                {
+                    VendorItemNative* it = items + i;
+                    result[i] = new VendorItem
+                    {
+                        ObjectId = it->ObjectId,
+                        Wcid = it->Wcid,
+                        Name = ReadAnsi(it->Name, 64),
+                        ItemType = it->ItemType,
+                        IconId = it->IconId,
+                        Amount = it->Amount,
+                        StackSize = it->StackSize,
+                        MaxStackSize = it->MaxStackSize,
+                        Value = it->Value,
+                        UnitValue = it->UnitValue,
+                        UnitPrice = it->UnitPrice,
+                        Burden = it->Burden,
+                        Unlimited = (it->Flags & 1u) != 0,
+                        Stackable = (it->Flags & 2u) != 0,
+                        NeedsContainerSlot = (it->Flags & 4u) != 0,
+                    };
+                }
+                return result;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buf);
+            }
+        }
+        return Array.Empty<VendorItem>();
+    }
+
+    /// <summary>
+    /// Buy from the open vendor (Decal VendorBuyAll). vendorId 0 = whichever vendor is
+    /// open; pass the id you read to make sure it's still that vendor. Returns the request
+    /// id, or 0 if refused (reason in <see cref="TryGetVendorTradeStatus"/>).
+    /// </summary>
+    public uint VendorBuy(uint vendorId, IReadOnlyList<VendorTradeEntryNative> items)
+    {
+        if (_api.Version < 67 || _api.VendorBuyFn == IntPtr.Zero || items == null || items.Count == 0)
+            return 0;
+
+        int n = items.Count;
+        IntPtr buf = Marshal.AllocHGlobal(n * sizeof(VendorTradeEntryNative));
+        try
+        {
+            VendorTradeEntryNative* p = (VendorTradeEntryNative*)buf;
+            for (int i = 0; i < n; i++)
+                p[i] = items[i];
+            return ((delegate* unmanaged[Cdecl]<uint, VendorTradeEntryNative*, int, uint>)_api.VendorBuyFn)(vendorId, p, n);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buf);
+        }
+    }
+
+    /// <summary>Buy <paramref name="amount"/> of one vendor item.</summary>
+    public uint VendorBuy(uint objectId, int amount, uint vendorId = 0) =>
+        VendorBuy(vendorId, new[] { new VendorTradeEntryNative(objectId, amount) });
+
+    /// <summary>
+    /// Sell your own items (whole stacks) to the open vendor (Decal VendorSellAll).
+    /// Items must be in your packs, not equipped, and of a type the vendor buys.
+    /// Returns the request id, or 0 if refused.
+    /// </summary>
+    public uint VendorSell(uint vendorId, IReadOnlyList<uint> itemIds)
+    {
+        if (_api.Version < 67 || _api.VendorSellFn == IntPtr.Zero || itemIds == null || itemIds.Count == 0)
+            return 0;
+
+        int n = itemIds.Count;
+        IntPtr buf = Marshal.AllocHGlobal(n * sizeof(uint));
+        try
+        {
+            uint* p = (uint*)buf;
+            for (int i = 0; i < n; i++)
+                p[i] = itemIds[i];
+            return ((delegate* unmanaged[Cdecl]<uint, uint*, int, uint>)_api.VendorSellFn)(vendorId, p, n);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buf);
+        }
+    }
+
+    /// <summary>Sell one of your items.</summary>
+    public uint VendorSell(uint itemId) => VendorSell(0, new[] { itemId });
+
+    /// <summary>State of the most recent buy/sell request (check RequestId is yours).</summary>
+    public bool TryGetVendorTradeStatus(out VendorTradeStatus status)
+    {
+        status = null!;
+        if (_api.Version < 67 || _api.GetVendorTradeStatusFn == IntPtr.Zero)
+            return false;
+
+        VendorTradeStatusNative raw;
+        if (((delegate* unmanaged[Cdecl]<VendorTradeStatusNative*, int>)_api.GetVendorTradeStatusFn)(&raw) == 0)
+            return false;
+
+        status = new VendorTradeStatus
+        {
+            RequestId = raw.RequestId,
+            State = (VendorTradeState)raw.State,
+            Result = (VendorTradeResult)raw.Result,
+            IsBuy = raw.IsBuy != 0,
+            VendorId = raw.VendorId,
+            EntryCount = raw.EntryCount,
+            Estimate = raw.Estimate,
+            Message = ReadAnsi(raw.Message, 128),
+        };
+        return true;
+    }
+
+    private static string ReadAnsi(byte* p, int capacity)
+    {
+        int len = 0;
+        while (len < capacity && p[len] != 0)
+            len++;
+        if (len == 0)
+            return string.Empty;
+        var chars = new char[len];
+        for (int i = 0; i < len; i++)
+            chars[i] = (char)p[i];   // Latin-1, the client's single-byte names
+        return new string(chars);
     }
 }

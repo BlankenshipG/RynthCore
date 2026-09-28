@@ -188,9 +188,30 @@ internal static class UpdateObjectInventoryHooks
     /// </summary>
     private static int ScanByContainerId(uint containerId, Span<uint> itemIds)
     {
+        // Check every object the client knows, from the identity snapshot. The old fixed
+        // range stopped at 0x8000FFFF, but a server hands out ids well past that once it
+        // has run a while, so newer items (and packs, with everything in them) were
+        // invisible to the bot: no bundles to craft from, inventory lookups finding nothing.
+        uint[] live = ClientObjectHooks.LiveObjectIds;
+        if (live.Length > 0)
+        {
+            int found = 0;
+            foreach (uint id in live)
+            {
+                if (found >= itemIds.Length) break;
+                if (id == containerId) continue;
+                if (!ClientObjectHooks.TryGetObjectOwnershipInfo(id, out uint c, out uint w, out _))
+                    continue;
+                if (c == containerId || w == containerId)
+                    itemIds[found++] = id;
+            }
+            itemIds[..found].Sort();   // same ascending order the range scan gave
+            return found;
+        }
+
         int written = 0;
 
-        // Scan dynamic object range (0x80000001 – 0x8000FFFF)
+        // No snapshot yet: scan the first dynamic object range (0x80000001 – 0x8000FFFF)
         for (uint id = 0x80000001; id <= 0x8000FFFF && written < itemIds.Length; id++)
         {
             if (id == containerId) continue;

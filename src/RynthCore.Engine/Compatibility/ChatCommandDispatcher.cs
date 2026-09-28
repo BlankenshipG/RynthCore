@@ -132,6 +132,7 @@ internal static unsafe class ChatCommandDispatcher
         {
             string trimmed = text.Trim();
             if (trimmed.Length == 0) return false;
+            LogoffOriginProbe.RecordChat("ChatCommandDispatcher", trimmed);
 
             // RynthCore engine commands (/rc ...) are handled before plugin
             // pre-dispatch and before any AC chat routing so they work even
@@ -320,6 +321,7 @@ internal static unsafe class ChatCommandDispatcher
     /// </summary>
     private static bool SimulateChatInput(string command)
     {
+        LogoffOriginProbe.RecordChat("SimulateChatInput", command);
         // Deep-audit finding #18 (2026-06-18): SendToGameWndProc drives
         // CallWindowProcA directly into AC's WndProc — calling that off the
         // window-owning thread is a cross-thread WndProc re-entry. Dispatch()

@@ -57,7 +57,15 @@ else
 LocalStatusServer? server = null;
 WebRtcVideoService? video = null;   // HD WebRTC video mode (opt-in); disposed in finally
 IconService? icons = null;          // item-icon decoder (GET /icon); disposed in finally
-if (cfg.ServeHttp)
+if (cfg.ServeHttp && string.IsNullOrWhiteSpace(cfg.ServeToken))
+{
+    // Same rule as DrakBot's remote: no token, no server, loopback included. The server can show
+    // the game screens, click in them and close clients.
+    AgentLog.Warn("ServeHttp is on but ServeToken is empty, so the status server stays off.");
+    AgentLog.Warn($"Set \"ServeToken\" in {configPath} and restart the agent. Use the same token as your");
+    AgentLog.Warn("DrakBot remote and one DrakRemote entry shows both.");
+}
+else if (cfg.ServeHttp)
 {
     string? commandDir = cfg.EnableRemoteControl ? Path.Combine(cfg.StatusDirectory, "commands") : null;
     VideoSocketService? videoSocket = null;

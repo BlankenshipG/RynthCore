@@ -19,6 +19,10 @@ namespace RynthCore.Engine.Compatibility;
 ///         recovery.</item>
 ///   <item><c>/rc vitals</c> (alias <c>/rc hud</c>) — toggle the custom D3D9
 ///         Health/Stamina/Mana HUD on/off (persisted to engine.json).</item>
+///   <item><c>/rc vendor [list|info|status|buy &lt;id|sel&gt; [n]|sell &lt;id|sel&gt; [id ...]]</c>
+///         — read / trade with the open vendor through the engine's vendor
+///         primitives (<see cref="VendorTrade"/>); a manual test hook for the
+///         plugin API. Replies go to chat from the main-thread drain and to the log.</item>
 /// </list>
 /// </summary>
 internal static class RynthCoreChatCommands
@@ -40,6 +44,15 @@ internal static class RynthCoreChatCommands
             return false;
 
         string sub = trimmed.Substring(Prefix.Length).Trim();
+
+        // /rc vendor [list|info|status|buy <id|sel> [n]|sell <id|sel> [id ...]]
+        if (sub.Equals("vendor", StringComparison.OrdinalIgnoreCase)
+            || sub.StartsWith("vendor ", StringComparison.OrdinalIgnoreCase))
+        {
+            try { VendorTrade.HandleChatCommand(sub.Length > 6 ? sub.Substring(7) : string.Empty); }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc vendor failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
 
         switch (sub.ToLowerInvariant())
         {

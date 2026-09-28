@@ -65,11 +65,13 @@ internal static class ChatHooks
     public static volatile bool ChatPanelShown;
 
     /// <summary>
-    /// RynthChat is standing in for the retail chat: its panel is open AND "Hide retail chat"
-    /// is on. Only then is the retail chatbox hidden and Enter routed to RynthChat — whichever
-    /// chat is visible gets Enter.
+    /// RynthChat is standing in for the retail chat: in the world, its panel is open AND
+    /// "Hide retail chat" is on. Only then is the retail chatbox hidden and Enter routed to
+    /// RynthChat — whichever chat is visible gets Enter. Outside the world Enter is AC's:
+    /// at character select it enters the game.
     /// </summary>
-    public static bool RynthChatOwnsChat => SuppressOriginalChat && ChatPanelShown;
+    public static bool RynthChatOwnsChat =>
+        SuppressOriginalChat && ChatPanelShown && LoginLifecycleHooks.HasObservedLoginComplete;
 
     public static IntPtr GmMainChatInstance => _gmMainChatInstance;
 
