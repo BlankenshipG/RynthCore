@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RynthCore.Install;
 
 namespace RynthCore.StatusAgent;
 
@@ -27,10 +28,10 @@ internal sealed class AgentConfig
     [JsonPropertyName("TimeoutSeconds")] public int TimeoutSeconds { get; set; } = 15;
 
     /// <summary>Directory holding the engine's per-client status files.</summary>
-    [JsonPropertyName("StatusDirectory")] public string StatusDirectory { get; set; } = @"C:\Games\RynthCore\Logs\status";
+    [JsonPropertyName("StatusDirectory")] public string StatusDirectory { get; set; } = Path.Combine(RynthInstallPaths.CoreLogsDir, "status");
 
     /// <summary>Directory holding per-client RynthCore.&lt;pid&gt;.log files (heartbeat fallback).</summary>
-    [JsonPropertyName("LogDirectory")] public string LogDirectory { get; set; } = @"C:\Games\RynthCore\Logs";
+    [JsonPropertyName("LogDirectory")] public string LogDirectory { get; set; } = RynthInstallPaths.CoreLogsDir;
 
     /// <summary>When true and no status file exists for a running client, derive
     /// basic status from that client's heartbeat log line. Lets the agent work
@@ -97,12 +98,12 @@ internal sealed class AgentConfig
     /// <summary>portal.dat used to decode item icons for GET /icon (read-only inventory viewer). Defaults to
     /// the RynthCore client's private copy. If the file is absent (e.g. an agent running off the game box)
     /// /icon 404s and the app falls back to text rows — no other feature is affected.</summary>
-    [JsonPropertyName("IconDatPath")] public string IconDatPath { get; set; } = @"C:\Games\RynthCore\AcClient\client_portal.dat";
+    [JsonPropertyName("IconDatPath")] public string IconDatPath { get; set; } = Path.Combine(RynthInstallPaths.CoreDir, "AcClient", "client_portal.dat");
 
     /// <summary>Directory of RynthAi's baked dungeon floor-plan maps ({landblock:X8}_{layer}.bin), served as
     /// PNGs via GET /map for the app's dungeon-map viewer. If the folder is absent (agent off the game box)
     /// /maps returns an empty list and /map 404s — no other feature is affected.</summary>
-    [JsonPropertyName("MapsDirectory")] public string MapsDirectory { get; set; } = @"C:\Games\RynthSuite\RynthAi\Maps";
+    [JsonPropertyName("MapsDirectory")] public string MapsDirectory { get; set; } = Path.Combine(RynthInstallPaths.RynthAiDir, "Maps");
 
     public static string DefaultConfigPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),

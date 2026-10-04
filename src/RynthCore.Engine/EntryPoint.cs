@@ -97,7 +97,8 @@ public static class EntryPoint
             catch { }
 
             // Set up the unified log sink BEFORE anything else so all
-            // subsequent failures are captured in C:\Games\RynthCore\Logs.
+            // subsequent failures are captured in <CoreDir>\Logs (installer-chosen;
+            // resolved here on the init worker, never under the loader lock).
             LogPaths.EnsureLogDirectory();
             if (_initCount <= 1)
             {

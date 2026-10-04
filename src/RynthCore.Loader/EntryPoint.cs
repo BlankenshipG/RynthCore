@@ -19,6 +19,7 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
+using RynthCore.Install;
 
 namespace RynthCore.Loader;
 
@@ -31,7 +32,8 @@ public static class EntryPoint
     // Unified log path — must stay in sync with RynthCore.Engine.LogPaths.
     // The loader cannot reference the engine assembly (it loads it
     // dynamically), so the constants are mirrored here.
-    private const string UnifiedLogDirectory = @"C:\Games\RynthCore\Logs";
+    // Installer-chosen RynthCore folder (falls back to C:\Games\RynthCore).
+    private static readonly string UnifiedLogDirectory = RynthInstallPaths.CoreLogsDir;
     private const string UnifiedLogFileName = "RynthCore.log";
     /// <summary>
     /// Subdirectory beside the loader where reload-generation copies of the

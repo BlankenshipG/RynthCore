@@ -48,4 +48,9 @@
     <Compile Include="..\RynthCore.Injector\InjectionResult.cs" Link="Shared\InjectionResult.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Install-location resolver (installer-chosen RynthCore / RynthSuite folders). -->
+    <Compile Include="..\RynthCore.App\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+  </ItemGroup>
+
 </Project>

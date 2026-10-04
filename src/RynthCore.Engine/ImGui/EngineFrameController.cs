@@ -23,6 +23,7 @@ using System.Runtime.InteropServices;
 using ImGuiNET;
 using RynthCore.Engine.D3D9;
 using RynthCore.Engine.Plugins;
+using RynthCore.Install;
 
 namespace RynthCore.Engine.ImGuiBackend;
 
@@ -131,8 +132,8 @@ internal static class EngineFrameController
             // between launches. Allocated once, kept alive for the process lifetime.
             try
             {
-                const string iniPath = @"C:\Games\RynthSuite\RynthAi\imgui.ini";
-                System.IO.Directory.CreateDirectory(@"C:\Games\RynthSuite\RynthAi");
+                string iniPath = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, "imgui.ini");
+                System.IO.Directory.CreateDirectory(RynthInstallPaths.RynthAiDir);
                 IntPtr iniPtr = System.Runtime.InteropServices.Marshal.StringToHGlobalAnsi(iniPath);
                 unsafe { io.NativePtr->IniFilename = (byte*)iniPtr; }
                 RynthLog.Render($"EngineFrameController: imgui.ini pinned to {iniPath}");

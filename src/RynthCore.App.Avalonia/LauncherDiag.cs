@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 using System.Threading;
+using RynthCore.Install;
 
 namespace RynthCore.App.Avalonia;
 
@@ -18,7 +19,8 @@ namespace RynthCore.App.Avalonia;
 /// </summary>
 internal static class LauncherDiag
 {
-    private const string UnifiedLogDirectory = @"C:\Games\RynthCore\Logs";
+    // Installer-chosen RynthCore folder (falls back to C:\Games\RynthCore).
+    private static readonly string UnifiedLogDirectory = RynthInstallPaths.CoreLogsDir;
     private const string UnifiedLogFileName = "RynthCore.log";
 
     private static readonly object LogLock = new();

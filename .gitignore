@@ -49,3 +49,5 @@ installer/Releases/
 # Process Monitor / debug log dumps (session junk)
 *.PML
 Logfile*.XML
+# Archived installers (Build-Installer.ps1 keeps the previous release here; only the version marker is tracked)
+installer/previous-release/*.exe

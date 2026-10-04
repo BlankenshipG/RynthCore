@@ -18,6 +18,7 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using RynthCore.Injector;
+using RynthCore.Install;
 
 namespace RynthCore.App.Avalonia;
 
@@ -136,6 +137,7 @@ internal partial class MainWindow : Window
         SessionList.ItemsSource = _sessionItems;
         LoadSettings();
         LoadRuntimeControls();
+        ApplyInstallerPluginRegistration();
         LoadPluginDllPaths();
         BuildPluginLoadout();
         WireEvents();
@@ -1639,6 +1641,78 @@ internal partial class MainWindow : Window
         AppendActivity($"Runtime loadout updated: {Path.GetFileName(dllPath)} {(enabled ? "enabled" : "disabled")} (engine.json synced).");
     }
 
+    /// <summary>
+    /// Applies the installer's one-shot plugin hand-off: the full installer writes the plugin
+    /// DLL paths it placed in the user-chosen RynthSuite folder to
+    /// <c>Software\Rynth\PendingPluginRegistration</c> (';'-separated). Each existing DLL is added
+    /// to the Plugins list, and any entry with the same file name that no longer exists (e.g. the
+    /// old <c>C:\Games\RynthSuite\...</c> path after moving the Suite folder) is replaced.
+    /// Rows pointing inside the RynthCore folder whose file the installer removed are dropped too.
+    /// The value is consumed once (deleted from HKCU; remembered in settings for HKLM).
+    /// </summary>
+    private void ApplyInstallerPluginRegistration()
+    {
+        try
+        {
+            string? pending = RynthInstallPaths.ReadSetting("PendingPluginRegistration");
+            if (string.IsNullOrWhiteSpace(pending)
+                || string.Equals(pending, _settings.AppliedInstallerPluginRegistration, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            _settings.PluginDllPaths ??= [];
+            var added = new List<string>();
+
+            // The installer clears loose DLLs out of the RynthCore folder (old 0.4.x layouts kept plugins
+            // and SDK DLLs there), so drop rows that pointed inside it and are now gone. Rows elsewhere are
+            // left alone, since a missing file there may just be on a drive that isn't mounted.
+            string coreRoot = Path.TrimEndingDirectorySeparator(RynthInstallPaths.CoreDir) + Path.DirectorySeparatorChar;
+            bool IsRemovedCoreFile(string p) =>
+                p.StartsWith(coreRoot, StringComparison.OrdinalIgnoreCase) && !File.Exists(p);
+            int pruned = _settings.PluginDllPaths.RemoveAll(IsRemovedCoreFile);
+            _settings.DisabledPluginDllPaths.RemoveAll(IsRemovedCoreFile);
+
+            foreach (string raw in pending.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                string path;
+                try { path = Path.GetFullPath(raw); } catch { continue; }
+                if (!File.Exists(path)) continue;
+
+                string fileName = Path.GetFileName(path);
+                // Drop stale rows for the same plugin that point at a file which is gone.
+                _settings.PluginDllPaths.RemoveAll(p =>
+                    string.Equals(Path.GetFileName(p), fileName, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(p, path, StringComparison.OrdinalIgnoreCase)
+                    && !File.Exists(p));
+
+                if (!_settings.PluginDllPaths.Any(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase)))
+                {
+                    _settings.PluginDllPaths.Add(path);
+                    added.Add(fileName);
+                }
+            }
+
+            _settings.AppliedInstallerPluginRegistration = pending;
+            SaveSettings();
+            RynthInstallPaths.DeleteUserSetting("PendingPluginRegistration");
+
+            _pluginDllPaths.Clear();
+            foreach (string p in _settings.PluginDllPaths) _pluginDllPaths.Add(p);
+            SyncPluginPathsToEngineSettings();
+
+            string msg = added.Count > 0
+                ? $"Installer registered plugin(s): {string.Join(", ", added)} (engine.json synced)."
+                : "Installer plugin registration already up to date.";
+            if (pruned > 0)
+                msg += $" Removed {pruned} plugin path(s) for files the installer cleared from {RynthInstallPaths.CoreDir}.";
+            LauncherDiag.Info("PLUGINS: " + msg);
+            try { AppendActivity(msg); } catch { }
+        }
+        catch (Exception ex)
+        {
+            LauncherDiag.Info("PLUGINS: installer registration failed: " + ex.Message);
+        }
+    }
+
     private void LoadPluginDllPaths()
     {
         _pluginDllPaths.Clear();
@@ -2338,7 +2412,7 @@ internal partial class MainWindow : Window
 
             // Tail the per-PID log for the last heartbeat line. Cheap: seek to
             // the end, read ~2KB, FileShare-tolerant of the engine's writer.
-            string logPath = System.IO.Path.Combine(@"C:\Games\RynthCore\Logs", $"RynthCore.{pid}.log");
+            string logPath = System.IO.Path.Combine(RynthInstallPaths.CoreLogsDir, $"RynthCore.{pid}.log");
             string tail;
             try
             {

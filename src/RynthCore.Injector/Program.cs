@@ -2,13 +2,15 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Text;
+using RynthCore.Install;
 
 namespace RynthCore.Injector;
 
 internal static class Program
 {
     // Unified log path — must stay in sync with RynthCore.Engine.LogPaths.
-    private const string UnifiedLogDirectory = @"C:\Games\RynthCore\Logs";
+    // Installer-chosen RynthCore folder (falls back to C:\Games\RynthCore).
+    private static readonly string UnifiedLogDirectory = RynthInstallPaths.CoreLogsDir;
     private const string UnifiedLogFileName = "RynthCore.log";
 
     private static int Main(string[] args)
