@@ -5,6 +5,7 @@
     (RynthCore-Setup-<version>.exe) via Inno Setup.
 
 .DESCRIPTION
+    0. Makes sure a .NET 10 SDK is available; installs one per-user when missing (see -NoDotNetInstall)
     1. Publishes the Avalonia launcher (self-contained, x86)
     2. Publishes RynthCore.Engine (NativeAOT, x86 -- ~2 min)
     3. Publishes RynthCore.Loader (NativeAOT, x86) -- the DLL the launcher injects
@@ -39,6 +40,11 @@
 
 .PARAMETER SkipBuild
     Skip dotnet publish steps and just re-stage + re-run ISCC against existing publish output.
+
+.PARAMETER NoDotNetInstall
+    Fail instead of auto-installing when no .NET 10 SDK is found. By default a missing SDK is
+    installed per-user (no admin) to %LOCALAPPDATA%\Microsoft\dotnet via Microsoft's signed
+    dotnet-install.ps1, and used for this build.
 #>
 param(
     [string]$Configuration = "Release",
@@ -49,7 +55,8 @@ param(
     # Version string injected into the installer (yyyy.m.d.n). When omitted,
     # the version defined in RynthCore.iss is used as-is.
     [string]$Version = "",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$NoDotNetInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -74,6 +81,59 @@ if ($Version) {
 # is published WITHOUT these args.
 $VersionArgs = @()
 if ($Version) { $VersionArgs = @("-p:Version=$Version") }
+
+# ── .NET 10 SDK check (auto-install when missing) ───────────────────────────
+# Every project targets net10.0, so publishing needs a .NET 10 SDK. Returns $true when the
+# 'dotnet' on PATH lists a 10.x SDK.
+function Test-DotNet10Sdk {
+    $cmd = Get-Command dotnet -ErrorAction SilentlyContinue
+    if (-not $cmd) { return $false }
+    $sdks = & $cmd.Source --list-sdks 2>$null
+    return [bool]($sdks | Where-Object { $_ -match '^10\.' })
+}
+
+# Makes a .NET 10 SDK available for this build: uses the one on PATH, else a previous per-user
+# auto-install, else installs one per-user (no admin) with Microsoft's dotnet-install.ps1, whose
+# Authenticode signature must verify as Microsoft before it is run.
+function Initialize-DotNet10Sdk {
+    if (Test-DotNet10Sdk) { Write-Host ".NET 10 SDK: found ($((Get-Command dotnet).Source))"; return }
+
+    $userDotNet = Join-Path $env:LOCALAPPDATA "Microsoft\dotnet"
+    if (Test-Path (Join-Path $userDotNet "dotnet.exe")) {
+        $env:DOTNET_ROOT = $userDotNet
+        $env:PATH = "$userDotNet;$env:PATH"
+        if (Test-DotNet10Sdk) { Write-Host ".NET 10 SDK: found per-user install ($userDotNet)"; return }
+    }
+
+    if ($NoDotNetInstall) {
+        throw "No .NET 10 SDK found. Install it from https://dotnet.microsoft.com/download/dotnet/10.0 or re-run without -NoDotNetInstall."
+    }
+
+    Write-Host ""
+    Write-Host ".NET 10 SDK not found -- installing it per-user to $userDotNet ..." -ForegroundColor Yellow
+    $installScript = Join-Path $env:TEMP "dotnet-install.ps1"
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri "https://dot.net/v1/dotnet-install.ps1" -OutFile $installScript -UseBasicParsing
+    $sig = Get-AuthenticodeSignature $installScript
+    if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+        Remove-Item $installScript -Force -ErrorAction SilentlyContinue
+        throw "dotnet-install.ps1 signature check failed ($($sig.Status)); not running it."
+    }
+
+    # Separate process so the script runs under Bypass regardless of this session's execution policy.
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $installScript -Channel 10.0 -InstallDir $userDotNet
+    $installExit = $LASTEXITCODE
+    Remove-Item $installScript -Force -ErrorAction SilentlyContinue
+    if ($installExit -ne 0) { throw "dotnet-install.ps1 failed (exit $installExit)" }
+
+    $env:DOTNET_ROOT = $userDotNet
+    $env:PATH = "$userDotNet;$env:PATH"
+    if (-not (Test-DotNet10Sdk)) { throw ".NET 10 SDK install finished but 'dotnet --list-sdks' still shows no 10.x SDK." }
+    Write-Host ".NET 10 SDK: installed ($userDotNet)" -ForegroundColor Green
+}
+
+# Only the publish steps need the SDK; -SkipBuild just re-stages and re-runs ISCC.
+if (-not $SkipBuild) { Initialize-DotNet10Sdk }
 
 $ScriptDir    = $PSScriptRoot
 $RepoRoot     = Split-Path $ScriptDir -Parent          # e.g. C:\Projects\RynthCore

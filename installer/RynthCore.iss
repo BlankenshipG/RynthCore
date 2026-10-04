@@ -10,6 +10,8 @@
 ; Both are recorded under HKA\Software\Rynth (CoreDir / SuiteDir); the engine, launcher and plugins
 ; resolve every path from there (RynthInstallPaths.cs), so neither folder has to be under C:\Games.
 ; Silent installs: /DIR="<core folder>" /SUITEDIR="<suite folder>".
+; Prerequisite: when the .NET 10 Desktop Runtime (x86) is missing, the "installdotnet" task (on by default)
+; downloads it from Microsoft and installs it before the files are copied. A failure is reported, never fatal.
 ;
 ; NOTE: No ISPP (#define / {#...}) macros are used in this file.
 ; Build-Installer.ps1 replaces the AppVersion placeholder via text substitution
@@ -70,6 +72,9 @@ Name: "experimental\rynthvision";  Description: "RynthVision - unclimbable slope
 
 [Tasks]
 Name: desktopicon; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
+; Only offered when the runtime is missing. RynthCore and its tools are self-contained / NativeAOT and run
+; without it; it is installed for framework-dependent add-ons and tools. Skip silently with /MERGETASKS="!installdotnet".
+Name: installdotnet; Description: "Download and install the Microsoft .NET 10 Desktop Runtime (x86, about 55 MB; may ask for administrator approval)"; GroupDescription: "Prerequisites:"; Check: DotNet10DesktopMissing
 
 ; Files left by older layouts (the 0.4.x RynthBundle put a framework-dependent launcher, the engine
 ; and plugins straight into {app}). Mixing those with a newer launcher is what broke 2026-10-04's
@@ -157,9 +162,16 @@ Filename: "{app}\RynthCore.exe"; WorkingDir: "{app}"; Flags: nowait runasorigina
 [Code]
 const
   DefaultSuiteDir = 'C:\Games\RynthSuite';
+  { Microsoft's permalink to the latest .NET 10 Desktop Runtime (x86 to match RynthCore's x86 binaries). }
+  DotNetDesktopUrl  = 'https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x86.exe';
+  DotNetDesktopFile = 'windowsdesktop-runtime-10-win-x86.exe';
+  DotNetManualUrl   = 'https://dotnet.microsoft.com/download/dotnet/10.0';
 
 var
   SuiteDirPage: TInputDirWizardPage;
+  DotNetDownloadPage: TDownloadWizardPage;
+  { Set once the .NET step ran (interactive: on leaving the Ready page; silent: in PrepareToInstall). }
+  DotNetHandled: Boolean;
   { True once the user (or /SUITEDIR / a previous install) chose the Suite folder explicitly;
     until then it follows the RynthCore folder as a sibling "RynthSuite" folder. }
   SuiteDirPinned: Boolean;
@@ -193,13 +205,14 @@ begin
     end;
 end;
 
-{ Suite folder recorded by an earlier install (HKCU first, then HKLM), or ''. }
+{ Suite folder recorded by an earlier install in the SAME install mode (HKA: HKCU per-user, HKLM all-users),
+  or ''. Never adopt the other mode's folder: two installs sharing a Suite folder would delete each other's
+  files on uninstall. }
 function RegisteredSuiteDir: string;
 begin
   Result := '';
-  if not RegQueryStringValue(HKCU, 'Software\Rynth', 'SuiteDir', Result) then
-    if not RegQueryStringValue(HKLM, 'Software\Rynth', 'SuiteDir', Result) then
-      Result := '';
+  if not RegQueryStringValue(HKA, 'Software\Rynth', 'SuiteDir', Result) then
+    Result := '';
 end;
 
 { Default Suite folder for a given RynthCore folder: its sibling "RynthSuite". }
@@ -274,6 +287,115 @@ begin
   Result := GetPendingPlugins('') <> '';
 end;
 
+{ ── .NET 10 Desktop Runtime (x86) ─────────────────────────────────────────── }
+
+{ True when Root (a ...\shared\Microsoft.WindowsDesktop.App folder) holds a 10.x version folder. }
+function HasVersion10Folder(const Root: string): Boolean;
+var
+  FindRec: TFindRec;
+begin
+  Result := False;
+  if FindFirst(AddBackslash(Root) + '10.*', FindRec) then
+  try
+    repeat
+      if FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY <> 0 then
+      begin
+        Result := True;
+        Exit;
+      end;
+    until not FindNext(FindRec);
+  finally
+    FindClose(FindRec);
+  end;
+end;
+
+{ Detects the x86 Desktop Runtime 10.x the way the .NET host does: the shared framework folder under
+  Program Files (x86)\dotnet, or the installer's registration in the 32-bit registry view. }
+function IsDotNet10DesktopX86Installed: Boolean;
+var
+  Names: TArrayOfString;
+  I: Integer;
+begin
+  Result := HasVersion10Folder(ExpandConstant('{commonpf32}\dotnet\shared\Microsoft.WindowsDesktop.App'));
+  if Result then Exit;
+  if RegGetValueNames(HKLM32, 'SOFTWARE\dotnet\Setup\InstalledVersions\x86\sharedfx\Microsoft.WindowsDesktop.App', Names) then
+    for I := 0 to GetArrayLength(Names) - 1 do
+      if Copy(Names[I], 1, 3) = '10.' then
+      begin
+        Result := True;
+        Exit;
+      end;
+end;
+
+// Check function for the installdotnet task: offer it only when the runtime is missing.
+function DotNet10DesktopMissing: Boolean;
+begin
+  Result := not IsDotNet10DesktopX86Installed;
+end;
+
+function OnDotNetDownloadProgress(const Url, FileName: String; const Progress, ProgressMax: Int64): Boolean;
+begin
+  Result := True;  { never cancel from code; the download page has its own Abort button }
+end;
+
+{ Downloads and runs the .NET 10 Desktop Runtime installer when the task is selected and the runtime is
+  still missing. Returns '' on success / nothing to do, else a reason. Never blocks the RynthCore install. }
+function InstallDotNetRuntime(UsePage: Boolean): string;
+var
+  SetupPath: string;
+  ResultCode: Integer;
+begin
+  Result := '';
+  DotNetHandled := True;
+  if not WizardIsTaskSelected('installdotnet') or IsDotNet10DesktopX86Installed then
+    Exit;
+
+  Log('.NET 10 Desktop Runtime (x86) missing; downloading ' + DotNetDesktopUrl);
+  try
+    if UsePage then
+    begin
+      DotNetDownloadPage.Clear;
+      DotNetDownloadPage.Add(DotNetDesktopUrl, DotNetDesktopFile, '');
+      DotNetDownloadPage.Show;
+      try
+        DotNetDownloadPage.Download;
+      finally
+        DotNetDownloadPage.Hide;
+      end;
+    end
+    else
+      DownloadTemporaryFile(DotNetDesktopUrl, DotNetDesktopFile, '', @OnDotNetDownloadProgress);
+  except
+    Result := 'the download failed (' + GetExceptionMessage + ')';
+    Exit;
+  end;
+
+  { The runtime's own bundle asks for elevation (UAC) itself when this setup is not elevated. }
+  SetupPath := ExpandConstant('{tmp}\' + DotNetDesktopFile);
+  Log('Running ' + SetupPath + ' /install /quiet /norestart');
+  if not ShellExec('', SetupPath, '/install /quiet /norestart', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then
+    Result := 'its installer could not be started (' + SysErrorMessage(ResultCode) + ')'
+  { 0 = installed, 3010/1641 = installed (restart pending/started), 1638 = a newer version is already installed }
+  else if (ResultCode <> 0) and (ResultCode <> 3010) and (ResultCode <> 1641) and (ResultCode <> 1638) then
+    Result := 'its installer exited with code ' + IntToStr(ResultCode) + ' (1602 = cancelled)'
+  else
+    Log('.NET 10 Desktop Runtime installer finished, exit code ' + IntToStr(ResultCode));
+end;
+
+{ Runs the .NET step and reports (but never fails on) a problem. }
+procedure HandleDotNetRuntime(UsePage: Boolean);
+var
+  Problem: string;
+begin
+  Problem := InstallDotNetRuntime(UsePage);
+  if Problem = '' then Exit;
+  Log('.NET 10 Desktop Runtime was not installed: ' + Problem);
+  if not WizardSilent then
+    MsgBox('The Microsoft .NET 10 Desktop Runtime could not be installed: ' + Problem + '.' + #13#10#13#10 +
+           'RynthCore will still be installed and works without it (it is self-contained). ' +
+           'You can install the runtime later from:' + #13#10 + DotNetManualUrl, mbInformation, MB_OK);
+end;
+
 procedure InitializeWizard;
 var
   Initial: string;
@@ -295,6 +417,10 @@ begin
   SuiteDirPinned := Initial <> '';
   if Initial = '' then Initial := DefaultSuiteDir;
   SuiteDirPage.Values[0] := Initial;
+
+  { Progress page for the optional .NET 10 Desktop Runtime download (shown only when that task runs). }
+  DotNetDownloadPage := CreateDownloadPage('Downloading Prerequisites',
+    'Downloading the Microsoft .NET 10 Desktop Runtime (x86)...', @OnDotNetDownloadProgress);
 end;
 
 procedure RegisterPreviousData(PreviousDataKey: Integer);
@@ -330,6 +456,18 @@ begin
     end;
     SuiteDirPinned := True;
   end;
+
+  { Leaving the Ready page: fetch/install the .NET runtime first (with a progress page) if that task is on. }
+  if CurPageID = wpReady then
+    HandleDotNetRuntime(True);
+end;
+
+// Silent installs skip the wizard pages, so the .NET step runs here instead (no progress page). Never blocks.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  if not DotNetHandled then
+    HandleDotNetRuntime(False);
+  Result := '';
 end;
 
 function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
