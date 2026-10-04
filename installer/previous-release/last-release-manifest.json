@@ -1,19 +1,19 @@
 {
     "schema":  1,
     "product":  "RynthCore + RynthSuite",
-    "version":  "2026.10.4.14",
-    "release":  2026100414,
-    "builtUtc":  "2026-10-04T23:22:12Z",
-    "previous":  "2026.10.4.13",
+    "version":  "2026.10.4.15",
+    "release":  2026100415,
+    "builtUtc":  "2026-10-04T23:42:24Z",
+    "previous":  "2026.10.4.14",
     "installer":  {
-                      "file":  "RynthCore-Setup-2026.10.4.14.exe",
-                      "size":  108485589,
-                      "sha256":  "90e791016252caecd165ceb9006befa4aa641a816b079fc63b802f8f8c7a2a63"
+                      "file":  "RynthCore-Setup-2026.10.4.15.exe",
+                      "size":  108526270,
+                      "sha256":  "f76a08fdc4af1096c022daf1cc1a27fdb834b79641d8c23a9a27b64e1d3017cb"
                   },
     "source":  {
                    "rynthCore":  {
                                      "branch":  "SK-local",
-                                     "commit":  "19095e17c007b240fc256b96cd8066858d2c8166",
+                                     "commit":  "e5bc26cb33655288ab04b0865eae49849e595d89",
                                      "dirty":  false
                                  },
                    "rynthSuite":  {
@@ -26,22 +26,22 @@
                        {
                            "name":  "Launcher (RynthCore.exe)",
                            "file":  "core\\RynthCore.exe",
-                           "version":  "2026.10.4.14+19095e17c007b240fc256b96cd8066858d2c8166"
+                           "version":  "2026.10.4.15+e5bc26cb33655288ab04b0865eae49849e595d89"
                        },
                        {
                            "name":  "Engine",
                            "file":  "core\\Runtime\\RynthCore.Engine.dll",
-                           "version":  "2026.10.4.14+19095e17c007b240fc256b96cd8066858d2c8166"
+                           "version":  "2026.10.4.15+e5bc26cb33655288ab04b0865eae49849e595d89"
                        },
                        {
                            "name":  "Loader",
                            "file":  "core\\Runtime\\RynthCore.Loader.dll",
-                           "version":  "2026.10.4.14+19095e17c007b240fc256b96cd8066858d2c8166"
+                           "version":  "2026.10.4.15+e5bc26cb33655288ab04b0865eae49849e595d89"
                        },
                        {
                            "name":  "Loot Editor",
                            "file":  "core\\Tools\\LootEditor\\RynthCore.LootEditor.exe",
-                           "version":  "2026.10.4.14+bd9be89f29de73ef8e6c18a04bfa2b5cb679ba3f"
+                           "version":  "2026.10.4.15+bd9be89f29de73ef8e6c18a04bfa2b5cb679ba3f"
                        },
                        {
                            "name":  "RynthAi plugin",
@@ -51,7 +51,7 @@
                        {
                            "name":  "Monster Editor",
                            "file":  "suite\\RynthAi\\MonsterEditor\\RynthCore.MonsterEditor.exe",
-                           "version":  "2026.10.4.14+bd9be89f29de73ef8e6c18a04bfa2b5cb679ba3f"
+                           "version":  "2026.10.4.15+bd9be89f29de73ef8e6c18a04bfa2b5cb679ba3f"
                        },
                        {
                            "name":  "RynthChat (experimental)",
@@ -85,13 +85,12 @@
                        }
                    ],
     "changelog":  [
-                      "RynthCore/Changelog/2026-10-04-installer-2026.10.4.13-release.md",
-                      "RynthCore/Changelog/2026-10-04-merge-result-cdecl-crash-fix.md",
-                      "RynthSuite/Changelog/RynthAi-0.6.19-hub-draw-diagnostics.md"
+                      "RynthCore/Changelog/2026-10-04-installer-2026.10.4.14-release.md",
+                      "RynthCore/Changelog/2026-10-04-plugin-render-snapshot-fix-and-imgui-diagnostics.md"
                   ],
     "changelogSince":  {
-                           "rynthCore":  "6b947521286c88fcfba44b66e2a250ae9490b849",
-                           "rynthSuite":  "82decc893180e70f6c46b689f989012bd5e80a1d",
+                           "rynthCore":  "19095e17c007b240fc256b96cd8066858d2c8166",
+                           "rynthSuite":  "bd9be89f29de73ef8e6c18a04bfa2b5cb679ba3f",
                            "date":  ""
                        }
 }
