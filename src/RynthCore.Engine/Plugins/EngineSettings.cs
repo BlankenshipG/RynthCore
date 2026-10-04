@@ -21,6 +21,7 @@ internal static class EngineSettings
     private static bool _enableEngine = true;
     private static int _engineHookCount = int.MaxValue;
     private static bool _enableImGuiBackend = true;
+    private static bool _enablePluginOverlayWindows = true;
     private static bool _enableHangMinidump = true;
     private static bool _drawCustomVitalBars = true;
     private static bool _preventIdleLogoff = true;
@@ -143,6 +144,19 @@ internal static class EngineSettings
         {
             EnsureLoaded();
             return _enableImGuiBackend;
+        }
+    }
+
+    /// <summary>When true (default) and the ImGui shell is off, plugins that export
+    /// RynthPluginRenderOverlay draw their extra ImGui windows (RynthAi: ILT Hub, Item Info)
+    /// beside the Avalonia UI. engine.json "EnablePluginOverlayWindows": false hides them.
+    /// Needs <see cref="EnableImGuiBackend"/>.</summary>
+    public static bool EnablePluginOverlayWindows
+    {
+        get
+        {
+            EnsureLoaded();
+            return _enablePluginOverlayWindows;
         }
     }
 
@@ -304,6 +318,12 @@ internal static class EngineSettings
                 _enableImGuiBackend = ibEl.GetBoolean();
             }
 
+            if (doc.RootElement.TryGetProperty("EnablePluginOverlayWindows", out var powEl) &&
+                (powEl.ValueKind == JsonValueKind.True || powEl.ValueKind == JsonValueKind.False))
+            {
+                _enablePluginOverlayWindows = powEl.GetBoolean();
+            }
+
             if (doc.RootElement.TryGetProperty("EnableHangMinidump", out var hmEl) &&
                 (hmEl.ValueKind == JsonValueKind.True || hmEl.ValueKind == JsonValueKind.False))
             {
@@ -359,6 +379,7 @@ internal static class EngineSettings
                 w.WriteBoolean("EnableEngine", _enableEngine);
                 w.WriteNumber("EngineHookCount", _engineHookCount);
                 w.WriteBoolean("EnableImGuiBackend", _enableImGuiBackend);
+                w.WriteBoolean("EnablePluginOverlayWindows", _enablePluginOverlayWindows);
                 w.WriteBoolean("EnableHangMinidump", _enableHangMinidump);
                 w.WriteBoolean("DrawCustomVitalBars", _drawCustomVitalBars);
                 w.WriteBoolean("PreventIdleLogoff", _preventIdleLogoff);

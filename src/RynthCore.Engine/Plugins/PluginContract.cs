@@ -10,7 +10,11 @@
 //    const char* RynthPluginName()           — human-readable name
 //    const char* RynthPluginVersion()        — version string (e.g. "1.0.0")
 //    void        RynthPluginTick()           — per-frame logic (before render)
-//    void        RynthPluginRender()         — per-frame ImGui drawing
+//    void        RynthPluginRender()         — per-frame ImGui drawing (ImGui shell on)
+//    void        RynthPluginRenderOverlay()  — per-frame ImGui drawing while the ImGui shell is
+//                                              off (Avalonia mode): only windows that have no
+//                                              Avalonia panel. Gated by engine.json
+//                                              "EnablePluginOverlayWindows" (default true).
 // ============================================================================
 
 using System;

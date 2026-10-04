@@ -1043,6 +1043,38 @@ internal static class PluginManager
         }
     }
 
+    /// <summary>
+    /// ImGui-shell-off counterpart of <see cref="RenderAll"/>: calls the optional
+    /// RynthPluginRenderOverlay export, where a plugin draws only the extra windows that have
+    /// no Avalonia panel (e.g. RynthAi's ILT Hub). They float beside the Avalonia UI and add to it.
+    /// A throw switches off just that plugin's overlay windows; the plugin is NOT marked Failed,
+    /// so its tick/automation and Avalonia panels keep running.
+    /// </summary>
+    public static void RenderOverlayAll()
+    {
+        if (!_loginCompleteObserved)
+            return; // same not-in-world crash zone guard as RenderAll
+
+        LoadedPlugin[] plugins = System.Threading.Volatile.Read(ref _pluginsRenderSnapshot);
+        for (int i = 0; i < plugins.Length; i++)
+        {
+            var plugin = plugins[i];
+            var overlay = plugin.RenderOverlay;
+            if (!plugin.Initialized || plugin.Failed || overlay == null)
+                continue;
+
+            try
+            {
+                overlay();
+            }
+            catch (Exception ex)
+            {
+                plugin.RenderOverlay = null;
+                RynthLog.Error($"PluginManager: {plugin.DisplayName} RenderOverlay threw {ex.GetType().Name}: {ex.Message} - overlay windows off for this session (plugin keeps running).");
+            }
+        }
+    }
+
     public static void ShutdownAll()
     {
         RynthLog.Plugin($"PluginManager: Shutting down {_plugins.Count} plugin(s)...");

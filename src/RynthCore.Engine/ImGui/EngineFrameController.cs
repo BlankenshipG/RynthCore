@@ -517,6 +517,12 @@ internal static class EngineFrameController
                 RynthCoreShell.Render(_frameCount);
                 PluginManager.RenderAll();
             }
+            else if (Plugins.EngineSettings.EnablePluginOverlayWindows)
+            {
+                // Avalonia mode: only the opt-in extra windows (RynthPluginRenderOverlay),
+                // never the plugins' full ImGui UIs that Avalonia panels already cover.
+                PluginManager.RenderOverlayAll();
+            }
 
             bool captureMouse =
                 ImGuiNET.ImGui.IsWindowHovered(ImGuiHoveredFlags.AnyWindow) ||

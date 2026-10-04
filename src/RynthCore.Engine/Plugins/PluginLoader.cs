@@ -482,6 +482,10 @@ internal static class PluginLoader
         if (renderPtr != IntPtr.Zero)
             plugin.Render = Marshal.GetDelegateForFunctionPointer<PluginRenderDelegate>(renderPtr);
 
+        IntPtr renderOverlayPtr = GetProcAddress(handle, "RynthPluginRenderOverlay");
+        if (renderOverlayPtr != IntPtr.Zero)
+            plugin.RenderOverlay = Marshal.GetDelegateForFunctionPointer<PluginRenderDelegate>(renderOverlayPtr);
+
         // Read name/version from the plugin if available
         if (plugin.GetName != null)
         {

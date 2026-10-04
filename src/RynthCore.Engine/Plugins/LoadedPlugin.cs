@@ -54,6 +54,8 @@ internal sealed class LoadedPlugin
     public PluginOnEnchantmentRemovedDelegate? OnEnchantmentRemoved { get; set; }
     public PluginTickDelegate? Tick { get; set; }
     public PluginRenderDelegate? Render { get; set; }
+    /// <summary>Optional RynthPluginRenderOverlay: ImGui windows drawn while the ImGui shell is off.</summary>
+    public PluginRenderDelegate? RenderOverlay { get; set; }
 
     // ─── Runtime state ───────────────────────────────────────────────
     public bool Initialized { get; set; }
@@ -100,5 +102,6 @@ internal sealed class LoadedPlugin
         OnEnchantmentRemoved = null;
         Tick = null;
         Render = null;
+        RenderOverlay = null;
     }
 }
