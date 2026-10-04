@@ -1,24 +1,24 @@
 {
     "schema":  1,
     "product":  "RynthCore + RynthSuite",
-    "version":  "2026.10.4.9",
-    "release":  2026100409,
-    "builtUtc":  "2026-10-04T21:42:08Z",
-    "previous":  "2026.10.4.8",
+    "version":  "2026.10.4.10",
+    "release":  2026100410,
+    "builtUtc":  "2026-10-04T22:06:28Z",
+    "previous":  "2026.10.4.9",
     "installer":  {
-                      "file":  "RynthCore-Setup-2026.10.4.9.exe",
-                      "size":  108442742,
-                      "sha256":  "95854d75eb1635e34474a9ef29deb65fc6dbc825d45e782fc9ecae501536efab"
+                      "file":  "RynthCore-Setup-2026.10.4.10.exe",
+                      "size":  108447483,
+                      "sha256":  "57462ea3fc03a71e92666cc54a961aa89f7b03a182540d05878ca6ce8f63e984"
                   },
     "source":  {
                    "rynthCore":  {
                                      "branch":  "SK-local",
-                                     "commit":  "7a58cdc0959c44a8804b6dc0ade56d1fd4a4299f",
+                                     "commit":  "a7cdbee1355f121fd842bcf6739814d1c5e0efd7",
                                      "dirty":  false
                                  },
                    "rynthSuite":  {
                                       "branch":  "SK-local",
-                                      "commit":  "22b77c5d296f0d4d52169fdd196398ee4637ae08",
+                                      "commit":  "898bf8b98b2912933f9f369d95ac3a6021c01bc8",
                                       "dirty":  false
                                   }
                },
@@ -26,72 +26,72 @@
                        {
                            "name":  "Launcher (RynthCore.exe)",
                            "file":  "core\\RynthCore.exe",
-                           "version":  "2026.10.4.9+7a58cdc0959c44a8804b6dc0ade56d1fd4a4299f"
+                           "version":  "2026.10.4.10+a7cdbee1355f121fd842bcf6739814d1c5e0efd7"
                        },
                        {
                            "name":  "Engine",
                            "file":  "core\\Runtime\\RynthCore.Engine.dll",
-                           "version":  "2026.10.4.9+7a58cdc0959c44a8804b6dc0ade56d1fd4a4299f"
+                           "version":  "2026.10.4.10+a7cdbee1355f121fd842bcf6739814d1c5e0efd7"
                        },
                        {
                            "name":  "Loader",
                            "file":  "core\\Runtime\\RynthCore.Loader.dll",
-                           "version":  "2026.10.4.9+7a58cdc0959c44a8804b6dc0ade56d1fd4a4299f"
+                           "version":  "2026.10.4.10+a7cdbee1355f121fd842bcf6739814d1c5e0efd7"
                        },
                        {
                            "name":  "Loot Editor",
                            "file":  "core\\Tools\\LootEditor\\RynthCore.LootEditor.exe",
-                           "version":  "2026.10.4.9+22b77c5d296f0d4d52169fdd196398ee4637ae08"
+                           "version":  "2026.10.4.10+898bf8b98b2912933f9f369d95ac3a6021c01bc8"
                        },
                        {
                            "name":  "RynthAi plugin",
                            "file":  "suite\\RynthAi\\RynthCore.Plugin.RynthAi.dll",
-                           "version":  "0.6.15-legacy-ui+22b77c5d296f0d4d52169fdd196398ee4637ae08"
+                           "version":  "0.6.16-legacy-ui+898bf8b98b2912933f9f369d95ac3a6021c01bc8"
                        },
                        {
                            "name":  "Monster Editor",
                            "file":  "suite\\RynthAi\\MonsterEditor\\RynthCore.MonsterEditor.exe",
-                           "version":  "2026.10.4.9+22b77c5d296f0d4d52169fdd196398ee4637ae08"
+                           "version":  "2026.10.4.10+898bf8b98b2912933f9f369d95ac3a6021c01bc8"
                        },
                        {
                            "name":  "RynthChat (experimental)",
                            "file":  "suite\\RynthChat\\RynthCore.Plugin.RynthChat.dll",
-                           "version":  "0.1.1-experimental+22b77c5d296f0d4d52169fdd196398ee4637ae08"
+                           "version":  "0.1.1-experimental+898bf8b98b2912933f9f369d95ac3a6021c01bc8"
                        },
                        {
                            "name":  "RynthJuice (experimental)",
                            "file":  "suite\\RynthJuice\\RynthCore.Plugin.RynthJuice.dll",
-                           "version":  "0.1.1-experimental+22b77c5d296f0d4d52169fdd196398ee4637ae08"
+                           "version":  "0.1.1-experimental+898bf8b98b2912933f9f369d95ac3a6021c01bc8"
                        },
                        {
                            "name":  "RynthNav (experimental)",
                            "file":  "suite\\RynthNav\\RynthCore.Plugin.RynthNav.dll",
-                           "version":  "0.5.5-experimental+22b77c5d296f0d4d52169fdd196398ee4637ae08"
+                           "version":  "0.5.5-experimental+898bf8b98b2912933f9f369d95ac3a6021c01bc8"
                        },
                        {
                            "name":  "RynthTracker (experimental)",
                            "file":  "suite\\RynthTracker\\RynthCore.Plugin.RynthTracker.dll",
-                           "version":  "0.1.1-experimental+22b77c5d296f0d4d52169fdd196398ee4637ae08"
+                           "version":  "0.1.1-experimental+898bf8b98b2912933f9f369d95ac3a6021c01bc8"
                        },
                        {
                            "name":  "RynthVision (experimental)",
                            "file":  "suite\\RynthVision\\RynthCore.Plugin.RynthVision.dll",
-                           "version":  "0.1.1-experimental+22b77c5d296f0d4d52169fdd196398ee4637ae08"
+                           "version":  "0.1.1-experimental+898bf8b98b2912933f9f369d95ac3a6021c01bc8"
                        },
                        {
                            "name":  "UbRythai (experimental)",
                            "file":  "suite\\UbRythai\\RynthCore.Plugin.UbRythai.dll",
-                           "version":  "3.1.10+22b77c5d296f0d4d52169fdd196398ee4637ae08"
+                           "version":  "3.1.10+898bf8b98b2912933f9f369d95ac3a6021c01bc8"
                        }
                    ],
     "changelog":  [
-                      "RynthCore/Changelog/2026-10-04-installer-2026.10.4.8-release.md",
-                      "RynthCore/Changelog/2026-10-04-plugin-overlay-windows.md",
-                      "RynthSuite/Changelog/RynthAi-0.6.15-ilt-hub-overlay-window.md"
+                      "RynthCore/Changelog/2026-10-04-create-seeds-and-fatal-only-crash-logger.md",
+                      "RynthCore/Changelog/2026-10-04-installer-2026.10.4.9-release.md",
+                      "RynthSuite/Changelog/RynthAi-0.6.16-typed-item-classification.md"
                   ],
     "changelogSince":  {
-                           "rynthCore":  "45f9ad2075c3e7bf5ac85b2a41c40c016654452f",
-                           "rynthSuite":  "975151b406c37258aa909584a163a1903ce1ac67",
+                           "rynthCore":  "7a58cdc0959c44a8804b6dc0ade56d1fd4a4299f",
+                           "rynthSuite":  "22b77c5d296f0d4d52169fdd196398ee4637ae08",
                            "date":  ""
                        }
 }
