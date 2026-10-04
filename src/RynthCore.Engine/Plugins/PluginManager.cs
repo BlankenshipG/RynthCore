@@ -1064,6 +1064,13 @@ internal static class PluginManager
             if (!plugin.Initialized || plugin.Failed || overlay == null)
                 continue;
 
+            if (!plugin.RenderOverlayLogged)
+            {
+                // One line per plugin per session: proves the engine is actually driving the overlay export.
+                plugin.RenderOverlayLogged = true;
+                RynthLog.Plugin($"PluginManager: first RenderOverlay call for {plugin.DisplayName}.");
+            }
+
             try
             {
                 overlay();

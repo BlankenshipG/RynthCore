@@ -57,6 +57,9 @@ internal sealed class LoadedPlugin
     /// <summary>Optional RynthPluginRenderOverlay: ImGui windows drawn while the ImGui shell is off.</summary>
     public PluginRenderDelegate? RenderOverlay { get; set; }
 
+    /// <summary>Set after the first RenderOverlay call has been logged (render thread only).</summary>
+    public bool RenderOverlayLogged { get; set; }
+
     // ─── Runtime state ───────────────────────────────────────────────
     public bool Initialized { get; set; }
     public bool LoginCompleteDispatched { get; set; }

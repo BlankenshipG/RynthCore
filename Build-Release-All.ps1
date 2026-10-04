@@ -40,6 +40,25 @@ if (-not (Test-Path $sln)) {
     throw "RynthCore.sln not found at: $sln"
 }
 
+# Plugin API delegates must be cdecl. On x86 a delegate without
+# [UnmanagedFunctionPointer(CallingConvention.Cdecl)] marshals as stdcall, and every cdecl call
+# from a plugin then pops its arguments twice and corrupts the plugin's stack.
+$contract = Join-Path $RepoRoot "src\RynthCore.Engine\Plugins\PluginContract.cs"
+$contractLines = [IO.File]::ReadAllLines($contract)
+$badDelegates = @()
+for ($i = 0; $i -lt $contractLines.Length; $i++) {
+    if ($contractLines[$i] -notmatch '^\s*(internal|public)\s+(unsafe\s+)?delegate\s') { continue }
+    # Nearest previous line that is not blank and not a // comment must carry the attribute.
+    $j = $i - 1
+    while ($j -ge 0 -and ($contractLines[$j].Trim() -eq '' -or $contractLines[$j].Trim().StartsWith('//'))) { $j-- }
+    if ($j -lt 0 -or $contractLines[$j] -notmatch 'UnmanagedFunctionPointer\(CallingConvention\.Cdecl\)') {
+        $badDelegates += "  line $($i + 1): $($contractLines[$i].Trim())"
+    }
+}
+if ($badDelegates.Count -gt 0) {
+    throw "PluginContract.cs delegate(s) missing [UnmanagedFunctionPointer(CallingConvention.Cdecl)]:`n$($badDelegates -join "`n")"
+}
+
 Write-Host "Building solution: $sln" -ForegroundColor Cyan
 dotnet build $sln -c Release
 if ($LASTEXITCODE -ne 0) { throw "Solution build failed (exit $LASTEXITCODE)" }

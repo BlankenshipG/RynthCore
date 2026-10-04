@@ -747,7 +747,7 @@ internal unsafe struct VendorTradeStatusNative
 /// <summary>Current API version. Bump when adding fields to RynthCoreAPI.</summary>
 internal static class PluginContractVersion
 {
-    public const uint Current = 68; // v68: GetMergeStackResult
+    public const uint Current = 69; // v69: GetMergeStackResult thunk is cdecl (v68 engines pass a stdcall thunk - unusable)
 }
 
 internal static class ClientActionHookFlags
@@ -1214,4 +1214,7 @@ internal unsafe delegate uint VendorSellCallbackDelegate(uint vendorId, uint* it
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetVendorTradeStatusCallbackDelegate(VendorTradeStatusNative* status);
+// Cdecl is mandatory on every API delegate: without it x86 marshals a stdcall thunk, the callee and
+// the cdecl caller both pop the args, and the plugin's stack drifts on every call.
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetMergeStackResultCallbackDelegate(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs);

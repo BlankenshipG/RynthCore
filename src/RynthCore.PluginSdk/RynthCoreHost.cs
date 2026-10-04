@@ -6,7 +6,7 @@ namespace RynthCore.PluginSdk;
 
 public readonly unsafe struct RynthCoreHost
 {
-    public const uint CurrentApiVersion = 68; // v68: GetMergeStackResult
+    public const uint CurrentApiVersion = 69; // v69: GetMergeStackResult usable (cdecl thunk)
 
     /// <summary>
     /// The oldest engine API a plugin built on this SDK loads on by default
@@ -130,7 +130,8 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetObjectDataIdProperty => _api.Version >= 65 && _api.GetObjectDataIdPropertyFn != IntPtr.Zero;
     public bool HasGetPluginExportJson     => _api.Version >= 66 && _api.GetPluginExportJsonFn     != IntPtr.Zero;
     // Version-checked first: on an older engine the field lies past the end of its API table.
-    public bool HasGetMergeStackResult     => _api.Version >= 68 && _api.GetMergeStackResultFn     != IntPtr.Zero;
+    // v68 engines export a stdcall thunk that corrupts the caller's stack, so require v69.
+    public bool HasGetMergeStackResult     => _api.Version >= 69 && _api.GetMergeStackResultFn     != IntPtr.Zero;
 
     // ─── Methods ────────────────────────────────────────────────────────────
 
