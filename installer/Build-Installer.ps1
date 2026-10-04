@@ -432,6 +432,9 @@ Write-Host "Staging complete: $StagingRoot" -ForegroundColor Green
 # ── Archive the previous installer when -Version bumps ─────────────────────
 # installer\previous-release\last-built-version.txt records the last version built; when a new
 # -Version is built, that version's installer is copied to previous-release\ first.
+# Inno stamps AppVersion as the setup exe's ProductVersion, padded with spaces/NULs.
+function Get-InstallerVersion([string]$Exe) { "$((Get-Item $Exe).VersionInfo.ProductVersion)".Trim([char[]]" `0") }
+
 $previousReleaseDir = Join-Path $ScriptDir "previous-release"
 $lastVersionFile    = Join-Path $previousReleaseDir "last-built-version.txt"
 if ($Version) {
@@ -444,8 +447,8 @@ if ($Version) {
             # another checkout); only archive it when its stamped ProductVersion really is $lastVer.
             $canonical = Join-Path $ScriptDir "Output\RynthCore-Setup.exe"
             $prevExe = $null
-            if ((Test-Path $canonical) -and ((Get-Item $canonical).VersionInfo.ProductVersion -eq $lastVer)) { $prevExe = $canonical }
-            elseif (Test-Path $canonical) { Write-Warning "Previous installer $lastVer not found in Output\ (RynthCore-Setup.exe is $((Get-Item $canonical).VersionInfo.ProductVersion)); nothing archived." }
+            if ((Test-Path $canonical) -and ((Get-InstallerVersion $canonical) -eq $lastVer)) { $prevExe = $canonical }
+            elseif (Test-Path $canonical) { Write-Warning "Previous installer $lastVer not found in Output\ (RynthCore-Setup.exe is $(Get-InstallerVersion $canonical)); nothing archived." }
         }
         if ($prevExe -and (Test-Path $prevExe)) {
             $archive = Join-Path $previousReleaseDir "RynthCore-Setup-$lastVer.exe"
@@ -547,7 +550,7 @@ if ($Version -and -not $NoPackage) {
     Write-Host "Assembling deployment package..." -ForegroundColor Cyan
 
     # The installer must carry this release's version (Inno stamps AppVersion as ProductVersion).
-    $stamped = (Get-Item $builtInstaller).VersionInfo.ProductVersion
+    $stamped = Get-InstallerVersion $builtInstaller
     if ($stamped -ne $Version) { throw "Installer ProductVersion is '$stamped', expected '$Version'." }
 
     $pkgName = "Release-$Version"
@@ -574,7 +577,7 @@ if ($Version -and -not $NoPackage) {
     $components = foreach ($kv in $componentFiles.GetEnumerator()) {
         $vi = (Get-Item $kv.Value).VersionInfo
         $ver = if ($vi.ProductVersion) { $vi.ProductVersion } else { $vi.FileVersion }
-        [ordered]@{ name = $kv.Key; file = $kv.Value.Substring($StagingRoot.Length + 1); version = "$ver" }
+        [ordered]@{ name = $kv.Key; file = $kv.Value.Substring($StagingRoot.Length + 1); version = "$ver".Trim([char[]]" `0") }
     }
 
     # Changelog entries since the previous release (its manifest's commits, else its build date).
