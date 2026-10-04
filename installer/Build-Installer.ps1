@@ -586,13 +586,28 @@ if ($Version -and -not $NoPackage) {
     if (Test-Path $lastManifestFile) {
         try { $prevManifest = Get-Content $lastManifestFile -Raw | ConvertFrom-Json } catch { $prevManifest = $null }
     }
-    $sinceDate = ""
-    if ($lastVer -and $lastVer -ne $Version) {
-        $lp = $lastVer.Split('.')
-        if ($lp.Count -eq 4) { $sinceDate = '{0:D4}-{1:D2}-{2:D2}' -f [int]$lp[0], [int]$lp[1], [int]$lp[2] }
+    # Baseline for "changes since": a rebuild of the same version reuses that build's baseline;
+    # otherwise the previous release's commits, or (no manifest yet) the previous version's date.
+    function ConvertTo-SinceDate([string]$Ver) {
+        $vp = "$Ver".Split('.')
+        if ($vp.Count -eq 4) { return '{0:D4}-{1:D2}-{2:D2}' -f [int]$vp[0], [int]$vp[1], [int]$vp[2] }
+        return ""
     }
-    $coreSince  = if ($prevManifest) { $prevManifest.source.rynthCore.commit }  else { "" }
-    $suiteSince = if ($prevManifest) { $prevManifest.source.rynthSuite.commit } else { "" }
+    $prevRelease = if ($lastVer -ne $Version) { $lastVer } else { "" }
+    $coreSince = ""; $suiteSince = ""; $sinceDate = ""
+    if ($prevManifest -and $prevManifest.version -eq $Version) {
+        $prevRelease = "$($prevManifest.previous)"
+        if ($prevManifest.changelogSince) {
+            $coreSince  = "$($prevManifest.changelogSince.rynthCore)"
+            $suiteSince = "$($prevManifest.changelogSince.rynthSuite)"
+            $sinceDate  = "$($prevManifest.changelogSince.date)"
+        } else { $sinceDate = ConvertTo-SinceDate $prevRelease }
+    } elseif ($prevManifest) {
+        $coreSince  = "$($prevManifest.source.rynthCore.commit)"
+        $suiteSince = "$($prevManifest.source.rynthSuite.commit)"
+    } else {
+        $sinceDate = ConvertTo-SinceDate $prevRelease
+    }
     $notesFrom = @(
         @{ Repo = 'RynthCore';  Root = $RepoRoot;       Files = (Get-ChangelogFiles $RepoRoot $coreSince $sinceDate) },
         @{ Repo = 'RynthSuite'; Root = $RynthSuiteRoot; Files = (Get-ChangelogFiles $RynthSuiteRoot $suiteSince $sinceDate) }
@@ -604,7 +619,7 @@ if ($Version -and -not $NoPackage) {
         version    = $Version
         release    = $release
         builtUtc   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-        previous   = $lastVer
+        previous   = $prevRelease
         installer  = [ordered]@{ file = $setupName; size = (Get-Item (Join-Path $pkgDir $setupName)).Length; sha256 = $setupHash }
         source     = [ordered]@{
             rynthCore  = [ordered]@{ branch = $CoreState.branch;  commit = $CoreState.commit;  dirty = $CoreState.dirty }
@@ -612,6 +627,8 @@ if ($Version -and -not $NoPackage) {
         }
         components = @($components)
         changelog  = @($notesFrom | ForEach-Object { $r = $_.Repo; $_.Files | ForEach-Object { "$r/$_" } })
+        # Baseline the notes were built from (reused when this version is rebuilt).
+        changelogSince = [ordered]@{ rynthCore = $coreSince; rynthSuite = $suiteSince; date = $sinceDate }
     }
     $manifestJson = $manifest | ConvertTo-Json -Depth 6
     Write-Utf8 (Join-Path $pkgDir 'release-manifest.json') $manifestJson
@@ -622,7 +639,7 @@ if ($Version -and -not $NoPackage) {
     $short = { param($s) if ($s.commit) { "$($s.branch)@$($s.commit.Substring(0,7))$(if ($s.dirty) { ' (uncommitted changes!)' })" } else { 'unknown' } }
     [void]$sb.AppendLine("# RynthCore + RynthSuite $Version")
     [void]$sb.AppendLine()
-    [void]$sb.AppendLine("Release $release, built $($manifest.builtUtc). Previous release: $(if ($lastVer) { $lastVer } else { 'none recorded' }).")
+    [void]$sb.AppendLine("Release $release, built $($manifest.builtUtc). Previous release: $(if ($prevRelease) { $prevRelease } else { 'none recorded' }).")
     [void]$sb.AppendLine("Source: RynthCore $(& $short $CoreState), RynthSuite $(& $short $SuiteState).")
     [void]$sb.AppendLine()
     [void]$sb.AppendLine("## Install")
@@ -637,7 +654,7 @@ if ($Version -and -not $NoPackage) {
     [void]$sb.AppendLine("|---|---|")
     foreach ($c in $components) { [void]$sb.AppendLine("| $($c.name) | $($c.version) |") }
     [void]$sb.AppendLine()
-    [void]$sb.AppendLine("## Changes$(if ($lastVer -and $lastVer -ne $Version) { " since $lastVer" })")
+    [void]$sb.AppendLine("## Changes$(if ($prevRelease) { " since $prevRelease" })")
     $anyNotes = $false
     foreach ($src in $notesFrom) {
         foreach ($rel in $src.Files) {
