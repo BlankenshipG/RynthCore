@@ -1053,10 +1053,45 @@ internal static class PluginManager
     /// </summary>
     public static void RenderOverlayAll()
     {
+        _overlayCalls++;
         if (!_loginCompleteObserved)
+        {
+            if (!_loggedOverlayWaitingForLogin)
+            {
+                _loggedOverlayWaitingForLogin = true;
+                RynthLog.Info("PluginManager: RenderOverlayAll called - waiting for login before drawing overlay windows.");
+            }
             return; // same not-in-world crash zone guard as RenderAll
+        }
 
         LoadedPlugin[] plugins = System.Threading.Volatile.Read(ref _pluginsRenderSnapshot);
+
+        // Count plugins that will actually be called; log whenever that set changes.
+        int bound = 0;
+        for (int i = 0; i < plugins.Length; i++)
+        {
+            var p = plugins[i];
+            if (p.Initialized && !p.Failed && p.RenderOverlay != null) bound++;
+        }
+        _overlayBound = bound;
+        if (bound != _loggedOverlayBound || plugins.Length != _loggedOverlayTotal)
+        {
+            _loggedOverlayBound = bound;
+            _loggedOverlayTotal = plugins.Length;
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < plugins.Length; i++)
+            {
+                var p = plugins[i];
+                if (sb.Length > 0) sb.Append(", ");
+                sb.Append(p.DisplayName).Append('(')
+                  .Append(p.RenderOverlay != null ? "overlay" : "no-overlay")
+                  .Append(p.Initialized ? "" : ",not-init")
+                  .Append(p.Failed ? ",failed" : "")
+                  .Append(')');
+            }
+            RynthLog.Info($"PluginManager: RenderOverlayAll login seen, {bound} of {plugins.Length} plugin(s) will draw overlay windows: {sb}.");
+        }
+
         for (int i = 0; i < plugins.Length; i++)
         {
             var plugin = plugins[i];
@@ -1082,6 +1117,17 @@ internal static class PluginManager
             }
         }
     }
+
+    // RenderOverlayAll diagnostics (render thread only).
+    private static long _overlayCalls;
+    private static int _overlayBound;
+    private static bool _loggedOverlayWaitingForLogin;
+    private static int _loggedOverlayBound = -1;
+    private static int _loggedOverlayTotal = -1;
+
+    /// <summary>Overlay stats for the ImGui heartbeat line.</summary>
+    internal static string DescribeOverlayState()
+        => $"overlayCalls={_overlayCalls} loginSeen={_loginCompleteObserved} overlayPlugins={_overlayBound}";
 
     public static void ShutdownAll()
     {
@@ -2174,6 +2220,10 @@ internal static class PluginManager
                 TryAddCanonicalPath(loadedCanonicalPaths, plugin.SourceFilePath);
             }
         }
+
+        // RenderAll / RenderOverlayAll iterate only this snapshot; without it they see no plugins.
+        PublishPluginsRenderSnapshot();
+        RynthLog.Plugin($"PluginManager: render snapshot published ({_plugins.Count} plugin(s)).");
     }
 
     private static void TryAddCanonicalPath(HashSet<string> set, string path)
@@ -2194,8 +2244,6 @@ internal static class PluginManager
             canonical = string.Empty;
             return false;
         }
-
-        PublishPluginsRenderSnapshot();
     }
 
     private static void InitializeLoadedPlugins()

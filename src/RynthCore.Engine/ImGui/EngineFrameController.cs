@@ -78,6 +78,24 @@ internal static class EngineFrameController
     // (after the Avalonia blit). Render thread only. Device == 0 means nothing pending.
     private static ImDrawDataPtr _deferredDrawData;
     private static IntPtr _deferredDrawDevice;
+
+    // ImGui pipeline diagnostics (render thread only): one-time lines plus a 30 s heartbeat so a
+    // log shows whether frames start, which branch runs and whether draw data is submitted.
+    private const long HeartbeatIntervalMs = 30_000;
+    private static bool _loggedImGuiGate;
+    private static long _engineErrorCount;
+    private static long _imguiErrorCount;
+    private static long _nextImGuiErrorLogAt;
+    private static long _nextEngineErrorLogAt;
+    private static bool _loggedInitFailedSkip;
+    private static bool _loggedFirstFrame;
+    private static bool _loggedFirstSubmit;
+    private static int _loggedBranch = -1;
+    private static string _initFailStep = "unknown";
+    private static long _framesCompleted;
+    private static long _drawSubmits;
+    private static long _nextHeartbeatAt;
+
     private static long _lastFrameTicks;
     private static int _frameCount;
 
@@ -118,7 +136,10 @@ internal static class EngineFrameController
             return true;
 
         if (!EnsureCore(pDevice))
+        {
+            _initFailStep = "EnsureCore (game window not found)";
             return false;
+        }
 
         IntPtr previousContext = ImGuiNET.ImGui.GetCurrentContext();
         if (previousContext != IntPtr.Zero)
@@ -141,7 +162,7 @@ internal static class EngineFrameController
                 System.IO.Directory.CreateDirectory(RynthInstallPaths.RynthAiDir);
                 IntPtr iniPtr = System.Runtime.InteropServices.Marshal.StringToHGlobalAnsi(iniPath);
                 unsafe { io.NativePtr->IniFilename = (byte*)iniPtr; }
-                RynthLog.Render($"EngineFrameController: imgui.ini pinned to {iniPath}");
+                RynthLog.Info($"EngineFrameController: imgui.ini pinned to {iniPath}");
             }
             catch (Exception ex)
             {
@@ -168,10 +189,16 @@ internal static class EngineFrameController
             ViewportProbe.Run();
 
             if (!Win32Backend.Init(_gameHwnd))
+            {
+                _initFailStep = "Win32Backend.Init";
                 return false;
+            }
 
             if (!DX9Backend.InitImGui(pDevice))
+            {
+                _initFailStep = "DX9Backend.InitImGui";
                 return false;
+            }
 
             // Viewport backends only run when ViewportsEnable is on. Installing
             // their callbacks on PlatformIO without the flag has no upside and
@@ -192,7 +219,7 @@ internal static class EngineFrameController
             _imguiInitialized = true;
             initSucceeded = true;
 
-            RynthLog.Render("EngineFrameController: Fully initialized - RynthCore shell active.");
+            RynthLog.Info("EngineFrameController: ImGui fully initialized.");
             return true;
         }
         finally
@@ -369,6 +396,12 @@ internal static class EngineFrameController
             // calls it at all.
 
             // ── ImGui-gated work ─────────────────────────────────────────
+            if (!_loggedImGuiGate)
+            {
+                // Reaching here proves the always-on steps above aren't throwing every frame.
+                _loggedImGuiGate = true;
+                RynthLog.Info($"EngineFrameController: reached ImGui gate (EnableImGuiBackend={Plugins.EngineSettings.EnableImGuiBackend}, EnableImGuiShell={Plugins.EngineSettings.EnableImGuiShell}, EnablePluginOverlayWindows={Plugins.EngineSettings.EnablePluginOverlayWindows}).");
+            }
             if (Plugins.EngineSettings.EnableImGuiBackend)
                 RunImGuiFrame(pDevice);
 
@@ -388,7 +421,16 @@ internal static class EngineFrameController
         }
         catch (Exception ex)
         {
-            RynthLog.Info($"EngineFrameController: frame {_frameCount} engine error: {ex.GetType().Name}: {ex.Message}");
+            // An exception here skips everything after it this frame (including RunImGuiFrame), so
+            // the first one gets a stack trace; repeats are summarised every 30 s instead of per frame.
+            _engineErrorCount++;
+            long errNow = Environment.TickCount64;
+            if (_engineErrorCount == 1)
+                RynthLog.Error($"EngineFrameController: engine frame error (rest of this frame skipped): {ex}");
+            else if (errNow >= _nextEngineErrorLogAt)
+                RynthLog.Error($"EngineFrameController: engine frame errors so far={_engineErrorCount}, latest {ex.GetType().Name}: {ex.Message}");
+            if (errNow >= _nextEngineErrorLogAt)
+                _nextEngineErrorLogAt = errNow + HeartbeatIntervalMs;
         }
         finally
         {
@@ -454,13 +496,22 @@ internal static class EngineFrameController
     /// </summary>
     private static void RunImGuiFrame(IntPtr pDevice)
     {
-        if (_imguiInitFailed) return;
+        if (_imguiInitFailed)
+        {
+            if (!_loggedInitFailedSkip)
+            {
+                _loggedInitFailedSkip = true;
+                RynthLog.Error("EngineFrameController: ImGui init failed earlier - RunImGuiFrame is a no-op for this session (no plugin overlay windows).");
+            }
+            return;
+        }
 
         if (!_imguiInitialized)
         {
             if (!Init(pDevice))
             {
                 _imguiInitFailed = true;
+                RynthLog.Error($"EngineFrameController: ImGui init FAILED at step '{_initFailStep}' - ImGui frames disabled for this session.");
                 return;
             }
         }
@@ -516,20 +567,38 @@ internal static class EngineFrameController
 
             ImGuiNET.ImGui.NewFrame();
             frameStarted = true;
+            if (!_loggedFirstFrame)
+            {
+                _loggedFirstFrame = true;
+                RynthLog.Info($"EngineFrameController: first ImGui frame started (frame={_frameCount}, display={io.DisplaySize.X:0}x{io.DisplaySize.Y:0}).");
+            }
+
             // EnableImGuiShell gates the in-AC ImGui surface as a whole: both the
             // RynthCore overlay bar and any plugin-drawn ImGui windows. Plugins
             // still load, init, and tick when this is off — they just don't
             // draw, so Avalonia panels can drive them via the plugin's C exports.
+            int branch;
             if (Plugins.EngineSettings.EnableImGuiShell)
             {
+                branch = 1;
                 RynthCoreShell.Render(_frameCount);
                 PluginManager.RenderAll();
             }
             else if (Plugins.EngineSettings.EnablePluginOverlayWindows)
             {
+                branch = 2;
                 // Avalonia mode: only the opt-in extra windows (RynthPluginRenderOverlay),
                 // never the plugins' full ImGui UIs that Avalonia panels already cover.
                 PluginManager.RenderOverlayAll();
+            }
+            else
+            {
+                branch = 0;
+            }
+            if (branch != _loggedBranch)
+            {
+                _loggedBranch = branch;
+                RynthLog.Info($"EngineFrameController: ImGui branch = {(branch == 1 ? "shell (RenderAll)" : branch == 2 ? "overlay windows (RenderOverlayAll)" : "none (shell and overlay windows both off)")}.");
             }
 
             bool captureMouse =
@@ -550,6 +619,8 @@ internal static class EngineFrameController
             // Avalonia panels. The draw data stays valid until the next NewFrame.
             _deferredDrawData = drawData;
             _deferredDrawDevice = pDevice;
+            _framesCompleted++;
+            LogHeartbeatIfDue(drawData);
 
             if ((io.ConfigFlags & ImGuiConfigFlags.ViewportsEnable) != 0)
             {
@@ -569,7 +640,14 @@ internal static class EngineFrameController
             {
             }
 
-            RynthLog.Info($"EngineFrameController: frame {_frameCount} ImGui error: {ex.GetType().Name}: {ex.Message}");
+            _imguiErrorCount++;
+            long errNow = Environment.TickCount64;
+            if (_imguiErrorCount == 1)
+                RynthLog.Error($"EngineFrameController: ImGui frame error at frame {_frameCount} (frameStarted={frameStarted}): {ex}");
+            else if (errNow >= _nextImGuiErrorLogAt)
+                RynthLog.Error($"EngineFrameController: ImGui frame errors so far={_imguiErrorCount}, latest {ex.GetType().Name}: {ex.Message}");
+            if (errNow >= _nextImGuiErrorLogAt)
+                _nextImGuiErrorLogAt = errNow + HeartbeatIntervalMs;
         }
         finally
         {
@@ -595,6 +673,12 @@ internal static class EngineFrameController
         try
         {
             DX9Backend.RenderDrawData(_deferredDrawData, device);
+            _drawSubmits++;
+            if (!_loggedFirstSubmit)
+            {
+                _loggedFirstSubmit = true;
+                RynthLog.Info("EngineFrameController: first deferred ImGui draw submitted (after the Avalonia layer).");
+            }
         }
         catch (Exception ex)
         {
@@ -604,6 +688,29 @@ internal static class EngineFrameController
         {
             ImGuiNET.ImGui.SetCurrentContext(previousContext);
         }
+    }
+
+    /// <summary>
+    /// Every 30 s: completed ImGui frames, deferred submits, draw list / vertex counts of the
+    /// latest frame and the overlay-window stats from PluginManager. Zero draw lists means no
+    /// ImGui window was drawn that frame. One string per interval; no per-frame allocation.
+    /// </summary>
+    private static void LogHeartbeatIfDue(ImDrawDataPtr drawData)
+    {
+        long now = Environment.TickCount64;
+        if (now < _nextHeartbeatAt) return;
+        bool first = _nextHeartbeatAt == 0;
+        _nextHeartbeatAt = now + HeartbeatIntervalMs;
+        if (first) return; // first interval starts now; the first-frame line already covers t=0
+
+        int lists = 0, vertices = 0;
+        unsafe
+        {
+            // ImDrawData: +4 CmdListsCount, +8 TotalIdxCount, +12 TotalVtxCount (see CLAUDE.md offsets).
+            byte* p = (byte*)drawData.NativePtr;
+            if (p != null) { lists = *(int*)(p + 4); vertices = *(int*)(p + 12); }
+        }
+        RynthLog.Info($"EngineFrameController: ImGui heartbeat frames={_framesCompleted} submits={_drawSubmits} lastFrame drawLists={lists} vertices={vertices} {PluginManager.DescribeOverlayState()}.");
     }
 
     internal static IntPtr FindGameWindow()

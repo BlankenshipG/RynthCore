@@ -6,6 +6,9 @@
     <RuntimeIdentifier>win-x86</RuntimeIdentifier>
     <OutputType>Library</OutputType>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Unreachable code (CS0162) is always a bug here: a misplaced statement after a return
+         once left the plugin render snapshot unpublished and silently disabled every overlay window. -->
+    <WarningsAsErrors>$(WarningsAsErrors);CS0162</WarningsAsErrors>
     <Nullable>enable</Nullable>
     <PublishAot>true</PublishAot>
     <NativeLib>Shared</NativeLib>
