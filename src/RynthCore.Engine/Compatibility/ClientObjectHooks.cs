@@ -216,6 +216,24 @@ internal static class ClientObjectHooks
     private static DateTime _lastObjectIdentityPrefetchUtc = DateTime.MinValue;
     private static bool _loggedObjectIdentityServe;
     private const int ObjectIdentityPrefetchThrottleMs = 500;
+
+    // Create-time identity seeds. ACCObjectMaint::CreateObject receives the server's
+    // PublicWeenieDesc, which already carries the object's name and ITEM_TYPE before
+    // qualities/appraisal exist. The main-thread snapshot above can't resolve names for
+    // ~10 s after login (qualities not populated yet), so off-thread readers fall back to
+    // these seeds when the snapshot has no entry (or reports type 0). Entries live from
+    // create until delete; the cap only guards against a missed delete hook.
+    private static readonly object _createSeedLock = new();
+    private static readonly Dictionary<uint, string> _createSeedNames = new(1024);
+    private static readonly Dictionary<uint, uint> _createSeedTypes = new(1024);
+    private const int CreateSeedCap = 16384;
+    // PublicWeenieDesc field offsets (Chorizite Weenie.cs; same layout the PWD-direct
+    // fallbacks in TryGetObjectName / TryGetItemType read from the embedded copy).
+    private const int PwdNameOffset = 4;
+    private const int PwdTypeOffset = 56;
+    private static int _createSeedCount;
+    private static bool _loggedCreateSeedServe;
+
     // Every id the same walk visited, swapped whole (readers never see a half-built array).
     private static volatile uint[] _liveObjectIds = Array.Empty<uint>();
 
@@ -1769,6 +1787,19 @@ internal static class ClientObjectHooks
         {
             lock (_objectIdentityCacheLock)
             {
+                // A zero snapshot value means qualities weren't populated when the walk
+                // ran; prefer the create-time descriptor type in that case.
+                if (_objectTypeCache.TryGetValue(objectId, out typeFlags) && typeFlags != 0)
+                    return true;
+            }
+            if (TryGetCreateSeedType(objectId, out uint seeded))
+            {
+                typeFlags = seeded;
+                return true;
+            }
+            // Snapshot hit with flags=0 is still an answer (static scenery often has no type).
+            lock (_objectIdentityCacheLock)
+            {
                 if (_objectTypeCache.TryGetValue(objectId, out typeFlags))
                     return true;
             }
@@ -2542,6 +2573,101 @@ internal static class ClientObjectHooks
         }
     }
 
+    /// <summary>
+    /// Records an object's name and ITEM_TYPE straight from the PublicWeenieDesc passed
+    /// to ACCObjectMaint::CreateObject. Called from the create hook on AC's main thread,
+    /// after the original returns. The descriptor is server data that exists before the
+    /// object's qualities do, so this makes names/types readable off-thread immediately
+    /// instead of after the first successful identity snapshot (~10 s at login).
+    /// Every read is pointer-validated; a bad descriptor simply records nothing.
+    /// </summary>
+    internal static void SeedIdentityFromCreate(uint objectId, IntPtr weenieDesc)
+    {
+        if (objectId == 0 || weenieDesc == IntPtr.Zero)
+            return;
+
+        try
+        {
+            // PublicWeenieDesc derives from PackObj, so a real descriptor starts with an
+            // acclient.exe vtable; reject anything else before reading fields.
+            if (!LooksLikeAcHeapObject(weenieDesc))
+                return;
+
+            bool gotName = TryReadPwdString(weenieDesc, PwdNameOffset, out string name);
+
+            uint typeFlags = 0;
+            IntPtr typeAddr = weenieDesc + PwdTypeOffset;
+            bool gotType = IsReadablePointer(typeAddr);
+            if (gotType)
+                typeFlags = unchecked((uint)Marshal.ReadInt32(typeAddr));
+
+            if (!gotName && (!gotType || typeFlags == 0))
+                return;
+
+            lock (_createSeedLock)
+            {
+                // Safety valve for a missed delete: drop everything rather than grow forever.
+                // The live snapshot covers anything still in the world.
+                if (_createSeedNames.Count >= CreateSeedCap || _createSeedTypes.Count >= CreateSeedCap)
+                {
+                    _createSeedNames.Clear();
+                    _createSeedTypes.Clear();
+                }
+                if (gotName)
+                    _createSeedNames[objectId] = name;
+                if (gotType && typeFlags != 0)
+                    _createSeedTypes[objectId] = typeFlags;
+            }
+
+            int seedNo = System.Threading.Interlocked.Increment(ref _createSeedCount);
+            // First few samples let a log reader confirm the descriptor offsets resolve
+            // to sensible names/types on this client build.
+            if (seedNo <= 5)
+                RynthLog.Compat($"[CreateSeed] #{seedNo} 0x{objectId:X8} name='{(gotName ? name : "")}' type=0x{typeFlags:X8}");
+            if (!_loggedCreateSeedServe && seedNo >= 50)
+            {
+                _loggedCreateSeedServe = true;
+                int names, types;
+                lock (_createSeedLock) { names = _createSeedNames.Count; types = _createSeedTypes.Count; }
+                RynthLog.Compat($"ClientObjectHooks: create-descriptor identity seeds active — {names} names, {types} types captured at CreateObject.");
+            }
+        }
+        catch
+        {
+            // Descriptor read failures are non-fatal; the periodic snapshot still runs.
+        }
+    }
+
+    /// <summary>Drops create-time seeds for a deleted object (called from the delete hook).</summary>
+    internal static void ForgetCreateSeed(uint objectId)
+    {
+        lock (_createSeedLock)
+        {
+            _createSeedNames.Remove(objectId);
+            _createSeedTypes.Remove(objectId);
+        }
+    }
+
+    private static bool TryGetCreateSeedName(uint objectId, out string name)
+    {
+        lock (_createSeedLock)
+        {
+            if (_createSeedNames.TryGetValue(objectId, out string? seeded) && seeded.Length > 0)
+            {
+                name = seeded;
+                return true;
+            }
+        }
+        name = string.Empty;
+        return false;
+    }
+
+    private static bool TryGetCreateSeedType(uint objectId, out uint typeFlags)
+    {
+        lock (_createSeedLock)
+            return _createSeedTypes.TryGetValue(objectId, out typeFlags);
+    }
+
     public static bool TryGetObjectName(uint objectId, out string name)
     {
         name = string.Empty;
@@ -2557,6 +2683,10 @@ internal static class ClientObjectHooks
                     return true;
                 }
             }
+            // Snapshot miss (login burst / object newer than the last walk): serve the
+            // name captured from the create descriptor.
+            if (TryGetCreateSeedName(objectId, out name))
+                return true;
             name = string.Empty;
             return false;
         }

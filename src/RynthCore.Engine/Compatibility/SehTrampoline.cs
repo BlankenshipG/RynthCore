@@ -43,12 +43,24 @@ internal static class SehTrampoline
     /// no managed callback / reverse-P/Invoke transition — so unlike the removed
     /// managed CrashLogger VEH it cannot itself re-trigger a NativeAOT fail-fast on an
     /// AC-owned thread. Writes the faulting 32-bit context + a module-resolved stack
-    /// sweep to <paramref name="logPath"/> for the 0xC0000005 (AV/CSE) and 0xC0000602
-    /// (RaiseFailFast) classes that bypass managed handlers. Observes only.
+    /// sweep (bounded by the thread's StackBase) to <paramref name="logPath"/> for FATAL
+    /// crashes only: unhandled exceptions (chained unhandled-exception filter), AVs in
+    /// NativeAOT code (which the runtime fail-fasts past every filter), and other
+    /// first-chance AVs only if the process dies shortly after. AVs caught by the SEH_*
+    /// wrappers and the logger's own faults are never written. Observes only.
     /// </summary>
     public static void InstallCrashLogger(string logPath)
     {
-        try { _InstallCrashLogger(logPath); }
+        try
+        {
+            _InstallCrashLogger(logPath);
+            // v2+ logs fatal crashes only (unhandled-exception filter + NativeAOT-module AVs);
+            // v1 (no version export) logged every first-chance AV.
+            uint version = 1;
+            try { version = _SehTrampolineVersion(); }
+            catch (EntryPointNotFoundException) { }
+            RynthLog.Compat($"SehTrampoline: native crash logger installed (v{version}{(version >= 2 ? ", fatal-only" : ", logs every first-chance AV")}) -> {logPath}");
+        }
         catch (Exception ex) { RynthLog.Compat($"SehTrampoline: InstallCrashLogger failed - {ex.GetType().Name}: {ex.Message}"); }
     }
 
@@ -103,6 +115,10 @@ internal static class SehTrampoline
     [DllImport("RynthCore.SehTrampoline.dll", EntryPoint = "RC_InstallCrashLogger",
                CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
     private static extern void _InstallCrashLogger([MarshalAs(UnmanagedType.LPWStr)] string logPath);
+
+    [DllImport("RynthCore.SehTrampoline.dll", EntryPoint = "RC_SehTrampolineVersion",
+               CallingConvention = CallingConvention.Cdecl)]
+    private static extern uint _SehTrampolineVersion();
 
     [DllImport("RynthCore.SehTrampoline.dll", EntryPoint = "RC_GetTagParserGuardAddress",
                CallingConvention = CallingConvention.Cdecl)]

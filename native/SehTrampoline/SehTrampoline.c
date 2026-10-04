@@ -26,10 +26,34 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+/* File version of this native module (bump with every behavioural change). */
+#define RC_SEH_TRAMPOLINE_VERSION 2   /* v2: fatal-only crash logger, bounded stack sweep */
+
+/* Crash-logger state that the SEH_* wrappers and DllMain also touch (defined below). */
+static __declspec(thread) int t_sehDepth;       /* >0 while inside an SEH_* wrapper call   */
+static void CrashLoggerFlushOnExit(void);
+
+/* Every SEH_* wrapper brackets its guarded call with these so the crash logger knows an
+ * access violation on this thread is about to be caught by our own __except. */
+#define RC_SEH_ENTER() (++t_sehDepth)
+#define RC_SEH_LEAVE() (--t_sehDepth)
+
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason, LPVOID lpReserved)
 {
-    (void)hModule; (void)ul_reason; (void)lpReserved;
+    (void)hModule;
+    /* lpReserved != NULL on DLL_PROCESS_DETACH means the process is exiting (ExitProcess),
+     * which is how AC's own crash handling ends the process: write out any recent
+     * first-chance AVs so a crash AC swallowed still leaves a trace. */
+    if (ul_reason == DLL_PROCESS_DETACH && lpReserved != NULL) {
+        CrashLoggerFlushOnExit();
+    }
     return TRUE;
+}
+
+/* Diagnostic: native module version so the engine log can confirm which build is loaded. */
+__declspec(dllexport) unsigned int __cdecl RC_SehTrampolineVersion(void)
+{
+    return RC_SEH_TRAMPOLINE_VERSION;
 }
 
 /* ── Cdecl helpers ─────────────────────────────────────────────────────── */
@@ -40,14 +64,17 @@ __declspec(dllexport) int __cdecl
 SEH_CdeclPtrUint(Fn_CdeclPtrUint fn, unsigned int arg, void** out_result)
 {
     *out_result = NULL;
+    RC_SEH_ENTER();
     __try {
         *out_result = fn(arg);
     }
     __except(GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
              ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        RC_SEH_LEAVE();
         *out_result = NULL;
         return 0;
     }
+    RC_SEH_LEAVE();
     return 1;
 }
 
@@ -57,14 +84,17 @@ __declspec(dllexport) int __cdecl
 SEH_CdeclPtrVoid(Fn_CdeclPtrVoid fn, void** out_result)
 {
     *out_result = NULL;
+    RC_SEH_ENTER();
     __try {
         *out_result = fn();
     }
     __except(GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
              ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        RC_SEH_LEAVE();
         *out_result = NULL;
         return 0;
     }
+    RC_SEH_LEAVE();
     return 1;
 }
 
@@ -73,13 +103,16 @@ typedef void (__cdecl *Fn_CdeclVoidUintByte)(unsigned int, unsigned char);
 __declspec(dllexport) int __cdecl
 SEH_CdeclVoidUintByte(Fn_CdeclVoidUintByte fn, unsigned int arg1, unsigned char arg2)
 {
+    RC_SEH_ENTER();
     __try {
         fn(arg1, arg2);
     }
     __except(GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
              ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        RC_SEH_LEAVE();
         return 0;
     }
+    RC_SEH_LEAVE();
     return 1;
 }
 
@@ -95,13 +128,16 @@ typedef void (__fastcall *Fn_FreeHandsCast)(void* ecx, void* edx, unsigned int s
 __declspec(dllexport) int __cdecl
 SEH_FreeHandsCast(void* fn, void* this_ptr, unsigned int spellId, unsigned int targetId)
 {
+    RC_SEH_ENTER();
     __try {
         ((Fn_FreeHandsCast)fn)(this_ptr, 0, spellId, targetId);
     }
     __except(GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
              ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        RC_SEH_LEAVE();
         return 0;
     }
+    RC_SEH_LEAVE();
     return 1;
 }
 
@@ -152,14 +188,17 @@ SEH_ThiscallByteUint(void* fn, void* this_ptr, unsigned int arg,
                      unsigned char* out_result)
 {
     *out_result = 0;
+    RC_SEH_ENTER();
     __try {
         *out_result = _helper_thiscall_byte_uint(fn, this_ptr, arg);
     }
     __except(GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
              ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        RC_SEH_LEAVE();
         *out_result = 0;
         return 0;
     }
+    RC_SEH_LEAVE();
     return 1;
 }
 
@@ -171,14 +210,17 @@ __declspec(dllexport) int __cdecl
 SEH_ThiscallUintNoArg(void* fn, void* this_ptr, unsigned int* out_result)
 {
     *out_result = 0;
+    RC_SEH_ENTER();
     __try {
         *out_result = _helper_thiscall_uint_noarg(fn, this_ptr);
     }
     __except(GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
              ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        RC_SEH_LEAVE();
         *out_result = 0;
         return 0;
     }
+    RC_SEH_LEAVE();
     return 1;
 }
 
@@ -209,179 +251,436 @@ SEH_ThiscallIntUintPtr(void* fn, void* this_ptr, unsigned int arg1, void* arg2,
                        int* out_result)
 {
     *out_result = 0;
+    RC_SEH_ENTER();
     __try {
         *out_result = _helper_thiscall_int_uint_ptr(fn, this_ptr, arg1, arg2);
     }
     __except(GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
              ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        RC_SEH_LEAVE();
         *out_result = 0;
         return 0;
     }
+    RC_SEH_LEAVE();
     return 1;
 }
 
-/* ── Process-wide native crash logger (VEH) ───────────────────────────────
- * Logs the faulting 32-bit context + a module-resolved stack sweep to a
- * dedicated file BEFORE the process dies, for the fatal exceptions that bypass
- * NativeAOT's managed handlers: 0xC0000005 (AV / corrupted-state) and
- * 0xC0000602 (STATUS_FAIL_FAST from RaiseFailFastException — e.g. an unhandled
- * managed exception or a stack-walk fail-fast in the plugin/engine).
+/* ── Process-wide native crash logger (fatal-only, v2) ────────────────────
+ * Goal: native-crash.log holds FATAL crashes only. v1 logged every first-chance AV
+ * (including ones AC or our own SEH_* wrappers handle) plus its own stack-sweep faults,
+ * so its 24-entry cap filled with noise before a real crash could be recorded.
  *
- * This is PURE NATIVE: no managed callback / reverse-P/Invoke transition, so
- * unlike the removed managed CrashLogger VEH it cannot itself re-trigger a
- * NativeAOT fail-fast on an AC-owned thread. It only OBSERVES — returns
- * EXCEPTION_CONTINUE_SEARCH so AC's own SEH / the runtime still proceed exactly
- * as before. Uses only kernel32 APIs + hand-rolled formatting (no CRT stdio /
- * user32) so the build link line stays unchanged. Hardened: stack sweep in
- * __try/__except, capped log count, dedicated file (no contention with the
- * managed log). x86 (32-bit) context fields only — matches the WOW64 target.
+ * All paths are PURE NATIVE (no managed callback / reverse-P/Invoke — that could itself
+ * trigger a NativeAOT fail-fast on an AC-owned thread) and observe-only: they always
+ * return EXCEPTION_CONTINUE_SEARCH or chain, so AC's SEH and the runtime proceed exactly
+ * as before. Only kernel32 APIs + hand-rolled, bounds-checked formatting (no CRT stdio).
+ *
+ *  1. Unhandled-exception filter (SetUnhandledExceptionFilter, chained to the previous
+ *     filter): an exception nobody handled is written immediately as FATAL.
+ *  2. First-chance VEH, immediate: AVs whose faulting address is inside a NativeAOT
+ *     module (engine / plugins). The runtime fail-fasts on those via
+ *     RaiseFailFastException, which bypasses every handler including the filter in (1),
+ *     so first chance is the only chance to record them. 0xC0000602 / 0xC0000409 too.
+ *  3. First-chance VEH, deferred: every other AV (acclient.exe, drivers, DINPUT8, …) is
+ *     formatted into an in-memory ring and written ONLY if the process then dies — via
+ *     the filter in (1), or at ExitProcess (DllMain detach) when it happened within the
+ *     last CL_EXIT_FLUSH_WINDOW_MS (AC's own crash handling ends with ExitProcess).
+ *     AVs that AC handles and survives never reach the file.
+ *
+ * Skipped entirely: AVs raised inside our own SEH_* wrappers (t_sehDepth > 0 — our
+ * __except catches them) and any fault raised while the logger itself is running on
+ * that thread (t_inLogger — v1 logged its own sweep faults as SehTrampoline.dll+0x13E8).
+ *
+ * The stack sweep is bounded to [Esp, NtCurrentTeb()->NtTib.StackBase); v1 read 4096
+ * slots past ESP unconditionally and ran off the top of the stack.
+ * x86 (32-bit) context fields only — matches the WOW64 target.
  */
+#define CL_SLOT_BYTES           8192   /* one formatted record                        */
+#define CL_RING_SLOTS           8      /* deferred first-chance records kept in memory */
+#define CL_MAX_IMMEDIATE        16     /* NativeAOT-module / fail-fast records per run */
+#define CL_MAX_FATAL            8      /* unhandled-exception records per run          */
+#define CL_MAX_SWEEP_SLOTS      4096   /* stack slots scanned (also capped by StackBase) */
+#define CL_MAX_SWEEP_LINES      96     /* code pointers emitted per record             */
+#define CL_EXIT_FLUSH_WINDOW_MS 30000  /* deferred AVs this recent are flushed at exit */
+
+#define CL_SLOT_EMPTY   0
+#define CL_SLOT_WRITING 1
+#define CL_SLOT_PENDING 2   /* deferred first-chance AV, not in the file (yet)   */
+#define CL_SLOT_DONE    3   /* written to the file, or discarded                 */
+
+typedef struct {
+    volatile LONG state;
+    DWORD         tid;
+    DWORD         tick;
+    unsigned int  exAddr;
+    int           len;
+    char          text[CL_SLOT_BYTES];
+} CL_SLOT;
+
 static wchar_t       g_crashLogPath[MAX_PATH];
-static volatile LONG g_crashCount = 0;
-static PVOID         g_vehHandle  = NULL;
+static PVOID         g_vehHandle       = NULL;
+static CL_SLOT       g_ring[CL_RING_SLOTS];
+static volatile LONG g_ringNext        = 0;
+static volatile LONG g_immediateCount  = 0;
+static volatile LONG g_fatalCount      = 0;
+static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter = NULL;
+static __declspec(thread) int t_inLogger;   /* logger running on this thread       */
+static __declspec(thread) int t_inUef;      /* filter running (guards chain cycles) */
 
-static char* cl_str(char* p, const char* s) { while (*s) { *p++ = *s++; } return p; }
+/* ── Bounds-checked text writer ── */
+typedef struct { char* p; char* end; } CL_W;
 
-static char* cl_hex(char* p, unsigned int v)
+static void cl_str(CL_W* w, const char* s)
+{
+    while (*s && w->p < w->end) { *w->p++ = *s++; }
+}
+
+static void cl_hex(CL_W* w, unsigned int v)
 {
     const char* H = "0123456789ABCDEF";
     int i;
-    *p++ = '0'; *p++ = 'x';
-    for (i = 28; i >= 0; i -= 4) { *p++ = H[(v >> i) & 0xF]; }
-    return p;
+    cl_str(w, "0x");
+    for (i = 28; i >= 0 && w->p < w->end; i -= 4) { *w->p++ = H[(v >> i) & 0xF]; }
 }
 
-static char* cl_u(char* p, unsigned int v)
+static void cl_u(CL_W* w, unsigned int v)
 {
     char tmp[12]; int n = 0;
-    if (v == 0) { *p++ = '0'; return p; }
+    if (v == 0) { cl_str(w, "0"); return; }
     while (v) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
-    while (n) { *p++ = tmp[--n]; }
-    return p;
+    while (n && w->p < w->end) { *w->p++ = tmp[--n]; }
+}
+
+/* Leaf file name of a loaded module, as narrow ASCII (lower-cased when lower != 0). */
+static int cl_module_leaf(HMODULE hm, char* out, int cap, int lower)
+{
+    wchar_t wpath[MAX_PATH];
+    DWORD n = GetModuleFileNameW(hm, wpath, MAX_PATH);
+    DWORD i, leaf = 0;
+    int k = 0;
+    for (i = 0; i < n; i++) { if (wpath[i] == L'\\' || wpath[i] == L'/') { leaf = i + 1; } }
+    for (i = leaf; i < n && k < cap - 1; i++) {
+        char ch = (char)wpath[i];
+        if (lower && ch >= 'A' && ch <= 'Z') { ch = (char)(ch - 'A' + 'a'); }
+        out[k++] = ch;
+    }
+    out[k] = 0;
+    return k;
 }
 
 /* Append "module.dll+0xRVA", or "0xADDR" if the address is in no module. */
-static char* cl_sym(char* p, unsigned int addr)
+static void cl_sym(CL_W* w, unsigned int addr)
 {
     HMODULE hm = NULL;
     /* GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS(0x4) | UNCHANGED_REFCOUNT(0x2) */
     if (GetModuleHandleExW(0x4 | 0x2, (LPCWSTR)(UINT_PTR)addr, &hm) && hm) {
-        wchar_t wpath[MAX_PATH];
-        DWORD n = GetModuleFileNameW(hm, wpath, MAX_PATH);
-        DWORD i, leaf = 0;
-        for (i = 0; i < n; i++) { if (wpath[i] == L'\\' || wpath[i] == L'/') leaf = i + 1; }
-        for (i = leaf; i < n; i++) { *p++ = (char)wpath[i]; }
-        p = cl_str(p, "+");
-        p = cl_hex(p, addr - (unsigned int)(UINT_PTR)hm);
+        char leaf[MAX_PATH];
+        cl_module_leaf(hm, leaf, MAX_PATH, 0);
+        cl_str(w, leaf);
+        cl_str(w, "+");
+        cl_hex(w, addr - (unsigned int)(UINT_PTR)hm);
     } else {
-        p = cl_hex(p, addr);
+        cl_hex(w, addr);
     }
-    return p;
 }
 
-static LONG CALLBACK CrashVeh(PEXCEPTION_POINTERS ep)
+static int cl_starts_with(const char* s, const char* prefix)
 {
+    while (*prefix) { if (*s++ != *prefix++) { return 0; } }
+    return 1;
+}
+
+/* ── NativeAOT module detection (cached per module base) ── */
+#define CL_MOD_CACHE 16
+static volatile UINT_PTR g_modBase[CL_MOD_CACHE];
+static volatile LONG     g_modManaged[CL_MOD_CACHE];
+static volatile LONG     g_modNext = 0;
+
+/* True when addr lies in a NativeAOT image (engine / plugin). NativeAOT images export
+ * DotNetRuntimeDebugHeader; RynthCore.* names are a fallback (minus our native DLLs). */
+static int cl_is_nativeaot_address(unsigned int addr)
+{
+    HMODULE hm = NULL;
+    int i, managed;
+    if (!GetModuleHandleExW(0x4 | 0x2, (LPCWSTR)(UINT_PTR)addr, &hm) || !hm) { return 0; }
+
+    for (i = 0; i < CL_MOD_CACHE; i++) {
+        if (g_modBase[i] == (UINT_PTR)hm) { return (int)g_modManaged[i]; }
+    }
+
+    managed = GetProcAddress(hm, "DotNetRuntimeDebugHeader") != NULL;
+    if (!managed) {
+        char leaf[MAX_PATH];
+        cl_module_leaf(hm, leaf, MAX_PATH, 1);
+        managed = cl_starts_with(leaf, "rynthcore.")
+               && !cl_starts_with(leaf, "rynthcore.sehtrampoline")
+               && !cl_starts_with(leaf, "rynthcore.cimgui");
+    }
+
+    /* Benign race: base is cleared first and published last, so a concurrent reader
+     * either misses the entry (and recomputes) or sees a matching flag. */
+    i = (int)((unsigned int)InterlockedIncrement(&g_modNext) % CL_MOD_CACHE);
+    g_modBase[i] = 0;
+    g_modManaged[i] = managed;
+    g_modBase[i] = (UINT_PTR)hm;
+    return managed;
+}
+
+/* ── Record formatting ── */
+
+/* Formats one crash record (header, registers, bounded stack sweep) into buf.
+ * Returns the byte count. Reads of stack memory are guarded by __try. */
+static int cl_format(char* buf, int cap, PEXCEPTION_POINTERS ep, const char* banner)
+{
+    CL_W w;
+    CONTEXT* c = ep->ContextRecord;
     DWORD code = ep->ExceptionRecord->ExceptionCode;
-    if (code != 0xC0000005 && code != 0xC0000602 && code != 0xC0000409) {
-        return EXCEPTION_CONTINUE_SEARCH;
+    unsigned int exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
+
+    w.p = buf;
+    w.end = buf + cap - 64;   /* reserve room for the END line */
+
+    cl_str(&w, "\r\n==== NATIVE CRASH LOGGER: ");
+    cl_str(&w, banner);
+    cl_str(&w, " ====\r\n  code=");
+    cl_hex(&w, code);
+    cl_str(&w, " exAddr=");
+    cl_sym(&w, exAddr);
+    cl_str(&w, " tid=");
+    cl_u(&w, GetCurrentThreadId());
+    {
+        SYSTEMTIME st; GetLocalTime(&st);
+        cl_str(&w, " time=");
+        cl_u(&w, st.wHour);   cl_str(&w, ":");
+        if (st.wMinute < 10) { cl_str(&w, "0"); } cl_u(&w, st.wMinute); cl_str(&w, ":");
+        if (st.wSecond < 10) { cl_str(&w, "0"); } cl_u(&w, st.wSecond);
     }
-    if (InterlockedIncrement(&g_crashCount) > 24) {
-        return EXCEPTION_CONTINUE_SEARCH;
+    if ((code == 0xC0000005 || code == 0xC0000409) && ep->ExceptionRecord->NumberParameters >= 2) {
+        unsigned int acc      = (unsigned int)ep->ExceptionRecord->ExceptionInformation[0];
+        unsigned int dataAddr = (unsigned int)ep->ExceptionRecord->ExceptionInformation[1];
+        cl_str(&w, " access=");
+        cl_str(&w, acc == 1 ? "WRITE" : (acc == 8 ? "EXEC" : "READ"));
+        cl_str(&w, " dataAddr=");
+        cl_hex(&w, dataAddr);   /* the [null+X] value, e.g. 0xC for the parser race */
     }
+    cl_str(&w, "\r\n  eip="); cl_sym(&w, c->Eip);
+    cl_str(&w, " esp=");      cl_hex(&w, c->Esp);
+    cl_str(&w, " ebp=");      cl_hex(&w, c->Ebp);
+    cl_str(&w, "\r\n  eax="); cl_hex(&w, c->Eax);
+    cl_str(&w, " ebx=");      cl_hex(&w, c->Ebx);
+    cl_str(&w, " ecx=");      cl_hex(&w, c->Ecx);
+    cl_str(&w, " edx=");      cl_hex(&w, c->Edx);
+    cl_str(&w, " esi=");      cl_hex(&w, c->Esi);
+    cl_str(&w, " edi=");      cl_hex(&w, c->Edi);
+    cl_str(&w, "\r\n  stack code pointers (esp -> StackBase):\r\n");
 
     {
-        HANDLE h = CreateFileW(g_crashLogPath, FILE_APPEND_DATA,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL, NULL);
-        if (h == INVALID_HANDLE_VALUE) { return EXCEPTION_CONTINUE_SEARCH; }
-        SetFilePointer(h, 0, NULL, FILE_END);
+        /* The handler runs on the faulting thread, so this TEB's stack bounds apply to
+         * the faulting ESP. Never read at or past StackBase (top of the stack). */
+        NT_TIB*  tib   = (NT_TIB*)NtCurrentTeb();
+        UINT_PTR base  = (UINT_PTR)tib->StackBase;
+        UINT_PTR limit = (UINT_PTR)tib->StackLimit;
+        UINT_PTR esp   = (UINT_PTR)c->Esp;
 
-        {
-            char buf[4096];
-            char* p = buf;
-            CONTEXT* c = ep->ContextRecord;
-            unsigned int exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
-            DWORD wr;
-
-            p = cl_str(p, "\r\n==== NATIVE CRASH LOGGER (SEH VEH) ====\r\n  code=");
-            p = cl_hex(p, code);
-            p = cl_str(p, " exAddr=");
-            p = cl_sym(p, exAddr);
-            p = cl_str(p, " tid=");
-            p = cl_u(p, GetCurrentThreadId());
-            {
-                SYSTEMTIME st; GetLocalTime(&st);
-                p = cl_str(p, " time=");
-                p = cl_u(p, st.wHour);   p = cl_str(p, ":");
-                if (st.wMinute < 10) { p = cl_str(p, "0"); } p = cl_u(p, st.wMinute); p = cl_str(p, ":");
-                if (st.wSecond < 10) { p = cl_str(p, "0"); } p = cl_u(p, st.wSecond);
-            }
-            if ((code == 0xC0000005 || code == 0xC0000409) && ep->ExceptionRecord->NumberParameters >= 2) {
-                unsigned int acc      = (unsigned int)ep->ExceptionRecord->ExceptionInformation[0];
-                unsigned int dataAddr = (unsigned int)ep->ExceptionRecord->ExceptionInformation[1];
-                p = cl_str(p, " access=");
-                p = cl_str(p, acc == 1 ? "WRITE" : (acc == 8 ? "EXEC" : "READ"));
-                p = cl_str(p, " dataAddr=");
-                p = cl_hex(p, dataAddr);   /* the [null+X] value, e.g. 0xC for the parser race */
-            }
-            p = cl_str(p, "\r\n  eip="); p = cl_sym(p, c->Eip);
-            p = cl_str(p, " esp=");      p = cl_hex(p, c->Esp);
-            p = cl_str(p, " ebp=");      p = cl_hex(p, c->Ebp);
-            p = cl_str(p, "\r\n  eax="); p = cl_hex(p, c->Eax);
-            p = cl_str(p, " ebx=");      p = cl_hex(p, c->Ebx);
-            p = cl_str(p, " ecx=");      p = cl_hex(p, c->Ecx);
-            p = cl_str(p, " edx=");      p = cl_hex(p, c->Edx);
-            p = cl_str(p, " esi=");      p = cl_hex(p, c->Esi);
-            p = cl_str(p, " edi=");      p = cl_hex(p, c->Edi);
-            p = cl_str(p, "\r\n  stack code pointers (esp -> up):\r\n");
-            WriteFile(h, buf, (DWORD)(p - buf), &wr, NULL);
-
+        if (esp < limit || esp >= base) {
+            cl_str(&w, "    <esp outside this thread's stack; sweep skipped>\r\n");
+        } else {
+            unsigned int slots = (unsigned int)((base - esp) / sizeof(unsigned int));
+            if (slots > CL_MAX_SWEEP_SLOTS) { slots = CL_MAX_SWEEP_SLOTS; }
             __try {
-                unsigned int* sp = (unsigned int*)c->Esp;
-                int i, emitted = 0;
-                for (i = 0; i < 4096 && emitted < 96; i++) {
+                const unsigned int* sp = (const unsigned int*)esp;
+                unsigned int i;
+                int emitted = 0;
+                /* 320 bytes of headroom = one full "+0xOFF  module+0xRVA" line. */
+                for (i = 0; i < slots && emitted < CL_MAX_SWEEP_LINES && (w.end - w.p) > 320; i++) {
                     unsigned int v = sp[i];
                     if (v > 0x00401000u && v < 0x7FFF0000u) {
                         HMODULE hm = NULL;
                         if (GetModuleHandleExW(0x4 | 0x2, (LPCWSTR)(UINT_PTR)v, &hm) && hm) {
-                            char* q = buf;
-                            q = cl_str(q, "    +");
-                            q = cl_hex(q, (unsigned int)(i * 4));
-                            q = cl_str(q, "  ");
-                            q = cl_sym(q, v);
-                            q = cl_str(q, "\r\n");
-                            WriteFile(h, buf, (DWORD)(q - buf), &wr, NULL);
+                            cl_str(&w, "    +");
+                            cl_hex(&w, i * 4u);
+                            cl_str(&w, "  ");
+                            cl_sym(&w, v);
+                            cl_str(&w, "\r\n");
                             emitted++;
                         }
                     }
                 }
             }
             __except (EXCEPTION_EXECUTE_HANDLER) {
-                const char* m = "    <stack sweep faulted>\r\n";
-                WriteFile(h, m, (DWORD)lstrlenA(m), &wr, NULL);
-            }
-
-            {
-                const char* e = "==== END NATIVE CRASH ====\r\n";
-                WriteFile(h, e, (DWORD)lstrlenA(e), &wr, NULL);
+                cl_str(&w, "    <stack sweep faulted>\r\n");
             }
         }
-        CloseHandle(h);
     }
+
+    w.end = buf + cap;
+    cl_str(&w, "==== END NATIVE CRASH ====\r\n");
+    return (int)(w.p - buf);
+}
+
+/* ── Output ── */
+
+static void cl_append_file(const char* data, int len)
+{
+    HANDLE h;
+    DWORD wr;
+    if (len <= 0 || g_crashLogPath[0] == 0) { return; }
+    h = CreateFileW(g_crashLogPath, FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) { return; }
+    SetFilePointer(h, 0, NULL, FILE_END);
+    WriteFile(h, data, (DWORD)len, &wr, NULL);
+    CloseHandle(h);
+}
+
+/* Claims a ring slot for writing. Rotates through the ring, overwriting the oldest
+ * PENDING/DONE record; never steals a slot another thread is mid-write on. */
+static CL_SLOT* cl_claim_slot(void)
+{
+    int tries;
+    for (tries = 0; tries < CL_RING_SLOTS * 2; tries++) {
+        CL_SLOT* s = &g_ring[(unsigned int)InterlockedIncrement(&g_ringNext) % CL_RING_SLOTS];
+        LONG st = s->state;
+        if (st != CL_SLOT_WRITING &&
+            InterlockedCompareExchange(&s->state, CL_SLOT_WRITING, st) == st) {
+            return s;
+        }
+    }
+    return NULL;
+}
+
+/* Writes PENDING deferred records to the file. Skips the record matching skipTid/skipAddr
+ * (the same fault the caller is about to log) and, when maxAgeMs != 0, records older
+ * than maxAgeMs (handled AVs from long before the exit). */
+static void cl_flush_pending(DWORD skipTid, unsigned int skipAddr, DWORD maxAgeMs)
+{
+    DWORD now = GetTickCount();
+    int i;
+    for (i = 0; i < CL_RING_SLOTS; i++) {
+        CL_SLOT* s = &g_ring[i];
+        if (InterlockedCompareExchange(&s->state, CL_SLOT_WRITING, CL_SLOT_PENDING) != CL_SLOT_PENDING) {
+            continue;
+        }
+        if ((skipTid != 0 && s->tid == skipTid && s->exAddr == skipAddr) ||
+            (maxAgeMs != 0 && now - s->tick > maxAgeMs)) {
+            InterlockedExchange(&s->state, CL_SLOT_DONE);
+            continue;
+        }
+        cl_append_file(s->text, s->len);
+        InterlockedExchange(&s->state, CL_SLOT_DONE);
+    }
+}
+
+/* ── Handlers ── */
+
+static LONG CALLBACK CrashVeh(PEXCEPTION_POINTERS ep)
+{
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    unsigned int exAddr;
+    int immediate;
+    CL_SLOT* s;
+
+    if (code != 0xC0000005 && code != 0xC0000602 && code != 0xC0000409) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (t_inLogger) {
+        return EXCEPTION_CONTINUE_SEARCH;   /* our own fault — the logger's __try handles it */
+    }
+    if (code == 0xC0000005 && t_sehDepth > 0) {
+        return EXCEPTION_CONTINUE_SEARCH;   /* an SEH_* wrapper's __except will catch it */
+    }
+
+    t_inLogger = 1;
+    exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
+    immediate = (code != 0xC0000005) || cl_is_nativeaot_address(exAddr);
+
+    if (!immediate || InterlockedIncrement(&g_immediateCount) <= CL_MAX_IMMEDIATE) {
+        s = cl_claim_slot();
+        if (s) {
+            s->tid    = GetCurrentThreadId();
+            s->tick   = GetTickCount();
+            s->exAddr = exAddr;
+            s->len    = cl_format(s->text, CL_SLOT_BYTES, ep,
+                code != 0xC0000005
+                    ? "FAIL-FAST / STACK CHECK (always fatal)"
+                    : (immediate
+                        ? "AV IN NATIVEAOT CODE (runtime fail-fasts unless it is a null-ref)"
+                        : "FIRST-CHANCE AV (deferred; written because the process died or exited soon after)"));
+            if (immediate) {
+                cl_append_file(s->text, s->len);
+                InterlockedExchange(&s->state, CL_SLOT_DONE);
+            } else {
+                InterlockedExchange(&s->state, CL_SLOT_PENDING);
+            }
+        }
+    }
+
+    t_inLogger = 0;
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-/* Install the VEH once. logPath = wide path to the dedicated crash log. */
+/* Unhandled-exception filter: nobody caught this exception, so it is fatal. */
+static LONG WINAPI CrashUef(PEXCEPTION_POINTERS ep)
+{
+    LONG verdict = EXCEPTION_CONTINUE_SEARCH;
+
+    /* A replaced-then-reasserted filter chain can loop back here; bail out of the cycle. */
+    if (t_inUef) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    t_inUef = 1;
+
+    if (!t_inLogger && InterlockedIncrement(&g_fatalCount) <= CL_MAX_FATAL) {
+        unsigned int exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
+        CL_SLOT* s;
+        t_inLogger = 1;
+        /* Earlier first-chance AVs (other threads, earlier faults) are context for this
+         * crash; the first-chance record of THIS fault is skipped as a duplicate. Flushed
+         * before claiming a slot so the claim can't overwrite one of them. */
+        cl_flush_pending(GetCurrentThreadId(), exAddr, 0);
+        s = cl_claim_slot();
+        if (s) {
+            s->len = cl_format(s->text, CL_SLOT_BYTES, ep, "UNHANDLED EXCEPTION (fatal)");
+            cl_append_file(s->text, s->len);
+            InterlockedExchange(&s->state, CL_SLOT_DONE);
+        }
+        t_inLogger = 0;
+    }
+
+    if (g_prevFilter) {
+        verdict = g_prevFilter(ep);
+    }
+    t_inUef = 0;
+    return verdict;
+}
+
+/* DllMain (process exit): write deferred AVs from the last CL_EXIT_FLUSH_WINDOW_MS. */
+static void CrashLoggerFlushOnExit(void)
+{
+    if (g_crashLogPath[0] == 0) { return; }
+    cl_flush_pending(0, 0, CL_EXIT_FLUSH_WINDOW_MS);
+}
+
+/* Installs the VEH once and (re-)asserts the unhandled-exception filter.
+ * logPath = wide path to the dedicated crash log. Safe to call more than once:
+ * a later call re-installs the filter if AC or a runtime replaced it. */
 __declspec(dllexport) void __cdecl
 RC_InstallCrashLogger(const wchar_t* logPath)
 {
-    if (g_vehHandle) { return; }
+    LPTOP_LEVEL_EXCEPTION_FILTER prev;
     if (logPath) {
         int i = 0;
         for (; logPath[i] && i < MAX_PATH - 1; i++) { g_crashLogPath[i] = logPath[i]; }
         g_crashLogPath[i] = 0;
     }
-    g_vehHandle = AddVectoredExceptionHandler(1, CrashVeh);
+    if (!g_vehHandle) {
+        g_vehHandle = AddVectoredExceptionHandler(1, CrashVeh);
+    }
+    prev = SetUnhandledExceptionFilter(CrashUef);
+    if (prev != CrashUef) {
+        g_prevFilter = prev;
+    }
 }
 
 /* ── Tagged-text parser guard (native MinHook detour body) ────────────────
