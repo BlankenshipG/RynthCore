@@ -60,6 +60,13 @@ Name: "custom"; Description: "Custom"; Flags: iscustom
 Name: "core";          Description: "RynthCore launcher, engine and Loot Editor"; Types: full core custom; Flags: fixed
 Name: "rynthai";       Description: "RynthSuite: RynthAi plugin (installed and registered with the launcher)"; Types: full
 Name: "monstereditor"; Description: "RynthSuite: Monster Editor"; Types: full
+; Experimental plugins: unchecked by default in every install type (ticking one switches to Custom).
+Name: "experimental";              Description: "RynthSuite: Experimental plugins (work in progress)"
+Name: "experimental\rynthchat";    Description: "RynthChat - replacement chat window (classifies and owns game chat)"
+Name: "experimental\rynthjuice";   Description: "RynthJuice - floating damage/heal numbers and kill bursts"
+Name: "experimental\rynthnav";     Description: "RynthNav - navmesh pathing and portal routing (needs baked NavData tiles)"
+Name: "experimental\rynthtracker"; Description: "RynthTracker - per-session kill tracker"
+Name: "experimental\rynthvision";  Description: "RynthVision - unclimbable slope, water and radar-range overlays"
 
 [Tasks]
 Name: desktopicon; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
@@ -93,6 +100,15 @@ Source: "staging\suite\RynthAi\RynthCore.Plugin.RynthAi.dll"; DestDir: "{code:Ge
 ; Monster Editor: RynthAi's dashboard launches it from <RynthAi>\MonsterEditor\.
 Source: "staging\suite\RynthAi\MonsterEditor\*"; DestDir: "{code:GetSuiteDir}\RynthAi\MonsterEditor"; Components: monstereditor; Flags: ignoreversion recursesubdirs createallsubdirs
 
+; Experimental plugins: each in its own <RynthSuite>\<Name>\ folder (the layout the launcher already uses).
+Source: "staging\suite\RynthChat\RynthCore.Plugin.RynthChat.dll";       DestDir: "{code:GetSuiteDir}\RynthChat";    Components: experimental\rynthchat;    Flags: ignoreversion
+Source: "staging\suite\RynthJuice\RynthCore.Plugin.RynthJuice.dll";     DestDir: "{code:GetSuiteDir}\RynthJuice";   Components: experimental\rynthjuice;   Flags: ignoreversion
+Source: "staging\suite\RynthNav\RynthCore.Plugin.RynthNav.dll";         DestDir: "{code:GetSuiteDir}\RynthNav";     Components: experimental\rynthnav;     Flags: ignoreversion
+Source: "staging\suite\RynthTracker\RynthCore.Plugin.RynthTracker.dll"; DestDir: "{code:GetSuiteDir}\RynthTracker"; Components: experimental\rynthtracker; Flags: ignoreversion
+Source: "staging\suite\RynthVision\RynthCore.Plugin.RynthVision.dll";   DestDir: "{code:GetSuiteDir}\RynthVision";  Components: experimental\rynthvision;  Flags: ignoreversion
+; RynthNav reads <RynthCore>\NavData. Starter portal list only; a newer one from RynthNav.PortalGraph is kept.
+Source: "staging\navdata\portals.tsv"; DestDir: "{app}\NavData"; Components: experimental\rynthnav; Flags: onlyifdoesntexist uninsneveruninstall
+
 ; RynthAi data directories (created once; never removed on uninstall — they hold user profiles)
 [Dirs]
 Name: "{code:GetSuiteDir}\RynthAi";                             Components: rynthai; Flags: uninsneveruninstall
@@ -108,6 +124,8 @@ Name: "{code:GetSuiteDir}\RynthAi\Logs";                        Components: rynt
 Name: "{code:GetSuiteDir}\RynthAi\pvars";                       Components: rynthai; Flags: uninsneveruninstall
 Name: "{code:GetSuiteDir}\RynthAi\ItemGiver";                   Components: rynthai; Flags: uninsneveruninstall
 Name: "{code:GetSuiteDir}\RynthAi\AutoVendor";                  Components: rynthai; Flags: uninsneveruninstall
+; RynthNav tiles baked by RynthNav.Baker (default --out) go here; kept on uninstall.
+Name: "{app}\NavData";                                          Components: experimental\rynthnav; Flags: uninsneveruninstall
 
 ; Install locations for the engine / launcher / plugins (see RynthInstallPaths.cs), plus a one-shot
 ; hand-off the launcher consumes on next start to add the plugin to its Plugins list.
@@ -115,7 +133,7 @@ Name: "{code:GetSuiteDir}\RynthAi\AutoVendor";                  Components: rynt
 [Registry]
 Root: HKA; Subkey: "Software\Rynth"; ValueType: string; ValueName: "CoreDir";  ValueData: "{app}";              Flags: uninsdeletevalue uninsdeletekeyifempty
 Root: HKA; Subkey: "Software\Rynth"; ValueType: string; ValueName: "SuiteDir"; ValueData: "{code:GetSuiteDir}"; Flags: uninsdeletevalue uninsdeletekeyifempty
-Root: HKA; Subkey: "Software\Rynth"; ValueType: string; ValueName: "PendingPluginRegistration"; ValueData: "{code:GetSuiteDir}\RynthAi\RynthCore.Plugin.RynthAi.dll"; Components: rynthai; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Rynth"; ValueType: string; ValueName: "PendingPluginRegistration"; ValueData: "{code:GetPendingPlugins}"; Check: HasPendingPlugins; Flags: uninsdeletevalue
 
 ; Shortcuts
 [Icons]
@@ -202,6 +220,60 @@ begin
     Result := RemoveBackslashUnlessRoot(Trim(SuiteDirPage.Values[0]));
 end;
 
+// Experimental plugin names; component "experimental\<lowercase name>" installs <Suite>\<Name>\RynthCore.Plugin.<Name>.dll.
+function ExperimentalPluginName(Index: Integer): string;
+begin
+  case Index of
+    0: Result := 'RynthChat';
+    1: Result := 'RynthJuice';
+    2: Result := 'RynthNav';
+    3: Result := 'RynthTracker';
+    4: Result := 'RynthVision';
+  else
+    Result := '';
+  end;
+end;
+
+function ExperimentalSelected(Index: Integer): Boolean;
+begin
+  Result := WizardIsComponentSelected('experimental\' + Lowercase(ExperimentalPluginName(Index)));
+end;
+
+{ True when anything is going into the RynthSuite folder (controls the Suite folder page / memo line). }
+function AnySuiteComponentSelected: Boolean;
+var
+  I: Integer;
+begin
+  Result := WizardIsComponentSelected('rynthai') or WizardIsComponentSelected('monstereditor');
+  for I := 0 to 4 do
+    if ExperimentalSelected(I) then
+      Result := True;
+end;
+
+// {code:GetPendingPlugins}: ';'-separated plugin DLLs for the launcher to add to its Plugins list on next start.
+function GetPendingPlugins(Param: string): string;
+var
+  I: Integer;
+  Name: string;
+begin
+  Result := '';
+  if WizardIsComponentSelected('rynthai') then
+    Result := GetSuiteDir('') + '\RynthAi\RynthCore.Plugin.RynthAi.dll';
+  for I := 0 to 4 do
+    if ExperimentalSelected(I) then
+    begin
+      Name := ExperimentalPluginName(I);
+      if Result <> '' then
+        Result := Result + ';';
+      Result := Result + GetSuiteDir('') + '\' + Name + '\RynthCore.Plugin.' + Name + '.dll';
+    end;
+end;
+
+function HasPendingPlugins: Boolean;
+begin
+  Result := GetPendingPlugins('') <> '';
+end;
+
 procedure InitializeWizard;
 var
   Initial: string;
@@ -210,7 +282,7 @@ begin
   SuiteDirPage := CreateInputDirPage(wpSelectComponents,
     'Select RynthSuite Location',
     'Where should the RynthSuite plugins and their data be installed?',
-    'RynthAi and the Monster Editor will be installed into the RynthSuite folder below, and your ' +
+    'RynthAi, the Monster Editor and any experimental plugins you picked will be installed into the RynthSuite folder below, and your ' +
     'profiles (nav, loot, meta, settings) are kept there. To continue, click Next. ' +
     'If you would like to select a different folder, click Browse.',
     False, 'RynthSuite');
@@ -233,9 +305,7 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   { No Suite components selected → no Suite folder to choose. }
-  Result := (SuiteDirPage <> nil) and (PageID = SuiteDirPage.ID)
-            and not WizardIsComponentSelected('rynthai')
-            and not WizardIsComponentSelected('monstereditor');
+  Result := (SuiteDirPage <> nil) and (PageID = SuiteDirPage.ID) and not AnySuiteComponentSelected;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -266,7 +336,7 @@ function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoType
   MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
 begin
   Result := MemoDirInfo + NewLine;
-  if WizardIsComponentSelected('rynthai') or WizardIsComponentSelected('monstereditor') then
+  if AnySuiteComponentSelected then
     Result := Result + 'RynthSuite location:' + NewLine + Space + GetSuiteDir('') + NewLine;
   Result := Result + NewLine + MemoComponentsInfo;
   if MemoTasksInfo <> '' then

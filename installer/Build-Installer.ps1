@@ -11,11 +11,13 @@
     4. Publishes RynthCore.Plugin.RynthAi (NativeAOT, x86) from RynthSuite
     5. Publishes the Loot Editor (self-contained, x86)
     6. Publishes the Monster Editor (self-contained, x86) from RynthSuite
-    7. Stages RynthCore under installer\staging\core\ and RynthSuite under
+    7. Publishes the experimental plugins (RynthChat, RynthJuice, RynthNav, RynthTracker,
+       RynthVision; NativeAOT, x86) -- optional components in the installer
+    8. Stages RynthCore under installer\staging\core\ and RynthSuite under
        installer\staging\suite\, plus the hand-built RynthCore.SehTrampoline.dll,
        and checks every required runtime file is there
-    8. Archives the previous installer (installer\previous-release\) when -Version changes
-    9. Invokes ISCC.exe to produce installer\Output\RynthCore-Setup-<version>.exe
+    9. Archives the previous installer (installer\previous-release\) when -Version changes
+   10. Invokes ISCC.exe to produce installer\Output\RynthCore-Setup-<version>.exe
        (and a RynthCore-Setup.exe copy)
 
     The installer lets the user choose both the RynthCore and the RynthSuite folders; the
@@ -96,6 +98,14 @@ $PluginPublish        = "$RynthSuiteRoot\Plugins\RynthCore.Plugin.RynthAi\bin\$C
 $LootEditorPublish    = "$RynthSuiteRoot\Tools\RynthCore.LootEditor\bin\$Configuration\net10.0\win-x86\publish"
 $MonsterEditorPublish = "$RynthSuiteRoot\Tools\RynthCore.MonsterEditor\bin\$Configuration\net10.0\win-x86\publish"
 
+# Experimental RynthSuite plugins (optional installer components). Each installs to
+# <RynthSuite>\<Name>\RynthCore.Plugin.<Name>.dll and keeps its own semantic version.
+$ExperimentalPlugins = @('RynthChat', 'RynthJuice', 'RynthNav', 'RynthTracker', 'RynthVision')
+function Get-ExperimentalProject([string]$Name) { "$RynthSuiteRoot\Plugins\RynthCore.Plugin.$Name\RynthCore.Plugin.$Name.csproj" }
+function Get-ExperimentalPublish([string]$Name) { "$RynthSuiteRoot\Plugins\RynthCore.Plugin.$Name\bin\$Configuration\net10.0-windows\win-x86\publish" }
+# RynthNav's starter portal list (shipped into <RynthCore>\NavData, never overwritten).
+$NavPortalsTsv = "$RynthSuiteRoot\Tools\RynthNav.PortalGraph\Data\portals.tsv"
+
 # staging\core  → {app}                          (user-chosen RynthCore folder)
 # staging\suite → {code:GetSuiteDir}             (user-chosen RynthSuite folder)
 $StagingRoot = "$ScriptDir\staging"
@@ -103,7 +113,9 @@ $CoreStaging  = "$StagingRoot\core"
 $SuiteStaging = "$StagingRoot\suite"
 
 # ── Validate projects ───────────────────────────────────────────────────────
-foreach ($p in @($LauncherProject, $EngineProject, $LoaderProject, $PluginProject, $LootEditorProject, $MonsterEditorProject)) {
+$allProjects = @($LauncherProject, $EngineProject, $LoaderProject, $PluginProject, $LootEditorProject, $MonsterEditorProject) +
+               @($ExperimentalPlugins | ForEach-Object { Get-ExperimentalProject $_ })
+foreach ($p in $allProjects) {
     if (-not (Test-Path $p)) {
         throw "Project not found: $p`nUpdate paths in Build-Installer.ps1 if your repo layout differs."
     }
@@ -112,39 +124,52 @@ foreach ($p in @($LauncherProject, $EngineProject, $LoaderProject, $PluginProjec
 if (-not $SkipBuild) {
     # ── 1. Launcher (self-contained Avalonia WinExe) ─────────────────────────
     Write-Host ""
-    Write-Host "[1/6] Publishing Launcher (self-contained, x86)..." -ForegroundColor Cyan
+    Write-Host "[1/7] Publishing Launcher (self-contained, x86)..." -ForegroundColor Cyan
     dotnet publish $LauncherProject -c $Configuration -r win-x86 --self-contained true @VersionArgs
     if ($LASTEXITCODE -ne 0) { throw "Launcher publish failed (exit $LASTEXITCODE)" }
 
     # ── 2. Engine (NativeAOT — the slow one) ──────────────────────────────────
     Write-Host ""
-    Write-Host "[2/6] Publishing Engine (NativeAOT, ~2 min)..." -ForegroundColor Cyan
+    Write-Host "[2/7] Publishing Engine (NativeAOT, ~2 min)..." -ForegroundColor Cyan
     dotnet publish $EngineProject -c $Configuration @VersionArgs
     if ($LASTEXITCODE -ne 0) { throw "Engine publish failed (exit $LASTEXITCODE)" }
 
     # ── 3. Loader (NativeAOT, small) ──────────────────────────────────────────
     Write-Host ""
-    Write-Host "[3/6] Publishing Loader (NativeAOT)..." -ForegroundColor Cyan
+    Write-Host "[3/7] Publishing Loader (NativeAOT)..." -ForegroundColor Cyan
     dotnet publish $LoaderProject -c $Configuration @VersionArgs
     if ($LASTEXITCODE -ne 0) { throw "Loader publish failed (exit $LASTEXITCODE)" }
 
     # ── 4. RynthAi plugin (NativeAOT; keeps its own version) ─────────────────
     Write-Host ""
-    Write-Host "[4/6] Publishing RynthAi plugin (NativeAOT)..." -ForegroundColor Cyan
+    Write-Host "[4/7] Publishing RynthAi plugin (NativeAOT)..." -ForegroundColor Cyan
     dotnet publish $PluginProject -c $Configuration
     if ($LASTEXITCODE -ne 0) { throw "Plugin publish failed (exit $LASTEXITCODE)" }
 
     # ── 5. Loot Editor (self-contained Avalonia tool) ─────────────────────────
     Write-Host ""
-    Write-Host "[5/6] Publishing Loot Editor (self-contained, x86)..." -ForegroundColor Cyan
+    Write-Host "[5/7] Publishing Loot Editor (self-contained, x86)..." -ForegroundColor Cyan
     dotnet publish $LootEditorProject -c $Configuration -r win-x86 --self-contained true @VersionArgs
     if ($LASTEXITCODE -ne 0) { throw "Loot Editor publish failed (exit $LASTEXITCODE)" }
 
     # ── 6. Monster Editor (self-contained Avalonia tool) ──────────────────────
     Write-Host ""
-    Write-Host "[6/6] Publishing Monster Editor (self-contained, x86)..." -ForegroundColor Cyan
+    Write-Host "[6/7] Publishing Monster Editor (self-contained, x86)..." -ForegroundColor Cyan
     dotnet publish $MonsterEditorProject -c $Configuration -r win-x86 --self-contained true @VersionArgs
     if ($LASTEXITCODE -ne 0) { throw "Monster Editor publish failed (exit $LASTEXITCODE)" }
+
+    # ── 7. Experimental plugins (NativeAOT; optional components) ──────────────
+    # RynthJuice/RynthNav/RynthVision set <PublishDir> to the live C:\Games\RynthSuite\<Name>\
+    # folder for dev hot-reload; override it so an installer build never touches a live install.
+    # A trailing '/' (not '\') keeps the argument intact when the path contains spaces.
+    Write-Host ""
+    Write-Host "[7/7] Publishing experimental plugins (NativeAOT)..." -ForegroundColor Cyan
+    foreach ($name in $ExperimentalPlugins) {
+        Write-Host "  $name"
+        $publishDir = (Get-ExperimentalPublish $name) + '/'
+        dotnet publish (Get-ExperimentalProject $name) -c $Configuration "-p:PublishDir=$publishDir"
+        if ($LASTEXITCODE -ne 0) { throw "$name publish failed (exit $LASTEXITCODE)" }
+    }
 }
 
 # ── Stage ────────────────────────────────────────────────────────────────────
@@ -224,6 +249,20 @@ Copy-Item $pluginDll "$SuiteStaging\RynthAi\" -Force
 # Monster Editor → <RynthSuite>\RynthAi\MonsterEditor (RynthAi's dashboard launches it from there)
 Copy-PublishTree $MonsterEditorPublish "$SuiteStaging\RynthAi\MonsterEditor"
 
+# Experimental plugins → <RynthSuite>\<Name>\RynthCore.Plugin.<Name>.dll (the NativeAOT DLL is self-contained;
+# cimgui.dll is provided by the engine's Runtime folder).
+foreach ($name in $ExperimentalPlugins) {
+    $dll = Join-Path (Get-ExperimentalPublish $name) "RynthCore.Plugin.$name.dll"
+    if (-not (Test-Path $dll)) { throw "$name DLL not found at: $dll" }
+    New-Item -ItemType Directory -Path "$SuiteStaging\$name" -Force | Out-Null
+    Copy-Item $dll "$SuiteStaging\$name\" -Force
+}
+
+# RynthNav starter data → <RynthCore>\NavData (staged apart from core so it is only installed with RynthNav).
+if (-not (Test-Path $NavPortalsTsv)) { throw "RynthNav portals.tsv not found at: $NavPortalsTsv" }
+New-Item -ItemType Directory -Path "$StagingRoot\navdata" -Force | Out-Null
+Copy-Item $NavPortalsTsv "$StagingRoot\navdata\" -Force
+
 # release.txt — which core release this install is ($release, from -Version at the top).
 Set-Content -Path "$CoreStaging\release.txt" -Value @($release, $Version) -Encoding ASCII
 
@@ -241,8 +280,9 @@ $required = @(
     "$CoreStaging\Runtime\cimgui.dll",
     "$CoreStaging\Tools\LootEditor\RynthCore.LootEditor.exe",
     "$SuiteStaging\RynthAi\RynthCore.Plugin.RynthAi.dll",
-    "$SuiteStaging\RynthAi\MonsterEditor\RynthCore.MonsterEditor.exe"
-)
+    "$SuiteStaging\RynthAi\MonsterEditor\RynthCore.MonsterEditor.exe",
+    "$StagingRoot\navdata\portals.tsv"
+) + @($ExperimentalPlugins | ForEach-Object { "$SuiteStaging\$_\RynthCore.Plugin.$_.dll" })
 $missing = @($required | Where-Object { -not (Test-Path $_) })
 if ($missing.Count -gt 0) { throw "Staging is missing required files:`n  $($missing -join "`n  ")" }
 
