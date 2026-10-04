@@ -51,3 +51,7 @@ installer/Releases/
 Logfile*.XML
 # Archived installers (Build-Installer.ps1 keeps the previous release here; only the version marker is tracked)
 installer/previous-release/*.exe
+
+# Local publish/bundle output (SK-era Build-Installer staging and old bundle exes)
+installer/_toolpublish/
+build_out/

@@ -34,7 +34,7 @@ UsePreviousAppDir=yes
 DefaultGroupName=RynthCore
 DisableProgramGroupPage=yes
 OutputDir=Output
-OutputBaseFilename=RynthBundle-Setup
+OutputBaseFilename=RynthCore-Setup
 SetupIconFile=..\src\RynthCore.App.Avalonia\LogoCore.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -69,6 +69,7 @@ Name: "experimental\rynthjuice";   Description: "RynthJuice - floating damage/he
 Name: "experimental\rynthnav";     Description: "RynthNav - navmesh pathing and portal routing (needs baked NavData tiles)"
 Name: "experimental\rynthtracker"; Description: "RynthTracker - per-session kill tracker"
 Name: "experimental\rynthvision";  Description: "RynthVision - unclimbable slope, water and radar-range overlays"
+Name: "experimental\ubrythai";     Description: "ub-Rythai - Utility Belt tools ported to RynthCore (XP meter, portal gems, chat automation)"
 
 [Tasks]
 Name: desktopicon; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
@@ -111,6 +112,7 @@ Source: "staging\suite\RynthJuice\RynthCore.Plugin.RynthJuice.dll";     DestDir:
 Source: "staging\suite\RynthNav\RynthCore.Plugin.RynthNav.dll";         DestDir: "{code:GetSuiteDir}\RynthNav";     Components: experimental\rynthnav;     Flags: ignoreversion
 Source: "staging\suite\RynthTracker\RynthCore.Plugin.RynthTracker.dll"; DestDir: "{code:GetSuiteDir}\RynthTracker"; Components: experimental\rynthtracker; Flags: ignoreversion
 Source: "staging\suite\RynthVision\RynthCore.Plugin.RynthVision.dll";   DestDir: "{code:GetSuiteDir}\RynthVision";  Components: experimental\rynthvision;  Flags: ignoreversion
+Source: "staging\suite\UbRythai\RynthCore.Plugin.UbRythai.dll";         DestDir: "{code:GetSuiteDir}\UbRythai";     Components: experimental\ubrythai;     Flags: ignoreversion
 ; RynthNav reads <RynthCore>\NavData. Starter portal list only; a newer one from RynthNav.PortalGraph is kept.
 Source: "staging\navdata\portals.tsv"; DestDir: "{app}\NavData"; Components: experimental\rynthnav; Flags: onlyifdoesntexist uninsneveruninstall
 
@@ -233,6 +235,10 @@ begin
     Result := RemoveBackslashUnlessRoot(Trim(SuiteDirPage.Values[0]));
 end;
 
+// Number of entries in ExperimentalPluginName; keep in sync with the [Components]/[Files] experimental rows.
+const
+  ExperimentalCount = 6;
+
 // Experimental plugin names; component "experimental\<lowercase name>" installs <Suite>\<Name>\RynthCore.Plugin.<Name>.dll.
 function ExperimentalPluginName(Index: Integer): string;
 begin
@@ -242,6 +248,7 @@ begin
     2: Result := 'RynthNav';
     3: Result := 'RynthTracker';
     4: Result := 'RynthVision';
+    5: Result := 'UbRythai';
   else
     Result := '';
   end;
@@ -258,7 +265,7 @@ var
   I: Integer;
 begin
   Result := WizardIsComponentSelected('rynthai') or WizardIsComponentSelected('monstereditor');
-  for I := 0 to 4 do
+  for I := 0 to ExperimentalCount - 1 do
     if ExperimentalSelected(I) then
       Result := True;
 end;
@@ -272,7 +279,7 @@ begin
   Result := '';
   if WizardIsComponentSelected('rynthai') then
     Result := GetSuiteDir('') + '\RynthAi\RynthCore.Plugin.RynthAi.dll';
-  for I := 0 to 4 do
+  for I := 0 to ExperimentalCount - 1 do
     if ExperimentalSelected(I) then
     begin
       Name := ExperimentalPluginName(I);

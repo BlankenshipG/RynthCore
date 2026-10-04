@@ -168,44 +168,27 @@ To confirm NativeAOT actually ran, check that `.lib` and `.exp` files exist alon
 
 ## Installer
 
-The `installer/` directory contains an Inno Setup script and a PowerShell build script that publishes all required projects, stages the output, and produces a single `RynthBundle-Setup.exe`.
+The `installer/` directory contains an Inno Setup script and a PowerShell build script that publishes all required projects, stages the output, and produces a single `RynthCore-Setup.exe`.
 
 ### Prerequisites
 
 - [Inno Setup 6](https://jrsoftware.org/isdl.php) installed to the default location (`C:\Program Files (x86)\Inno Setup 6\`)
 - All build prerequisites listed above (.NET 10 SDK, VS Build Tools)
 
-### Build the full release + installer (recommended)
-
-From the `RynthCore` repo root:
-
-```powershell
-cd C:\Projects\RynthCore
-.\Build-Release-All.ps1 -Version 0.4.2
-```
-
-This builds `RynthCore.sln` in **Release**, then runs `installer\Build-Installer.ps1` (same as below).
-
-### Build the installer only
-
-`RynthSuite` must be a **sibling** folder of `RynthCore` (e.g. `C:\Projects\RynthCore` and `C:\Projects\RynthSuite`), or pass `-RynthSuiteRoot`. **ub-Rythai** is picked up from the sibling **`ub-Rythai`** folder when `ub-Rythai\RynthCore.Plugin.UbRythai\RynthCore.Plugin.UbRythai.csproj` exists (override with `-UbRythaiPluginProject`, or use `-SkipUbRythai` to omit).
+### Build the installer
 
 ```powershell
 cd C:\Projects\RynthCore\installer
-.\Build-Installer.ps1 -Version 0.4.2
+.\Build-Installer.ps1
 ```
 
 This runs `dotnet publish` for the Launcher, Loader, Engine, and RynthAi plugin (from RynthSuite), stages everything under `installer\staging\app\`, then invokes `ISCC.exe` to produce the installer.
 
-Output: `installer\Output\RynthBundle-Setup.exe` (or `installer\Output\RynthBundle-Setup-<version>.exe` when `-Version` is set — Inno **`OutputBaseFilename`** is versioned so the compile is not blocked by a locked `RynthBundle-Setup.exe`; the script then copies to the canonical name when possible).
+It also publishes the **experimental plugins** — RynthChat, RynthJuice, RynthNav, RynthTracker, RynthVision and **ub-Rythai** (`RynthSuite\Plugins\ub-Rythai\RynthCore.Plugin.UbRythai`) — as optional installer components (unchecked by default) that install to `<RynthSuite>\<Name>\RynthCore.Plugin.<Name>.dll`.
 
-### Previous release folder
+`..\Build-Release-All.ps1 -Version <x.y.z.w>` builds `RynthCore.sln` first and then runs `Build-Installer.ps1`.
 
-When you pass **`-Version`** to `Build-Installer.ps1` or `Build-Release-All.ps1`, the script compares it to `installer\previous-release\last-built-version.txt`. If that file lists a **different** version and `installer\Output\RynthBundle-Setup.exe` already exists, the **existing** setup exe is copied to:
-
-`installer\previous-release\RynthBundle-Setup-<previous-version>.exe`
-
-After a **successful** Inno compile, `last-built-version.txt` is updated to the new `-Version`. Archived `*.exe` files are gitignored; commit **`last-built-version.txt`** with the current shipping bundle version so the next bump archives the right label.
+Output: `installer\Output\RynthCore-Setup.exe`
 
 ### Options
 
@@ -214,8 +197,6 @@ After a **successful** Inno compile, `last-built-version.txt` is updated to the 
 | `-Configuration` | `Release` | Build configuration |
 | `-IsccPath` | `C:\Program Files (x86)\Inno Setup 6\ISCC.exe` | Path to the Inno Setup compiler |
 | `-SkipBuild` | off | Skip `dotnet publish` steps and re-package using the existing staging directory |
-| `-UbRythaiPluginProject` | *(default sibling path)* | Full path to `RynthCore.Plugin.UbRythai.csproj` |
-| `-SkipUbRythai` | off | Do not publish or stage ub-Rythai (e.g. CI without that repo) |
 
 ### What the installer does
 

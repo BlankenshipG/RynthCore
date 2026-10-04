@@ -128,8 +128,7 @@ jobs:
         $parent = Split-Path "$env:GITHUB_WORKSPACE" -Parent
         & "$env:GITHUB_WORKSPACE\installer\Build-Installer.ps1" `
             -RynthSuiteRoot "$parent\RynthSuite" `
-            -Version "${{ steps.ver.outputs.version }}" `
-            -SkipUbRythai
+            -Version "${{ steps.ver.outputs.version }}"
 
     # ── Tag (manual dispatch only — tag-push already has a tag) ───────────────
     - name: Create tag (manual dispatch)
@@ -147,7 +146,7 @@ jobs:
       with:
         tag_name: ${{ steps.ver.outputs.tag }}
         name: RynthCore ${{ steps.ver.outputs.tag }}
-        files: installer/Output/RynthBundle-Setup-${{ steps.ver.outputs.version }}.exe
+        files: installer/Output/RynthCore-Setup.exe
         body: |
           ## Installation
 

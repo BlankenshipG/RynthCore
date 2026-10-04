@@ -13,7 +13,7 @@
     5. Publishes the Loot Editor (self-contained, x86)
     6. Publishes the Monster Editor (self-contained, x86) from RynthSuite
     7. Publishes the experimental plugins (RynthChat, RynthJuice, RynthNav, RynthTracker,
-       RynthVision; NativeAOT, x86) -- optional components in the installer
+       RynthVision, UbRythai; NativeAOT, x86) -- optional components in the installer
     8. Stages RynthCore under installer\staging\core\ and RynthSuite under
        installer\staging\suite\, plus the hand-built RynthCore.SehTrampoline.dll,
        and checks every required runtime file is there
@@ -160,9 +160,15 @@ $MonsterEditorPublish = "$RynthSuiteRoot\Tools\RynthCore.MonsterEditor\bin\$Conf
 
 # Experimental RynthSuite plugins (optional installer components). Each installs to
 # <RynthSuite>\<Name>\RynthCore.Plugin.<Name>.dll and keeps its own semantic version.
-$ExperimentalPlugins = @('RynthChat', 'RynthJuice', 'RynthNav', 'RynthTracker', 'RynthVision')
-function Get-ExperimentalProject([string]$Name) { "$RynthSuiteRoot\Plugins\RynthCore.Plugin.$Name\RynthCore.Plugin.$Name.csproj" }
-function Get-ExperimentalPublish([string]$Name) { "$RynthSuiteRoot\Plugins\RynthCore.Plugin.$Name\bin\$Configuration\net10.0-windows\win-x86\publish" }
+$ExperimentalPlugins = @('RynthChat', 'RynthJuice', 'RynthNav', 'RynthTracker', 'RynthVision', 'UbRythai')
+# Project folders that don't follow Plugins\RynthCore.Plugin.<Name>\ (ub-Rythai keeps its own sub-tree).
+$ExperimentalProjectDirs = @{ 'UbRythai' = "$RynthSuiteRoot\Plugins\ub-Rythai\RynthCore.Plugin.UbRythai" }
+function Get-ExperimentalDir([string]$Name) {
+    if ($ExperimentalProjectDirs.ContainsKey($Name)) { return $ExperimentalProjectDirs[$Name] }
+    return "$RynthSuiteRoot\Plugins\RynthCore.Plugin.$Name"
+}
+function Get-ExperimentalProject([string]$Name) { "$(Get-ExperimentalDir $Name)\RynthCore.Plugin.$Name.csproj" }
+function Get-ExperimentalPublish([string]$Name) { "$(Get-ExperimentalDir $Name)\bin\$Configuration\net10.0-windows\win-x86\publish" }
 # RynthNav's starter portal list (shipped into <RynthCore>\NavData, never overwritten).
 $NavPortalsTsv = "$RynthSuiteRoot\Tools\RynthNav.PortalGraph\Data\portals.tsv"
 
@@ -181,29 +187,14 @@ foreach ($p in $allProjects) {
     }
 }
 
-if ($PluginProjects.Count -eq 0) {
-    throw "No RynthSuite plugin projects found under: $RynthSuiteRoot\Plugins"
-}
-
-if ($IncludeSuiteTools) {
-    foreach ($p in @($LootEditorProject, $MonsterEditorProject)) {
-        if (-not (Test-Path $p)) {
-            throw "Suite tool project not found: $p"
-        }
-    }
-}
-
 if (-not $SkipBuild) {
-    $step = 0
-    $totalSteps = 3 + $PluginProjects.Count + $(if ($IncludeSuiteTools) { 2 } else { 0 })
-
-    $step++
+    # ── 1. Launcher (self-contained Avalonia WinExe) ─────────────────────────
     Write-Host ""
     Write-Host "[1/7] Publishing Launcher (self-contained, x86)..." -ForegroundColor Cyan
     dotnet publish $LauncherProject -c $Configuration -r win-x86 --self-contained true @VersionArgs
     if ($LASTEXITCODE -ne 0) { throw "Launcher publish failed (exit $LASTEXITCODE)" }
 
-    $step++
+    # ── 2. Engine (NativeAOT — the slow one) ──────────────────────────────────
     Write-Host ""
     Write-Host "[2/7] Publishing Engine (NativeAOT, ~2 min)..." -ForegroundColor Cyan
     dotnet publish $EngineProject -c $Configuration @VersionArgs
@@ -396,41 +387,6 @@ if ($Version) {
             Write-Host "Archiving previous installer ($lastVer) -> $archive" -ForegroundColor Cyan
             Copy-Item $prevExe $archive -Force
         }
-    }
-}
-
-# ── Archive prior bundle when -Version bumps ────────────────────────────────
-# Copies installer\Output\RynthBundle-Setup.exe to previous-release\ using the
-# version recorded in previous-release\last-built-version.txt (updated after a
-# successful ISCC when -Version is set). See BUILD.md "Previous release folder".
-$previousReleaseDir = Join-Path $ScriptDir "previous-release"
-$lastVersionFile    = Join-Path $previousReleaseDir "last-built-version.txt"
-$bundleExe          = Join-Path $ScriptDir "Output\RynthBundle-Setup.exe"
-
-function Get-LastBuiltBundleVersion {
-    param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return "" }
-    return (Get-Content -LiteralPath $Path -Raw).Trim()
-}
-
-function Get-SafeVersionFileSuffix {
-    param([string]$Ver)
-    # Allow digits, dots, letters, hyphen for Inno-style version labels.
-    $s = ($Ver -replace '[^\d\.\w\-]', '_')
-    if (-not $s) { return "unknown" }
-    return $s
-}
-
-if ($Version) {
-    $versionTrim = $Version.Trim()
-    New-Item -ItemType Directory -Path $previousReleaseDir -Force | Out-Null
-    $lastVer = Get-LastBuiltBundleVersion -Path $lastVersionFile
-    if ((Test-Path -LiteralPath $bundleExe) -and $lastVer -and ($lastVer -ne $versionTrim)) {
-        $suffix = Get-SafeVersionFileSuffix -Ver $lastVer
-        $archivePath = Join-Path $previousReleaseDir "RynthBundle-Setup-$suffix.exe"
-        Write-Host ""
-        Write-Host "Archiving previous bundle ($lastVer) -> $archivePath" -ForegroundColor Cyan
-        Copy-Item -LiteralPath $bundleExe -Destination $archivePath -Force
     }
 }
 
