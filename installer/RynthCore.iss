@@ -13,7 +13,8 @@ AppId={{A8B4C2D1-E3F5-4678-9ABC-DEF012345678}
 AppName=RynthCore
 AppVersion=0.0.0
 AppPublisher=RynthCore
-AppPublisherURL=https://github.com/tombohar/RynthCore
+; Canonical product/docs page (aelrynth.com); tombohar GitHub upstream is gone.
+AppPublisherURL=https://aelrynth.com/rynth.html
 DefaultDirName=C:\Games\RynthCore
 DisableDirPage=no
 DefaultGroupName=RynthCore

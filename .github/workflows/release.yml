@@ -37,9 +37,12 @@ jobs:
         $parent = Split-Path "$env:GITHUB_WORKSPACE" -Parent
         $dest   = "$parent\RynthSuite"
         Write-Host "Cloning RynthSuite to: $dest"
+        # Sibling fork on the same GitHub owner (BlankenshipG in this environment).
+        # Canonical public source is https://aelrynth.com/git/RynthSuite.git — CI uses
+        # the GitHub sibling so the release build matches this fork pair.
         # If RynthSuite is private, set a GH_PAT secret and use the token URL:
-        # git clone https://x-access-token:${{ secrets.GH_PAT }}@github.com/tombohar/RynthSuite.git $dest
-        git clone https://github.com/tombohar/RynthSuite.git $dest
+        # git clone https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository_owner }}/RynthSuite.git $dest
+        git clone "https://github.com/${{ github.repository_owner }}/RynthSuite.git" $dest
         if ($LASTEXITCODE -ne 0) { throw "git clone RynthSuite failed" }
 
     # ── Toolchain ─────────────────────────────────────────────────────────────
