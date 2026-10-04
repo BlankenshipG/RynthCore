@@ -12,16 +12,12 @@
 //    • Launcher grid: 3 cols × 2-3 rows of GridBtns (visual only — opens
 //                     no sub-windows yet; main-dashboard scope only).
 //
-//  Live data comes from the RynthAi plugin via these C exports:
-//    RynthPluginGetSnapshotJson         → JSON blob (polled every 33 ms)
-//    RynthPluginToggleMacro             → flip IsMacroRunning
-//    RynthPluginSetSubsystemEnabled(id) → 0=Combat 1=Buff 2=Nav 3=Loot 4=Meta
-//    RynthPluginSelectProfile(kind, i)  → 0=nav 1=loot 2=meta 3=profile
-//    RynthPluginForceRebuff             → buff manager force rebuff
-//    RynthPluginCancelForceRebuff       → cancel pending FR
-//    RynthPluginAdjustOpacity(delta)    → header +/- chips (mirrored)
-//    RynthPluginTogglePanelLock         → Lock chip (mirrored)
-//    RynthPluginTogglePanelMinimize     → _ chip (mirrored)
+//  Live data comes from UiDataHub (UiSources.RynthAi / UiSources.Patrol,
+//  UI/Data/RynthAiData.cs), which calls the plugin's exports on the pump
+//  thread; clicks go through RynthAiCommands. This face never calls a
+//  plugin export itself (they used to run on the Avalonia thread, racing the
+//  plugin tick). The ImGui face (ImGui/Panels/RynthAiFace.cs) reads the same
+//  view.
 // ============================================================================
 
 using System;
@@ -39,27 +35,12 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using RynthCore.Engine.Plugins;
+using RynthCore.Engine.UI.Data;
 
 namespace RynthCore.Engine.UI.Panels;
 
 internal static partial class RynthAiPanel
 {
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, ExactSpelling = true)]
-    private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate IntPtr GetSnapshotJsonFn();
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate void VoidFn();
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate void IntFn(int arg);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate void IntIntFn(int a, int b);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate void FloatFn(float arg);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate void PtrFn(IntPtr arg);
-
     // ── Color palette — exact match to LegacyDashboardRenderer ImGui Vector4
     //    floats (multiplied by 255 and rounded). Don't deepen these; the ImGui
     //    contrast is what makes the dashboard read crisp against AC scenes.
@@ -110,19 +91,6 @@ internal static partial class RynthAiPanel
     // FR button: (0.28,0.20,0.04).
     private static readonly IBrush ColFrFill    = new SolidColorBrush(Color.FromRgb(0x47, 0x33, 0x0A));
 
-    private static GetSnapshotJsonFn? _getSnapshotJson;
-    private static VoidFn? _toggleMacro;
-    private static IntIntFn? _setSubsystemEnabled;
-    private static IntIntFn? _selectProfile;
-    private static VoidFn? _forceRebuff;
-    private static VoidFn? _cancelForceRebuff;
-    private static FloatFn? _adjustOpacity;
-    private static VoidFn? _togglePanelLock;
-    private static VoidFn? _togglePanelMinimize;
-    private static PtrFn? _sendNavCommand;
-    private static GetSnapshotJsonFn? _getPatrolInfoJson;
-    private static bool _bindingLogged;
-
     /// <summary>
     /// Set by AvaloniaOverlay.TogglePanel before invoking the factory. The
     /// panel calls this with its in-panel title-row Border so the wrapping
@@ -167,122 +135,21 @@ internal static partial class RynthAiPanel
     private const double MinimizedHeightPreset  = 110;
     private const double MinimizedMinHeightFloor = 46;
 
-    // Last-known good vitals — persists across panel recreates AND across
-    // engine hot-reloads (saved to disk). After a reload the plugin's vital
-    // cache is cold for a tick or two; without this the panel shows 0/0,
-    // which the user sees as the bars wiping. Updated only when the snapshot
-    // gives us a real (non-zero max) reading.
-    private static uint _cachedHp, _cachedMaxHp;
-    private static uint _cachedSt, _cachedMaxSt;
-    private static uint _cachedMn, _cachedMaxMn;
-    private static bool _vitalCacheLoaded;
-    private static long _vitalCacheLastSavedTick;
+    // The minimized state lives in UI/RynthAiDashboardState.cs, not here:
+    // engine init reads it before the overlay starts, and touching this class
+    // then would run its static brushes on the wrong thread.
 
-    // Avalonia panel's OWN minimize state, persisted independently of the
-    // ImGui dashboard. Sharing snap.IsMinimized via the plugin caused the
-    // ImGui "_" chip to also collapse the Avalonia panel (and vice versa) —
-    // which the user noticed because the Avalonia minimized look hadn't
-    // been built out yet, so the panel just blanked.
-    private static bool _avaloniaMinimized;
-    private static bool _avaloniaMinimizedLoaded;
-
-    /// <summary>
-    /// Live-testing finding 2026-09-02: lets the overlay pick the right
-    /// initial MinHeight floor when (re)docking the panel, so a saved small
-    /// (minimized) height from a previous session isn't immediately
-    /// re-clamped back up to the expanded floor. Loads on first access if
-    /// not already loaded, same as the panel's own Create() does.
-    /// </summary>
-    internal static bool IsAvaloniaMinimized
-    {
-        get { LoadAvaloniaMinimized(); return _avaloniaMinimized; }
-    }
-
-    private static string VitalCachePath =>
-        System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "RynthCore", "vitals.cache");
-
-    private static string AvaloniaMinimizedPath =>
-        System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "RynthCore", "rynthai_avalonia.cache");
-
-    private static void LoadAvaloniaMinimized()
-    {
-        if (_avaloniaMinimizedLoaded) return;
-        _avaloniaMinimizedLoaded = true;
-        try
-        {
-            string path = AvaloniaMinimizedPath;
-            if (!System.IO.File.Exists(path)) return;
-            _avaloniaMinimized = string.Equals(
-                System.IO.File.ReadAllText(path).Trim(),
-                "minimized",
-                StringComparison.OrdinalIgnoreCase);
-        }
-        catch { /* corrupt cache — start fresh */ }
-    }
-
-    private static void SaveAvaloniaMinimized()
-    {
-        try
-        {
-            string path = AvaloniaMinimizedPath;
-            string dir = System.IO.Path.GetDirectoryName(path)!;
-            System.IO.Directory.CreateDirectory(dir);
-            System.IO.File.WriteAllText(path, _avaloniaMinimized ? "minimized" : "expanded");
-        }
-        catch { /* best-effort */ }
-    }
-
-    private static void LoadVitalCache()
-    {
-        if (_vitalCacheLoaded) return;
-        _vitalCacheLoaded = true;
-        try
-        {
-            string path = VitalCachePath;
-            if (!System.IO.File.Exists(path)) return;
-            string[] parts = System.IO.File.ReadAllText(path).Split(',');
-            if (parts.Length < 6) return;
-            _cachedHp     = uint.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture);
-            _cachedMaxHp  = uint.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture);
-            _cachedSt     = uint.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture);
-            _cachedMaxSt  = uint.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture);
-            _cachedMn     = uint.Parse(parts[4], System.Globalization.CultureInfo.InvariantCulture);
-            _cachedMaxMn  = uint.Parse(parts[5], System.Globalization.CultureInfo.InvariantCulture);
-        }
-        catch { /* corrupt cache — start fresh */ }
-    }
-
-    private static void SaveVitalCache()
-    {
-        // Throttle disk writes to once per second so polling 4×/s doesn't
-        // beat up AppData. We only save when at least one max changed anyway.
-        long now = Environment.TickCount64;
-        if (now - _vitalCacheLastSavedTick < 1000) return;
-        _vitalCacheLastSavedTick = now;
-        try
-        {
-            string path = VitalCachePath;
-            string dir = System.IO.Path.GetDirectoryName(path)!;
-            System.IO.Directory.CreateDirectory(dir);
-            System.IO.File.WriteAllText(path,
-                $"{_cachedHp},{_cachedMaxHp},{_cachedSt},{_cachedMaxSt},{_cachedMn},{_cachedMaxMn}");
-        }
-        catch { /* best-effort, never throw out of a UI tick */ }
-    }
+    public const double ExpandedHeight = ExpandedHeightPreset, ExpandedMinHeight = ExpandedMinHeightFloor;
+    public const double MinimizedHeight = MinimizedHeightPreset, MinimizedMinHeight = MinimizedMinHeightFloor;
 
     internal static Control Create()
     {
         RynthLog.Info("RynthAiPanel.Create: entry");
-        TryBind();
-        LoadVitalCache();
-        LoadAvaloniaMinimized();
-        RynthLog.Info("RynthAiPanel.Create: TryBind ok");
+        RynthAiDashboardState.EnsureLoaded();
 
-        Snapshot snap = new();
+        // The latest hub view; its raw snapshot backs click handlers (current
+        // toggle states, picker lists) exactly as the old per-tick snapshot did.
+        RynthAiSnapshot snap = new();
         Border? activePicker = null;
         Button? activeAnchor = null;
 
@@ -355,7 +222,6 @@ internal static partial class RynthAiPanel
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(8, 2, 0, 0)
         };
-        int versionPollTicks = 0;
         titleStack.Children.Add(versionText);
         titleRow.Children.Add(titleStack);
 
@@ -382,20 +248,19 @@ internal static partial class RynthAiPanel
         // Chip clicks must NOT also trigger drag — Button itself handles
         // PointerPressed and marks the event handled, so it doesn't bubble
         // to the title-border drag handler.
-        lockChip.Click  += (_, _) => { ClosePicker(); _togglePanelLock?.Invoke(); };
-        minusChip.Click += (_, _) => { ClosePicker(); _adjustOpacity?.Invoke(-0.1f); };
-        plusChip.Click  += (_, _) => { ClosePicker(); _adjustOpacity?.Invoke(0.1f); };
+        lockChip.Click  += (_, _) => { ClosePicker(); RynthAiCommands.TogglePanelLock(); };
+        minusChip.Click += (_, _) => { ClosePicker(); RynthAiCommands.AdjustOpacity(-0.1f); };
+        plusChip.Click  += (_, _) => { ClosePicker(); RynthAiCommands.AdjustOpacity(0.1f); };
         minChip.Click   += (_, _) =>
         {
             ClosePicker();
-            _avaloniaMinimized = !_avaloniaMinimized;
-            SaveAvaloniaMinimized();
+            RynthAiDashboardState.SetMinimized(!RynthAiDashboardState.Minimized);
             // Live-testing finding 2026-09-02: reducing used to hide content
             // rows but leave the window's own size untouched. Actually
             // resize to the preset for the mode just switched to.
             RequestDockedResize?.Invoke(
-                _avaloniaMinimized ? MinimizedHeightPreset : ExpandedHeightPreset,
-                _avaloniaMinimized ? MinimizedMinHeightFloor : ExpandedMinHeightFloor);
+                RynthAiDashboardState.Minimized ? MinimizedHeightPreset : ExpandedHeightPreset,
+                RynthAiDashboardState.Minimized ? MinimizedMinHeightFloor : ExpandedMinHeightFloor);
         };
         dockChip.Click  += (_, _) =>
         {
@@ -439,7 +304,7 @@ internal static partial class RynthAiPanel
             CornerRadius = new CornerRadius(3),
             Padding = new Thickness(0)
         };
-        macroButton.Click += (_, _) => { ClosePicker(); _toggleMacro?.Invoke(); };
+        macroButton.Click += (_, _) => { ClosePicker(); RynthAiCommands.ToggleMacro(); };
         macroRow.Children.Add(macroButton);
 
         // Status circle: 8px filled + 14px ring while running
@@ -555,7 +420,7 @@ internal static partial class RynthAiPanel
             IsVisible = false
         };
         ToolTip.SetTip(minimizedMacroButton, "Click to Start / Stop Macro");
-        minimizedMacroButton.Click += (_, _) => { ClosePicker(); _toggleMacro?.Invoke(); };
+        minimizedMacroButton.Click += (_, _) => { ClosePicker(); RynthAiCommands.ToggleMacro(); };
         togglesPanel.Children.Add(minimizedMacroButton);
 
         // Avalonia 11 Grid has no ColumnSpacing/RowSpacing; we lay the cells
@@ -612,25 +477,25 @@ internal static partial class RynthAiPanel
             Margin = new Thickness(0, 1, 0, 0)
         };
         ToolTip.SetTip(frButton, "Force-recast all buffs.");
-        frButton.Click += (_, _) => { ClosePicker(); _forceRebuff?.Invoke(); };
+        frButton.Click += (_, _) => { ClosePicker(); RynthAiCommands.ForceRebuff(); };
         // Right-click cancel
         frButton.PointerPressed += (_, e) =>
         {
             if (e.GetCurrentPoint(frButton).Properties.IsRightButtonPressed)
             {
                 e.Handled = true;
-                _cancelForceRebuff?.Invoke();
+                RynthAiCommands.CancelForceRebuff();
             }
         };
         togglesPanel.Children.Add(frButton);
 
         combatGrid.Children.Add(togglesPanel);
 
-        combatToggle.Click += (_, _) => { ClosePicker(); _setSubsystemEnabled?.Invoke(0, snap.CombatEnabled ? 0 : 1); };
-        buffToggle.Click   += (_, _) => { ClosePicker(); _setSubsystemEnabled?.Invoke(1, snap.BuffingEnabled ? 0 : 1); };
-        navToggle.Click    += (_, _) => { ClosePicker(); _setSubsystemEnabled?.Invoke(2, snap.NavigationEnabled ? 0 : 1); };
-        lootToggle.Click   += (_, _) => { ClosePicker(); _setSubsystemEnabled?.Invoke(3, snap.LootingEnabled ? 0 : 1); };
-        metaToggle.Click   += (_, _) => { ClosePicker(); _setSubsystemEnabled?.Invoke(4, snap.MetaEnabled ? 0 : 1); };
+        combatToggle.Click += (_, _) => { ClosePicker(); RynthAiCommands.SetSubsystemEnabled(0, !snap.CombatEnabled); };
+        buffToggle.Click   += (_, _) => { ClosePicker(); RynthAiCommands.SetSubsystemEnabled(1, !snap.BuffingEnabled); };
+        navToggle.Click    += (_, _) => { ClosePicker(); RynthAiCommands.SetSubsystemEnabled(2, !snap.NavigationEnabled); };
+        lootToggle.Click   += (_, _) => { ClosePicker(); RynthAiCommands.SetSubsystemEnabled(3, !snap.LootingEnabled); };
+        metaToggle.Click   += (_, _) => { ClosePicker(); RynthAiCommands.SetSubsystemEnabled(4, !snap.MetaEnabled); };
 
         // Right column: target + vitals ──────────────────────
         var vitalsStack = new StackPanel { Orientation = Orientation.Vertical, Spacing = 3, Margin = new Thickness(6, 2, 0, 0) };
@@ -697,21 +562,17 @@ internal static partial class RynthAiPanel
             Margin = new Thickness(0, 4, 0, 0)
         };
         AddSplitLauncher(launcherGrid, 0, 0, "Meta", "⚙", "Lua", "<>",
-            onLeftClick: () => AvaloniaOverlay.ActivateBarButton("Meta"));
-        AddLauncher(launcherGrid, 0, 1, "Monsters",    "◎",
-            onClick: () => AvaloniaOverlay.ActivateBarButton("Monsters"));
+            onLeftClick:  () => PanelRouter.Toggle("Meta"),
+            onRightClick: () => PanelRouter.Toggle("Lua"));
+        AddMonstersLauncher(launcherGrid, 0, 1);
         AddLauncher(launcherGrid, 0, 2, "Settings",    "⚒",
-            onClick: () => AvaloniaOverlay.ActivateBarButton("Settings"));
+            onClick: () => PanelRouter.Toggle("Settings"));
         AddSplitLauncher(launcherGrid, 1, 0, "Nav", "➤", "Map", "🗺",
-            onLeftClick: () => AvaloniaOverlay.ActivateBarButton("Nav"));
+            onLeftClick: () => PanelRouter.Toggle("Nav"));
         AddLauncher(launcherGrid, 1, 1, "Items",       "🛡",
-            onClick: () => AvaloniaOverlay.ActivateBarButton("Items"));
+            onClick: () => PanelRouter.Toggle("Items"));
         var patrolBtn = AddLauncher(launcherGrid, 1, 2, "Patrol", "⬡",
-            onClick: () =>
-            {
-                if (_sendNavCommand == null) TryBind();
-                SendNavCmd("{\"Cmd\":\"dunPatrol\"}");
-            });
+            onClick: () => RynthAiCommands.SendNavCommand("{\"Cmd\":\"dunPatrol\"}"));
         ToolTip.SetTip(patrolBtn, "Left-click: start dungeon patrol.  Right-click: routes & recorded hazards.");
         // Right-click → patrol management flyout (saved routes + recorded dungeon hazards).
         patrolBtn.PointerPressed += (_, e) =>
@@ -845,11 +706,11 @@ internal static partial class RynthAiPanel
         }
 
         profileSelector.Click += (_, _) =>
-            ShowPicker(profileSelector, snap.Profiles, snap.SelectedProfileIdx, idx => _selectProfile?.Invoke(3, idx));
+            ShowPicker(profileSelector, snap.Profiles, snap.SelectedProfileIdx, idx => RynthAiCommands.SelectProfile(3, idx));
         navSelector.Click += (_, _) =>
-            ShowPicker(navSelector, snap.NavProfiles, snap.SelectedNavIdx, idx => _selectProfile?.Invoke(0, idx));
+            ShowPicker(navSelector, snap.NavProfiles, snap.SelectedNavIdx, idx => RynthAiCommands.SelectProfile(0, idx));
         lootSelector.Click += (_, _) =>
-            ShowPicker(lootSelector, snap.LootProfiles, snap.SelectedLootIdx, idx => _selectProfile?.Invoke(1, idx));
+            ShowPicker(lootSelector, snap.LootProfiles, snap.SelectedLootIdx, idx => RynthAiCommands.SelectProfile(1, idx));
         lootEditButton.Click += (_, _) =>
         {
             ClosePicker();
@@ -857,7 +718,7 @@ internal static partial class RynthAiPanel
             LaunchLootEditor(path);
         };
         metaSelector.Click += (_, _) =>
-            ShowPicker(metaSelector, snap.MetaProfiles, snap.SelectedMetaIdx, idx => _selectProfile?.Invoke(2, idx));
+            ShowPicker(metaSelector, snap.MetaProfiles, snap.SelectedMetaIdx, idx => RynthAiCommands.SelectProfile(2, idx));
 
         // ── Polling timer: refresh from snapshot ────────────────────────────
         // 33 ms (~30 Hz) — vital changes feel instant to the eye. The
@@ -868,15 +729,6 @@ internal static partial class RynthAiPanel
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
         timer.Tick += (_, _) =>
         {
-            if (versionPollTicks-- <= 0)   // ~every 2 s; the timer runs at 30 Hz
-            {
-                versionPollTicks = 60;
-                string ver = "";
-                foreach (var p in PluginManager.Plugins)
-                    if (p.DisplayName.Contains("RynthAi", StringComparison.OrdinalIgnoreCase)) { ver = p.VersionString; break; }
-                if (versionText.Text != ver) versionText.Text = ver;
-            }
-            if (_getSnapshotJson == null) TryBind();
 
             // TL;DR #7: signal the popout host (if floating) that a new
             // snapshot arrived this 33ms tick. Unconditional (not gated on
@@ -885,19 +737,37 @@ internal static partial class RynthAiPanel
             // (was 60Hz via alwaysRender), not further gating below that.
             MarkDirty?.Invoke();
 
-            snap = ReadSnapshot();
+            // Footer: FPS (refreshed once/sec by EndSceneHook) + engine
+            // gen uptime (re-stamped on every hot-reload). Engine-local, so it
+            // updates even before the first hub view arrives.
+            float liveFps = D3D9.EndSceneHook.MeasuredFps;
+            SetText(fpsText, liveFps > 0 ? $"FPS {liveFps:F0}" : "FPS —");
+            DateTime startedUtc = EntryPoint.InitStartedUtc;
+            if (startedUtc != DateTime.MinValue)
+            {
+                TimeSpan up = DateTime.UtcNow - startedUtc;
+                SetText(uptimeText, up.TotalHours >= 1
+                    ? $"Up {(int)up.TotalHours}:{up.Minutes:D2}:{up.Seconds:D2}"
+                    : $"Up {up.Minutes}:{up.Seconds:D2}");
+            }
+            SetText(minChip,  RynthAiDashboardState.Minimized ? "^" : "_");
+            SetText(dockChip, IsFloatingNow?.Invoke() == true ? "↙" : "↗");
+
+            var current = UiSources.RynthAi.Current;
+            if (current == null) return;
+            RynthAiView view = current.Value;
+            snap = view.Raw;
+            SetText(versionText, view.Version);
 
             // Live-testing finding 2026-09-02: apply the opacity the header
             // +/- chips set (see ColPanelBg's declaration above). Same 0.1
             // floor as the plugin-side clamp so the panel can never fade to
             // fully invisible/unclickable-looking.
-            byte bgAlpha = (byte)Math.Clamp(Math.Round(snap.BgOpacity * 255f), 25.5, 255);
+            byte bgAlpha = view.PanelAlpha;
             if (ColPanelBg.Color.A != bgAlpha)
                 ColPanelBg.Color = new Color(bgAlpha, ColPanelBg.Color.R, ColPanelBg.Color.G, ColPanelBg.Color.B);
 
             SetText(lockChip, snap.IsLocked ? "Unlk" : "Lock");
-            SetText(minChip,  _avaloniaMinimized ? "^" : "_");
-            SetText(dockChip, IsFloatingNow?.Invoke() == true ? "↙" : "↗");
 
             // Mirrors LegacyDashboardRenderer's minimized layout:
             //   • title row (always visible — chips live there)
@@ -905,7 +775,7 @@ internal static partial class RynthAiPanel
             //   • inline ON/OFF macro button at top of toggles when minimized
             //   • header grid (macro state, dropdowns) — hidden when minimized
             //   • launcher grid (6 buttons) — hidden when minimized
-            bool minimized = _avaloniaMinimized;
+            bool minimized = RynthAiDashboardState.Minimized;
             headerGrid.IsVisible          = !minimized;
             launcherGrid.IsVisible        = !minimized;
             footerGrid.IsVisible          = !minimized;
@@ -934,13 +804,13 @@ internal static partial class RynthAiPanel
             statusDot.Fill = running ? ColGreen : ColMute;
             statusRing.IsVisible = running;
 
-            SetText(metaStateValue,    string.IsNullOrWhiteSpace(snap.CurrentState) ? "Default" : snap.CurrentState);
-            SetText(botActivityValue,  string.IsNullOrWhiteSpace(snap.BotAction) || snap.BotAction == "Default" ? "Idle" : snap.BotAction);
+            SetText(metaStateValue,    view.MetaStateText);
+            SetText(botActivityValue,  view.BotActivityText);
 
-            SetText(profileSelector, Truncate(snap.SelectedProfile, 16));
-            SetText(navSelector,     Truncate(snap.CurrentNavName, 16));
-            SetText(lootSelector,    Truncate(snap.CurrentLootName, 16));
-            SetText(metaSelector,    Truncate(snap.CurrentMetaName, 16));
+            SetText(profileSelector, view.ProfileText);
+            SetText(navSelector,     view.NavText);
+            SetText(lootSelector,    view.LootText);
+            SetText(metaSelector,    view.MetaText);
 
             UpdateToggle(combatToggle, snap.CombatEnabled);
             UpdateToggle(buffToggle,   snap.BuffingEnabled);
@@ -949,58 +819,25 @@ internal static partial class RynthAiPanel
             UpdateMetaToggle(metaToggle, snap.MetaEnabled);
 
             // Target headline + segmented bar
-            string label = string.IsNullOrWhiteSpace(snap.TargetLabel) ? "NO TARGET" : snap.TargetLabel.ToUpperInvariant();
-            SetText(targetLabel, Truncate(label, 32));
+            SetText(targetLabel, view.TargetHeadline);
             SetText(targetHp,    snap.TargetHealthDisplay);
-            UpdateSegmentedBar(targetSegments, snap.TargetHealthPercent, ref targetSegLastLit);
+            UpdateSegmentedBar(targetSegments, view.TargetSegmentsLit, ref targetSegLastLit);
 
-            bool showTargetSubBars = snap.ShowTargetStaminaMana && snap.TargetMaxStamina > 0;
-            targetStRow.IsVisible = showTargetSubBars;
-            targetMnRow.IsVisible = showTargetSubBars;
-            if (showTargetSubBars)
+            targetStRow.IsVisible = view.ShowTargetSubBars;
+            targetMnRow.IsVisible = view.ShowTargetSubBars;
+            if (view.ShowTargetSubBars)
             {
-                UpdateCompactBar(targetStFill, targetStLabel, "ST", snap.TargetStamina, snap.TargetMaxStamina);
-                UpdateCompactBar(targetMnFill, targetMnLabel, "MN", snap.TargetMana,    snap.TargetMaxMana);
+                UpdateBar(targetStFill, targetStLabel, view.TargetStamina);
+                UpdateBar(targetMnFill, targetMnLabel, view.TargetMana);
             }
 
-            // Sticky vitals: keep showing last-known values when the plugin
-            // briefly returns 0 after a hot reload (host cache is cold for a
-            // tick or two). Update + persist the cache only when we get a
-            // real reading.
-            bool cacheChanged = false;
-            if (snap.PlayerMaxHealth  != 0) { _cachedHp = snap.PlayerHealth;   _cachedMaxHp = snap.PlayerMaxHealth;   cacheChanged = true; }
-            if (snap.PlayerMaxStamina != 0) { _cachedSt = snap.PlayerStamina;  _cachedMaxSt = snap.PlayerMaxStamina;  cacheChanged = true; }
-            if (snap.PlayerMaxMana    != 0) { _cachedMn = snap.PlayerMana;     _cachedMaxMn = snap.PlayerMaxMana;     cacheChanged = true; }
-            if (cacheChanged) SaveVitalCache();
-
-            UpdateVitalRow(hpFill, hpText, "HP",
-                snap.PlayerMaxHealth  != 0 ? snap.PlayerHealth  : _cachedHp,
-                snap.PlayerMaxHealth  != 0 ? snap.PlayerMaxHealth  : _cachedMaxHp);
-            UpdateVitalRow(stFill, stText, "ST",
-                snap.PlayerMaxStamina != 0 ? snap.PlayerStamina : _cachedSt,
-                snap.PlayerMaxStamina != 0 ? snap.PlayerMaxStamina : _cachedMaxSt);
-            UpdateVitalRow(mnFill, mnText, "MN",
-                snap.PlayerMaxMana    != 0 ? snap.PlayerMana    : _cachedMn,
-                snap.PlayerMaxMana    != 0 ? snap.PlayerMaxMana    : _cachedMaxMn);
-
-            // Footer: FPS (refreshed once/sec by EndSceneHook) + engine
-            // gen uptime (re-stamped on every hot-reload). Cheap to recompute
-            // every 100 ms — string interpolation only, no native calls.
-            float liveFps = D3D9.EndSceneHook.MeasuredFps;
-            SetText(fpsText, liveFps > 0 ? $"FPS {liveFps:F0}" : "FPS —");
-
-            DateTime startedUtc = EntryPoint.InitStartedUtc;
-            if (startedUtc != DateTime.MinValue)
-            {
-                TimeSpan up = DateTime.UtcNow - startedUtc;
-                string upStr = up.TotalHours >= 1
-                    ? $"Up {(int)up.TotalHours}:{up.Minutes:D2}:{up.Seconds:D2}"
-                    : $"Up {up.Minutes}:{up.Seconds:D2}";
-                SetText(uptimeText, upStr);
-            }
+            // Sticky vitals are applied by the hub (StickyVitals).
+            UpdateBar(hpFill, hpText, view.Health);
+            UpdateBar(stFill, stText, view.Stamina);
+            UpdateBar(mnFill, mnText, view.Mana);
         };
-        timer.Start();
-        RynthLog.Info("RynthAiPanel.Create: timer started, returning root");
+        // Not started here: AttachedToVisualTree starts it (and subscribes).
+        RynthLog.Info("RynthAiPanel.Create: returning root");
 
         // BringPanelToFront in AvaloniaOverlay does Remove+Add on the
         // windowFrame whenever a drag or resize starts — that fires
@@ -1009,8 +846,17 @@ internal static partial class RynthAiPanel
         // killed snapshot polling: numbers froze and dropdown selections
         // appeared not to change (the click DID reach the plugin, the
         // panel just never re-polled to refresh the visible label).
-        root.AttachedToVisualTree += (_, _) => timer.Start();
-        root.DetachedFromVisualTree += (_, _) => { timer.Stop(); ClosePicker(); };
+        root.AttachedToVisualTree += (_, _) =>
+        {
+            UiSources.RynthAi.Subscribe();
+            timer.Start();
+        };
+        root.DetachedFromVisualTree += (_, _) =>
+        {
+            UiSources.RynthAi.Unsubscribe();
+            timer.Stop();
+            ClosePicker();
+        };
         return root;
     }
 
@@ -1090,7 +936,7 @@ internal static partial class RynthAiPanel
     /// engine module (Runtime\ or Runtime\.engine_loads\) to find it. ShellExecute, not
     /// Process.Start: the Process API is the documented AV hazard inside acclient.exe.
     /// </summary>
-    private static void LaunchLootEditor(string? profilePath)
+    internal static void LaunchLootEditor(string? profilePath)
     {
         try
         {
@@ -1249,14 +1095,9 @@ internal static partial class RynthAiPanel
         return brushes;
     }
 
-    private static void UpdateSegmentedBar(Rectangle[] segments, float pct, ref int lastLitCount)
+    private static void UpdateSegmentedBar(Rectangle[] segments, int litCount, ref int lastLitCount)
     {
-        float clamped = Math.Clamp(pct, 0f, 1f);
         int n = segments.Length;
-        int litCount = 0;
-        for (int i = 0; i < n; i++)
-            if ((float)i / n <= clamped) litCount++;
-
         if (litCount == lastLitCount)
             return; // nothing crossed a segment boundary since the last call — skip entirely
 
@@ -1307,13 +1148,12 @@ internal static partial class RynthAiPanel
         return grid;
     }
 
-    private static void UpdateCompactBar(Rectangle fill, TextBlock label, string prefix, uint v, uint maxV)
+    /// <summary>Sizes a bar's fill to the view's fraction and sets its text.</summary>
+    private static void UpdateBar(Rectangle fill, TextBlock text, VitalView bar)
     {
-        double pct = maxV == 0 ? 0 : Math.Clamp((double)v / maxV, 0, 1);
-        // Width set via parent bounds — bind via width binding using grid actual width
         if (fill.Parent is Grid g && g.Bounds.Width > 0)
-            fill.Width = g.Bounds.Width * pct;
-        SetText(label, $"{prefix} {v}/{maxV}");
+            fill.Width = g.Bounds.Width * bar.Fraction;
+        SetText(text, bar.Text);
     }
 
     private static Grid BuildVitalRow(string icon, IBrush color, out Rectangle fill, out TextBlock text)
@@ -1354,15 +1194,6 @@ internal static partial class RynthAiPanel
         grid.Children.Add(fill);
         grid.Children.Add(content);
         return grid;
-    }
-
-    private static void UpdateVitalRow(Rectangle fill, TextBlock text, string label, uint v, uint maxV)
-    {
-        double pct = maxV == 0 ? 0 : Math.Clamp((double)v / maxV, 0, 1);
-        if (fill.Parent is Grid g && g.Bounds.Width > 0)
-            fill.Width = g.Bounds.Width * pct;
-        string display = maxV == 0 ? (v == 0 ? "--/--" : $"{v}/--") : $"{v}/{maxV}";
-        SetText(text, $"{label}: {(int)(pct * 100)}% ({display})");
     }
 
     /// <summary>
@@ -1416,6 +1247,14 @@ internal static partial class RynthAiPanel
         return btn;
     }
 
+    // Monsters opens the Damage panel (the basic Monsters panel and its
+    // Simple/Advanced chip were retired 2026-10-01).
+    private static void AddMonstersLauncher(Grid grid, int row, int col)
+    {
+        Button open = AddLauncher(grid, row, col, "Monsters", "◎", onClick: PanelRouter.ToggleMonsters);
+        ToolTip.SetTip(open, "Monsters: weapons, spells and rules per monster (the Damage panel)");
+    }
+
     private static void UpdateToggle(Button btn, bool on)
     {
         btn.Background = on ? ColTealSoft : ColBarBg;
@@ -1428,12 +1267,6 @@ internal static partial class RynthAiPanel
         btn.Background = on ? ColTealSoft : ColBarBg;
         btn.BorderBrush = on ? ColTeal : ColBtnBord;
         btn.Foreground = on ? ColTeal : ColMute;
-    }
-
-    private static string Truncate(string? value, int max)
-    {
-        if (string.IsNullOrEmpty(value)) return "None";
-        return value.Length > max ? value[..(max - 1)] + "…" : value;
     }
 
     private static void SetText(TextBlock tb, string s)
@@ -1453,163 +1286,6 @@ internal static partial class RynthAiPanel
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    //  Plugin export binding + snapshot ingest
-    // ────────────────────────────────────────────────────────────────────────
-
-    private static int _snapshotDiagsLogged;
-    private static string _lastLoggedTargetLabel = string.Empty;
-    private static uint _lastLoggedPlayerHealth;
-    private static uint _lastLoggedPlayerMaxHealth;
-
-    private static Snapshot ReadSnapshot()
-    {
-        if (_getSnapshotJson == null) return new Snapshot();
-
-        try
-        {
-            IntPtr ptr = _getSnapshotJson();
-            if (ptr == IntPtr.Zero) return new Snapshot();
-            string json = Marshal.PtrToStringAnsi(ptr) ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(json)) return new Snapshot();
-            Snapshot snap = JsonSerializer.Deserialize(json, SnapshotJsonContext.Default.Snapshot) ?? new Snapshot();
-
-            // Log first 3 snapshots for pipeline-up diagnostic. Then log on
-            // any change to a vital/target field so we can see when data
-            // starts flowing post-login without flooding.
-            if (_snapshotDiagsLogged < 3 ||
-                snap.TargetLabel != _lastLoggedTargetLabel ||
-                snap.PlayerHealth != _lastLoggedPlayerHealth ||
-                snap.PlayerMaxHealth != _lastLoggedPlayerMaxHealth)
-            {
-                _snapshotDiagsLogged++;
-                _lastLoggedTargetLabel = snap.TargetLabel;
-                _lastLoggedPlayerHealth = snap.PlayerHealth;
-                _lastLoggedPlayerMaxHealth = snap.PlayerMaxHealth;
-                RynthLog.Info(
-                    $"RynthAiPanel.ReadSnapshot[{_snapshotDiagsLogged}]: " +
-                    $"player HP={snap.PlayerHealth}/{snap.PlayerMaxHealth} " +
-                    $"ST={snap.PlayerStamina}/{snap.PlayerMaxStamina} " +
-                    $"MN={snap.PlayerMana}/{snap.PlayerMaxMana} " +
-                    $"target='{snap.TargetLabel}' hp={snap.TargetHealth}/{snap.TargetMaxHealth} " +
-                    $"jsonLen={json.Length}");
-            }
-
-            return snap;
-        }
-        catch (Exception ex)
-        {
-            RynthLog.Info($"RynthAiPanel.ReadSnapshot: deserialize threw {ex.GetType().Name}: {ex.Message}");
-            return new Snapshot();
-        }
-    }
-
-    // RL loads fresh plugin copies without unloading the old ones: drop the
-    // exports bound below so the next poll re-binds to the live copy.
-    static RynthAiPanel() => PluginManager.PluginsUnloaded += () =>
-    {
-        _getSnapshotJson = null;
-        _toggleMacro = null;
-        _setSubsystemEnabled = null;
-        _selectProfile = null;
-        _forceRebuff = null;
-        _cancelForceRebuff = null;
-        _adjustOpacity = null;
-        _togglePanelLock = null;
-        _togglePanelMinimize = null;
-        _sendNavCommand = null;
-        _getPatrolInfoJson = null;
-    };
-
-    private static void TryBind()
-    {
-        LoadedPlugin? plugin = PluginManager.Plugins.FirstOrDefault(
-            p => p.DisplayName.Contains("RynthAi", StringComparison.OrdinalIgnoreCase));
-        if (plugin == null || plugin.ModuleHandle == IntPtr.Zero) return;
-
-        _getSnapshotJson      ??= Bind<GetSnapshotJsonFn>(plugin, "RynthPluginGetSnapshotJson");
-        _toggleMacro          ??= Bind<VoidFn>(plugin,             "RynthPluginToggleMacro");
-        _setSubsystemEnabled  ??= Bind<IntIntFn>(plugin,           "RynthPluginSetSubsystemEnabled");
-        _selectProfile        ??= Bind<IntIntFn>(plugin,           "RynthPluginSelectProfile");
-        _forceRebuff          ??= Bind<VoidFn>(plugin,             "RynthPluginForceRebuff");
-        _cancelForceRebuff    ??= Bind<VoidFn>(plugin,             "RynthPluginCancelForceRebuff");
-        _adjustOpacity        ??= Bind<FloatFn>(plugin,            "RynthPluginAdjustOpacity");
-        _togglePanelLock      ??= Bind<VoidFn>(plugin,             "RynthPluginTogglePanelLock");
-        _togglePanelMinimize  ??= Bind<VoidFn>(plugin,             "RynthPluginTogglePanelMinimize");
-        _sendNavCommand       ??= Bind<PtrFn>(plugin,              "RynthPluginSendNavCommand");
-        _getPatrolInfoJson    ??= Bind<GetSnapshotJsonFn>(plugin,  "RynthPluginGetPatrolInfoJson");
-
-        if (!_bindingLogged && _getSnapshotJson != null)
-        {
-            _bindingLogged = true;
-            RynthLog.UI("RynthAiPanel: bound RynthAi plugin exports for live dashboard data.");
-        }
-    }
-
-    private static T? Bind<T>(LoadedPlugin plugin, string exportName) where T : Delegate
-    {
-        IntPtr addr = GetProcAddress(plugin.ModuleHandle, exportName);
-        return addr == IntPtr.Zero ? null : Marshal.GetDelegateForFunctionPointer<T>(addr);
-    }
-
-    private static void SendNavCmd(string json)
-    {
-        if (_sendNavCommand == null) return;
-        IntPtr ptr = Marshal.StringToHGlobalAnsi(json);
-        try { _sendNavCommand(ptr); }
-        finally { Marshal.FreeHGlobal(ptr); }
-    }
-
-    private sealed class Snapshot
-    {
-        [JsonPropertyName("macroRunning")]    public bool MacroRunning { get; set; }
-        [JsonPropertyName("currentState")]    public string CurrentState { get; set; } = string.Empty;
-        [JsonPropertyName("botAction")]       public string BotAction { get; set; } = string.Empty;
-        [JsonPropertyName("selectedProfile")] public string SelectedProfile { get; set; } = "Default";
-        [JsonPropertyName("profiles")]        public string[] Profiles { get; set; } = Array.Empty<string>();
-        [JsonPropertyName("navProfiles")]     public string[] NavProfiles { get; set; } = Array.Empty<string>();
-        [JsonPropertyName("lootProfiles")]    public string[] LootProfiles { get; set; } = Array.Empty<string>();
-        [JsonPropertyName("metaProfiles")]    public string[] MetaProfiles { get; set; } = Array.Empty<string>();
-        [JsonPropertyName("currentNavName")]  public string CurrentNavName { get; set; } = string.Empty;
-        [JsonPropertyName("currentLootName")] public string CurrentLootName { get; set; } = string.Empty;
-        [JsonPropertyName("currentLootPath")] public string CurrentLootPath { get; set; } = string.Empty;
-        // Set while a vendor is open: the AutoVendor profile it would use (may not exist yet).
-        [JsonPropertyName("vendorProfilePath")] public string VendorProfilePath { get; set; } = string.Empty;
-        [JsonPropertyName("currentMetaName")] public string CurrentMetaName { get; set; } = string.Empty;
-        [JsonPropertyName("selectedNavIdx")]  public int SelectedNavIdx { get; set; }
-        [JsonPropertyName("selectedLootIdx")] public int SelectedLootIdx { get; set; }
-        [JsonPropertyName("selectedMetaIdx")] public int SelectedMetaIdx { get; set; }
-        [JsonPropertyName("selectedProfileIdx")] public int SelectedProfileIdx { get; set; }
-        [JsonPropertyName("combatEnabled")]     public bool CombatEnabled { get; set; }
-        [JsonPropertyName("buffingEnabled")]    public bool BuffingEnabled { get; set; }
-        [JsonPropertyName("navigationEnabled")] public bool NavigationEnabled { get; set; }
-        [JsonPropertyName("lootingEnabled")]    public bool LootingEnabled { get; set; }
-        [JsonPropertyName("metaEnabled")]       public bool MetaEnabled { get; set; }
-        [JsonPropertyName("currentTargetId")]   public uint CurrentTargetId { get; set; }
-        [JsonPropertyName("targetLabel")]       public string TargetLabel { get; set; } = "NO TARGET";
-        [JsonPropertyName("targetHealthPercent")] public float TargetHealthPercent { get; set; }
-        [JsonPropertyName("targetHealthDisplay")] public string TargetHealthDisplay { get; set; } = "0";
-        [JsonPropertyName("targetHealth")]    public uint TargetHealth { get; set; }
-        [JsonPropertyName("targetMaxHealth")] public uint TargetMaxHealth { get; set; }
-        [JsonPropertyName("targetStamina")]   public uint TargetStamina { get; set; }
-        [JsonPropertyName("targetMaxStamina")] public uint TargetMaxStamina { get; set; }
-        [JsonPropertyName("targetMana")]      public uint TargetMana { get; set; }
-        [JsonPropertyName("targetMaxMana")]   public uint TargetMaxMana { get; set; }
-        [JsonPropertyName("playerHealth")]    public uint PlayerHealth { get; set; }
-        [JsonPropertyName("playerMaxHealth")] public uint PlayerMaxHealth { get; set; }
-        [JsonPropertyName("playerStamina")]   public uint PlayerStamina { get; set; }
-        [JsonPropertyName("playerMaxStamina")] public uint PlayerMaxStamina { get; set; }
-        [JsonPropertyName("playerMana")]      public uint PlayerMana { get; set; }
-        [JsonPropertyName("playerMaxMana")]   public uint PlayerMaxMana { get; set; }
-        [JsonPropertyName("showTargetStaminaMana")] public bool ShowTargetStaminaMana { get; set; }
-        [JsonPropertyName("isLocked")]    public bool IsLocked { get; set; }
-        [JsonPropertyName("isMinimized")] public bool IsMinimized { get; set; }
-        [JsonPropertyName("bgOpacity")]   public float BgOpacity { get; set; } = 0.95f;
-    }
-
-    [JsonSerializable(typeof(Snapshot))]
-    private sealed partial class SnapshotJsonContext : JsonSerializerContext { }
-
-    // ────────────────────────────────────────────────────────────────────────
     //  Patrol management flyout (right-click the Patrol launcher button)
     // ────────────────────────────────────────────────────────────────────────
 
@@ -1617,6 +1293,17 @@ internal static partial class RynthAiPanel
     {
         var root = new StackPanel { Orientation = Orientation.Vertical, Spacing = 4, Width = 244, Margin = new Thickness(8) };
         PopulatePatrolFlyout(root);
+        // Patrol info comes from the hub (single-consumer export): subscribe
+        // while the flyout is open and repopulate when it changes.
+        long seen = UiSources.Patrol.Current?.Version ?? -1;
+        var poll = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+        poll.Tick += (_, _) =>
+        {
+            var cur = UiSources.Patrol.Current;
+            if (cur == null || cur.Version == seen) return;
+            seen = cur.Version;
+            PopulatePatrolFlyout(root);
+        };
         var scroll = new ScrollViewer
         {
             Content = root,
@@ -1628,13 +1315,15 @@ internal static partial class RynthAiPanel
             Content = scroll,
             Placement = PlacementMode.Top,
         };
+        flyout.Opened += (_, _) => { UiSources.Patrol.Subscribe(); UiSources.Patrol.RequestRefresh(); poll.Start(); };
+        flyout.Closed += (_, _) => { poll.Stop(); UiSources.Patrol.Unsubscribe(); };
         flyout.ShowAt(anchor);
     }
 
     private static void PopulatePatrolFlyout(StackPanel root)
     {
         root.Children.Clear();
-        PatrolInfo info = FetchPatrolInfo();
+        PatrolInfo info = UiSources.Patrol.Current?.Value ?? new PatrolInfo();
 
         root.Children.Add(new TextBlock
         {
@@ -1656,8 +1345,7 @@ internal static partial class RynthAiPanel
                 var clear = MiniButton("Clear");
                 clear.Click += (_, _) =>
                 {
-                    SendNavCmd($"{{\"Cmd\":\"clearHazards\",\"NavName\":\"{info.CurrentLandblock}\"}}");
-                    PopulatePatrolFlyout(root);
+                    RynthAiCommands.SendNavCommand($"{{\"Cmd\":\"clearHazards\",\"NavName\":\"{info.CurrentLandblock}\"}}", refreshPatrol: true);
                 };
                 Grid.SetColumn(clear, 1);
                 row.Children.Add(clear);
@@ -1668,9 +1356,9 @@ internal static partial class RynthAiPanel
             // environmental lava/acid the name detector can't see.
             var markRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Margin = new Thickness(0, 2, 0, 0) };
             var mark = MiniButton("Mark cell as hazard");
-            mark.Click += (_, _) => { SendNavCmd("{\"Cmd\":\"markHazardHere\"}"); PopulatePatrolFlyout(root); };
+            mark.Click += (_, _) => RynthAiCommands.SendNavCommand("{\"Cmd\":\"markHazardHere\"}", refreshPatrol: true);
             var unmark = MiniButton("Unmark");
-            unmark.Click += (_, _) => { SendNavCmd("{\"Cmd\":\"unmarkHazardHere\"}"); PopulatePatrolFlyout(root); };
+            unmark.Click += (_, _) => RynthAiCommands.SendNavCommand("{\"Cmd\":\"unmarkHazardHere\"}", refreshPatrol: true);
             markRow.Children.Add(mark);
             markRow.Children.Add(unmark);
             root.Children.Add(markRow);
@@ -1693,7 +1381,7 @@ internal static partial class RynthAiPanel
         }
         else
         {
-            foreach (DungeonHaz d in info.Dungeons)
+            foreach (DungeonHazards d in info.Dungeons)
             {
                 var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
                 row.Children.Add(new TextBlock
@@ -1704,8 +1392,7 @@ internal static partial class RynthAiPanel
                 var clear = MiniButton("Clear");
                 clear.Click += (_, _) =>
                 {
-                    SendNavCmd($"{{\"Cmd\":\"clearHazards\",\"NavName\":\"{d.Landblock}\"}}");
-                    PopulatePatrolFlyout(root);
+                    RynthAiCommands.SendNavCommand($"{{\"Cmd\":\"clearHazards\",\"NavName\":\"{d.Landblock}\"}}", refreshPatrol: true);
                 };
                 Grid.SetColumn(clear, 1);
                 row.Children.Add(clear);
@@ -1717,8 +1404,7 @@ internal static partial class RynthAiPanel
             clearAll.Margin = new Thickness(0, 3, 0, 0);
             clearAll.Click += (_, _) =>
             {
-                SendNavCmd("{\"Cmd\":\"clearHazardsAll\"}");
-                PopulatePatrolFlyout(root);
+                RynthAiCommands.SendNavCommand("{\"Cmd\":\"clearHazardsAll\"}", refreshPatrol: true);
             };
             root.Children.Add(clearAll);
         }
@@ -1754,36 +1440,4 @@ internal static partial class RynthAiPanel
         HorizontalContentAlignment = HorizontalAlignment.Center,
     };
 
-    private static PatrolInfo FetchPatrolInfo()
-    {
-        if (_getPatrolInfoJson == null) TryBind();
-        if (_getPatrolInfoJson == null) return new PatrolInfo();
-        try
-        {
-            IntPtr p = _getPatrolInfoJson();
-            if (p == IntPtr.Zero) return new PatrolInfo();
-            string json = Marshal.PtrToStringAnsi(p) ?? "{}";
-            return JsonSerializer.Deserialize(json, PatrolJsonContext.Default.PatrolInfo) ?? new PatrolInfo();
-        }
-        catch { return new PatrolInfo(); }
-    }
-
-    private sealed class PatrolInfo
-    {
-        [JsonPropertyName("inDungeon")]        public bool InDungeon { get; set; }
-        [JsonPropertyName("currentLandblock")] public string CurrentLandblock { get; set; } = "0000";
-        [JsonPropertyName("currentHazards")]   public int CurrentHazards { get; set; }
-        [JsonPropertyName("liveHazards")]      public int LiveHazards { get; set; }
-        [JsonPropertyName("dungeons")]         public DungeonHaz[] Dungeons { get; set; } = Array.Empty<DungeonHaz>();
-        [JsonPropertyName("routes")]           public string[] Routes { get; set; } = Array.Empty<string>();
-    }
-
-    private sealed class DungeonHaz
-    {
-        [JsonPropertyName("landblock")] public string Landblock { get; set; } = "0000";
-        [JsonPropertyName("cells")]     public int Cells { get; set; }
-    }
-
-    [JsonSerializable(typeof(PatrolInfo))]
-    private sealed partial class PatrolJsonContext : JsonSerializerContext { }
 }

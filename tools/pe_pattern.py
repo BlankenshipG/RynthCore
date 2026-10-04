@@ -165,6 +165,11 @@ GROUPS = {
     "TimeSyncHooks": [
         ("ClientNet_HandleTimeSynch", 0x005448F0),
     ],
+    "PlayerTrade": [
+        ("Event_OpenTradeNegotiations", 0x006AE260), ("Event_AddToTrade", 0x006AE030),
+        ("Event_ResetTrade", 0x006AE330), ("Event_CloseTradeNegotiations", 0x006AE140),
+        ("ClientTradeSystem_AcceptTrade", 0x0056E7A0), ("ClientTradeSystem_DeclineTrade", 0x0056E7C0),
+    ],
 }
 
 def best_pattern(text_b, text_base, va, off):
@@ -188,6 +193,7 @@ GROUPS_DATA = [
     ("s_selected_id", 0x00871E54), ("s_previous_selected_id", 0x00871E58),
     ("split_amount", 0x0081D7EC), ("total_stack", 0x0081D7F0),
     ("PStringChar_s_NullBuffer", 0x008EF11C), ("PStringWide_s_NullBuffer", 0x00818340),
+    ("ClientTradeSystem_s_pTradeSystem", 0x0087174C),
     ("RecvFrom_slot", 0x007935AC),
 ]
 

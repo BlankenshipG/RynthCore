@@ -10,4 +10,15 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Decal bridge registration (docs/DECAL_BRIDGE_PLAN.md), shared with the launcher. -->
+    <Compile Include="..\RynthCore.App\DecalLocator.cs" Link="Shared\DecalLocator.cs" />
+    <Compile Include="..\RynthCore.App\DecalBridgeRegistration.cs" Link="Shared\DecalBridgeRegistration.cs" />
+    <Compile Include="..\RynthCore.App\DecalBridgeCheck.cs" Link="Shared\DecalBridgeCheck.cs" />
+    <Compile Include="..\RynthCore.App\RealDecalCheckHost.cs" Link="Shared\RealDecalCheckHost.cs" />
+    <!-- "Decal + RynthCore" accounts live in decal-accounts.json beside appsettings.json. -->
+    <Compile Include="..\RynthCore.App\InjectionMode.cs" Link="Shared\InjectionMode.cs" />
+    <Compile Include="..\RynthCore.App\DecalAccountModes.cs" Link="Shared\DecalAccountModes.cs" />
+  </ItemGroup>
+
 </Project>

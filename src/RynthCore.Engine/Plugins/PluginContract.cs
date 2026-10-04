@@ -581,8 +581,8 @@ internal struct RynthCoreAPI
     public IntPtr SendPluginCommandFn;
 
     /// <summary>Function pointer: int GetObjectDataIdProperty(uint objectId, uint stype, uint* value)
-    /// Reads a STypeDID property that lives in the object's PublicWeenieDesc (currently Icon=8 →
-    /// _iconID). Read directly from the embedded PWD struct — network-populated, so it works on
+    /// Reads a STypeDID property that lives in the object's PublicWeenieDesc (Icon=8 → _iconID;
+    /// since 2026-09-30 also IconOverlay=50 and IconUnderlay=52, 0 = none). Read directly from the embedded PWD struct — network-populated, so it works on
     /// UNequipped/never-appraised pack items with no qualities pointer and no main-thread native
     /// call. Returns 1 on success (value = the DataID, e.g. 0x06xxxxxx), 0 otherwise. Requires API
     /// v65+. APPENDED-AT-END for ABI safety.</summary>
@@ -634,6 +634,229 @@ internal struct RynthCoreAPI
     /// Fills the state of the most recent VendorBuy/VendorSell request. Returns 1 if a
     /// request has been made this session, 0 if not. Any thread. Requires API v67+.</summary>
     public IntPtr GetVendorTradeStatusFn;
+
+    /// <summary>Function pointer: void* GetPluginInterface(const char* pluginName, const char* iface, uint version)
+    /// Asks a named plugin for a typed interface table (e.g. RynthAi's "RynthAi.Script" v1 for
+    /// RynthLua) through the fixed-signature export
+    /// <c>void* RynthPluginQueryInterface(const char* iface, uint version)</c>. Null when the plugin
+    /// isn't loaded or doesn't offer it. The table belongs to the target plugin; call its functions
+    /// only from the plugin pump thread. Requires API v68+.</summary>
+    public IntPtr GetPluginInterfaceFn;
+
+    /// <summary>v69: <c>int GetLiveObjectIds(uint* buffer, int capacity)</c>: copies up to
+    /// <paramref name="capacity"/> ids of the objects in the client's object table (the engine's
+    /// snapshot, refreshed on the game thread) and returns the total count, so a caller whose
+    /// buffer was too small can retry with a bigger one. Requires API v69+.</summary>
+    public IntPtr GetLiveObjectIdsFn;
+
+    // ── v70: action outcomes and wield-to-slot ──────────────────────────
+    // Since v70 the engine also raises RynthPluginOnEnchantmentAdded / Removed (the
+    // player's enchantment GameEvents 0x02C2-0x02C8 and 0x0312; see SmartBoxHooks).
+
+    /// <summary>v70: <c>int GetLastUseDone(int* seq, uint* error)</c>: the most recent server
+    /// UseDone (GameEvent 0x01C7): its sequence number (the same count GetUseDoneSeq returns)
+    /// and its WeenieError code (0 = the action completed; e.g. 0x1D YoureTooBusy, 0x400
+    /// YouDontHaveAllTheComponents). Both come from one atomic snapshot, so they always belong
+    /// together. Returns 1 when the engine watches UseDone (seq 0 = none yet), 0 when it can't.
+    /// Any thread. Requires API v70+.</summary>
+    public IntPtr GetLastUseDoneFn;
+
+    /// <summary>v70: <c>int GetLastWeenieError(int* seq, uint* error, uint* eventType, uint* objectId)</c>:
+    /// the most recent refusal the server sent: WeenieError (eventType 0x028A, e.g. 0x402
+    /// YourSpellFizzled — a fizzled cast still ends with UseDone(0)), WeenieErrorWithString
+    /// (0x028B) or InventoryServerSaveFailed (0x00A0, objectId = the item). seq counts them
+    /// (0 = none yet). Returns 1 when the engine watches these, 0 when it can't. Any thread.
+    /// Requires API v70+.</summary>
+    public IntPtr GetLastWeenieErrorFn;
+
+    /// <summary>v70: <c>int WieldItem(uint objectId, uint equipMask)</c>: wield the item into the
+    /// given EquipMask slot(s) (the 0x001A GetAndWieldItem game action, as a paperdoll drag
+    /// sends it; e.g. 0x00200000 Shield, 0x00100000 MeleeWeapon). Queued for AC's main thread
+    /// when called from another thread. Returns 1 if sent or queued. The server answers with
+    /// the wield or InventoryServerSaveFailed (see GetLastWeenieError). Requires API v70+.</summary>
+    public IntPtr WieldItemFn;
+
+    // ── v71: script windows (docs: RynthSuite Docs/RYNTHLUA_WINDOWS_DESIGN.md §4) ──
+    // A plugin draws ImGui windows by pushing a display list; the engine replays it every
+    // frame on AC's thread and sends input back as events. The engine never calls into the
+    // plugin for this and never keeps `data` / `buffer`: bytes are copied during the call.
+
+    /// <summary>v71: <c>int UiSubmit(const uint8_t* data, int length)</c>: the owner's complete
+    /// window set (display-list format 1, UI/ScriptWindows/DisplayListParser.cs). Only from the
+    /// plugin's own tick or event on the pump thread. Returns 0, or -1 malformed, -2 not called
+    /// from a dispatch, -3 over a limit (nothing applied), -4 unsupported format version.
+    /// Requires API v71+.</summary>
+    public IntPtr UiSubmitFn;
+
+    /// <summary>v71: <c>int UiPollEvents(uint8_t* buffer, int capacity, int* remaining)</c>:
+    /// copies whole events (never a partial one) and returns the bytes written;
+    /// <c>*remaining</c> = events still queued. Same thread rule as UiSubmit. Requires API v71+.</summary>
+    public IntPtr UiPollEventsFn;
+
+    /// <summary>v71: <c>int UiGetInfo(UiInfoNative* info)</c>: the caller sets info->Size to the
+    /// size it knows; the engine fills up to that and returns the bytes written (0 when there is
+    /// no ImGui). Any thread. Requires API v71+.</summary>
+    public IntPtr UiGetInfoFn;
+
+    // ── v72: player-to-player trade (docs: Compatibility/PlayerTrade.cs) ──
+    // The state comes from the server's trade GameEvents, read in the existing game-event
+    // detour on AC's main thread; plugins poll it (Generation / Sequence / counters tell them
+    // what changed). The actions go through the client's own CM_Trade / ClientTradeSystem
+    // functions and are queued for AC's main thread when called from another thread.
+
+    /// <summary>v72: <c>int GetTradeState(TradeStateNative* state)</c>: the caller sets
+    /// state->Size to the size it knows; the engine fills up to that and returns the bytes
+    /// written (0 on a bad argument). Any thread. Requires API v72+.</summary>
+    public IntPtr GetTradeStateFn;
+
+    /// <summary>v72: <c>int GetTradeItems(int side, uint* buffer, int capacity)</c>: copies up to
+    /// <paramref name="capacity"/> item ids from one side of the window (1 = yours, 2 = the
+    /// partner's) and returns that side's total count; -1 for a bad side. Any thread.
+    /// Requires API v72+.</summary>
+    public IntPtr GetTradeItemsFn;
+
+    /// <summary>v72: <c>int TradeOpen(uint targetId)</c>: ask a player to trade (0x01F6
+    /// OpenTradeNegotiations; the server walks you into range). Returns 1 if sent or queued.
+    /// Requires API v72+.</summary>
+    public IntPtr TradeOpenFn;
+
+    /// <summary>v72: <c>int TradeAdd(uint itemId, uint slot)</c>: put one of your items in the
+    /// open trade window (0x01F8 AddToTrade; slot 0 = next free). The server answers with
+    /// AddToTrade or TradeFailure (see GetTradeState). Returns 1 if sent or queued.
+    /// Requires API v72+.</summary>
+    public IntPtr TradeAddFn;
+
+    /// <summary>v72: <c>int TradeAccept(void)</c>: accept the trade as it stands (the window's
+    /// Accept button, 0x01FA). Returns 1 if sent or queued. Requires API v72+.</summary>
+    public IntPtr TradeAcceptFn;
+
+    /// <summary>v72: <c>int TradeDecline(void)</c>: withdraw your acceptance (0x01FB).
+    /// Returns 1 if sent or queued. Requires API v72+.</summary>
+    public IntPtr TradeDeclineFn;
+
+    /// <summary>v72: <c>int TradeReset(void)</c>: empty both sides of the window (0x0204).
+    /// Returns 1 if sent or queued. Requires API v72+.</summary>
+    public IntPtr TradeResetFn;
+
+    /// <summary>v72: <c>int TradeClose(void)</c>: end the trade (0x01F7 CloseTradeNegotiations).
+    /// Returns 1 if sent or queued. Requires API v72+.</summary>
+    public IntPtr TradeCloseFn;
+
+    /// <summary>v73: <c>int GetObjectInstanceIdProperty(uint objectId, uint stype, uint* value)</c>:
+    /// a PropertyInstanceId (another object's id: Container 2, Wielder 3, Monarch 26, HouseOwner 32,
+    /// PetOwner 44, the player's Allegiance/Patron/..., anything an UpdatePropertyInstanceID set).
+    /// Any thread; served from the engine's caches and PublicWeenieDesc snapshot. 1 = found (non-zero).
+    /// Requires API v73+.</summary>
+    public IntPtr GetObjectInstanceIdPropertyFn;
+
+    /// <summary>v74: <c>int GetVTankState(int* sequence)</c>: VTank's macro, as the Decal bridge
+    /// sees it (Compatibility/VTankWatch.cs; signal = VTank's documented /vt start and /vt stop
+    /// through Decal's chat parser). Returns flags: bit0 = the engine watches (Decal bridge mode),
+    /// bit1 = VTank's macro is running. 0 without Decal. <c>*sequence</c> (may be null) is bumped
+    /// on every change. Any thread. Requires API v74+.</summary>
+    public IntPtr GetVTankStateFn;
+
+    /// <summary>v75: <c>int GetCharacterTitles(uint* ids, int maxCount, uint* currentTitle)</c>: the
+    /// titles the player holds, from the server's title events (0x0029 at login, 0x002B per new
+    /// title; Compatibility/CharacterTitles.cs). Copies up to maxCount ids (ids may be null to
+    /// ask for the count) and returns how many the character holds, or -1 when the list isn't
+    /// known for the current character. *currentTitle (may be null) = the displayed title.
+    /// Any thread. Requires API v75+.</summary>
+    public IntPtr GetCharacterTitlesFn;
+
+    /// <summary>v75: <c>int GetServerInfo(byte* worldName, int capacity)</c>: which server this
+    /// is (Compatibility/ServerInfo.cs). Returns flags: bit0 = Aelrynth (host, announced world
+    /// name or the Bank mod's properties), bit1 = Aelrynth's staging world, bit2 = the server
+    /// announced its world name, which is then copied to worldName (UTF-8, NUL-terminated, cut
+    /// to capacity - 1; worldName may be null). Never the launcher's profile name. Any thread.
+    /// Requires API v75+.</summary>
+    public IntPtr GetServerInfoFn;
+}
+
+/// <summary>v72 <see cref="TradeStateNative.Flags"/> bits.</summary>
+internal static class TradeStateFlags
+{
+    public const uint Open = 1u << 0;
+    public const uint YouAccepted = 1u << 1;
+    public const uint PartnerAccepted = 1u << 2;
+    /// <summary>The engine sees the trade GameEvents (its game-event hook is installed).</summary>
+    public const uint Watching = 1u << 3;
+    /// <summary>All six trade actions are bound on this client.</summary>
+    public const uint ActionsAvailable = 1u << 4;
+}
+
+/// <summary>
+/// v72 <c>GetTradeState</c> result. Pack 4, 96 bytes; later versions only append.
+/// Mirrored by RynthCore.PluginSdk (TradeStateNative in RynthCoreApiNative.cs).
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal unsafe struct TradeStateNative
+{
+    /// <summary>In: the caller's sizeof. Out: bytes written.</summary>
+    public uint Size;
+    /// <summary><see cref="TradeStateFlags"/>.</summary>
+    public uint Flags;
+    /// <summary>+1 for every trade that opens (RegisterTrade).</summary>
+    public uint Generation;
+    /// <summary>+1 for every trade event (and TradeComplete).</summary>
+    public uint Sequence;
+    /// <summary>The other player; 0 when no trade is open.</summary>
+    public uint PartnerId;
+    /// <summary>Who opened the trade.</summary>
+    public uint InitiatorId;
+    public int SelfItemCount;
+    public int PartnerItemCount;
+    /// <summary>The last trade GameEvent type (0x01FD-0x0208).</summary>
+    public uint LastEventType;
+    /// <summary>TradeFailure events so far; the last one's item and WeenieError follow.</summary>
+    public uint FailureCount;
+    public uint LastFailureItemId;
+    public uint LastFailureReason;
+    /// <summary>EndTradeReason of the last CloseTrade: 1 normal, 2 entered combat, 0x51 cancelled.</summary>
+    public uint LastCloseReason;
+    public uint LastAcceptedBy;
+    public uint LastDeclinedBy;
+    public uint LastResetBy;
+    /// <summary>Trades completed so far (WeenieError 0x0529 TradeComplete).</summary>
+    public uint CompletedCount;
+    /// <summary>Times the partner has accepted so far (AcceptTrade from the partner).</summary>
+    public uint PartnerAcceptCount;
+    public fixed uint Reserved[6];
+}
+
+/// <summary>
+/// v71 <c>UiGetInfo</c> result. Pack 4, 480 bytes in format 1; later versions only append.
+/// Mirrored by RynthCore.PluginSdk (UiInfoNative in RynthCoreApiNative.cs).
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal unsafe struct UiInfoNative
+{
+    /// <summary>In: the caller's sizeof. Out: bytes written.</summary>
+    public uint Size;
+    /// <summary>bit0 ImGui available, bit1 in world, bit2 pop-outs available.</summary>
+    public uint Flags;
+    /// <summary>Highest display-list format the engine replays.</summary>
+    public ushort MaxFormatVersion;
+    /// <summary>The ops replayed within MaxFormatVersion: 2 = + Image, ImageButton, InputInt, InputFloat,
+    /// DragInt, DragFloat (2026-09-30). 0 on older engines (the field was reserved) = Phase 1 ops only.</summary>
+    public ushort OpLevel;
+    public uint MaxOpsPerWindow;
+    public uint MaxBytesPerWindow;
+    public uint MaxWindowsPerOwner;
+    public uint MaxBytesPerSubmit;
+    public float DisplayWidth;
+    public float DisplayHeight;
+    public float UiScale;
+    public float TextLineHeight;
+    public float FrameHeight;
+    public float ItemSpacingX;
+    public float ItemSpacingY;
+    public float FramePaddingX;
+    public float FramePaddingY;
+    /// <summary>Default font advance of ' '..'~' (95), pixels at UiScale.</summary>
+    public fixed float AsciiAdvance[95];
+    public uint FrameCounter;
+    public fixed uint Reserved[8];
 }
 
 // ─── Vendor trading ABI structs (v67) ───────────────────────────────────
@@ -735,7 +958,7 @@ internal unsafe struct VendorTradeStatusNative
 /// <summary>Current API version. Bump when adding fields to RynthCoreAPI.</summary>
 internal static class PluginContractVersion
 {
-    public const uint Current = 67;
+    public const uint Current = 75;
 }
 
 internal static class ClientActionHookFlags
@@ -1189,6 +1412,45 @@ internal unsafe delegate int GetObjectDataIdPropertyCallbackDelegate(uint object
 internal delegate IntPtr GetPluginExportJsonCallbackDelegate(IntPtr pluginNameAnsi, IntPtr exportNameAnsi);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate IntPtr GetPluginInterfaceCallbackDelegate(IntPtr pluginNameAnsi, IntPtr ifaceAnsi, uint version);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetLiveObjectIdsCallbackDelegate(uint* buffer, int capacity);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetLastUseDoneCallbackDelegate(int* seq, uint* error);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetLastWeenieErrorCallbackDelegate(int* seq, uint* error, uint* eventType, uint* objectId);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int WieldItemCallbackDelegate(uint objectId, uint equipMask);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int UiSubmitCallbackDelegate(byte* data, int length);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int UiPollEventsCallbackDelegate(byte* buffer, int capacity, int* remaining);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int UiGetInfoCallbackDelegate(UiInfoNative* info);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetTradeStateCallbackDelegate(TradeStateNative* state);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetTradeItemsCallbackDelegate(int side, uint* buffer, int capacity);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int TradeOpenCallbackDelegate(uint targetId);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int TradeAddCallbackDelegate(uint itemId, uint slot);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int TradeSimpleCallbackDelegate();
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetVendorInfoCallbackDelegate(VendorInfoNative* info);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -1202,3 +1464,12 @@ internal unsafe delegate uint VendorSellCallbackDelegate(uint vendorId, uint* it
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetVendorTradeStatusCallbackDelegate(VendorTradeStatusNative* status);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetVTankStateCallbackDelegate(int* sequence);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetCharacterTitlesCallbackDelegate(uint* ids, int maxCount, uint* currentTitle);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetServerInfoCallbackDelegate(byte* worldName, int capacity);

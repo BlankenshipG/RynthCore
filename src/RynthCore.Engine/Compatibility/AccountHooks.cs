@@ -75,6 +75,7 @@ internal static class AccountHooks
     private static SendNoticeWorldNameDelegate?  _sendNoticeWorldNameDetour;
     private static string? _cachedAccountName;
     private static string? _cachedWorldName;
+    private static volatile string? _announcedWorldName;
 
     public static bool IsInitialized     { get; private set; }
     public static bool WorldHookInstalled { get; private set; }
@@ -153,6 +154,7 @@ internal static class AccountHooks
                         if (!string.IsNullOrEmpty(name))
                         {
                             _cachedWorldName = name;
+                            _announcedWorldName = name;
                             RynthLog.Verbose($"Compat: world name captured - \"{name}\".");
                         }
                     }
@@ -161,8 +163,20 @@ internal static class AccountHooks
         }
         catch { }
 
+        // The account id is set by now (login): warm the account-name cache here
+        // on the main thread so off-thread readers find it filled.
+        try { WarmFromMainThread(); }
+        catch { }
+
         return result;
     }
+
+    /// <summary>
+    /// The world name the server itself announced at login (the SendNotice_WorldName hook),
+    /// or null. Unlike TryGetWorldName it never falls back to the launcher's profile name,
+    /// which the player chose (ServerInfo's detection wants what the server said). Any thread.
+    /// </summary>
+    public static string? AnnouncedWorldName => _announcedWorldName;
 
     /// <summary>
     /// Returns the current account name. Result is cached after the first successful read.
@@ -171,11 +185,49 @@ internal static class AccountHooks
     {
         name = string.Empty;
 
-        if (_cachedAccountName != null)
+        string? cached = Volatile.Read(ref _cachedAccountName);
+        if (cached != null)
         {
-            name = _cachedAccountName;
+            name = cached;
             return true;
         }
+
+        // Cold cache off AC's main thread (host GetAccountNameFn on the plugin pump:
+        // RynthNet identity push, meta expressions, RynthLua): report "not yet".
+        // Client::GetInstance / Client::GetAccountName and the PSRefBuffer read run
+        // on the main thread only (WarmFromMainThread), which fills the cache
+        // during login, normally before any plugin asks.
+        if (!MainThreadGuard.IsOnMainThread())
+            return false;
+
+        return TryReadAccountNameNative(out name);
+    }
+
+    private static long _nextAccountNameWarmMs;
+
+    /// <summary>
+    /// Main thread only (MainThreadSnapshots.Tick, and the end of the
+    /// SendNotice_WorldName detour). Fills the account-name cache while it is cold,
+    /// at most every 500 ms; a single null check once it is warm.
+    /// </summary>
+    internal static void WarmFromMainThread()
+    {
+        if (Volatile.Read(ref _cachedAccountName) != null || !MainThreadGuard.IsOnMainThread())
+            return;
+        long now = Environment.TickCount64;
+        if (now < _nextAccountNameWarmMs)
+            return;
+        _nextAccountNameWarmMs = now + 500;
+        TryReadAccountNameNative(out _);
+    }
+
+    // The native read (body unchanged). MAIN THREAD ONLY.
+    private static bool TryReadAccountNameNative(out string name)
+    {
+        name = string.Empty;
+
+        if (!MainThreadGuard.IsOnMainThread())
+            return false;
 
         if (_getClientInstance == null || _getAccountName == null)
             return false;
@@ -205,7 +257,7 @@ internal static class AccountHooks
             if (string.IsNullOrEmpty(str))
                 return false;
 
-            _cachedAccountName = str;
+            Volatile.Write(ref _cachedAccountName, str);
             name = str;
             return true;
         }

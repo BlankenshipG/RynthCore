@@ -46,8 +46,8 @@ internal static class Nav3DRenderInjector
 
         try
         {
-            IntPtr vtable = Marshal.ReadIntPtr(pDevice);
-            IntPtr addr = Marshal.ReadIntPtr(vtable, DeviceVTableIndex.DrawIndexedPrimitive * IntPtr.Size);
+            IntPtr addr = DecalD3D9.HookTarget(pDevice, DeviceVTableIndex.DrawIndexedPrimitive);
+            if (addr == IntPtr.Zero) return;   // Decal client and the slot isn't d3d9's: not hooked
 
             _hookDelegate = new DrawIndexedPrimitiveD(Detour);
             IntPtr hookPtr = Marshal.GetFunctionPointerForDelegate(_hookDelegate);
@@ -79,13 +79,26 @@ internal static class Nav3DRenderInjector
             _seen3D = true;
 
         // Detect 3D→UI transition: ZENABLE goes from 1→0 after 3D draws
-        if (!_markersRenderedThisFrame && _seen3D && _lastZEnable != 0 && zEnable == 0)
+        // Decal clients: VVS/Decal/UB draw 3D into their own render targets too; only AC's
+        // back buffer gets the markers and nameplates (measured 2026-09-30: without this they
+        // showed up inside a Virindi window). Evaluated only at a transition, and only with Decal.
+        if (!_markersRenderedThisFrame && _seen3D && _lastZEnable != 0 && zEnable == 0 &&
+            (!DecalD3D9.Enabled || ImGuiBackend.DX9Backend.IsRenderingToBackBuffer(dev)))
         {
             _markersRenderedThisFrame = true;
             _inRender = true;
             try
             {
                 ImGuiBackend.DX9Backend.RenderNav3D(dev);
+            }
+            catch
+            {
+            }
+            // The world overlays (nameplates, combat text) go here too, over the
+            // markers and under AC's UI. Its own frame flag: drawn at most once.
+            try
+            {
+                ImGuiBackend.UnderUiLayer.PresentAtTransition(dev);
             }
             catch
             {

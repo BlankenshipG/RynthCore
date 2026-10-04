@@ -39,8 +39,11 @@ public static class EntryPoint
     private static int _initCount;
     private static bool _imGuiResolverConfigured;
     private static IntPtr _imGuiNativeHandle;
+    /// <summary>Module handle of the loaded cimgui.dll (zero until preloaded).</summary>
+    internal static IntPtr ImGuiNativeHandle => _imGuiNativeHandle;
     private static readonly object LogLock = new();
     private static readonly Queue<string> RecentLogLines = new();
+    private static long _recentLogSeq;
 
     /// <summary>Set true to enable verbose startup logging (hook ready messages, plugin lifecycle, etc.).</summary>
     internal static bool VerboseLogging = false;
@@ -63,6 +66,24 @@ public static class EntryPoint
     /// from inside an EndScene detour — the caller should run on a background
     /// thread so the render thread's call into our hook can return cleanly.
     /// </summary>
+    /// <summary>
+    /// The loader refused a hot-reload because this client is short of address
+    /// space (each reload keeps the old engine and plugins mapped). Says so in
+    /// chat. Loader thread.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthCoreReloadRefused")]
+    public static uint ReloadRefused(int freeMb)
+    {
+        try
+        {
+            RynthLog.Warn($"Hot-reload refused by the loader: {freeMb} MB of address space free.");
+            Compatibility.AcMainThreadQueue.EnqueueWriteToChat(
+                $"[RynthCore] A new RynthCore build is ready but wasn't loaded: this client has only {freeMb} MB of memory address space left, and reloading could crash it. Restart the client to use the new build.", 2);
+        }
+        catch { }
+        return 0;
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthCoreShutdown")]
     public static uint Shutdown(IntPtr lpParam)
     {
@@ -149,18 +170,16 @@ public static class EntryPoint
             // and our VEH (NativeAOT __fastfail, AC self-exit on disconnect,
             // etc.). Install early so we catch even very-early-startup kills.
             RunInitStep("early process-exit hooks", ProcessExitHooks.Initialize);
+            // Logs the text of any message box (AC shows some errors in one on
+            // its main thread, which then looks like a wedge to the watchdog).
+            RunInitStep("message-box hooks", MessageBoxHooks.Initialize);
             // Heartbeat: one log line per second so we have a hard upper-bound
             // timestamp for when AC went silent if it dies via a path our
             // termination hooks don't catch (kernel-level kill, int 0x29 not
             // routed through RtlFailFast, hardware fault, etc.).
             RunInitStep("heartbeat logger", HeartbeatLogger.Start);
 
-            var thread = new Thread(InitWorker)
-            {
-                Name = "RynthCore.Init",
-                IsBackground = true
-            };
-            thread.Start();
+            _initThread = EngineThreads.Start("RynthCore.Init", InitWorker);
 
             return 0;
         }
@@ -204,6 +223,13 @@ public static class EntryPoint
         // GetModuleHandleA("RynthCore.Engine.dll") fails when the loader has
         // staged us under a unique filename (RynthCore.Engine.gen2.dll etc.)
         // for hot-reload, so this is the path that always works.
+#if ENGINE_CORECLR
+        // A managed engine is an assembly, not a module: the loader staged it and the
+        // Shim loaded it from that path.
+        string location = typeof(EntryPoint).Assembly.Location;
+        if (!string.IsNullOrEmpty(location))
+            return location;
+#endif
         IntPtr hEngine = IntPtr.Zero;
         try
         {
@@ -499,6 +525,14 @@ public static class EntryPoint
                 RynthLog.Info("WARNING: cimgui runtime not found - ImGui will not be available.");
                 RynthLog.Info("  Ship RynthCore.cimgui.dll (or cimgui.dll) alongside RynthCore.Engine.dll");
             }
+            else if (Plugins.EngineSettings.EnableImGuiBackend)
+            {
+                // Read the ImGui font files and the panel state here, off AC's
+                // render thread (the ImGui faces read both from memory).
+                ImGuiBackend.ImGuiFonts.Preload();
+                UI.PanelStateStore.TryGetPanel("", out _);
+                UI.PanelFaceStore.TryGet("", out _);
+            }
 
             if (!Plugins.EngineSettings.EnableEngine)
             {
@@ -510,13 +544,44 @@ public static class EntryPoint
             // user has dropped a candidate-string list at
             // %APPDATA%\RynthCore\string_anchors.txt — otherwise no-ops.
             // No hooks installed, no AC code modified; pure pattern read.
-            StringAnchorDiagnostic.RunIfConfigured();
+            // A diagnostic (runs when its config file exists); ~0.8 s of scanning, so the
+            // first load does it and a hot reload skips it.
+            if (_initCount < 2)
+                StringAnchorDiagnostic.RunIfConfigured();
 
             int hookBudget = Plugins.EngineSettings.EngineHookCount;
             int hookIndex = 0;
+            // Decal bridge mode (docs/DECAL_BRIDGE_PLAN.md) is decided before any hook goes
+            // in. Without Decal in the process this is two GetModuleHandle calls, Active
+            // stays false and no step is skipped.
+            DecalBridgeHost.Initialize();
+            // Decal stand-down (2026-10-03, docs/DECAL_BRIDGE_PLAN.md "Where Decal reads its
+            // filters"): Decal is in this client but the bridge isn't (not registered as this
+            // client sees the registry, protocol mismatch, mapping failure). The old coexistence
+            // path that used to run here never worked - no overlay, then a crash. Stand down
+            // instead: install only what DecalBridgeHost's "the Decal bridge isn't loaded" chat
+            // line needs - the login event, AddTextToScroll's address (a probe, no hook) and the
+            // Client::UseTime drain that runs queued chat writes on AC's main thread - and load
+            // no plugins. None of those is a function Decal patches. The client then runs as a
+            // plain Decal client. DecalBridge=Off (tests) and engine.json "DecalStandDown": false
+            // keep the old path. Without Decal this is false (InactiveReason stays null).
+            bool decalStandDown = DecalBridgeHost.ShouldStandDown;
+            if (decalStandDown)
+                RynthLog.Warn($"InitWorker: Decal without the bridge ({DecalBridgeHost.InactiveReason}) - standing down: " +
+                    "only the login, chat-address and UseTime-drain steps install; no plugins, no overlay.");
+            List<(string Name, Action Action)>? bridgeSkipped = null;
             RynthLog.Info($"InitWorker: starting hook init steps (budget={hookBudget})");
             void Step(string name, Action action)
             {
+                if (InitAborted()) return;
+                if (decalStandDown && name is not ("client helper hooks" or "login lifecycle hooks" or "game-tick cast drain hook"))
+                    return;   // stand-down (above): logged once there
+                if (DecalBridgeHost.SkipsInitStep(name))
+                {
+                    RynthLog.Info($"InitWorker: '{name}' skipped - bridge mode leaves this to Decal.");
+                    (bridgeSkipped ??= new()).Add((name, action));
+                    return;
+                }
                 int idx = hookIndex++;
                 if (idx >= hookBudget)
                 {
@@ -598,6 +663,34 @@ public static class EntryPoint
             Step("raw packet hooks", RawPacketHooks.Initialize);
             Step("property-update hooks", PropertyUpdateHooks.Initialize);
             Step("auto-id service", AutoIdService.Start);
+            // Bridge mode: wait (bounded) for the bridge's hello. In Auto mode a bridge that
+            // never shows up means the old coexistence mode: install what was skipped.
+            if (bridgeSkipped != null && !DecalBridgeHost.WaitForBridge(InitAborted))
+            {
+                // No hello: Decal didn't load the bridge. Stand down (see above) rather than
+                // install the chat/salvage hooks over Decal's own patches. The other native
+                // hooks went in during the 20 s wait and stay; nothing loads plugins to use them.
+                if (DecalBridgeHost.ShouldStandDown)
+                {
+                    decalStandDown = true;
+                    RynthLog.Warn($"InitWorker: Decal without the bridge ({DecalBridgeHost.InactiveReason}) - standing down: " +
+                        "the chat and salvage hooks stay out; no plugins, no overlay.");
+                }
+                else
+                {
+                    foreach ((string name, Action action) in bridgeSkipped)
+                        RunInitStep(name + " (bridge fallback)", action);
+                }
+            }
+            if (InitAborted()) return;
+            if (decalStandDown)
+            {
+                // No LoadPlugins, no RunPostLoginBootstrap (EndScene hook, plugin pump), and no
+                // hot-reload bootstrap below: a reload of this client stands down again (the
+                // registry hasn't changed). DecalBridgeHost posts the chat line at login.
+                RynthLog.Info("InitWorker: stand-down complete - this client runs as a Decal client; RynthCore stays idle.");
+                return;
+            }
             if (Plugins.EngineSettings.EnablePlugins)
             {
                 RynthLog.Info("InitWorker DIAG — calling PluginManager.LoadPlugins.");
@@ -621,6 +714,7 @@ public static class EntryPoint
             // viewport platform/renderer. Avalonia floating panels still
             // work because they ride a separate LayeredWindow (GDI), not
             // the D3D9 swap chain.
+            if (InitAborted()) return;
             LoginLifecycleHooks.LoginComplete += RunPostLoginBootstrap;
 
             // ── Fast-login race guard (first launch, initCount==1) ───────────
@@ -643,6 +737,7 @@ public static class EntryPoint
             }
 
             RynthLog.Info($"InitWorker: post-init checkpoint, _initCount={_initCount}");
+            if (InitAborted()) return;
 
             // On a hot reload (initCount >= 2) the game's already past the
             // login gate, so SendLoginCompleteNotification won't fire again.
@@ -650,7 +745,7 @@ public static class EntryPoint
             // protects against can't happen post-login.
             if (_initCount >= 2)
             {
-                if (DecalDetection.IsDecalLoaded)
+                if (UseDecalCoexistencePath())
                 {
                     RynthLog.Info(
                         $"D3D9: Hot reload (initCount={_initCount}) — Decal coexistence " +
@@ -693,7 +788,13 @@ public static class EntryPoint
                     RynthLog.Info("PlayerVitals: hot reload — could not derive qualities ptr (will fall back to event-driven path).");
             }
 
-            if (Plugins.EngineSettings.EnableAvaloniaOverlay)
+            // Avalonia (the older panel UI, now only a fallback) and the ImGui faces are
+            // set up separately: the ImGui faces, the chat settings and the dashboard state
+            // don't depend on Avalonia, and the CoreCLR engine runs without it (Avalonia
+            // can't be unloaded; docs/UNLOADABLE_ENGINE_PLAN.md).
+            bool avalonia = Plugins.EngineSettings.EnableAvaloniaOverlay;
+            bool dcompTest = avalonia && UI.Dcomp.DcompOverlayBootstrap.IsEnabled;
+            if (avalonia)
             {
                 PreloadNativeDll(engineDir, "libSkiaSharp.dll");
                 PreloadNativeDll(engineDir, "libHarfBuzzSharp.dll");
@@ -703,88 +804,133 @@ public static class EntryPoint
                 // skip the production AvaloniaOverlay and start the DComp test
                 // path instead. Both paths cannot coexist in one process (Avalonia
                 // is single-app-per-process). Default behavior is unchanged.
-                if (UI.Dcomp.DcompOverlayBootstrap.IsEnabled)
+                if (dcompTest)
                 {
                     RynthLog.Info("InitWorker: RYNTHCORE_DCOMP_OVERLAY=1 — starting DComp test overlay instead of production AvaloniaOverlay.");
                     UI.Dcomp.DcompOverlayBootstrap.Start();
                 }
-                else
-                {
-                    // Engine-builtin panels (no plugin DLL pairing) — always register.
-                    OverlayHost.RegisterPanel("Status",  StatusPanel.Create);
-                    OverlayHost.RegisterPanel("Log",     LogPanel.Create);
-                    OverlayHost.RegisterPanel("Monsters", MonstersPanel.Create);
-                    OverlayHost.RegisterPanel("Items",    ItemsPanel.Create);
-                    OverlayHost.RegisterPanel("Settings", SettingsPanel.Create);
-                    OverlayHost.RegisterPanel("Nav",      NavPanel.Create);
-                    OverlayHost.RegisterPanel("Meta",     MetaPanel.Create);
-                    OverlayHost.RegisterPanel("Radar", RadarPanel.Create);
-
-                    // Plugin-paired panels: register only if the matching plugin DLL is
-                    // listed in engine.json PluginPaths (controlled by the launcher Plugins
-                    // tab). The panel UI is engine-side per the Avalonia-overlay design
-                    // (plugin DLLs feed data via C exports) — unchecking a plugin in the
-                    // launcher must take its entire surface area out of process so the
-                    // diagnostic "is plugin X the off-thread caller?" question is testable.
-                    if (HasPluginDll("RynthCore.Plugin.RynthAi.dll"))
-                    {
-                        OverlayHost.RegisterPanel("RynthAi", RynthAiPanel.Create);
-                        OverlayHost.RegisterPanel("Damage", MonsterDamagePanel.Create);
-                    }
-                    else
-                        RynthLog.Info("InitWorker: RynthAi panel skipped — DLL not in engine.json PluginPaths.");
-
-                    if (HasPluginDll("RynthCore.Plugin.RynthChat.dll"))
-                    {
-                        OverlayHost.RegisterPanel("Chat", RynthChatPanel.Create);
-                        // Regex filter-rule editor — its own panel (opened from
-                        // the chat panel's Filters button or the bar).
-                        OverlayHost.RegisterPanel("ChatFilters", RynthChatFiltersPanel.Create);
-                        // Apply persisted RynthChat settings (incl. "Hide retail chat" ->
-                        // ChatHooks.SuppressOriginalChat) at init so suppression takes effect
-                        // on login without the user having to open the Chat panel first.
-                        //
-                        // ⚠ INVARIANT: this is the ONLY place that invokes a panel's static
-                        // method BEFORE AvaloniaOverlay.Start() (below) sets up the Win32
-                        // platform. Doing so runs that panel's static ctor on THIS (InitWorker)
-                        // thread. A panel whose static ctor eagerly constructs Avalonia objects
-                        // (SolidColorBrush etc.) would then create Dispatcher.UIThread with the
-                        // wrong (non-controlled) impl → the overlay thread's Dispatcher.MainLoop
-                        // throws PlatformNotSupportedException → the ENTIRE overlay dies and no
-                        // RynthCore/plugin UI renders (game + plugin pump still run). This bit us
-                        // 2026-06-30; fixed by making RynthChatPanel's brush statics LAZY.
-                        // Before adding any EnsureSettingsLoaded-style early call for another
-                        // panel, confirm that panel's static ctor constructs NO Avalonia objects
-                        // (make its brushes lazy), OR move the settings-load off the panel class.
-                        // OverlayHost.RegisterPanel above is safe: a method-group does NOT trigger
-                        // the static ctor. See rynthcore memory "overlay no-UI = dispatcher poison".
-                        RynthChatPanel.EnsureSettingsLoaded();
-                    }
-                    else
-                        RynthLog.Info("InitWorker: RynthChat panel skipped — DLL not in engine.json PluginPaths.");
-
-                    if (HasPluginDll("RynthCore.Plugin.RynthVision.dll"))
-                        OverlayHost.RegisterPanel("Vision", RynthVisionPanel.Create);
-                    else
-                        RynthLog.Info("InitWorker: RynthVision panel skipped — DLL not in engine.json PluginPaths.");
-
-                    if (HasPluginDll("RynthCore.Plugin.RynthTracker.dll"))
-                        OverlayHost.RegisterPanel("Tracker", RynthTrackerPanel.Create);
-                    else
-                        RynthLog.Info("InitWorker: RynthTracker panel skipped — DLL not in engine.json PluginPaths.");
-
-                    if (HasPluginDll("RynthCore.Plugin.RynthNav.dll"))
-                        OverlayHost.RegisterPanel("RynthNav", RynthNavPanel.Create);
-                    else
-                        RynthLog.Info("InitWorker: RynthNav panel skipped — DLL not in engine.json PluginPaths.");
-
-                    AvaloniaOverlay.Start();
-                }
             }
             else
             {
-                RynthLog.Info("InitWorker: AvaloniaOverlay disabled via engine.json (EnableAvaloniaOverlay=false). No panels, no Skia, no offscreen window.");
+                RynthLog.Info("InitWorker: AvaloniaOverlay disabled (engine.json EnableAvaloniaOverlay=false, or the CoreCLR engine). ImGui faces only; no Skia, no offscreen window.");
             }
+
+            if (!dcompTest)
+            {
+                // The panel list (titles + Avalonia view factories). Registering creates no
+                // Avalonia object and starts nothing; the ImGui bar builds its buttons from it
+                // and PanelRouter resolves titles with it, Avalonia on or off.
+                // Engine-builtin panels (no plugin DLL pairing) — always register.
+                OverlayHost.RegisterPanel("Status",  StatusPanel.Create);
+                OverlayHost.RegisterPanel("Log",     LogPanel.Create);
+                OverlayHost.RegisterPanel("Monsters", MonstersPanel.Create);
+                OverlayHost.RegisterPanel("Items",    ItemsPanel.Create);
+                OverlayHost.RegisterPanel("Settings", SettingsPanel.Create);
+                OverlayHost.RegisterPanel("Nav",      NavPanel.Create);
+                OverlayHost.RegisterPanel("Meta",     MetaPanel.Create);
+                OverlayHost.RegisterPanel("Radar", RadarPanel.Create);
+
+                // Plugin-paired panels: register only if the matching plugin DLL is
+                // listed in engine.json PluginPaths (controlled by the launcher Plugins
+                // tab). The panel UI is engine-side per the Avalonia-overlay design
+                // (plugin DLLs feed data via C exports) — unchecking a plugin in the
+                // launcher must take its entire surface area out of process so the
+                // diagnostic "is plugin X the off-thread caller?" question is testable.
+                if (HasPluginDll("RynthCore.Plugin.RynthAi.dll"))
+                {
+                    OverlayHost.RegisterPanel("RynthAi", RynthAiPanel.Create);
+                    OverlayHost.RegisterPanel("Damage", MonsterDamagePanel.Create);
+                }
+                // Lua: the RynthLua plugin (or an older RynthAi that still carries it).
+                if (HasPluginDll("RynthCore.Plugin.RynthLua.dll") || HasPluginDll("RynthCore.Plugin.RynthAi.dll"))
+                    OverlayHost.RegisterPanel("Lua", LuaPanel.Create);
+                else
+                    RynthLog.Info("InitWorker: RynthAi panel skipped — DLL not in engine.json PluginPaths.");
+
+                if (HasPluginDll("RynthCore.Plugin.RynthChat.dll"))
+                {
+                    OverlayHost.RegisterPanel("Chat", RynthChatPanel.Create);
+                    // Regex filter-rule editor — its own panel (opened from
+                    // the chat panel's Filters button or the bar).
+                    OverlayHost.RegisterPanel("ChatFilters", RynthChatFiltersPanel.Create);
+                }
+                else
+                    RynthLog.Info("InitWorker: RynthChat panel skipped — DLL not in engine.json PluginPaths.");
+
+                if (HasPluginDll("RynthCore.Plugin.RynthVision.dll"))
+                    OverlayHost.RegisterPanel("Vision", RynthVisionPanel.Create);
+                else
+                    RynthLog.Info("InitWorker: RynthVision panel skipped — DLL not in engine.json PluginPaths.");
+
+                if (HasPluginDll("RynthCore.Plugin.RynthTracker.dll"))
+                    OverlayHost.RegisterPanel("Tracker", RynthTrackerPanel.Create);
+                else
+                    RynthLog.Info("InitWorker: RynthTracker panel skipped — DLL not in engine.json PluginPaths.");
+
+                if (HasPluginDll("RynthCore.Plugin.RynthNav.dll"))
+                    OverlayHost.RegisterPanel("RynthNav", RynthNavPanel.Create);
+                else
+                    RynthLog.Info("InitWorker: RynthNav panel skipped — DLL not in engine.json PluginPaths.");
+
+                // Apply persisted RynthChat settings (incl. "Hide retail chat" ->
+                // ChatHooks.SuppressOriginalChat) at init so suppression takes effect
+                // on login without the user having to open the Chat panel first; the
+                // chat keys feed ChatModel's input line whichever chat face is up.
+                //
+                // ⚠ INVARIANT: this runs BEFORE AvaloniaOverlay.Start() (below) sets up
+                // the Win32 platform, on THIS (InitWorker) thread. Nothing here may run a
+                // panel's static ctor that constructs Avalonia objects (SolidColorBrush
+                // etc.): that creates Dispatcher.UIThread with the wrong impl → the
+                // overlay thread's Dispatcher.MainLoop throws PlatformNotSupportedException
+                // → the ENTIRE overlay dies (bit us 2026-06-30). Hence ChatModel
+                // (UI/Data/ChatData.cs), which touches no Avalonia type, not the panel
+                // class. OverlayHost.RegisterPanel above is safe: a method group does NOT
+                // trigger the static ctor. See rynthcore memory "overlay no-UI = dispatcher poison".
+                if (HasPluginDll("RynthCore.Plugin.RynthChat.dll"))
+                {
+                    UI.Data.ChatModel.EnsureSettingsLoaded();
+                    UI.Data.ChatModel.InstallInput();
+                }
+                // ImGui faces for panels docked in the client (UI.PanelRouter
+                // picks the face). Registered even while the ImGui layer is off,
+                // so /rc imgui on can use them without a reload.
+                bool trackerPresent = HasPluginDll("RynthCore.Plugin.RynthTracker.dll");
+                ImGuiBackend.Panels.P1Faces.Register(trackerPresent);
+                if (HasPluginDll("RynthCore.Plugin.RynthVision.dll"))
+                    ImGuiBackend.Panels.VisionFace.Register();
+                if (HasPluginDll("RynthCore.Plugin.RynthNav.dll"))
+                    ImGuiBackend.Panels.RynthNavFace.Register();
+                if (HasPluginDll("RynthCore.Plugin.RynthChat.dll"))
+                {
+                    ImGuiBackend.Panels.ChatFace.Register();
+                    ImGuiBackend.Panels.ChatFiltersFace.Register();
+                }
+                ImGuiBackend.Panels.RadarFace.Register();
+                ImGuiBackend.Panels.SettingsFace.Register();
+                ImGuiBackend.Panels.MetaFace.Register();
+                RadarSettingsStore.Load(); // file read here, not on AC's thread
+                if (HasPluginDll("RynthCore.Plugin.RynthLua.dll") || HasPluginDll("RynthCore.Plugin.RynthAi.dll"))
+                    ImGuiBackend.Panels.LuaFace.Register();
+                if (HasPluginDll("RynthCore.Plugin.RynthAi.dll"))
+                {
+                    ImGuiBackend.Panels.RynthAiFace.Register();
+                    ImGuiBackend.Panels.DamageFace.Register();
+                    ImGuiBackend.Panels.DamageDetailFace.Register();
+                    ImGuiBackend.Panels.MonstersFace.Register();
+                    ImGuiBackend.Panels.NavFace.Register();
+                    ImGuiBackend.Panels.ItemsFace.Register();
+                    // Load the dashboard state file here, not on AC's thread. NOT through
+                    // RynthAiPanel: see the dispatcher invariant above ChatModel.EnsureSettingsLoaded.
+                    RynthAiDashboardState.EnsureLoaded();
+                }
+                if (trackerPresent)
+                    TrackerSettings.EnsureLoaded();
+                // Hide the docked Avalonia bar before it is built if the ImGui bar stands in.
+                ImGuiBackend.ImGuiBar.ApplyFace();
+            }
+
+            if (avalonia && !dcompTest)
+                AvaloniaOverlay.Start();
             RynthLog.Info("RynthCore bootstrap initialized.");
         }
         catch (Exception ex)
@@ -825,8 +971,20 @@ public static class EntryPoint
     /// that need them already null-check, and headless plugins (Avalonia-
     /// rendered like RynthAi) work fine without them.
     /// </summary>
+    private static int _decalCoexistenceStarted;
+
     private static void InitPluginsForDecalCoexistence()
     {
+        // Once per generation. A hot reload reaches this twice - from the initCount>=2
+        // branch in InitWorker and again from RunPostLoginBootstrap via
+        // MarkAlreadyComplete - and used to start TWO tick pumps (two concurrent
+        // PluginManager.TickAll drivers; _tickPumpThread only remembered the second).
+        // Measured on a Decal test client 2026-09-29 (spike/decal-bridge).
+        if (Interlocked.CompareExchange(ref _decalCoexistenceStarted, 1, 0) != 0)
+        {
+            RynthLog.Info("DecalCoexistence: plugin init/pump already started in this generation - not starting a second pump.");
+            return;
+        }
         IntPtr hwnd = global::RynthCore.Engine.ImGuiBackend.EngineFrameController.FindGameWindow();
         if (hwnd != IntPtr.Zero)
         {
@@ -845,7 +1003,8 @@ public static class EntryPoint
         {
             try
             {
-                Thread.Sleep(DecalCoexistencePluginInitDelay);
+                if (!EngineThreads.Sleep(DecalCoexistencePluginInitDelay))
+                    return;
 
                 // Reseed the qualities pointer from the live player object
                 // before plugins look at vitals. Auto-inject lands AFTER AC
@@ -870,6 +1029,17 @@ public static class EntryPoint
                     $"dispatchCount={Compatibility.CreateObjectHooks.DispatchCount}, " +
                     $"liveObjects={Plugins.PluginManager.LiveObjectCount}");
 
+                // Bridge mode: queue what the bridge buffered before InitPlugins, so its
+                // replay includes it.
+                if (DecalBridgeHost.Active)
+                    RynthLog.Info($"DecalBridge: drained {DecalBridgeHost.Drain()} buffered record(s) before plugin init.");
+
+                // No EndScene hook in this mode, so the per-frame main-thread prefetches the
+                // pump reads (skills, spells, attackable, names/types, positions, stats, the
+                // cold-login object seed) run from the Client::UseTime detour instead.
+                Compatibility.GameTickHooks.HeadlessPrefetch = true;
+                RynthLog.Info("DecalCoexistence: main-thread prefetches now run from Client::UseTime (no EndScene hook).");
+
                 Plugins.PluginManager.InitPlugins(IntPtr.Zero, IntPtr.Zero, hwnd);
 
                 // Drive the plugin tick loop. Without this, the macro
@@ -880,7 +1050,8 @@ public static class EntryPoint
                 int consecutiveFailures = 0;
                 while (Volatile.Read(ref _tickPumpStopRequested) == 0)
                 {
-                    Thread.Sleep(DecalCoexistenceTickInterval);
+                    if (!EngineThreads.Sleep(DecalCoexistenceTickInterval))
+                        break;
                     if (Volatile.Read(ref _tickPumpStopRequested) != 0)
                         break;
                     try
@@ -892,8 +1063,15 @@ public static class EntryPoint
                         // NO TARGET, BuffManager never sees enchantments land, combat
                         // events evaporate. Historically driven from EngineFrameController's
                         // per-frame loop; this is the headless equivalent.
+                        if (DecalBridgeHost.Active)
+                            DecalBridgeHost.Drain();   // bridge events into the same queues
                         Plugins.PluginManager.ProcessPendingActions(IntPtr.Zero, IntPtr.Zero, hwnd);
+                        Plugins.PluginManager.FlushPendingDeletes(); // as PumpPluginFrame: closes the create->delete race
                         Plugins.PluginManager.TickAll();
+                        // Panel data (UiDataHub): published on the plugin-tick thread, as
+                        // PumpPluginFrame does in the normal pump. Without it the panels'
+                        // snapshots never refreshed with Decal loaded.
+                        UI.Data.UiDataHub.Step();
                         consecutiveFailures = 0;
                     }
                     catch (Exception tickEx)
@@ -928,6 +1106,7 @@ public static class EntryPoint
             IsBackground = true,
         };
         _tickPumpThread = worker;
+        EngineThreads.Track(worker);
         worker.Start();
     }
 
@@ -971,8 +1150,10 @@ public static class EntryPoint
     {
         if (Interlocked.CompareExchange(ref _postLoginBootstrapStarted, 1, 0) != 0)
             return;
+        if (EngineLifecycle.IsShuttingDown)
+            return;   // no EndScene hook / plugin pump for a generation being torn down
 
-        if (DecalDetection.IsDecalLoaded)
+        if (UseDecalCoexistencePath())
         {
             RynthLog.Info(
                 $"D3D9: Decal coexistence — '{DecalDetection.DetectedModule}' loaded, " +
@@ -1011,6 +1192,37 @@ public static class EntryPoint
             RynthLog.Info("NormalPluginPump: disabled via engine.json (EnablePlugins=false).");
     }
 
+    private static int _decalInGameLogged;
+
+    /// <summary>
+    /// True: Decal is in this client and the old coexistence path runs (no EndScene hook, no
+    /// ImGui, the 30 Hz Decal pump). False without Decal, and with Decal when engine.json
+    /// DecalInGameImGui (or RYNTHCORE_DECAL_IMGUI=1) asks for the normal EndScene hook and
+    /// ImGui renderer there (docs/DECAL_BRIDGE_PLAN.md, step 3): the bootstrapper then finds
+    /// AC's device without creating one (Decal detours Direct3DCreate9 and CreateDevice).
+    /// Without Decal the setting is never read.
+    /// </summary>
+    private static bool UseDecalCoexistencePath()
+    {
+        if (!DecalDetection.IsDecalLoaded && !DecalBridgeHost.Active)
+            return false;
+        if (!Plugins.EngineSettings.DecalInGameImGui)
+            return true;
+        // AC's device must be known through the bridge first (bridge mode only); otherwise
+        // the old coexistence path, so plugins still get their pump.
+        if (!DecalBridgeHost.Active || !D3D9.DecalD3D9.TryResolve())
+        {
+            if (Interlocked.Exchange(ref _decalInGameLogged, 1) == 0)
+                RynthLog.Info($"D3D9: DecalInGameImGui is on, but AC's device isn't known through the Decal bridge (bridge mode={DecalBridgeHost.Active}) - Decal coexistence path instead.");
+            return true;
+        }
+        D3D9Bootstrapper.DecalInProcess = true;
+        if (Interlocked.Exchange(ref _decalInGameLogged, 1) == 0)
+            RynthLog.Info($"D3D9: Decal in the process ('{DecalDetection.DetectedModule ?? "Decal"}', bridge mode={DecalBridgeHost.Active}) and DecalInGameImGui is on - " +
+                "installing the normal EndScene hook and ImGui renderer (device found without creating one).");
+        return false;
+    }
+
     private static void StartNormalPluginPump()
     {
         if (Interlocked.CompareExchange(ref _normalPumpStarted, 1, 0) != 0)
@@ -1024,7 +1236,8 @@ public static class EntryPoint
                 int consecutiveFailures = 0;
                 while (Volatile.Read(ref _tickPumpStopRequested) == 0)
                 {
-                    Thread.Sleep(NormalPluginPumpInterval);
+                    if (!EngineThreads.Sleep(NormalPluginPumpInterval))
+                        break;
                     if (Volatile.Read(ref _tickPumpStopRequested) != 0)
                         break;
                     try
@@ -1060,6 +1273,7 @@ public static class EntryPoint
             IsBackground = true,
         };
         _tickPumpThread = worker;
+        EngineThreads.Track(worker);
         worker.Start();
     }
 
@@ -1077,6 +1291,7 @@ public static class EntryPoint
     /// </summary>
     internal static bool StopTickPumpAndJoin(int timeoutMs = 2000)
     {
+        Compatibility.GameTickHooks.HeadlessPrefetch = false;   // no more prefetch work once teardown starts
         if (_tickPumpThread == null)
             return true;
 
@@ -1106,8 +1321,34 @@ public static class EntryPoint
         Interlocked.Exchange(ref _tickPumpStopRequested, 1);
     }
 
+    private static Thread? _initThread;
+    private static int _initAbortLogged;
+
+    /// <summary>
+    /// Waits for InitWorker to finish. A reload can arrive while it is still installing
+    /// hooks and loading plugins; teardown must not run under it (it would keep
+    /// installing hooks and starting the D3D9 bootstrap for a generation being torn
+    /// down). InitWorker stops at its next step once shutdown has begun.
+    /// </summary>
+    internal static bool WaitForInitWorker(int timeoutMs)
+    {
+        Thread? t = _initThread;
+        if (t == null || t == Thread.CurrentThread) return true;
+        return t.Join(timeoutMs);
+    }
+
+    /// <summary>True (and logged once) when shutdown began while InitWorker was running.</summary>
+    private static bool InitAborted()
+    {
+        if (!EngineLifecycle.IsShuttingDown) return false;
+        if (Interlocked.Exchange(ref _initAbortLogged, 1) == 0)
+            RynthLog.Info("InitWorker: engine shutting down — stopping init here.");
+        return true;
+    }
+
     private static void RunInitStep(string name, Action action)
     {
+        if (InitAborted()) return;
         try
         {
             action();
@@ -1166,6 +1407,20 @@ public static class EntryPoint
         {
             RynthLog.Info($"InstallManagedExceptionHandlers: FirstChance hook failed - {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Removes the handlers above. They are process-wide events, so under the CoreCLR
+    /// host they would keep this engine generation alive after a reload (and keep its
+    /// handlers running next to the new generation's).
+    /// </summary>
+    internal static void UninstallManagedExceptionHandlers()
+    {
+        if (Interlocked.CompareExchange(ref _managedHandlersInstalled, 0, 1) != 1)
+            return;
+        AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
+        System.Threading.Tasks.TaskScheduler.UnobservedTaskException -= OnUnobservedTaskException;
+        AppDomain.CurrentDomain.FirstChanceException -= OnFirstChanceException;
     }
 
     [ThreadStatic] private static bool _inFirstChanceHandler;
@@ -1285,6 +1540,7 @@ public static class EntryPoint
             lock (LogLock)
             {
                 RecentLogLines.Enqueue(line);
+                System.Threading.Interlocked.Increment(ref _recentLogSeq); // 64-bit: atomic for the lock-free RecentLogSeq read
                 while (RecentLogLines.Count > MaxRecentLogLines)
                     RecentLogLines.Dequeue();
 
@@ -1341,4 +1597,21 @@ public static class EntryPoint
         lock (LogLock)
             return RecentLogLines.ToArray();
     }
+
+    /// <summary>
+    /// The recent-log ring plus the sequence number of its last line (lines are
+    /// numbered from 1 since load). Lets a viewer "clear" by remembering a
+    /// sequence number, which keeps working after the ring wraps.
+    /// </summary>
+    internal static string[] GetRecentLogLines(out long lastSeq)
+    {
+        lock (LogLock)
+        {
+            lastSeq = _recentLogSeq;
+            return RecentLogLines.ToArray();
+        }
+    }
+
+    /// <summary>Sequence number of the newest log line (0 before any). Lock-free read.</summary>
+    internal static long RecentLogSeq => System.Threading.Interlocked.Read(ref _recentLogSeq);
 }

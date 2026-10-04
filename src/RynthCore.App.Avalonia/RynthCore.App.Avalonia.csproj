@@ -32,6 +32,9 @@
     <Compile Include="..\RynthCore.App\LaunchAccountProfile.cs" Link="Shared\LaunchAccountProfile.cs" />
     <Compile Include="..\RynthCore.App\InjectionMode.cs" Link="Shared\InjectionMode.cs" />
     <Compile Include="..\RynthCore.App\DecalLocator.cs" Link="Shared\DecalLocator.cs" />
+    <Compile Include="..\RynthCore.App\DecalBridgeRegistration.cs" Link="Shared\DecalBridgeRegistration.cs" />
+    <Compile Include="..\RynthCore.App\DecalBridgeCheck.cs" Link="Shared\DecalBridgeCheck.cs" />
+    <Compile Include="..\RynthCore.App\RealDecalCheckHost.cs" Link="Shared\RealDecalCheckHost.cs" />
     <Compile Include="..\RynthCore.App\AcLaunchArgumentBuilder.cs" Link="Shared\AcLaunchArgumentBuilder.cs" />
     <Compile Include="..\RynthCore.App\AcClientLaunchSettingsService.cs" Link="Shared\AcClientLaunchSettingsService.cs" />
     <Compile Include="..\RynthCore.App\AcClientLoginAutomationService.cs" Link="Shared\AcClientLoginAutomationService.cs" />
@@ -41,6 +44,7 @@
     <Compile Include="..\RynthCore.App\BuildVersion.cs" Link="Shared\BuildVersion.cs" />
     <Compile Include="..\RynthCore.App\AppSettings.cs" Link="Shared\AppSettings.cs" />
     <Compile Include="..\RynthCore.App\AppSettingsStore.cs" Link="Shared\AppSettingsStore.cs" />
+    <Compile Include="..\RynthCore.App\DecalAccountModes.cs" Link="Shared\DecalAccountModes.cs" />
     <Compile Include="..\RynthCore.App\PluginDefinition.cs" Link="Shared\PluginDefinition.cs" />
     <Compile Include="..\RynthCore.Injector\EngineInjectionService.cs" Link="Shared\EngineInjectionService.cs" />
     <Compile Include="..\RynthCore.Injector\InjectionResult.cs" Link="Shared\InjectionResult.cs" />

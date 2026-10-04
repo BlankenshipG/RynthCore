@@ -87,6 +87,10 @@ internal static class EngineStatusMetrics
         w.WriteString("ts", DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'"));
         w.WriteString("host", SafeMachineName());
         w.WriteNumber("pid", Environment.ProcessId);
+        // The engine's build ("2026.9.26.3 (8ca322f)", "dev (...)") and plugin API version, so a
+        // plugin can say which engine it runs on (RynthAi /ra version). Additive fields.
+        w.WriteString("engineVersion", EntryPoint.BuildStamp);
+        w.WriteNumber("apiVersion", Plugins.PluginContractVersion.Current);
 
         w.WriteString("account", SessionStateRegistry.LastAccountName ?? string.Empty);
         w.WriteString("character", SessionStateRegistry.LastCharacterName ?? string.Empty);

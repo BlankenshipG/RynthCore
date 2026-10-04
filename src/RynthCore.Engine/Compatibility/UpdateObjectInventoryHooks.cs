@@ -102,6 +102,7 @@ internal static class UpdateObjectInventoryHooks
         {
             if (objectId != 0)
                 PluginManager.QueueUpdateObjectInventory(objectId);
+            InventoryModel.MarkDirty();   // Inventory panel: capture again soon (one volatile write)
         }
         catch { }
     }
@@ -188,6 +189,18 @@ internal static class UpdateObjectInventoryHooks
     /// </summary>
     private static int ScanByContainerId(uint containerId, Span<uint> itemIds)
     {
+        // Off AC's main thread (host GetContainerContentsFn on the plugin pump): one
+        // pass over the main-thread PWD snapshot under a single lock, no AC memory.
+        // Per-id TryGetObjectOwnershipInfo would serve the same snapshot but take the
+        // lock once per id; the fixed-range fallback below (65k ids) is pointless
+        // off-thread, so an empty snapshot just means "nothing yet".
+        if (!MainThreadGuard.IsOnMainThread())
+        {
+            int n = ClientObjectHooks.CollectOwnedIdsFromSnapshot(containerId, itemIds);
+            itemIds[..n].Sort();   // same ascending order as below
+            return n;
+        }
+
         // Check every object the client knows, from the identity snapshot. The old fixed
         // range stopped at 0x8000FFFF, but a server hands out ids well past that once it
         // has run a while, so newer items (and packs, with everything in them) were
@@ -264,17 +277,5 @@ internal static class UpdateObjectInventoryHooks
     private const uint PageNoAccess = 0x01;
     private const uint PageGuard = 0x100;
 
-    private static bool IsReadablePointer(IntPtr ptr)
-    {
-        if (ptr == IntPtr.Zero)
-            return false;
-
-        if (VirtualQuery(ptr, out MEMORY_BASIC_INFORMATION mbi, Marshal.SizeOf<MEMORY_BASIC_INFORMATION>()) == 0)
-            return false;
-
-        if (mbi.State != MemCommit)
-            return false;
-
-        return (mbi.Protect & (PageNoAccess | PageGuard)) == 0;
-    }
+    private static bool IsReadablePointer(IntPtr ptr) => MemoryProbe.IsAccessible(ptr);
 }

@@ -7,11 +7,10 @@
 //    Consumables — Name, Type picker, Delete
 //    Mana Stones — Enable tapping toggle, keep count, min mana threshold
 //
-//  Plugin exports used:
-//    RynthPluginGetItemsJson        → polled every 1s for external edits
-//    RynthPluginSetItemsJson        → write-back on edit
-//    RynthPluginAddSelectedWeapon   → add currently selected inventory item as weapon
-//    RynthPluginAddSelectedConsumable → add currently selected inventory item as consumable
+//  Data goes through UiDataHub (UI/Data/ItemsData.cs): UiSources.Items polls
+//  RynthPluginGetItemsJson on the pump thread; ItemsCommands saves
+//  (RynthPluginSetItemsJson) and adds the selected item there. The ImGui face
+//  (ImGui/Panels/ItemsFace.cs) reads the same snapshot.
 // ============================================================================
 
 using System;
@@ -26,6 +25,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using RynthCore.Engine.Plugins;
+using RynthCore.Engine.UI.Data;
 
 namespace RynthCore.Engine.UI.Panels;
 
@@ -35,21 +35,6 @@ internal partial class ItemsPanelJsonContext : JsonSerializerContext { }
 
 internal static class ItemsPanel
 {
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, ExactSpelling = true)]
-    private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate IntPtr GetItemsJsonFn();
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate void SetItemsJsonFn(IntPtr ansiJson);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate void VoidFn();
-
-    private static GetItemsJsonFn?  _getItemsJson;
-    private static SetItemsJsonFn?  _setItemsJson;
-    private static VoidFn?          _addSelectedWeapon;
-    private static VoidFn?          _addSelectedConsumable;
-
     private static readonly IBrush ColAmber   = new SolidColorBrush(Color.FromRgb(0xE8, 0xB3, 0x33));
     private static readonly IBrush ColRed     = new SolidColorBrush(Color.FromRgb(0xFF, 0x55, 0x55));
     private static readonly IBrush ColTeal    = new SolidColorBrush(Color.FromRgb(0x26, 0xD9, 0xE6));
@@ -66,7 +51,7 @@ internal static class ItemsPanel
         { "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether" };
 
     private static readonly string[] ConsumableTypes =
-        { "General", "Lockpick", "HealthKit", "ManaStone", "Stamina", "Pet" };
+        { "General", "Lockpick", "HealthKit", "HealthPotion", "ManaPotion", "StaminaPotion", "ManaStone", "Stamina", "Pet" };
 
     internal sealed class Payload
     {
@@ -100,7 +85,6 @@ internal static class ItemsPanel
 
     public static Control Create()
     {
-        TryBind();
 
         var state = new State();
 
@@ -249,11 +233,7 @@ internal static class ItemsPanel
             }
 
             body.Children.Add(BuildAddButton("Add Selected Weapon", "(select a weapon in inventory first)",
-                () =>
-                {
-                    if (_addSelectedWeapon == null) TryBind();
-                    _addSelectedWeapon?.Invoke();
-                }));
+                ItemsCommands.AddSelectedWeapon));
 
             body.Children.Add(BuildDivider());
 
@@ -284,11 +264,7 @@ internal static class ItemsPanel
             }
 
             body.Children.Add(BuildAddButton("Add Selected Consumable", "(select an item in inventory first)",
-                () =>
-                {
-                    if (_addSelectedConsumable == null) TryBind();
-                    _addSelectedConsumable?.Invoke();
-                }));
+                ItemsCommands.AddSelectedConsumable));
 
             body.Children.Add(BuildDivider());
 
@@ -307,7 +283,6 @@ internal static class ItemsPanel
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1000) };
         timer.Tick += (_, _) =>
         {
-            if (_getItemsJson == null) TryBind();
             if (state.Dirty) return;
             if (!TryFetch(out var fresh)) return;
 
@@ -340,8 +315,17 @@ internal static class ItemsPanel
         // Stop with the visual tree — a running DispatcherTimer roots the closed
         // view forever (one immortal poller per open/close). RadarPanel idiom;
         // must restart on attach: drag/resize fires Detached→Attached.
-        root.AttachedToVisualTree   += (_, _) => { if (!timer.IsEnabled) timer.Start(); };
-        root.DetachedFromVisualTree += (_, _) => timer.Stop();
+        root.AttachedToVisualTree += (_, _) =>
+        {
+            UiSources.Items.Subscribe();
+            UiSources.Items.RequestRefresh();
+            if (!timer.IsEnabled) timer.Start();
+        };
+        root.DetachedFromVisualTree += (_, _) =>
+        {
+            timer.Stop();
+            UiSources.Items.Unsubscribe();
+        };
 
         return root;
     }
@@ -728,81 +712,26 @@ internal static class ItemsPanel
         return b;
     }
 
-    // ── Plugin binding ────────────────────────────────────────────────────────
-    // RL loads fresh plugin copies without unloading the old ones: drop the
-    // exports bound below so the next poll re-binds to the live copy.
-    static ItemsPanel() => PluginManager.PluginsUnloaded += () =>
-    {
-        _getItemsJson = null;
-        _setItemsJson = null;
-        _addSelectedWeapon = null;
-        _addSelectedConsumable = null;
-    };
+    // ── Hub ───────────────────────────────────────────────────────────────────
+    // The hub version at the last save: older snapshots predate it and would
+    // briefly revert the edit on screen, so they're skipped.
+    private static long _savedAtVersion = -1;
 
-    private static void TryBind()
-    {
-        var plugin = PluginManager.Plugins.FirstOrDefault(
-            p => p.DisplayName.Contains("RynthAi", StringComparison.OrdinalIgnoreCase));
-        if (plugin == null || plugin.ModuleHandle == IntPtr.Zero) return;
-
-        if (_getItemsJson == null)
-        {
-            IntPtr p = GetProcAddress(plugin.ModuleHandle, "RynthPluginGetItemsJson");
-            if (p != IntPtr.Zero) _getItemsJson = Marshal.GetDelegateForFunctionPointer<GetItemsJsonFn>(p);
-        }
-        if (_setItemsJson == null)
-        {
-            IntPtr p = GetProcAddress(plugin.ModuleHandle, "RynthPluginSetItemsJson");
-            if (p != IntPtr.Zero) _setItemsJson = Marshal.GetDelegateForFunctionPointer<SetItemsJsonFn>(p);
-        }
-        if (_addSelectedWeapon == null)
-        {
-            IntPtr p = GetProcAddress(plugin.ModuleHandle, "RynthPluginAddSelectedWeapon");
-            if (p != IntPtr.Zero) _addSelectedWeapon = Marshal.GetDelegateForFunctionPointer<VoidFn>(p);
-        }
-        if (_addSelectedConsumable == null)
-        {
-            IntPtr p = GetProcAddress(plugin.ModuleHandle, "RynthPluginAddSelectedConsumable");
-            if (p != IntPtr.Zero) _addSelectedConsumable = Marshal.GetDelegateForFunctionPointer<VoidFn>(p);
-        }
-    }
-
+    // A private copy of the hub's latest items (the panel edits it in place).
     private static bool TryFetch(out Payload payload)
     {
         payload = new Payload();
-        if (_getItemsJson == null) return false;
-        try
-        {
-            IntPtr ptr = _getItemsJson();
-            if (ptr == IntPtr.Zero) return false;
-            string? json = Marshal.PtrToStringAnsi(ptr);
-            if (string.IsNullOrEmpty(json)) return false;
-            var parsed = JsonSerializer.Deserialize(json, ItemsPanelJsonContext.Default.Payload);
-            if (parsed == null) return false;
-            payload = parsed;
-            return true;
-        }
-        catch { return false; }
+        var snap = UiSources.Items.Current;
+        if (snap == null || snap.Version <= _savedAtVersion) return false;
+        payload = snap.Value.ParseCopy();
+        return true;
     }
 
     private static void PushChanges(State state)
     {
-        if (_setItemsJson == null) TryBind();
-        if (_setItemsJson == null) return;
-
-        IntPtr ansi = IntPtr.Zero;
-        try
-        {
-            string json = JsonSerializer.Serialize(state.Data, ItemsPanelJsonContext.Default.Payload);
-            ansi = Marshal.StringToHGlobalAnsi(json);
-            _setItemsJson(ansi);
-            state.Dirty = false;
-        }
-        catch { }
-        finally
-        {
-            if (ansi != IntPtr.Zero) Marshal.FreeHGlobal(ansi);
-        }
+        _savedAtVersion = UiSources.Items.Current?.Version ?? _savedAtVersion;
+        ItemsCommands.SetJson(ItemsCommands.Serialize(state.Data));
+        state.Dirty = false;
     }
 
     // ── Change detection ──────────────────────────────────────────────────────

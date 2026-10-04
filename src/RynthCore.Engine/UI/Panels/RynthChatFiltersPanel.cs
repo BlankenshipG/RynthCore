@@ -4,11 +4,15 @@
 //  "ChatFilters" panel (dockable/floatable) — rules get complex enough that
 //  a small overlay inside the chat panel doesn't cut it.
 //
-//  Rule semantics (shared state lives in RynthChatPanel):
+//  Rule semantics (the rules live in ChatModel, UI/Data/ChatData.cs; the ImGui
+//  face is ImGui/Panels/ChatFiltersFace.cs):
 //    • Regex, case-insensitive, matched against the formatted line.
 //    • FIRST matching rule wins — order matters, hence the ▲▼ buttons.
-//    • Tab name set  → matching lines MOVE to that tab (still shown in All).
+//    • Tab name set  → matching lines MOVE to that tab (and leave All).
 //    • Tab name empty → matching lines are hidden everywhere.
+//  Since 2026-09-29 rules can also copy and colour (action, when, colour);
+//  only the ImGui face edits those. Editing a tab here makes the rule a plain
+//  Move (or Hide when empty) again.
 // ============================================================================
 
 using System;
@@ -19,6 +23,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
 using RynthCore.Engine.ImGuiBackend;
+using RynthCore.Engine.UI.Data;
 
 namespace RynthCore.Engine.UI.Panels;
 
@@ -32,12 +37,12 @@ internal static class RynthChatFiltersPanel
 
     internal static Control Create()
     {
-        RynthChatPanel.EnsureSettingsLoaded();
+        ChatModel.EnsureSettingsLoaded();
 
         var hint = new TextBlock
         {
             Text = "Regex rules, case-insensitive — FIRST match wins (reorder with ▲▼).\n" +
-                   "Tab set: matching lines move to that tab (still visible in All).\n" +
+                   "Tab set: matching lines move to that tab (and leave All).\n" +
                    "Tab empty: matching lines are hidden everywhere.",
             FontSize = 9,
             Foreground = Brushes.Gray,
@@ -71,9 +76,9 @@ internal static class RynthChatFiltersPanel
 
         void RebuildRows()
         {
-            var filters = RynthChatPanel.Filters;
+            var filters = ChatModel.Filters;
             rows.Children.Clear();
-            for (int i = 0; i < filters.Count; i++)
+            for (int i = 0; i < filters.Length; i++)
             {
                 var r = filters[i];
                 int index = i;
@@ -87,7 +92,7 @@ internal static class RynthChatFiltersPanel
                 enabledCheck.IsCheckedChanged += (_, _) =>
                 {
                     r.Enabled = enabledCheck.IsChecked == true;
-                    RynthChatPanel.NotifyFiltersChanged();
+                    ChatModel.FiltersChanged();
                 };
 
                 var patternBox = new TextBox
@@ -111,7 +116,7 @@ internal static class RynthChatFiltersPanel
                     r.Pattern = patternBox.Text ?? "";
                     r.Recompile();
                     patternBox.BorderBrush = r.Invalid ? Brushes.IndianRed : FieldBorder;
-                    RynthChatPanel.NotifyFiltersChanged();
+                    ChatModel.FiltersChanged();
                 };
 
                 var tabBox = new TextBox
@@ -133,7 +138,8 @@ internal static class RynthChatFiltersPanel
                 tabBox.TextChanged += (_, _) =>
                 {
                     r.Tab = (tabBox.Text ?? "").Trim();
-                    RynthChatPanel.NotifyFiltersChanged();
+                    r.Action = r.Tab.Length == 0 ? ChatRuleAction.Hide : ChatRuleAction.Move;
+                    ChatModel.FiltersChanged();
                 };
 
                 Button SmallBtn(string label, IBrush fg) => new()
@@ -151,30 +157,23 @@ internal static class RynthChatFiltersPanel
                 upBtn.IsEnabled = index > 0;
                 upBtn.Click += (_, _) =>
                 {
-                    if (index <= 0) return;
-                    filters.RemoveAt(index);
-                    filters.Insert(index - 1, r);
+                    ChatModel.MoveFilter(r, -1);
                     RebuildRows();
-                    RynthChatPanel.NotifyFiltersChanged();
                 };
 
                 var downBtn = SmallBtn("▼", Brushes.White);
-                downBtn.IsEnabled = index < filters.Count - 1;
+                downBtn.IsEnabled = index < filters.Length - 1;
                 downBtn.Click += (_, _) =>
                 {
-                    if (index >= filters.Count - 1) return;
-                    filters.RemoveAt(index);
-                    filters.Insert(index + 1, r);
+                    ChatModel.MoveFilter(r, +1);
                     RebuildRows();
-                    RynthChatPanel.NotifyFiltersChanged();
                 };
 
                 var delBtn = SmallBtn("Delete", Brushes.IndianRed);
                 delBtn.Click += (_, _) =>
                 {
-                    filters.Remove(r);
+                    ChatModel.EditFilters(list => list.Remove(r));
                     RebuildRows();
-                    RynthChatPanel.NotifyFiltersChanged();
                 };
 
                 rows.Children.Add(new StackPanel
@@ -185,7 +184,7 @@ internal static class RynthChatFiltersPanel
                 });
             }
 
-            if (filters.Count == 0)
+            if (filters.Length == 0)
             {
                 rows.Children.Add(new TextBlock
                 {
@@ -199,14 +198,28 @@ internal static class RynthChatFiltersPanel
 
         addBtn.Click += (_, _) =>
         {
-            var rule = new RynthChatPanel.ChatFilterRule();
+            var rule = new ChatFilterRule();
             rule.Recompile();
-            RynthChatPanel.Filters.Add(rule);
-            RebuildRows();
             // Empty pattern is inert until typed — no display change yet, but
             // persist the row so it survives a relaunch mid-edit.
-            RynthChatPanel.NotifyFiltersChanged();
+            ChatModel.EditFilters(list => list.Add(rule));
+            RebuildRows();
         };
+
+        // The other face (ImGui) may change the rules too.
+        long seen = ChatModel.FiltersVersion;
+        var timer = new Avalonia.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        timer.Tick += (_, _) =>
+        {
+            long v = ChatModel.FiltersVersion;
+            if (v == seen) return;
+            seen = v;
+            // Don't rebuild under the user's typing (a keystroke bumps the version too).
+            if (Win32Backend.AvaloniaTextInputActive && layout.IsKeyboardFocusWithin) return;
+            RebuildRows();
+        };
+        layout.AttachedToVisualTree += (_, _) => { seen = ChatModel.FiltersVersion; RebuildRows(); timer.Start(); };
+        layout.DetachedFromVisualTree += (_, _) => timer.Stop();
 
         RebuildRows();
         return layout;

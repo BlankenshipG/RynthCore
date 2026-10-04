@@ -290,9 +290,29 @@ internal static class ProcessExitHooks
         // hProcess == -1 (pseudo-handle for current process) or == GetCurrentProcess() handle.
         bool selfKill = hProcess == new IntPtr(-1) || hProcess == GetCurrentProcessHandle();
         if (selfKill)
+        {
             LogTermination("TerminateProcess", hProcess, exitCode);
+            DumpCrashOnce("TerminateProcess", exitCode);
+        }
         try { return _terminateOriginal!(hProcess, exitCode); }
         catch { return false; }
+    }
+
+    // A crash exit (an NTSTATUS error code, 0xC0000000 and up: 0xC0000005 is an access
+    // violation) on the way out: write a minidump once, while the faulting frames are still on
+    // the stack. The runtime ends the process with TerminateProcess after a native AV under one
+    // of our detours, so no unhandled exception ever reaches a crash watcher (procdump -e saw
+    // nothing for Lucy's Town Network crashes, 10-01 19:46 and 10-02 15:55).
+    private static int _crashDumped;
+    private static void DumpCrashOnce(string via, uint code)
+    {
+        if (code < 0xC0000000u || System.Threading.Interlocked.Exchange(ref _crashDumped, 1) != 0) return;
+        try
+        {
+            if (CrashDump.WriteSelfDump($"{via} 0x{code:X8}", out string path, "crash"))
+                RynthLog.Info($"ProcessExit: crash dump written {path} ({via} 0x{code:X8})");
+        }
+        catch { }
     }
 
     [DllImport("kernel32.dll")]
@@ -312,7 +332,10 @@ internal static class ProcessExitHooks
     {
         bool selfKill = processHandle == new IntPtr(-1) || processHandle == GetCurrentProcessHandle();
         if (selfKill)
+        {
             LogTermination("NtTerminateProcess", processHandle, exitStatus);
+            DumpCrashOnce("NtTerminateProcess", exitStatus);
+        }
         try { return _ntTermOriginal!(processHandle, exitStatus); }
         catch { return 0xC0000001; /* STATUS_UNSUCCESSFUL */ }
     }
@@ -360,6 +383,9 @@ internal static class ProcessExitHooks
         catch { /* original never returns */ }
         HardTerminateNoReentry(code);
     }
+
+    /// <summary>ExitProcess/TerminateProcess was called: the process is closing.</summary>
+    public static bool TerminationIntercepted => Volatile.Read(ref _logged) != 0;
 
     private static void LogTermination(string func, IntPtr hProcess, uint exitCode)
     {

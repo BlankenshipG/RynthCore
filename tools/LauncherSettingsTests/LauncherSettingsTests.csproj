@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Offline checks for the launcher's shared settings with "Decal + RynthCore" accounts
+    (src\RynthCore.App\AppSettingsStore.cs and DecalAccountModes.cs, compiled in): the choice
+    lives in decal-accounts.json, appsettings.json never holds a value an older launcher can't
+    read, migration of a file that does, and what happens when an older launcher edits the
+    accounts. Works in a temp folder, never in %APPDATA%\RynthCore.
+    Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>LauncherSettingsTests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\RynthCore.App\AppSettings.cs" Link="App\AppSettings.cs" />
+    <Compile Include="..\..\src\RynthCore.App\AppSettingsStore.cs" Link="App\AppSettingsStore.cs" />
+    <Compile Include="..\..\src\RynthCore.App\DecalAccountModes.cs" Link="App\DecalAccountModes.cs" />
+    <Compile Include="..\..\src\RynthCore.App\InjectionMode.cs" Link="App\InjectionMode.cs" />
+    <Compile Include="..\..\src\RynthCore.App\LaunchAccountProfile.cs" Link="App\LaunchAccountProfile.cs" />
+    <Compile Include="..\..\src\RynthCore.App\LaunchServerProfile.cs" Link="App\LaunchServerProfile.cs" />
+  </ItemGroup>
+
+</Project>

@@ -30,6 +30,15 @@ internal static class D3D9Bootstrapper
     [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
     private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
 
+    /// <summary>
+    /// Decal is in this client and the in-game renderer was asked for (EntryPoint,
+    /// DecalInGameImGui). Decal detours Direct3DCreate9 and IDirect3D9::CreateDevice, so the
+    /// throwaway-device discovery would hand a second device to Decal: the EndScene address
+    /// comes from AC's live device (heap scan) or d3d9.dll's image instead. Never set
+    /// without Decal.
+    /// </summary>
+    internal static volatile bool DecalInProcess;
+
     private static int _started;
     private static bool _d3dCreateHookInstalled;
     private static bool _createDeviceHookInstalled;
@@ -46,18 +55,23 @@ internal static class D3D9Bootstrapper
         if (Interlocked.CompareExchange(ref _started, 1, 0) != 0)
             return;
 
-        var thread = new Thread(BootstrapWorker)
-        {
-            Name = "RynthCore.D3D9Bootstrap",
-            IsBackground = true
-        };
-        thread.Start();
+        EngineThreads.Start("RynthCore.D3D9Bootstrap", BootstrapWorker);
     }
 
     private static void BootstrapWorker()
     {
         try
         {
+            if (DecalInProcess)
+            {
+                while (GetModuleHandleA("d3d9.dll") == IntPtr.Zero)
+                    if (!EngineThreads.Sleep(PollIntervalMs))
+                        return;
+                RynthLog.D3D9("D3D9Bootstrapper: Decal in the process - discovering EndScene without creating a device.");
+                EndSceneHook.InstallWithoutDevice("decal-live-device");
+                return;
+            }
+
             // This runs after character login, so d3d9.dll and the game's
             // device are fully initialized. Use the NULLREF throwaway device
             // for vtable discovery — it's safe post-login because the
@@ -91,7 +105,8 @@ internal static class D3D9Bootstrapper
                     return;
                 }
 
-                Thread.Sleep(PollIntervalMs);
+                if (!EngineThreads.Sleep(PollIntervalMs))
+                    return;   // engine shutting down: don't install hooks for a dying generation
             }
         }
         catch (Exception ex)

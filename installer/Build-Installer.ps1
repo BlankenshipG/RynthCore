@@ -5,12 +5,18 @@
 
 .DESCRIPTION
     1. Publishes the Avalonia launcher (self-contained, x86)
-    2. Publishes RynthCore.Engine (NativeAOT, x86 -- ~2 min)
-    3. Publishes RynthCore.Loader (NativeAOT, x86) -- the DLL the launcher injects
-    4. Publishes RynthCore.Plugin.RynthAi (NativeAOT, x86)
+    2+3. The engine and the loader. By default the unloadable engine
+       (docs/UNLOADABLE_ENGINE_PLAN.md): scripts\Publish-EngineCoreClr.ps1 stages the native
+       loader (native\Loader), RynthCore.Shim, the CoreCLR engine (ReadyToRun) and the
+       app-local .NET runtime (Runtime\dotnet) straight into staging\app\Runtime.
+       -NativeAot builds the old NativeAOT engine + loader instead.
+    4. Publishes RynthCore.Plugin.RynthAi (NativeAOT, x86: the release plugins stay NativeAOT
+       - the CoreCLR engine loads them - until the update feed can carry a managed plugin's
+       dependency DLLs)
     5. Publishes the Loot Editor
     6. Stages all output under installer\staging\app\, plus the hand-built
-       RynthCore.SehTrampoline.dll, and checks every required runtime file is there
+       RynthCore.SehTrampoline.dll and the Decal bridge (DecalBridge\RynthCore.DecalBridge.dll,
+       built here against Decal's reference assemblies), and checks every required file is there
     7. Invokes ISCC.exe to produce installer\Output\RynthCore-Setup.exe
 
 .PARAMETER Configuration
@@ -32,7 +38,19 @@ param(
     # Version string injected into the installer (e.g. "0.3"). When omitted,
     # the version defined in RynthCore.iss is used as-is.
     [string]$Version = "",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    # The old NativeAOT engine + loader (a hot reload leaks every engine generation).
+    [switch]$NativeAot,
+    # The Decal bridge (src\RynthCore.DecalBridge, docs/DECAL_BRIDGE_PLAN.md) is staged into
+    # {app}\DecalBridge by default: every release ships it (experimental, opt-in per account;
+    # nothing registers it unless the player picks "Decal + RynthCore"). Building it needs
+    # Decal installed (its public reference assemblies); without Decal this script fails.
+    # -SkipDecalBridge leaves it out (dev builds on a machine without Decal; never a release).
+    [switch]$SkipDecalBridge,
+    # Old opt-in switch, kept so existing command lines still work; the bridge is the default now.
+    [switch]$IncludeDecalBridge,
+    # Decal's install folder, when not the default C:\Program Files (x86)\Decal 3.0.
+    [string]$DecalDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -80,7 +98,7 @@ $LootEditorPublish = "$RynthSuiteRoot\Tools\RynthCore.LootEditor\bin\$Configurat
 $StagingDir  = "$ScriptDir\staging\app"
 
 # ── Validate projects ───────────────────────────────────────────────────────
-foreach ($p in @($LauncherProject, $EngineProject, $LoaderProject, $PluginProject, $LootEditorProject)) {
+foreach ($p in @($LauncherProject, $EngineProject, $PluginProject, $LootEditorProject) + @(if ($NativeAot) { $LoaderProject })) {
     if (-not (Test-Path $p)) {
         throw "Project not found: $p`nUpdate paths in Build-Installer.ps1 if your repo layout differs."
     }
@@ -93,17 +111,20 @@ if (-not $SkipBuild) {
     dotnet publish $LauncherProject -c $Configuration -r win-x86 --self-contained true @VersionArgs
     if ($LASTEXITCODE -ne 0) { throw "Launcher publish failed (exit $LASTEXITCODE)" }
 
-    # ── 2. Engine (NativeAOT — the slow one) ──────────────────────────────────
-    Write-Host ""
-    Write-Host "[2/5] Publishing Engine (NativeAOT, ~2 min)..." -ForegroundColor Cyan
-    dotnet publish $EngineProject -c $Configuration @VersionArgs
-    if ($LASTEXITCODE -ne 0) { throw "Engine publish failed (exit $LASTEXITCODE)" }
+    if ($NativeAot) {
+        # ── 2. Engine (NativeAOT — the slow one) ──────────────────────────────
+        Write-Host ""
+        Write-Host "[2/5] Publishing Engine (NativeAOT, ~2 min)..." -ForegroundColor Cyan
+        dotnet publish $EngineProject -c $Configuration @VersionArgs
+        if ($LASTEXITCODE -ne 0) { throw "Engine publish failed (exit $LASTEXITCODE)" }
 
-    # ── 3. Loader (NativeAOT, small) ──────────────────────────────────────────
-    Write-Host ""
-    Write-Host "[3/5] Publishing Loader (NativeAOT)..." -ForegroundColor Cyan
-    dotnet publish $LoaderProject -c $Configuration @VersionArgs
-    if ($LASTEXITCODE -ne 0) { throw "Loader publish failed (exit $LASTEXITCODE)" }
+        # ── 3. Loader (NativeAOT, small) ──────────────────────────────────────
+        Write-Host ""
+        Write-Host "[3/5] Publishing Loader (NativeAOT)..." -ForegroundColor Cyan
+        dotnet publish $LoaderProject -c $Configuration @VersionArgs
+        if ($LASTEXITCODE -ne 0) { throw "Loader publish failed (exit $LASTEXITCODE)" }
+    }
+    # (Default: the CoreCLR engine and native loader are built straight into staging below.)
 
     # ── 4. Plugin (NativeAOT) ─────────────────────────────────────────────────
     Write-Host ""
@@ -143,18 +164,30 @@ foreach ($file in (Get-ChildItem "$LauncherPublish" -File)) {
     Copy-Item $file.FullName "$StagingDir\$destName" -Force
 }
 
-# Engine runtime files (into Runtime\, skip .pdb)
-foreach ($file in (Get-ChildItem "$EnginePublish" -File)) {
-    if ($file.Extension -eq '.pdb') { continue }
-    Copy-Item $file.FullName "$StagingDir\Runtime\$($file.Name)" -Force
-}
+if ($NativeAot) {
+    # Engine runtime files (into Runtime\, skip .pdb)
+    foreach ($file in (Get-ChildItem "$EnginePublish" -File)) {
+        if ($file.Extension -eq '.pdb') { continue }
+        Copy-Item $file.FullName "$StagingDir\Runtime\$($file.Name)" -Force
+    }
 
-# Loader — the DLL the launcher injects (EngineInjectionService.EngineDllName); it
-# maps RynthCore.Engine.dll and provides hot-reload. Without it a fresh install's
-# launcher can't auto-find an engine to inject.
-$loaderDll = "$LoaderPublish\RynthCore.Loader.dll"
-if (-not (Test-Path $loaderDll)) { throw "Loader DLL not found at: $loaderDll" }
-Copy-Item $loaderDll "$StagingDir\Runtime\" -Force
+    # Loader — the DLL the launcher injects (EngineInjectionService.EngineDllName); it
+    # maps RynthCore.Engine.dll and provides hot-reload. Without it a fresh install's
+    # launcher can't auto-find an engine to inject.
+    $loaderDll = "$LoaderPublish\RynthCore.Loader.dll"
+    if (-not (Test-Path $loaderDll)) { throw "Loader DLL not found at: $loaderDll" }
+    Copy-Item $loaderDll "$StagingDir\Runtime\" -Force
+} else {
+    # The unloadable engine: native loader (same RynthCoreInit contract with the launcher's
+    # injector), RynthCore.Shim, the CoreCLR engine (ReadyToRun) + its dependencies, and
+    # Runtime\dotnet (the app-local x86 .NET runtime). Needs Visual Studio's C++ tools (cl.exe)
+    # for the loader, like the SEH trampoline.
+    Write-Host ""
+    Write-Host "[2+3/5] Building the unloadable engine + native loader into staging..." -ForegroundColor Cyan
+    & "$RepoRoot\scripts\Publish-EngineCoreClr.ps1" -Target "$StagingDir\Runtime" -Configuration $Configuration -MsBuildArgs $VersionArgs
+    # Keep the engine's pdb (its stack traces get line numbers); drop the loader's and shim's.
+    Remove-Item "$StagingDir\Runtime\RynthCore.Loader.pdb", "$StagingDir\Runtime\RynthCore.Shim.pdb" -Force -ErrorAction SilentlyContinue
+}
 
 # SEH trampoline — hand-built native DLL (native\SehTrampoline\Build-SehTrampoline.ps1),
 # NOT part of the engine publish output. Without it SehTrampoline.IsAvailable stays
@@ -169,8 +202,8 @@ if ((Test-Path $sehSrc) -and (Get-Item $sehSrc).LastWriteTime -gt (Get-Item $seh
 }
 Copy-Item $sehDll "$StagingDir\Runtime\" -Force
 
-# Engine Native subfolder
-if (Test-Path "$EnginePublish\Native") {
+# Engine Native subfolder (NativeAOT layout)
+if ($NativeAot -and (Test-Path "$EnginePublish\Native")) {
     foreach ($file in (Get-ChildItem "$EnginePublish\Native" -File)) {
         if ($file.Extension -eq '.pdb') { continue }
         Copy-Item $file.FullName "$StagingDir\Runtime\Native\$($file.Name)" -Force
@@ -196,6 +229,38 @@ foreach ($dir in (Get-ChildItem "$LootEditorPublish" -Directory)) {
     Get-ChildItem "$StagingDir\Tools\LootEditor\$($dir.Name)" -Recurse -File -Filter '*.pdb' | Remove-Item -Force
 }
 
+# Decal bridge (docs/DECAL_BRIDGE_PLAN.md, experimental): the net48 x86 Decal network filter
+# goes to {app}\DecalBridge\, the folder the launcher registers for "Decal + RynthCore"
+# accounts (and only for those). Built against Decal's public reference assemblies, so the
+# build machine needs Decal; -p:RequireDecal=true turns "no Decal" into a build error rather
+# than the empty assembly a plain solution build makes. Never ships any Decal file.
+if ($SkipDecalBridge) {
+    Write-Warning "-SkipDecalBridge: this build has no Decal bridge; 'Decal + RynthCore' accounts can't launch with it. Not for a release."
+} else {
+    Write-Host ""
+    Write-Host "Building the Decal bridge (net48 x86, against Decal's reference assemblies)..." -ForegroundColor Cyan
+    $bridgeProject = "$RepoRoot\src\RynthCore.DecalBridge\RynthCore.DecalBridge.csproj"
+    $bridgeDll = "$RepoRoot\src\RynthCore.DecalBridge\bin\$Configuration\RynthCore.DecalBridge.dll"
+    $decalArgs = @("-p:RequireDecal=true")
+    if ($DecalDir) { $decalArgs += "-p:DecalDir=$DecalDir" }
+    # A DLL left over from an earlier build must never be shipped in place of this one.
+    Remove-Item $bridgeDll -Force -ErrorAction SilentlyContinue
+    if (Test-Path $bridgeDll) { throw "Could not remove the old $bridgeDll (in use by a Decal client?)" }
+    dotnet build $bridgeProject -c $Configuration -nologo -v q @decalArgs @VersionArgs
+    if ($LASTEXITCODE -ne 0) { throw "Decal bridge build failed (exit $LASTEXITCODE). Is Decal 3.0 installed? (-DecalDir for another folder, -SkipDecalBridge for a dev build)" }
+    if (-not (Test-Path $bridgeDll)) { throw "Decal bridge not built at $bridgeDll" }
+    # The real bridge has its filter type; the no-Decal build is an empty assembly.
+    $bridgeBytes = [System.IO.File]::ReadAllBytes($bridgeDll)
+    if ([System.Text.Encoding]::ASCII.GetString($bridgeBytes).IndexOf("BridgeFilter") -lt 0) {
+        throw "$bridgeDll has no BridgeFilter type - it was built without Decal's reference assemblies."
+    }
+    New-Item -ItemType Directory -Path "$StagingDir\DecalBridge" -Force | Out-Null
+    Copy-Item $bridgeDll "$StagingDir\DecalBridge\" -Force
+    $staleDecal = @(Get-ChildItem "$StagingDir\DecalBridge" -File | Where-Object { $_.Name -ne "RynthCore.DecalBridge.dll" })
+    if ($staleDecal.Count -gt 0) { throw "Unexpected files in the staged DecalBridge folder: $($staleDecal.Name -join ', ')" }
+    Write-Host "  RynthCore.DecalBridge.dll $((Get-Item $bridgeDll).VersionInfo.FileVersion)"
+}
+
 # release.txt — which core release this install is ($release, from -Version at the top).
 Set-Content -Path "$StagingDir\release.txt" -Value @($release, $Version) -Encoding ASCII
 
@@ -210,6 +275,16 @@ $required = @(
     "$StagingDir\Runtime\cimgui.dll",
     "$pluginStagingDir\RynthAi\RynthCore.Plugin.RynthAi.dll"
 )
+if (-not $NativeAot) {
+    $required += @(
+        "$StagingDir\Runtime\RynthCore.Shim.dll",
+        "$StagingDir\Runtime\dotnet\coreclr.dll",
+        "$StagingDir\Runtime\dotnet\System.Private.CoreLib.dll"
+    )
+}
+if (-not $SkipDecalBridge) {
+    $required += "$StagingDir\DecalBridge\RynthCore.DecalBridge.dll"
+}
 $missing = @($required | Where-Object { -not (Test-Path $_) })
 if ($missing.Count -gt 0) { throw "Staging is missing required files:`n  $($missing -join "`n  ")" }
 

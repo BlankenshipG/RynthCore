@@ -7,8 +7,7 @@
 //
 //   1. EndSceneHook.Uninstall — chains into EngineFrameController.Shutdown which
 //      tears down PluginManager (RynthPluginShutdown + FreeLibrary plugins),
-//      OverlayTextureRenderer, ViewportRendererBackend, ViewportPlatformBackend,
-//      DX9Backend, Win32Backend (restores WndProc), and destroys ImGui context.
+//      OverlayTextureRenderer, DX9Backend, and destroys the ImGui context.
 //   2. Drain — sleep so any in-flight EndScene call has returned through the
 //      trampoline before we tear down anything else.
 //   3. AvaloniaOverlay.Stop — Dispatcher shutdown, join STA thread.
@@ -106,6 +105,15 @@ internal static class EngineLifecycle
 
         RynthLog.Info("EngineLifecycle: Shutdown beginning.");
 
+        // A reload can come while this generation is still initializing (two RL clicks,
+        // or a file-watcher reload during login). Let InitWorker reach its next step and
+        // stop before tearing anything down under it.
+        Step("InitWorker join", () =>
+        {
+            if (!EntryPoint.WaitForInitWorker(15000))
+                RynthLog.Info("EngineLifecycle: InitWorker still running after 15 s; tearing down anyway.");
+        });
+
         // Stop the hang watchdog BEFORE its beat source (the EndScene detour)
         // is uninstalled. A still-running old-generation watchdog sees the beat
         // go silent, declares a false hang ~4s later, suspends AC's healthy main
@@ -120,6 +128,10 @@ internal static class EngineLifecycle
         // concurrently freeing — a heap-corruption window adjacent to the
         // 2026-06-11 DINPUT8 reload wedge.
         Step("AcMainThreadQueue.Disarm", () => Compatibility.AcMainThreadQueue.Disarm());
+
+        // Same for queued panel commands (UI.Data.UiDataHub): never run a
+        // plugin-mutating UI command while the plugins are shutting down.
+        Step("UiDataHub.Disarm", () => UI.Data.UiDataHub.Disarm());
 
         Step("EndSceneHook.Uninstall", () => EndSceneHook.Uninstall());
 
@@ -151,6 +163,12 @@ internal static class EngineLifecycle
         // Otherwise the pump's TickAll/ProcessPendingActions can be mid-call
         // into a plugin whose code pages we're about to unmap → AV.
         Step("TickPump.StopAndJoin", () => EntryPoint.StopTickPumpAndJoin());
+        // spike/decal-bridge: after the pump (its only reader) has stopped.
+        Step("DecalBridgeHost.Shutdown", () => Compatibility.DecalBridgeHost.Shutdown());
+
+        // The chat log is written on the tick pump (UiDataHub), now stopped. Left open,
+        // it outlived this generation and locked the next one out of the file.
+        Step("ChatModel.CloseLog", () => UI.Data.ChatModel.CloseLog());
 
         Step("PluginManager.ShutdownAll (defensive)", () => PluginManager.ShutdownAll());
 
@@ -160,6 +178,14 @@ internal static class EngineLifecycle
         // returns). Without this, hot-reload fires a CLR exception in the dying
         // module's code at the moment of FreeLibrary.
         Step("HeartbeatLogger.StopAndJoin", () => Compatibility.HeartbeatLogger.StopAndJoin());
+
+        // Every other engine thread (init, pumps, login helpers, D3D9 bootstrap...).
+        // Their sleeps wake at once; a thread still running engine code afterwards
+        // keeps this generation from unloading under the CoreCLR host.
+        Step("EngineThreads.StopAndJoinAll", () => EngineThreads.StopAndJoinAll(3000));
+
+        // Process-wide events: under CoreCLR they would hold this generation.
+        Step("EntryPoint.UninstallManagedExceptionHandlers", EntryPoint.UninstallManagedExceptionHandlers);
 
         Step("MH_DisableHook(ALL)", () =>
         {
@@ -174,6 +200,10 @@ internal static class EngineLifecycle
             int disable = MinHook.MH_DisableHook(MinHook.MH_ALL_HOOKS);
             RynthLog.Info($"MH_DisableHook(ALL) = {MinHook.StatusString(disable)}");
         });
+
+        // Managed plugins' contexts go last: nothing in the engine may call into them
+        // after this (every thread is joined, the hooks are off).
+        Step("ManagedPlugins.UnloadRetired", ManagedPlugins.UnloadRetired);
 
         Volatile.Write(ref _hasShutDown, 1);
         RynthLog.Info("EngineLifecycle: Shutdown complete.");

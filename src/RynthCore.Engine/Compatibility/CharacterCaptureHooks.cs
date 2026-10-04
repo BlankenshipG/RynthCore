@@ -122,12 +122,7 @@ internal static class CharacterCaptureHooks
         if (Interlocked.Exchange(ref _autoLoginPollStarted, 1) != 0)
             return;
 
-        var thread = new Thread(AutoLoginPollLoop)
-        {
-            Name = "RynthCore.AutoLoginPoll",
-            IsBackground = true
-        };
-        thread.Start();
+        EngineThreads.Start("RynthCore.AutoLoginPoll", AutoLoginPollLoop);
         RynthLog.Info($"CharacterCapture: Poll-driven auto-login armed for '{targetCharacter}'.");
     }
 
@@ -139,6 +134,10 @@ internal static class CharacterCaptureHooks
     /// Hard-stops the instant mode==GamePlayUI or LoginComplete is observed:
     /// poking LogOn pointers while in-game has been correlated with AC self-
     /// exiting (see ScheduleAutoLoginIfRequested's notes).
+    /// Thread note (2026-09-30): this thread never touches AC itself any more.
+    /// CharacterManagementHooks serves the mode and the character list from its
+    /// main-thread snapshot, and TryLogOnCharacter hands the real LogOnCharacter
+    /// to AC's main thread and waits at most ~1.5 s for the result.
     /// </summary>
     private static void AutoLoginPollLoop()
     {
@@ -152,9 +151,8 @@ internal static class CharacterCaptureHooks
 
         try
         {
-            while (true)
+            while (EngineThreads.Sleep(AutoLoginPollIntervalMs))
             {
-                Thread.Sleep(AutoLoginPollIntervalMs);
 
                 if (LoginLifecycleHooks.HasObservedLoginComplete)
                 {
@@ -254,21 +252,15 @@ internal static class CharacterCaptureHooks
         if (Interlocked.Exchange(ref _characterListCapturePollStarted, 1) != 0)
             return;
 
-        var thread = new Thread(CharacterListCapturePollLoop)
-        {
-            Name = "RynthCore.CharacterListCapture",
-            IsBackground = true
-        };
-        thread.Start();
+        EngineThreads.Start("RynthCore.CharacterListCapture", CharacterListCapturePollLoop);
     }
 
     private static void CharacterListCapturePollLoop()
     {
         try
         {
-            while (!EngineLifecycle.IsShuttingDown)
+            while (!EngineLifecycle.IsShuttingDown && EngineThreads.Sleep(CharacterListCapturePollIntervalMs))
             {
-                Thread.Sleep(CharacterListCapturePollIntervalMs);
 
                 // In the world: no native reads at all.
                 if (LoginLifecycleHooks.HasObservedLoginComplete)
@@ -529,12 +521,44 @@ internal static class CharacterCaptureHooks
                 return (sessionHint.AccountName, sessionHint.ServerName, sessionHint.TargetCharacter);
             }
 
-            return ReadLaunchContextFile(Path.Combine(rootDir, "launch_context.json"));
+            // The shared launch_context.json names whatever the launcher last started.
+            // Only trust it for a client started at about that moment (an old launcher
+            // that wrote no per-process file). A client the launcher didn't start - one
+            // from ThwargLauncher that "watch for AC start" injected into - otherwise
+            // auto-logged into the launcher's last character and was knocked back to
+            // the desktop (2026-09-30, a player's Thwarg main closing seconds after login).
+            string sharedPath = Path.Combine(rootDir, "launch_context.json");
+            if (!SharedContextIsForThisLaunch(sharedPath))
+                return (string.Empty, string.Empty, string.Empty);
+            return ReadLaunchContextFile(sharedPath);
         }
         catch
         {
             return (string.Empty, string.Empty, string.Empty);
         }
+    }
+
+    private static int _sharedContextLogged;
+
+    /// <summary>True when the shared launch_context.json was written within two minutes of this process starting.</summary>
+    private static bool SharedContextIsForThisLaunch(string sharedPath)
+    {
+        if (!File.Exists(sharedPath)) return false;
+        DateTime? created = null;
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(File.ReadAllBytes(sharedPath));
+            if (doc.RootElement.TryGetProperty("CreatedAtUtc", out JsonElement c) && c.TryGetDateTime(out DateTime t))
+                created = t.ToUniversalTime();
+        }
+        catch { }
+        DateTime started = System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime();
+        bool ours = created.HasValue && created.Value >= started.AddMinutes(-2) && created.Value <= started.AddSeconds(30);
+        if (Interlocked.Exchange(ref _sharedContextLogged, 1) == 0)
+            RynthLog.Info(ours
+                ? $"CharacterCapture: no per-process launch context; using the shared one (written {created:HH:mm:ss}Z, this client started {started:HH:mm:ss}Z)."
+                : $"CharacterCapture: no launch context for this client (not started by the RynthCore launcher; shared one from {(created.HasValue ? created.Value.ToString("HH:mm:ss") + "Z" : "?")} is another launch) - no auto-login.");
+        return ours;
     }
 
     private static (string accountName, string serverName, string targetCharacter) ReadLaunchContextFile(string filePath)
@@ -623,8 +647,8 @@ internal static class CharacterCaptureHooks
         {
             try
             {
-                Thread.Sleep(scheduledDelayMs);
-                PerformAutoLogin(fallbackCharacters, finalSlots, targetCharacter);
+                if (EngineThreads.Sleep(scheduledDelayMs))
+                    PerformAutoLogin(fallbackCharacters, finalSlots, targetCharacter);
             }
             finally
             {
@@ -635,6 +659,7 @@ internal static class CharacterCaptureHooks
             Name = "RynthCore.AutoLogin",
             IsBackground = true
         };
+        EngineThreads.Track(thread);
         thread.Start();
 
         RynthLog.Verbose(

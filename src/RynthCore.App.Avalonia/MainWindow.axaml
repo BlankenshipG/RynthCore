@@ -108,10 +108,39 @@
     </Border>
 
     <Grid Grid.Row="1" ColumnDefinitions="3*,Auto,2*">
-      <TabControl Grid.Column="0" Margin="14,0,0,0" Padding="0">
+      <TabControl x:Name="MainTabs" Grid.Column="0" Margin="14,0,0,0" Padding="0">
         <TabItem Header="Launcher">
           <ScrollViewer>
             <StackPanel Spacing="12" Margin="6">
+              <!-- Updates: the card is built by UpdateCardModel (MainWindow.RefreshUpdateCard). -->
+              <Border x:Name="UpdateCardBorder" Background="#132028" CornerRadius="16" Padding="18"
+                      BorderBrush="#243742" BorderThickness="1">
+                <StackPanel Spacing="8">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <StackPanel Grid.Column="0" Spacing="4" VerticalAlignment="Center">
+                      <TextBlock x:Name="UpdateCardTitle" Text="Updates" FontSize="16" FontWeight="SemiBold"
+                                 Foreground="#26C1A6" TextWrapping="Wrap" />
+                      <TextBlock x:Name="UpdateCardDetail" Text="Not checked yet." TextWrapping="Wrap" Foreground="#9AA8B3" />
+                    </StackPanel>
+                    <WrapPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top" Margin="12,0,0,0">
+                      <Button x:Name="UpdateCardActionButton" IsVisible="False" Margin="0,0,8,6"
+                              Background="#26C1A6" Foreground="#0B1218" FontWeight="SemiBold" />
+                      <Button x:Name="CheckUpdatesButton" Content="Check for updates" Margin="0,0,0,6" />
+                    </WrapPanel>
+                  </Grid>
+                  <StackPanel x:Name="UpdateCardWhatsNewPanel" Spacing="2" IsVisible="False" />
+                  <Grid x:Name="DownloadArea" ColumnDefinitions="*,Auto" IsVisible="False">
+                    <ProgressBar x:Name="DownloadProgressBar" Grid.Column="0" Minimum="0" Maximum="100"
+                                 Height="10" MinHeight="10" VerticalAlignment="Center"
+                                 Foreground="#26C1A6" Background="#0F161D" />
+                    <Button x:Name="CancelDownloadButton" Grid.Column="1" Content="Cancel" Margin="10,0,0,0"
+                            ToolTip.Tip="Stops the download. Nothing half-installed is left behind: the partial file is deleted and what you have stays as it is." />
+                  </Grid>
+                  <Button x:Name="UpdateCardNewPluginsButton" IsVisible="False" HorizontalAlignment="Left"
+                          Background="Transparent" BorderThickness="0" Padding="0" Foreground="#F2C14E" />
+                </StackPanel>
+              </Border>
+
               <Border Background="#132028" CornerRadius="16" Padding="18">
                 <StackPanel Spacing="8">
                   <TextBlock Text="Launch Targets" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
@@ -234,21 +263,21 @@
           </ScrollViewer>
         </TabItem>
 
-        <TabItem Header="Plugins">
-          <ScrollViewer>
+        <TabItem x:Name="PluginsTab" Header="Plugins">
+          <ScrollViewer x:Name="PluginsScroll">
             <StackPanel Spacing="12" Margin="6">
               <Border Background="#132028" CornerRadius="16" Padding="18">
                 <StackPanel Spacing="8">
                   <TextBlock Text="Updates" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
+                  <!-- Compact: the update card with its buttons is on the Launcher tab. -->
                   <TextBlock x:Name="UpdateStatusText"
                              Text="Not checked yet."
                              TextWrapping="Wrap"
                              Foreground="#9AA8B3" />
-                  <WrapPanel Orientation="Horizontal">
-                    <Button x:Name="CheckUpdatesButton" Content="Check for updates" Margin="0,0,8,6" />
-                    <Button x:Name="UpdatePluginsButton" Content="Update plugins" IsVisible="False" Margin="0,0,8,6" />
-                    <Button x:Name="InstallCoreUpdateButton" Content="Install RynthCore update" IsVisible="False" Margin="0,0,8,6" />
-                  </WrapPanel>
+                  <ProgressBar x:Name="PluginsTabProgressBar" Minimum="0" Maximum="100" Height="6" MinHeight="6"
+                               IsVisible="False" Foreground="#26C1A6" Background="#0F161D" />
+                  <Button x:Name="ShowUpdateCardButton" Content="Updates on the Launcher tab" HorizontalAlignment="Left"
+                          Background="Transparent" BorderThickness="0" Padding="0" Foreground="#26C1A6" />
                   <CheckBox x:Name="AutoUpdatePluginsCheckBox"
                             Content="Update plugins automatically (a running bot keeps its version until AC restarts)"
                             Foreground="#EAF0F4" />
@@ -256,12 +285,34 @@
               </Border>
               <Border Background="#132028" CornerRadius="16" Padding="18">
                 <StackPanel Spacing="8">
+                  <TextBlock Text="Usage statistics" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
+                  <CheckBox x:Name="UsageStatsCheckBox"
+                            Content="Help improve RynthCore: send an anonymous usage report once a day"
+                            Foreground="#EAF0F4" />
+                  <TextBlock x:Name="UsageStatsWhatText" TextWrapping="Wrap" Foreground="#9AA8B3" />
+                  <TextBlock x:Name="UsageStatsNeverText" TextWrapping="Wrap" Foreground="#9AA8B3" />
+                  <TextBlock x:Name="UsageStatsStopText" TextWrapping="Wrap" Foreground="#9AA8B3" />
+                  <Button x:Name="ShowUsageReportButton" Content="Show what is sent" HorizontalAlignment="Left" />
+                </StackPanel>
+              </Border>
+              <Border Background="#132028" CornerRadius="16" Padding="18">
+                <StackPanel Spacing="8">
                   <TextBlock Text="Plugins" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
-                  <TextBlock Text="Manage the runtime modules loaded into RynthCore. Add plugins by browsing for their DLL file."
+                  <TextBlock Text="The plugins RynthCore loads. Untick one to skip it; the X takes it out of the list (its files stay on disk). RynthSuite plugins you don't have are under Available plugins below; Add Plugin is for any other plugin DLL."
                              TextWrapping="Wrap"
                              Foreground="#9AA8B3" />
                   <StackPanel x:Name="PluginLoadoutPanel" Spacing="10" />
                   <Button x:Name="AddPluginDllButton" Content="Add Plugin" HorizontalAlignment="Left" />
+                </StackPanel>
+              </Border>
+              <Border x:Name="AvailablePluginsBorder" Background="#132028" CornerRadius="16" Padding="18">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="Available plugins" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
+                  <TextBlock x:Name="AvailablePluginsHint"
+                             Text="Plugins you can add appear here after the first update check."
+                             TextWrapping="Wrap"
+                             Foreground="#9AA8B3" />
+                  <StackPanel x:Name="AvailablePluginsPanel" Spacing="10" />
                 </StackPanel>
               </Border>
             </StackPanel>
@@ -352,6 +403,9 @@
                   <CheckBox x:Name="EnableDcompOverlayCheckBox"
                             Content="Use DComp overlay (experimental, GPU-rendered)"
                             ToolTip.Tip="When ON, the engine starts the new DirectComposition overlay instead of the production AvaloniaOverlay. Mutually exclusive — Avalonia is single-app-per-process. Toggle takes effect on next AC client launch (a hot reload won't switch overlays)." />
+                  <CheckBox x:Name="EnableImGuiBackendCheckBox"
+                            Content="ImGui panels (preview)"
+                            ToolTip.Tip="When ON, the engine runs its in-client ImGui layer, which docked panels move to as their ImGui versions are finished (choose per panel with /rc ui). Popped-out panels stay Avalonia windows. Costs nothing while no ImGui panel is open. Takes effect on next AC client launch or engine reload (RL)." />
                 </StackPanel>
               </Border>
 
@@ -366,6 +420,8 @@
                     <Button x:Name="RefreshSessionsButton" Content="Refresh Sessions" Margin="0,0,8,8" />
                     <Button x:Name="ResetOverlayBarButton" Content="Reset Overlay Bar" Margin="0,0,8,8"
                             ToolTip.Tip="Drags the in-game RynthCore overlay bar back to the top-left corner. Use this if the bar was moved off-screen and can no longer be reached. Applies to every running RynthCore client." />
+                    <Button x:Name="CheckDecalBridgeButton" Content="Check Decal bridge" Margin="0,0,8,8"
+                            ToolTip.Tip="For Decal + RynthCore (experimental): checks whether a client started now will load the RynthCore Decal bridge - where Decal reads its plugin list on this PC, whether the bridge is listed and enabled there, Decal's version and its .NET part. Changes nothing unless you press Repair." />
                   </WrapPanel>
                   <TextBlock Text="Manual inject targets the first detected acclient.exe session. Reset Overlay Bar signals all running RynthCore clients via the dispatch file."
                              TextWrapping="Wrap"

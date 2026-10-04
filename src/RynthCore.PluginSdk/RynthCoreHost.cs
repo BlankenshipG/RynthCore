@@ -6,7 +6,7 @@ namespace RynthCore.PluginSdk;
 
 public readonly unsafe struct RynthCoreHost
 {
-    public const uint CurrentApiVersion = 67;
+    public const uint CurrentApiVersion = 68;
 
     /// <summary>
     /// The oldest engine API a plugin built on this SDK loads on by default
@@ -128,7 +128,36 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetPluginSnapshotJson => _api.Version >= 64 && _api.GetPluginSnapshotJsonFn != IntPtr.Zero;
     public bool HasSendPluginCommand     => _api.Version >= 64 && _api.SendPluginCommandFn     != IntPtr.Zero;
     public bool HasGetObjectDataIdProperty => _api.Version >= 65 && _api.GetObjectDataIdPropertyFn != IntPtr.Zero;
+    /// <summary>v73: <see cref="TryGetObjectInstanceIdProperty"/> (any PropertyInstanceId).</summary>
+    public bool HasGetObjectInstanceIdProperty => _api.Version >= 73 && _api.GetObjectInstanceIdPropertyFn != IntPtr.Zero;
+    /// <summary>v74: <see cref="TryGetVTankState"/> (VTank's macro under the Decal bridge).</summary>
+    public bool HasGetVTankState => _api.Version >= 74 && _api.GetVTankStateFn != IntPtr.Zero;
+    /// <summary>v75: <see cref="TryGetCharacterTitles"/> (the titles the player holds).</summary>
+    public bool HasGetCharacterTitles => _api.Version >= 75 && _api.GetCharacterTitlesFn != IntPtr.Zero;
+    /// <summary>v75: <see cref="TryGetServerInfo"/> (which server this is).</summary>
+    public bool HasGetServerInfo => _api.Version >= 75 && _api.GetServerInfoFn != IntPtr.Zero;
     public bool HasGetPluginExportJson     => _api.Version >= 66 && _api.GetPluginExportJsonFn     != IntPtr.Zero;
+    public bool HasGetPluginInterface      => _api.Version >= 68 && _api.GetPluginInterfaceFn      != IntPtr.Zero;
+    public bool HasGetLiveObjectIds        => _api.Version >= 69 && _api.GetLiveObjectIdsFn        != IntPtr.Zero;
+    public bool HasGetLastUseDone          => _api.Version >= 70 && _api.GetLastUseDoneFn          != IntPtr.Zero;
+    public bool HasGetLastWeenieError      => _api.Version >= 70 && _api.GetLastWeenieErrorFn      != IntPtr.Zero;
+    public bool HasWieldItem               => _api.Version >= 70 && _api.WieldItemFn               != IntPtr.Zero;
+    /// <summary>
+    /// v70: the engine raises OnEnchantmentAdded / OnEnchantmentRemoved for the player's
+    /// enchantment changes (older engines never called them). Added carries the spell id and
+    /// the duration in seconds (-1 or 0 for ones without a timer); Removed carries the spell id.
+    /// Both reach the plugin after AC applied the change, so a registry read then sees it.
+    /// </summary>
+    public bool HasEnchantmentEvents       => _api.Version >= 70;
+    /// <summary>v71: script windows (UiSubmit / UiPollEvents / UiGetInfo).</summary>
+    public bool HasUi                      => _api.Version >= 71 && _api.UiSubmitFn != IntPtr.Zero
+                                              && _api.UiPollEventsFn != IntPtr.Zero && _api.UiGetInfoFn != IntPtr.Zero;
+    /// <summary>v72: player-to-player trade (TryGetTradeState / GetTradeItems / Trade* actions).</summary>
+    public bool HasTrade                   => _api.Version >= 72 && _api.GetTradeStateFn != IntPtr.Zero
+                                              && _api.GetTradeItemsFn != IntPtr.Zero && _api.TradeOpenFn != IntPtr.Zero
+                                              && _api.TradeAddFn != IntPtr.Zero && _api.TradeAcceptFn != IntPtr.Zero
+                                              && _api.TradeDeclineFn != IntPtr.Zero && _api.TradeResetFn != IntPtr.Zero
+                                              && _api.TradeCloseFn != IntPtr.Zero;
 
     // ─── Methods ────────────────────────────────────────────────────────────
 
@@ -448,16 +477,27 @@ public readonly unsafe struct RynthCoreHost
         }
     }
 
+    /// <summary>
+    /// Raised (static: per plugin DLL) after this plugin issues <see cref="UseObject"/> (target 0) or
+    /// <see cref="UseObjectOn"/>: (source, target). Lets a plugin know which items'
+    /// properties (uses left, stack size ...) may have just changed.
+    /// </summary>
+    public static event Action<uint, uint>? ObjectUsed;
+
     public bool UseObject(uint objectId)
     {
-        return _api.UseObjectFn != IntPtr.Zero &&
-               ((delegate* unmanaged[Cdecl]<uint, int>)_api.UseObjectFn)(objectId) != 0;
+        bool ok = _api.UseObjectFn != IntPtr.Zero &&
+                  ((delegate* unmanaged[Cdecl]<uint, int>)_api.UseObjectFn)(objectId) != 0;
+        ObjectUsed?.Invoke(objectId, 0);
+        return ok;
     }
 
     public bool UseObjectOn(uint sourceObjectId, uint targetObjectId)
     {
-        return _api.UseObjectOnFn != IntPtr.Zero &&
-               ((delegate* unmanaged[Cdecl]<uint, uint, int>)_api.UseObjectOnFn)(sourceObjectId, targetObjectId) != 0;
+        bool ok = _api.UseObjectOnFn != IntPtr.Zero &&
+                  ((delegate* unmanaged[Cdecl]<uint, uint, int>)_api.UseObjectOnFn)(sourceObjectId, targetObjectId) != 0;
+        ObjectUsed?.Invoke(sourceObjectId, targetObjectId);
+        return ok;
     }
 
     public bool UseEquippedItem(uint sourceObjectId, uint targetObjectId)
@@ -813,9 +853,11 @@ public readonly unsafe struct RynthCoreHost
     }
 
     /// <summary>
-    /// Reads a STypeDID property that lives in the object's PublicWeenieDesc — currently
-    /// Icon=8 (→ _iconID, e.g. 0x06xxxxxx). Works on UNequipped/never-appraised pack items
-    /// (PWD is network-populated; no qualities pointer or appraisal required). Returns false
+    /// Reads a STypeDID property that lives in the object's PublicWeenieDesc: Icon=8 (→ _iconID,
+    /// e.g. 0x06xxxxxx), and on engines from 2026-09-30 IconOverlay=50 / IconUnderlay=52 (0 = none). Works on UNequipped/never-appraised pack items
+    /// (PWD is network-populated; no qualities pointer or appraisal required). Engines from
+    /// API v73 answer every data id the client knows (an identified object's data id table,
+    /// the player's PlayerDescription, UpdatePropertyDataID, the PWD Spell 28). Returns false
     /// when the engine predates API v65 or the read fails.
     /// </summary>
     public bool TryGetObjectDataIdProperty(uint objectId, uint stype, out uint value)
@@ -828,6 +870,112 @@ public readonly unsafe struct RynthCoreHost
         {
             return ((delegate* unmanaged[Cdecl]<uint, uint, uint*, int>)_api.GetObjectDataIdPropertyFn)(objectId, stype, valuePtr) != 0;
         }
+    }
+
+    /// <summary>
+    /// v73: reads a PropertyInstanceId (STypeIID) - another object's id, e.g. Container 2,
+    /// Wielder 3, Monarch 26, HouseOwner 32, PetOwner 44, or the player's Allegiance/Patron.
+    /// Any thread. False when the engine predates v73, or the client doesn't know it (0).
+    /// On older engines Container and Wielder are still available through
+    /// <see cref="TryGetObjectOwnershipInfo"/>.
+    /// </summary>
+    public bool TryGetObjectInstanceIdProperty(uint objectId, uint stype, out uint value)
+    {
+        value = 0;
+        if (!HasGetObjectInstanceIdProperty)
+            return false;
+
+        fixed (uint* valuePtr = &value)
+        {
+            return ((delegate* unmanaged[Cdecl]<uint, uint, uint*, int>)_api.GetObjectInstanceIdPropertyFn)(objectId, stype, valuePtr) != 0;
+        }
+    }
+
+    /// <summary>
+    /// v74: VTank's macro in this client, as the engine sees it under the Decal bridge
+    /// (VTank's documented /vt start and /vt stop through Decal's chat parser; VTank's own
+    /// Run Macro button is not seen). <paramref name="watching"/> is false without Decal, or
+    /// when Decal runs without the bridge: then <paramref name="running"/> is always false.
+    /// <paramref name="sequence"/> changes on every change. False when the engine predates v74.
+    /// Any thread.
+    /// </summary>
+    public bool TryGetVTankState(out bool watching, out bool running, out int sequence)
+    {
+        watching = false;
+        running = false;
+        sequence = 0;
+        if (!HasGetVTankState)
+            return false;
+
+        int seq = 0;
+        int flags = ((delegate* unmanaged[Cdecl]<int*, int>)_api.GetVTankStateFn)(&seq);
+        watching = (flags & 1) != 0;
+        running = watching && (flags & 2) != 0;
+        sequence = seq;
+        return true;
+    }
+
+    /// <summary>
+    /// v75: the title ids the player holds and the one on display, from the server's title
+    /// events (sent at login and for each new title). False when the engine predates v75 or
+    /// hasn't received the list for this character (e.g. a plugin build on an engine that was
+    /// updated mid-session: it comes at the next login). Any thread.
+    /// </summary>
+    public bool TryGetCharacterTitles(out uint[] titleIds, out uint currentTitle)
+    {
+        titleIds = Array.Empty<uint>();
+        currentTitle = 0;
+        if (!HasGetCharacterTitles)
+            return false;
+        var fn = (delegate* unmanaged[Cdecl]<uint*, int, uint*, int>)_api.GetCharacterTitlesFn;
+        uint cur = 0;
+        int count = fn(null, 0, &cur);
+        if (count < 0)
+            return false;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            uint[] buffer = new uint[Math.Max(count, 1)];
+            int total;
+            fixed (uint* p = buffer) total = fn(p, buffer.Length, &cur);
+            if (total < 0)
+                return false;
+            if (total <= buffer.Length)
+            {
+                Array.Resize(ref buffer, total);
+                titleIds = buffer;
+                currentTitle = cur;
+                return true;
+            }
+            count = total;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// v75: which server this client is on, as the engine decides it: <paramref name="isAelrynth"/>
+    /// (the connect host, the world name the server announced, or the Bank mod's properties),
+    /// <paramref name="isStaging"/> (Aelrynth's staging world), and the world name the server
+    /// announced at login ("" until then; never the launcher's profile name). False when the
+    /// engine predates v75. Any thread.
+    /// </summary>
+    public bool TryGetServerInfo(out bool isAelrynth, out bool isStaging, out string worldName)
+    {
+        isAelrynth = false;
+        isStaging = false;
+        worldName = string.Empty;
+        if (!HasGetServerInfo)
+            return false;
+        byte* buf = stackalloc byte[257];
+        int flags = ((delegate* unmanaged[Cdecl]<byte*, int, int>)_api.GetServerInfoFn)(buf, 257);
+        isAelrynth = (flags & 1) != 0;
+        isStaging = (flags & 2) != 0;
+        if ((flags & 4) != 0)
+        {
+            int n = 0;
+            while (n < 256 && buf[n] != 0) n++;
+            worldName = System.Text.Encoding.UTF8.GetString(buf, n);
+        }
+        return true;
     }
 
     public bool TryGetObjectBoolProperty(uint objectId, uint stype, out bool value)
@@ -1413,6 +1561,237 @@ public readonly unsafe struct RynthCoreHost
     /// The target owns the returned buffer (valid until its next call on that export), so this copies it.
     /// Returns null pre-v66 or on failure. Requires API v66+ (check <see cref="HasGetPluginExportJson"/>).
     /// </summary>
+    /// <summary>
+    /// A named plugin's typed interface table (v68): <paramref name="iface"/> at
+    /// <paramref name="version"/>, e.g. ("RynthAi", "RynthAi.Script", 1). The pointer belongs to
+    /// the target plugin; call its functions only from the plugin pump thread (OnTick and the
+    /// events it drains). IntPtr.Zero when the plugin isn't loaded, isn't initialised yet, or
+    /// doesn't offer that interface: resolve lazily and again after each Init.
+    /// </summary>
+    public IntPtr GetPluginInterface(string pluginName, string iface, uint version)
+    {
+        if (_api.Version < 68 || _api.GetPluginInterfaceFn == IntPtr.Zero || string.IsNullOrEmpty(pluginName) || string.IsNullOrEmpty(iface))
+            return IntPtr.Zero;
+        IntPtr namePtr = Marshal.StringToHGlobalAnsi(pluginName);
+        IntPtr ifacePtr = Marshal.StringToHGlobalAnsi(iface);
+        try
+        {
+            return ((delegate* unmanaged[Cdecl]<IntPtr, IntPtr, uint, IntPtr>)_api.GetPluginInterfaceFn)(namePtr, ifacePtr, version);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(namePtr);
+            Marshal.FreeHGlobal(ifacePtr);
+        }
+    }
+
+    /// <summary>
+    /// v69: every object the client currently knows (landscape, inventory, everything in its
+    /// object table), from the engine's snapshot (refreshed on the game thread a few times a
+    /// second). Empty on older engines or before the first snapshot.
+    /// </summary>
+    public uint[] GetLiveObjectIds()
+    {
+        if (_api.Version < 69 || _api.GetLiveObjectIdsFn == IntPtr.Zero)
+            return Array.Empty<uint>();
+        var fn = (delegate* unmanaged[Cdecl]<uint*, int, int>)_api.GetLiveObjectIdsFn;
+        int capacity = 1024;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            uint[] buffer = new uint[capacity];
+            int total;
+            fixed (uint* p = buffer) total = fn(p, capacity);
+            if (total <= 0) return Array.Empty<uint>();
+            if (total <= capacity)
+            {
+                if (total == capacity) return buffer;
+                Array.Resize(ref buffer, total);
+                return buffer;
+            }
+            capacity = total + 256;
+        }
+        return Array.Empty<uint>();
+    }
+
+    /// <summary>
+    /// v70: the most recent server UseDone (GameEvent 0x01C7): <paramref name="seq"/> is its
+    /// number in the same count <see cref="GetUseDoneSeq"/> returns, <paramref name="error"/> its
+    /// WeenieError code (0 = the action completed, e.g. 0x1D YoureTooBusy). Both come from one
+    /// snapshot. False on older engines or when the engine can't watch UseDone; seq 0 = none yet.
+    /// </summary>
+    public bool TryGetLastUseDone(out int seq, out uint error)
+    {
+        seq = 0;
+        error = 0;
+        if (_api.Version < 70 || _api.GetLastUseDoneFn == IntPtr.Zero)
+            return false;
+        int s;
+        uint e;
+        int ok = ((delegate* unmanaged[Cdecl]<int*, uint*, int>)_api.GetLastUseDoneFn)(&s, &e);
+        seq = s;
+        error = e;
+        return ok != 0;
+    }
+
+    /// <summary>
+    /// v70: the most recent refusal the server sent: <paramref name="eventType"/> 0x028A
+    /// WeenieError (e.g. 0x402 YourSpellFizzled; a fizzled cast still ends with UseDone(0)),
+    /// 0x028B WeenieErrorWithString, or 0x00A0 InventoryServerSaveFailed (a refused wield or
+    /// move; <paramref name="objectId"/> is the item, else 0). <paramref name="seq"/> counts them
+    /// (0 = none yet): record it before an action and compare. False on older engines.
+    /// </summary>
+    public bool TryGetLastWeenieError(out int seq, out uint error, out uint eventType, out uint objectId)
+    {
+        seq = 0;
+        error = eventType = objectId = 0;
+        if (_api.Version < 70 || _api.GetLastWeenieErrorFn == IntPtr.Zero)
+            return false;
+        int s;
+        uint e, t, o;
+        int ok = ((delegate* unmanaged[Cdecl]<int*, uint*, uint*, uint*, int>)_api.GetLastWeenieErrorFn)(&s, &e, &t, &o);
+        seq = s;
+        error = e;
+        eventType = t;
+        objectId = o;
+        return ok != 0;
+    }
+
+    /// <summary>
+    /// v70: wield an item into the given EquipMask slot(s), as dragging it onto that paperdoll
+    /// slot does (the 0x001A GetAndWieldItem game action). E.g. 0x00100000 MeleeWeapon,
+    /// 0x00200000 Shield, 0x00400000 MissileWeapon, 0x01000000 Held, 0x02000000 TwoHanded;
+    /// rings and bracelets have a left and a right bit. The server checks the slot against the
+    /// item and answers with the wield or InventoryServerSaveFailed (see
+    /// <see cref="TryGetLastWeenieError"/>). Check <see cref="HasWieldItem"/>.
+    /// </summary>
+    public bool WieldItem(uint objectId, uint equipMask)
+    {
+        return _api.Version >= 70 && _api.WieldItemFn != IntPtr.Zero &&
+               ((delegate* unmanaged[Cdecl]<uint, uint, int>)_api.WieldItemFn)(objectId, equipMask) != 0;
+    }
+
+    /// <summary>
+    /// v71: submits this plugin's complete set of script windows (display-list format 1,
+    /// RynthSuite Docs/RYNTHLUA_WINDOWS_DESIGN.md §4.2). Call only from the plugin's own tick or
+    /// event (else -2). The engine copies what it needs before returning. Returns 0, or -1
+    /// malformed, -2 not in a dispatch, -3 over a limit (nothing applied), -4 unsupported
+    /// format; -100 on an engine without <see cref="HasUi"/>.
+    /// </summary>
+    public int UiSubmit(ReadOnlySpan<byte> data)
+    {
+        if (!HasUi) return -100;
+        fixed (byte* p = data)
+            return ((delegate* unmanaged[Cdecl]<byte*, int, int>)_api.UiSubmitFn)(p, data.Length);
+    }
+
+    /// <summary>
+    /// v71: copies whole queued window events (format 1, §4.3) into <paramref name="buffer"/> and
+    /// returns the bytes written; <paramref name="remaining"/> = events still queued. Same thread
+    /// rule as <see cref="UiSubmit"/>. 0 on an engine without <see cref="HasUi"/>.
+    /// </summary>
+    public int UiPollEvents(Span<byte> buffer, out int remaining)
+    {
+        remaining = 0;
+        if (!HasUi) return 0;
+        int rem = 0;
+        int written;
+        fixed (byte* p = buffer)
+            written = ((delegate* unmanaged[Cdecl]<byte*, int, int*, int>)_api.UiPollEventsFn)(p, buffer.Length, &rem);
+        remaining = rem;
+        return written < 0 ? 0 : written;
+    }
+
+    /// <summary>
+    /// v71: limits and layout facts for script windows (text line height, ASCII advances for
+    /// CalcTextSize, display size). False on an engine without <see cref="HasUi"/> or with no
+    /// ImGui (e.g. Decal coexistence mode).
+    /// </summary>
+    public bool TryGetUiInfo(out UiInfoNative info)
+    {
+        info = default;
+        if (!HasUi) return false;
+        UiInfoNative local = default;
+        local.Size = (uint)sizeof(UiInfoNative);
+        int n = ((delegate* unmanaged[Cdecl]<UiInfoNative*, int>)_api.UiGetInfoFn)(&local);
+        info = local;
+        return n > 0;
+    }
+
+    // ─── Player-to-player trade (API v72) ──────────────────────────────────
+    // The engine tracks the trade window from the server's trade events (on AC's main
+    // thread) and serves copies; poll TryGetTradeState from your tick and compare
+    // Generation / Sequence / the counters with your last read to see what changed.
+    // The actions send the retail client's own trade game actions, queued for AC's
+    // main thread; the server's answer shows up in the next state reads.
+
+    /// <summary>
+    /// v72: the trade window right now. False on an engine without <see cref="HasTrade"/>.
+    /// A closed trade still returns true (IsOpen false) with the counters.
+    /// </summary>
+    public bool TryGetTradeState(out TradeState state)
+    {
+        state = default;
+        if (!HasTrade) return false;
+        TradeStateNative raw = default;
+        raw.Size = (uint)sizeof(TradeStateNative);
+        int n = ((delegate* unmanaged[Cdecl]<TradeStateNative*, int>)_api.GetTradeStateFn)(&raw);
+        if (n < 8) return false;
+        state = new TradeState(raw);
+        return true;
+    }
+
+    /// <summary>
+    /// v72: the item ids on one side of the trade window (<see cref="TradeSide.You"/> or
+    /// <see cref="TradeSide.Partner"/>); empty when none, or on an older engine.
+    /// </summary>
+    public uint[] GetTradeItems(TradeSide side)
+    {
+        if (!HasTrade) return Array.Empty<uint>();
+        var fn = (delegate* unmanaged[Cdecl]<int, uint*, int, int>)_api.GetTradeItemsFn;
+        int capacity = 32;
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            uint[] buffer = new uint[capacity];
+            int total;
+            fixed (uint* p = buffer) total = fn((int)side, p, capacity);
+            if (total <= 0) return Array.Empty<uint>();
+            if (total <= capacity)
+            {
+                if (total < capacity) Array.Resize(ref buffer, total);
+                return buffer;
+            }
+            capacity = total + 16;
+        }
+        return Array.Empty<uint>();
+    }
+
+    /// <summary>v72: ask a player to trade (the server walks you into range first).</summary>
+    public bool TradeOpen(uint targetId)
+        => HasTrade && ((delegate* unmanaged[Cdecl]<uint, int>)_api.TradeOpenFn)(targetId) != 0;
+
+    /// <summary>
+    /// v72: put one of your items in the open trade window (slot 0 = next free). The server
+    /// answers with the item on your side, or a TradeFailure (FailureCount / LastFailure*).
+    /// </summary>
+    public bool TradeAdd(uint itemId, uint slot = 0)
+        => HasTrade && ((delegate* unmanaged[Cdecl]<uint, uint, int>)_api.TradeAddFn)(itemId, slot) != 0;
+
+    /// <summary>v72: accept the trade as it stands (the trade window's Accept button).</summary>
+    public bool TradeAccept()
+        => HasTrade && ((delegate* unmanaged[Cdecl]<int>)_api.TradeAcceptFn)() != 0;
+
+    /// <summary>v72: withdraw your acceptance (the Decline button).</summary>
+    public bool TradeDecline()
+        => HasTrade && ((delegate* unmanaged[Cdecl]<int>)_api.TradeDeclineFn)() != 0;
+
+    /// <summary>v72: empty both sides of the trade window.</summary>
+    public bool TradeReset()
+        => HasTrade && ((delegate* unmanaged[Cdecl]<int>)_api.TradeResetFn)() != 0;
+
+    /// <summary>v72: end the trade.</summary>
+    public bool TradeClose()
+        => HasTrade && ((delegate* unmanaged[Cdecl]<int>)_api.TradeCloseFn)() != 0;
+
     public string? GetPluginExportJson(string pluginName, string exportName)
     {
         if (_api.GetPluginExportJsonFn == IntPtr.Zero || string.IsNullOrEmpty(pluginName) || string.IsNullOrEmpty(exportName))

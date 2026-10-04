@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -12,15 +14,22 @@ internal static class AppSettingsStore
         WriteIndented = true,
         Converters =
         {
+            // Before the general enum converter: InjectionMode is written so that every
+            // launcher can read it ("Decal + RynthCore" lives in decal-accounts.json).
+            new SharedInjectionModeConverter(),
             new JsonStringEnumConverter()
         }
     };
 
-    private static string SettingsDirectory =>
+    /// <summary>Tests only (tools\LauncherSettingsTests): a folder used instead of %APPDATA%\RynthCore.</summary>
+    internal static string? DirectoryOverride { get; set; }
+
+    private static string SettingsDirectory => DirectoryOverride ??
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore");
 
     private static string SettingsPath => Path.Combine(SettingsDirectory, "appsettings.json");
     private static string BackupPath => SettingsPath + ".bak";
+    private static string DecalAccountsPath => DecalAccountModes.PathIn(SettingsDirectory);
 
     /// <summary>
     /// Set when the last Load() hit a corrupt/unreadable file (quarantined it,
@@ -30,10 +39,22 @@ internal static class AppSettingsStore
     /// </summary>
     public static string? LastLoadDiagnostic { get; private set; }
 
+    /// <summary>
+    /// Set when the last Load() moved "Decal + RynthCore" accounts out of appsettings.json
+    /// into decal-accounts.json (a file written by a pre-release Decal bridge build), or found
+    /// decal-accounts.json unreadable. Null otherwise.
+    /// </summary>
+    public static string? LastMigrationNote { get; private set; }
+
     public static AppSettings Load()
     {
         LastLoadDiagnostic = null;
+        LastMigrationNote = null;
+        return ApplyDecalAccounts(LoadShared());
+    }
 
+    private static AppSettings LoadShared()
+    {
         if (!File.Exists(SettingsPath))
             return new AppSettings();
 
@@ -85,18 +106,89 @@ internal static class AppSettingsStore
         }
     }
 
+    /// <summary>
+    /// Puts back the "Decal + RynthCore" accounts listed in decal-accounts.json (those that
+    /// appsettings.json still lists as RynthCore). An appsettings.json that itself says
+    /// "DecalBridge" (written by a pre-release bridge build) is rewritten at once, .bak
+    /// included, so no launcher finds that value there again.
+    /// </summary>
+    private static AppSettings ApplyDecalAccounts(AppSettings settings)
+    {
+        List<LaunchAccountProfile> accounts = settings.AccountProfiles ?? new List<LaunchAccountProfile>();
+        int legacy = accounts.Count(a => a.InjectionMode == InjectionMode.DecalBridge);
+
+        HashSet<string> ids = DecalAccountModes.ReadIds(DecalAccountsPath, out string? error);
+        if (error != null)
+            LastMigrationNote = error;
+        foreach (LaunchAccountProfile account in accounts)
+            if (DecalAccountModes.IsDecalBridge(ids, account.Id, account.InjectionMode))
+                account.InjectionMode = InjectionMode.DecalBridge;
+
+        if (legacy > 0)
+        {
+            try
+            {
+                Save(settings);
+                File.Copy(SettingsPath, BackupPath, overwrite: true);
+                LastMigrationNote = $"Moved {legacy} \"Decal + RynthCore\" account(s) from appsettings.json to " +
+                                    $"{DecalAccountModes.FileName}, so older launchers can still read appsettings.json.";
+            }
+            catch (Exception ex)
+            {
+                LastMigrationNote = $"Could not move \"Decal + RynthCore\" accounts to {DecalAccountModes.FileName} " +
+                                    $"({ex.GetType().Name}: {ex.Message}); the next save retries.";
+            }
+        }
+        return settings;
+    }
+
     public static void Save(AppSettings settings)
     {
+        // "Decal + RynthCore" accounts go to decal-accounts.json first; appsettings.json
+        // lists them as RynthCore (SharedInjectionModeConverter).
+        Directory.CreateDirectory(SettingsDirectory);
+        DecalAccountModes.WriteIds(DecalAccountsPath,
+            (settings.AccountProfiles ?? new List<LaunchAccountProfile>())
+                .Where(a => a.InjectionMode == InjectionMode.DecalBridge)
+                .Select(a => a.Id));
+
         // Atomic write: serialize to a temp file, then swap it in. A crash or
         // power cut mid-write can no longer truncate the live file (which holds
         // every server/account profile and is rewritten constantly); the swap
         // also maintains a .bak Load() can recover from.
-        Directory.CreateDirectory(SettingsDirectory);
         string tmp = SettingsPath + ".tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(settings, JsonOptions));
         if (File.Exists(SettingsPath))
             File.Replace(tmp, SettingsPath, BackupPath);
         else
             File.Move(tmp, SettingsPath);
+    }
+
+    /// <summary>
+    /// InjectionMode in appsettings.json. Writes only names every launcher knows: DecalBridge is
+    /// written as <see cref="DecalAccountModes.SharedMode"/> (decal-accounts.json holds the real
+    /// choice). Reads names and numbers; a name or number this build doesn't know reads as RynthCore
+    /// instead of making the whole file unreadable.
+    /// </summary>
+    private sealed class SharedInjectionModeConverter : JsonConverter<InjectionMode>
+    {
+        public override InjectionMode Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt32(out int number))
+                return Enum.IsDefined((InjectionMode)number) ? (InjectionMode)number : InjectionMode.RynthCore;
+            if (reader.TokenType == JsonTokenType.String)
+            {
+                return Enum.TryParse(reader.GetString(), ignoreCase: true, out InjectionMode mode) && Enum.IsDefined(mode)
+                    ? mode
+                    : InjectionMode.RynthCore;
+            }
+            throw new JsonException($"InjectionMode: unexpected {reader.TokenType}.");
+        }
+
+        public override void Write(Utf8JsonWriter writer, InjectionMode value, JsonSerializerOptions options)
+        {
+            InjectionMode shared = value == InjectionMode.DecalBridge ? DecalAccountModes.SharedMode : value;
+            writer.WriteStringValue(shared.ToString());
+        }
     }
 }

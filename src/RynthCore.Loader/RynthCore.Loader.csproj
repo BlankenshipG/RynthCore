@@ -26,4 +26,8 @@
     <Optimize>false</Optimize>
   </PropertyGroup>
 
+  <!-- GC segment size (hex, 8 MB): reserves 16 MB of acclient's address space instead of 48. See RynthCore.Engine.csproj. -->
+  <ItemGroup>
+    <IlcArg Include="--runtimeopt:GCSegmentSize=800000" />
+  </ItemGroup>
 </Project>

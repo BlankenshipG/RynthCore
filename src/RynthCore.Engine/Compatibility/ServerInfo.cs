@@ -1,0 +1,163 @@
+// ============================================================================
+//  RynthCore.Engine - Compatibility/ServerInfo.cs
+//
+//  Which server this client is on: ServerInfo.IsAelrynth is the one flag the
+//  Aelrynth-only features (the Skills panel's mastery) check before they show
+//  anything or send a server command another server wouldn't know.
+//
+//  Signals (combined by ServerDetect.Decide, AelrynthWire.cs):
+//    - the launch command line's -h host[:port] / -p port (read once);
+//    - the world name the server announced at login (AccountHooks, the
+//      SendNotice_WorldName hook; not the launcher's own profile name);
+//    - the Bank mod's custom player properties 9101-9103 (PropertyCaches).
+//  Unknown means not Aelrynth. "/rc server aelrynth|other|auto" overrides it
+//  for this session (testing), never saved.
+//
+//  Threads: any. Re-evaluated at most once a second; each read in between is a
+//  volatile load and a compare. Never touches AC (dictionary reads only).
+// ============================================================================
+
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+namespace RynthCore.Engine.Compatibility;
+
+internal static class ServerInfo
+{
+    public enum Mode { Auto, ForceAelrynth, ForceOther }
+
+    private const int RefreshMs = 1000;
+
+    private static volatile ServerVerdict _verdict = ServerVerdict.Unknown;
+    private static long _nextRefreshMs;
+    private static int _mode;                      // Mode
+    private static int _hostRead;
+    private static readonly object HostLock = new();
+    private static string _host = "";
+    private static int _port;
+    private static ServerHostKind _hostKind = ServerHostKind.Unknown;
+    private static volatile bool _bankSeen;        // sticky: the properties only ever appear on Aelrynth
+    private static volatile bool _lastAelrynth;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr GetCommandLineW();
+
+    /// <summary>True when the client is on Aelrynth (live, staging or a dev copy) - or the override says so. Any thread.</summary>
+    public static bool IsAelrynth => Current.IsAelrynth;
+
+    /// <summary>Aelrynth's staging world (port 9030 / "Staging" world name). Any thread.</summary>
+    public static bool IsStaging => Current.IsStaging;
+
+    public static Mode Override
+    {
+        get => (Mode)Volatile.Read(ref _mode);
+        set
+        {
+            Volatile.Write(ref _mode, (int)value);
+            Volatile.Write(ref _nextRefreshMs, 0);
+        }
+    }
+
+    /// <summary>The current verdict (re-evaluated at most once a second). Any thread.</summary>
+    public static ServerVerdict Current
+    {
+        get
+        {
+            long now = Environment.TickCount64;
+            if (now >= Volatile.Read(ref _nextRefreshMs))
+            {
+                Volatile.Write(ref _nextRefreshMs, now + RefreshMs);
+                Refresh();
+            }
+            return _verdict;
+        }
+    }
+
+    /// <summary>The connect host and port from the command line, for /rc server. Any thread.</summary>
+    public static string HostDescription
+    {
+        get
+        {
+            ReadHostOnce();
+            return _host.Length == 0 ? "(none)" : _port > 0 ? $"{_host}:{_port}" : _host;
+        }
+    }
+
+    private static void Refresh()
+    {
+        try
+        {
+            ReadHostOnce();
+            if (!_bankSeen)
+                _bankSeen = HasBankProperties();
+
+            ServerVerdict v = Override switch
+            {
+                Mode.ForceAelrynth => new ServerVerdict { IsAelrynth = true, Reason = "forced on with /rc server aelrynth (testing)" },
+                Mode.ForceOther => new ServerVerdict { Reason = "forced off with /rc server other (testing)" },
+                _ => ServerDetect.Decide(_hostKind, _host, _port, AccountHooks.AnnouncedWorldName, _bankSeen),
+            };
+            _verdict = v;
+            if (v.IsAelrynth != _lastAelrynth)
+            {
+                _lastAelrynth = v.IsAelrynth;
+                RynthLog.Compat($"ServerInfo: {v.Reason}");
+            }
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"ServerInfo: refresh failed - {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static void ReadHostOnce()
+    {
+        if (Volatile.Read(ref _hostRead) != 0)
+            return;
+        lock (HostLock)
+        {
+            if (_hostRead != 0)
+                return;
+            ReadHost();
+            Volatile.Write(ref _hostRead, 1);
+        }
+    }
+
+    private static void ReadHost()
+    {
+        try
+        {
+            IntPtr p = GetCommandLineW();
+            string? cmd = p == IntPtr.Zero ? null : Marshal.PtrToStringUni(p);
+            // Only -h / -p are kept: the command line also carries the account password.
+            if (ServerDetect.TryParseLaunchHost(cmd, out string host, out int port))
+            {
+                _host = host;
+                _port = port;
+            }
+            _hostKind = ServerDetect.ClassifyHost(_host);
+        }
+        catch
+        {
+            _hostKind = ServerHostKind.Unknown;
+        }
+    }
+
+    private static bool HasBankProperties()
+    {
+        uint me = ClientHelperHooks.GetPlayerId();
+        if (me == 0) return false;
+        return PropertyCaches.TryGetInt64(me, ServerDetect.RadianceEarnedProperty, out _)
+            || PropertyCaches.TryGetInt64(me, ServerDetect.LuminanceBankedProperty, out _)
+            || PropertyCaches.TryGetInt64(me, ServerDetect.LuminanceDrawnProperty, out _);
+    }
+
+    /// <summary>The Bank mod's "Radiance earned this session" (9101), when the server sends it. Any thread.</summary>
+    public static bool TryGetRadianceEarned(out long value)
+    {
+        value = 0;
+        uint me = ClientHelperHooks.GetPlayerId();
+        return me != 0 && PropertyCaches.TryGetInt64(me, ServerDetect.RadianceEarnedProperty, out value);
+    }
+}

@@ -26,11 +26,39 @@
     <Platforms>x86</Platforms>
   </PropertyGroup>
 
+  <!--
+    -p:EngineHost=coreclr builds the engine as a plain managed assembly for the native
+    loader's CoreCLR host (docs/UNLOADABLE_ENGINE_PLAN.md): each hot reload loads it into a
+    fresh collectible AssemblyLoadContext and unloads the old one. Publish it with
+    scripts\Publish-EngineCoreClr.ps1. The default (aot) build is unchanged.
+  -->
+  <PropertyGroup Condition="'$(EngineHost)' == 'coreclr'">
+    <PublishAot>false</PublishAot>
+    <NativeLib></NativeLib>
+    <SelfContained>false</SelfContained>
+    <DefineConstants>$(DefineConstants);ENGINE_CORECLR</DefineConstants>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <GenerateRuntimeConfigurationFiles>false</GenerateRuntimeConfigurationFiles>
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
     <StackTraceSupport>true</StackTraceSupport>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
   </PropertyGroup>
+
+  <!--
+    GC segment size (hex, 8 MB). The GC reserves SOH + LOH + POH segments up
+    front, 16 MB each by default on x86: 48 MB of acclient's 4 GB address space
+    per engine copy, kept for the life of the process since a NativeAOT DLL
+    can't be unloaded and every hot-reload loads a fresh copy. 8 MB segments
+    reserve 16 MB. The plugins get the same setting (RynthSuite
+    Plugins/Directory.Build.props). Bare hex: the runtime ignores a 0x prefix.
+  -->
+  <ItemGroup>
+    <IlcArg Include="--runtimeopt:GCSegmentSize=800000" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
@@ -45,6 +73,10 @@
     <Compile Include="..\RynthCore.App\CharacterCacheStore.cs" Link="Shared\CharacterCacheStore.cs" />
     <Compile Include="..\RynthCore.App\SessionStateStore.cs" Link="Shared\SessionStateStore.cs" />
     <Compile Include="..\RynthCore.App\BuildVersion.cs" Link="Shared\BuildVersion.cs" />
+    <!-- DXT1/3/5 for AC icons in script windows (UI/ScriptWindows/AcIconDecoder.cs); the StatusAgent's copy (MonoGame, Ms-PL). -->
+    <Compile Include="..\RynthCore.StatusAgent\Dat\DxtUtil.cs" Link="Shared\DxtUtil.cs" />
+    <!-- The byte-ring protocol shared with the Decal bridge plugin (docs/DECAL_BRIDGE_PLAN.md). -->
+    <Compile Include="..\RynthCore.DecalBridge\BridgeProtocol.cs" Link="Shared\BridgeProtocol.cs" />
   </ItemGroup>
 
   <!-- Prevent trimmer from removing ImGui.NET's DllImport methods -->
@@ -62,6 +94,12 @@
 
   <ItemGroup>
     <BundledNativeDll Include="Native\cimgui.dll" />
+  </ItemGroup>
+
+  <!-- Phosphor icon font (MIT, Assets\Fonts\Phosphor.LICENSE, THIRD-PARTY-NOTICES.md):
+       inside the engine DLL, read by ImGuiFonts.Preload, so no deploy step ships it. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\Fonts\Phosphor.ttf" LogicalName="RynthCore.Engine.Assets.Fonts.Phosphor.ttf" />
   </ItemGroup>
 
   <ItemGroup>

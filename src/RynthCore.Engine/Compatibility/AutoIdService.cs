@@ -113,6 +113,13 @@ internal static class AutoIdService
                 // Object may have been destroyed between enqueue and drain
                 if (objectId == 0)
                     continue;
+                // Deleted since it was queued: Evict took it out of _sent. Skip it without
+                // spending one of the 3 requests per tick. After a big landblock change (the
+                // 585 deletes of 2026-10-02) the queue otherwise kept asking the server to
+                // appraise gone objects at 30 a second for half a minute, and live ones waited.
+                // A delete-then-recreate is queued again by Enqueue, so nothing live is lost.
+                if (!_sent.ContainsKey(objectId))
+                    continue;
 
                 // Marshal onto AC's main thread (EndScene drain) — the Timer thread must
                 // not call the native 0xC8 send directly (off-thread heap alloc + non-atomic

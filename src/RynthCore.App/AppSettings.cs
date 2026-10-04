@@ -27,6 +27,13 @@ internal sealed class AppSettings
     /// with; the new one loads on the next AC start. Core updates always ask first.
     public bool AutoUpdatePlugins { get; set; } = true;
 
+    /// "Help improve RynthCore": one anonymous usage report a day (see the launcher's
+    /// UsageStats.cs for exactly what is sent). OFF unless the player turns it on.
+    public bool UsageStatsEnabled { get; set; }
+
+    /// True once the launcher has explained usage statistics and asked (shown once).
+    public bool UsageStatsAsked { get; set; }
+
     /// When true, the launcher kills any RynthCore-mode acclient.exe it
     /// launched that hasn't reached IsLoggedIn within
     /// <see cref="StuckClientTimeoutSeconds"/>. Catches stuck char-select,

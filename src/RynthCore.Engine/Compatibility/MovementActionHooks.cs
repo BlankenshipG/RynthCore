@@ -225,8 +225,14 @@ internal static class MovementActionHooks
 
     public static bool SetAutonomyLevel(uint level)
     {
+        // A missing delegate stays a false return on every thread (it would only
+        // no-op in the drain), then off-thread callers queue the 0xF752 send like
+        // StopMovement/Jump do; true there means "queued".
         if (_autonomyLevel == null)
             return false;
+
+        if (!MainThreadGuard.IsOnMainThread())
+            return AcMainThreadQueue.EnqueueSetAutonomyLevel(level);
 
         try
         {
