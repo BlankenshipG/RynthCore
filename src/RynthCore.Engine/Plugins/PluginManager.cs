@@ -239,6 +239,7 @@ internal static class PluginManager
     private static VendorBuyCallbackDelegate? _vendorBuyCallback;
     private static VendorSellCallbackDelegate? _vendorSellCallback;
     private static GetVendorTradeStatusCallbackDelegate? _getVendorTradeStatusCallback;
+    private static GetMergeStackResultCallbackDelegate? _getMergeStackResultCallback;
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -2462,6 +2463,7 @@ internal static class PluginManager
         _vendorBuyCallback ??= VendorBuyAction;
         _vendorSellCallback ??= VendorSellAction;
         _getVendorTradeStatusCallback ??= GetVendorTradeStatusAction;
+        _getMergeStackResultCallback ??= GetMergeStackResultAction;
 
         _api.Version = PluginContractVersion.Current;
         _api.LogFn = Marshal.GetFunctionPointerForDelegate(_logCallback);
@@ -2578,6 +2580,7 @@ internal static class PluginManager
         _api.VendorBuyFn = Marshal.GetFunctionPointerForDelegate(_vendorBuyCallback);
         _api.VendorSellFn = Marshal.GetFunctionPointerForDelegate(_vendorSellCallback);
         _api.GetVendorTradeStatusFn = Marshal.GetFunctionPointerForDelegate(_getVendorTradeStatusCallback);
+        _api.GetMergeStackResultFn = Marshal.GetFunctionPointerForDelegate(_getMergeStackResultCallback);
     }
 
     private static void ProbeClientHooks()
@@ -3140,6 +3143,22 @@ internal static class PluginManager
     private static int MergeStackInternal(uint sourceObjectId, uint targetObjectId)
     {
         return ToAbiBool(ClientHelperHooks.MergeStackInternal(sourceObjectId, targetObjectId));
+    }
+
+    // v68: outcome of the latest MergeStackInternal(source, target) (MergeStackResults codes).
+    private static unsafe int GetMergeStackResultAction(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs)
+    {
+        try
+        {
+            int status = MergeStackResults.Get(sourceObjectId, targetObjectId, out int sent, out int age);
+            if (amount != null) *amount = sent;
+            if (ageMs != null) *ageMs = age;
+            return status;
+        }
+        catch
+        {
+            return MergeStackResults.None;
+        }
     }
 
     private static int GiveObjectTo(uint objectId, uint targetId, int amount)

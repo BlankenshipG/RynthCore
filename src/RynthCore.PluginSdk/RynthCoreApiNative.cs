@@ -125,4 +125,5 @@ public struct RynthCoreApiNative
     public IntPtr VendorBuyFn;               // uint VendorBuy(uint vendorId, VendorTradeEntryNative*, int count)
     public IntPtr VendorSellFn;              // uint VendorSell(uint vendorId, uint* itemIds, int count)
     public IntPtr GetVendorTradeStatusFn;    // int  GetVendorTradeStatus(VendorTradeStatusNative*)
+    public IntPtr GetMergeStackResultFn;     // v68: int GetMergeStackResult(uint src, uint tgt, int* amount, int* ageMs)
 }
