@@ -3,6 +3,8 @@
 **/obj/
 artifacts/
 TestResults/
+**/__pycache__/
+*.pyc
 
 # IDE and local tooling
 .vs/
@@ -42,5 +44,10 @@ scratch/
 # Installer build artifacts
 installer/staging/
 installer/Output/
-# Prior bundle installers archived on version bump (see installer/previous-release/last-built-version.txt)
+installer/Releases/
+
+# Process Monitor / debug log dumps (session junk)
+*.PML
+Logfile*.XML
+# Archived installers (Build-Installer.ps1 keeps the previous release here; only the version marker is tracked)
 installer/previous-release/*.exe

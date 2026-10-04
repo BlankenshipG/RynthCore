@@ -19,8 +19,52 @@ internal sealed class AppSettings
     public bool WatchForAcStart { get; set; } = true;
     public bool InjectAllRunningClients { get; set; } = true;
     public string LoggingLevel { get; set; } = "Info";
+    public int LaunchStaggerMs { get; set; } = 250;
+    public int CrashRelaunchLimitInWindow { get; set; } = 3;
+    public int CrashRelaunchWindowMinutes { get; set; } = 5;
+    public bool OverrideWindowTitle { get; set; } = true;
+
+    /// When true (default), the launcher installs RynthSuite plugin updates as soon as a
+    /// check finds them. Safe mid-session: running clients keep the version they started
+    /// with; the new one loads on the next AC start. Core updates always ask first.
+    public bool AutoUpdatePlugins { get; set; } = true;
+
+    /// When true, the launcher kills any RynthCore-mode acclient.exe it
+    /// launched that hasn't reached IsLoggedIn within
+    /// <see cref="StuckClientTimeoutSeconds"/>. Catches stuck char-select,
+    /// patcher hangs, and "you have been disconnected" failure screens at
+    /// the front of the launch flow. Off by default — destructive.
+    /// Decal-mode clients are skipped (no engine = no IsLoggedIn signal).
+    public bool KillStuckClients { get; set; }
+    public int StuckClientTimeoutSeconds { get; set; } = 60;
+
+    /// When true (default), the launcher kills+relaunches a RynthCore-mode
+    /// client whose per-PID heartbeat shows the WEDGE signature: login=1 and
+    /// fps=0 sustained for <see cref="WedgeRestartSeconds"/> while the engine
+    /// heartbeat keeps flowing (AC main thread dead, process alive — the AV
+    /// class). Containment for the residual corruption AVs: an overnight soak
+    /// loses ~2 minutes to a wedge instead of the rest of the night.
+    /// Minimized windows are exempt (some drivers stop presenting). Relaunch
+    /// rides the existing crash-relaunch machinery (counts toward the
+    /// circuit breaker) and needs AutoLaunch for the relaunch half.
+    public bool AutoRestartWedgedClients { get; set; } = true;
+    public int WedgeRestartSeconds { get; set; } = 90;
     public List<string> EnabledPluginIds { get; set; } = [];
     public List<string> PluginDllPaths { get; set; } = [];
+
+    /// User-added plugin DLL paths whose checkboxes are currently unchecked.
+    /// The path stays in <see cref="PluginDllPaths"/> (so the row remains in
+    /// the UI), but is filtered out when syncing PluginPaths into engine.json.
+    /// Case-insensitive set semantics; comparisons must use OrdinalIgnoreCase.
+    public List<string> DisabledPluginDllPaths { get; set; } = [];
+
+    /// <summary>
+    /// Last installer plugin hand-off (registry <c>Software\Rynth\PendingPluginRegistration</c>)
+    /// the launcher applied. Lets an all-users install, whose HKLM value the launcher cannot
+    /// delete, register its plugins once without re-adding a plugin the user later removed.
+    /// </summary>
+    public string? AppliedInstallerPluginRegistration { get; set; }
+
     public List<LaunchServerProfile> ServerProfiles { get; set; } = [];
     public List<LaunchAccountProfile> AccountProfiles { get; set; } = [];
 

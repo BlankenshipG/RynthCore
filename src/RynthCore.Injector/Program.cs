@@ -1,14 +1,33 @@
 using System;
-using RynthCore;
+using System.IO;
+using System.Linq;
+using System.Text;
+using RynthCore.Install;
 
 namespace RynthCore.Injector;
 
 internal static class Program
 {
+    // Unified log path — must stay in sync with RynthCore.Engine.LogPaths.
+    // Installer-chosen RynthCore folder (falls back to C:\Games\RynthCore).
+    private static readonly string UnifiedLogDirectory = RynthInstallPaths.CoreLogsDir;
+    private const string UnifiedLogFileName = "RynthCore.log";
+
     private static int Main(string[] args)
     {
+        // Headless modes never prompt — safe to call from scripts / a test
+        // harness with no interactive console.
+        bool headless = args.Any(a =>
+            string.Equals(a, "--launch", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(a, "--no-prompt", StringComparison.OrdinalIgnoreCase));
+
         try
         {
+            LogToFile("Injector starting.");
+
+            if (args.Any(a => string.Equals(a, "--launch", StringComparison.OrdinalIgnoreCase)))
+                return LaunchCommand.Run(args, LogToFile);
+
             return Run(args);
         }
         catch (Exception ex)
@@ -16,73 +35,106 @@ internal static class Program
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine();
             Console.WriteLine($"FATAL EXCEPTION: {ex}");
-            try
-            {
-                DesktopRollingLog.AppendLine(DesktopRollingLog.StemInjector,
-                    $"FATAL: {ex.GetType().Name}: {ex.Message}");
-            }
-            catch
-            {
-            }
             Console.ResetColor();
+            LogToFile($"FATAL: {ex}");
             return 99;
         }
         finally
         {
-            Console.WriteLine();
-            Console.WriteLine("Press any key to exit...");
-            Console.ReadKey(true);
+            if (!headless)
+            {
+                Console.WriteLine();
+                Console.WriteLine("Press any key to exit...");
+                try { Console.ReadKey(true); } catch { /* no interactive console */ }
+            }
         }
     }
 
     private static int Run(string[] args)
     {
         var service = new EngineInjectionService();
-        void Line(string s)
-        {
-            Console.WriteLine(s);
-            try
-            {
-                string t = DateTime.Now.ToString("HH:mm:ss.fff");
-                DesktopRollingLog.AppendLine(DesktopRollingLog.StemInjector, $"[{t}] {s}");
-            }
-            catch
-            {
-            }
-        }
 
-        Line("========================================");
-        Line("        RynthCore Injector Console        ");
-        Line("========================================");
-        Line("");
+        Console.WriteLine("========================================");
+        Console.WriteLine("        RynthCore Injector Console        ");
+        Console.WriteLine("========================================");
+        Console.WriteLine();
 
         string? enginePath = service.TryResolveEnginePath(args.Length > 0 ? args[0] : null);
         if (enginePath == null)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Line($"Could not locate {EngineInjectionService.EngineDllName}.");
-            Line("Copy it next to the injector or pass the full path as the first argument.");
+            Console.WriteLine($"Could not locate {EngineInjectionService.EngineDllName}.");
+            Console.WriteLine("Copy it next to the injector or pass the full path as the first argument.");
             Console.ResetColor();
+            LogToFile($"FAIL: could not locate {EngineInjectionService.EngineDllName}");
             return 1;
         }
 
-        InjectionResult result = service.InjectFirstRunning(enginePath, Line);
-        Line("");
+        LogToFile($"Resolved engine path: {enginePath}");
+
+        InjectionResult result = service.InjectFirstRunning(
+            enginePath,
+            line =>
+            {
+                Console.WriteLine(line);
+                LogToFile(line);
+            });
+        Console.WriteLine();
 
         if (result.Success)
         {
             Console.ForegroundColor = ConsoleColor.Green;
-            Line(result.Summary);
-            Line("Check Desktop\\RynthCore.log for in-process engine output. " +
-                 "RynthCore-Launcher.log and RynthCore-Injector.log list launcher/injector. " +
-                 "Each file rolls at 10 MB; up to 10 roll segments per day per file under Desktop\\RynthLogs.");
+            Console.WriteLine(result.Summary);
+            Console.WriteLine($"Check {Path.Combine(UnifiedLogDirectory, UnifiedLogFileName)} for in-process status.");
             Console.ResetColor();
+            LogToFile($"SUCCESS: {result.Summary}");
             return 0;
         }
 
         Console.ForegroundColor = ConsoleColor.Red;
-        Line(result.Summary);
+        Console.WriteLine(result.Summary);
         Console.ResetColor();
+        LogToFile($"FAIL: {result.Summary}  exit={result.ExitCode}");
         return result.ExitCode;
+    }
+
+    /// <summary>
+    /// Append a line to the unified RynthCore log so injector and in-process
+    /// engine activity show up in one timeline. FileShare.ReadWrite lets the
+    /// engine (running inside acclient.exe) keep writing concurrently.
+    /// </summary>
+    private static void LogToFile(string message)
+    {
+        try
+        {
+            Directory.CreateDirectory(UnifiedLogDirectory);
+            string line = $"[{DateTime.Now:HH:mm:ss.fff}] [pid:{Environment.ProcessId}] [injector] {message}\r\n";
+            byte[] bytes = Encoding.UTF8.GetBytes(line);
+
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                try
+                {
+                    using var fs = new FileStream(
+                        Path.Combine(UnifiedLogDirectory, UnifiedLogFileName),
+                        FileMode.Append,
+                        FileAccess.Write,
+                        FileShare.ReadWrite);
+                    fs.Write(bytes, 0, bytes.Length);
+                    return;
+                }
+                catch (IOException)
+                {
+                    System.Threading.Thread.Sleep(5);
+                }
+                catch
+                {
+                    return;
+                }
+            }
+        }
+        catch
+        {
+        }
     }
 }

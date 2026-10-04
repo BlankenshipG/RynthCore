@@ -11,6 +11,14 @@ internal static class SessionStateRegistry
     private static bool _initialized;
     private static bool _loginRecorded;
 
+    // Last-recorded session identity, exposed in-memory so the GetEngineStatusJson accessor
+    // can label this client without re-parsing any file (re-reading
+    // the session record here can recurse through DatFileShareHooks — see the
+    // long comment in TryWriteLoginState). Empty until LoginComplete records.
+    internal static string LastAccountName { get; private set; } = string.Empty;
+    internal static string LastCharacterName { get; private set; } = string.Empty;
+    internal static string LastServerName { get; private set; } = string.Empty;
+
     public static void Initialize()
     {
         if (_initialized)
@@ -18,6 +26,12 @@ internal static class SessionStateRegistry
 
         _initialized = true;
         LoginLifecycleHooks.LoginComplete += OnLoginComplete;
+        // No longer subscribe to LogoutLifecycleHooks. RecvNotice_Logoff has
+        // been observed firing during normal play (transient state changes,
+        // not actual logoff), and flipping IsLoggedIn=false on a per-process
+        // record would let the launcher's stuck-client reaper kill a healthy
+        // in-game client. The launcher's _everLoggedInPids latch handles the
+        // post-login case from its side without needing this signal.
     }
 
     public static void Poll()
@@ -33,6 +47,35 @@ internal static class SessionStateRegistry
         TryWriteLoginState();
     }
 
+    /// <summary>
+    /// Flip the persisted record to <c>IsLoggedIn=false</c> + record
+    /// <c>LogoutAtUtc</c>. Fires for both clean logout (CPlayerSystem::ExecuteLogOff)
+    /// and server-driven disconnect (gmGamePlayUI::RecvNotice_Logoff). The
+    /// launcher's stuck-client reaper uses LogoutAtUtc to detect a session
+    /// that's been sitting on the disconnect/char-select screen too long.
+    /// Resets <see cref="_loginRecorded"/> so a relogin within the same
+    /// process re-records correctly.
+    /// </summary>
+    private static void OnLogoutObserved()
+    {
+        try
+        {
+            SessionStateRecord? record = SessionStateStore.TryReadForProcess(Environment.ProcessId);
+            if (record == null)
+                return;
+
+            record.IsLoggedIn = false;
+            record.LogoutAtUtc = DateTime.UtcNow;
+            SessionStateStore.WriteForProcess(Environment.ProcessId, record);
+            _loginRecorded = false;
+            RynthLog.Verbose($"SessionState: recorded logout for PID {Environment.ProcessId}.");
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"SessionState: failed to record logout - {ex.Message}");
+        }
+    }
+
     private static void TryWriteLoginState()
     {
         if (_loginRecorded)
@@ -40,7 +83,13 @@ internal static class SessionStateRegistry
 
         try
         {
-            SessionStateRecord? existingRecord = SessionStateStore.TryReadForProcess(Environment.ProcessId);
+            // Do not call TryReadForProcess here — JsonDocument.Parse inside
+            // it interacts with DatFileShareHooks.CreateFile in a way that
+            // causes a stack overflow (~17s after LoginComplete).  All fields
+            // it would have contributed are either read from the launch-context
+            // file below or reseeded from Process.StartTime, so the result was
+            // always null anyway once the workaround was in place.
+            SessionStateRecord? existingRecord = null;
             (string accountName, string serverName, string targetCharacter) = ReadLaunchContext();
 
             accountName = Coalesce(accountName, existingRecord?.AccountName);
@@ -67,8 +116,13 @@ internal static class SessionStateRegistry
             if (!string.IsNullOrWhiteSpace(accountName) && !string.IsNullOrWhiteSpace(characterName))
                 CharacterCacheStore.UpsertCharacter(accountName, serverName, characterName);
 
+            // Cache identity in-memory for the GetEngineStatusJson accessor.
+            LastAccountName = accountName;
+            LastCharacterName = characterName;
+            LastServerName = serverName;
+
             _loginRecorded = true;
-            RynthLog.Verbose($"SessionState: recorded login session for PID {Environment.ProcessId} account='{accountName}' character='{characterName}'.");
+            RynthLog.Info($"SessionState: recorded login session for PID {Environment.ProcessId} account='{accountName}' character='{characterName}' (IsLoggedIn=true).");
         }
         catch (Exception ex)
         {
@@ -78,11 +132,19 @@ internal static class SessionStateRegistry
 
     private static string ResolveCharacterName(string fallbackCharacter)
     {
+        // DIAGNOSTIC: live-memory lookup disabled — ClientObjectHooks.TryGetObjectName
+        // chain (GetWeenieObject + GetObjectName variants) was bisected as the
+        // recursive AV trigger at LoginComplete. Returning the launch-context
+        // character name only until the lookup is fixed.
+        return fallbackCharacter ?? string.Empty;
+
+#pragma warning disable CS0162
         uint playerId = ClientHelperHooks.GetPlayerId();
         if (playerId != 0 && ClientObjectHooks.TryGetObjectName(playerId, out string actualName) && !string.IsNullOrWhiteSpace(actualName))
             return actualName;
 
         return fallbackCharacter ?? string.Empty;
+#pragma warning restore CS0162
     }
 
     private static DateTime GetProcessStartTimeUtc()

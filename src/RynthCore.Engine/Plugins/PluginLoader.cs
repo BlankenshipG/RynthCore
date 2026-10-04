@@ -75,7 +75,14 @@ internal static class PluginLoader
     }
 
     /// <summary>
-    /// Unloads a plugin by freeing its DLL.
+    /// Unloads a plugin. <b>Does NOT call FreeLibrary</b> — NativeAOT plugin DLLs
+    /// share the .NET runtime with the host engine, and their <c>DLL_PROCESS_DETACH</c>
+    /// path tears down NativeAOT runtime state in ways that race with our other
+    /// threads (TickPump, Avalonia STA, hooks) and produce a deterministic
+    /// <c>ntdll!RtlpHeap</c> AV at addr ending in <c>0xFFC</c> on hot-reload + manual
+    /// exit. The module handle is intentionally leaked; on next reload, a new
+    /// shadow copy at a different path is loaded so the new plugin code runs
+    /// cleanly. The OS reclaims the leaked module pages when the process exits.
     /// </summary>
     public static void Unload(LoadedPlugin plugin)
     {
@@ -84,12 +91,11 @@ internal static class PluginLoader
 
         if (plugin.ModuleHandle != IntPtr.Zero)
         {
-            FreeLibrary(plugin.ModuleHandle);
-            RynthLog.Verbose($"PluginLoader: Unloaded {plugin.FileName}");
+            RynthLog.Verbose($"PluginLoader: Skipping FreeLibrary on {plugin.FileName} (NativeAOT — module pages leaked intentionally).");
         }
 
-        TryDeleteFile(plugin.FilePath);
-        TryDeleteFile(Path.ChangeExtension(plugin.FilePath, ".pdb"));
+        // Don't try to delete the .dll/.pdb either — they're still mapped.
+        // Old shadow copies get cleaned up on next launch via CleanupShadowCopies.
         TryDeleteEmptyDirectory(Path.GetDirectoryName(plugin.FilePath));
     }
 
@@ -106,6 +112,190 @@ internal static class PluginLoader
         catch (Exception ex)
         {
             RynthLog.Verbose($"PluginLoader: Shadow cleanup skipped ({ex.Message})");
+        }
+    }
+
+    /// <summary>
+    /// One-shot startup sweep over sibling per-PID shadow roots
+    /// (<c>&lt;baseShadowRootDir&gt;/p&lt;PID&gt;/</c>). Deletes dirs whose
+    /// owning PID is dead — i.e. orphans from previous client runs that
+    /// crashed or were killed before tearing down their shadow tree.
+    ///
+    /// Mutex-serialized across processes: two clients launching concurrently
+    /// must not race on the same dead-PID dirs, because Directory.Delete
+    /// failures (already-deleted-by-other-client → DirectoryNotFoundException)
+    /// generate exception heap pressure, which is exactly the failure mode
+    /// the per-PID shadow-root design is meant to eliminate.
+    /// </summary>
+    public static void CleanupOrphanShadowRoots(string baseShadowRootDir, int currentPid)
+    {
+        RynthLog.Plugin($"PluginLoader: orphan sweep starting (root={baseShadowRootDir}, currentPid={currentPid}).");
+
+        if (!Directory.Exists(baseShadowRootDir))
+        {
+            RynthLog.Plugin("PluginLoader: orphan sweep — base dir does not exist, nothing to do.");
+            return;
+        }
+
+        RynthLog.Plugin("PluginLoader: orphan sweep DIAG-1 — base dir exists, creating mutex.");
+
+        System.Threading.Mutex? mutex = null;
+        bool acquired = false;
+        int deleted = 0;
+        int skippedAlive = 0;
+        try
+        {
+            try
+            {
+                mutex = new System.Threading.Mutex(false, "Local\\RynthCore.PluginShadow.OrphanSweep");
+            }
+            catch (Exception ex)
+            {
+                RynthLog.Plugin($"PluginLoader: orphan sweep — mutex create threw {ex.GetType().Name}: {ex.Message}. Proceeding without serialization.");
+            }
+
+            RynthLog.Plugin($"PluginLoader: orphan sweep DIAG-2 — mutex created (null={mutex == null}).");
+
+            if (mutex != null)
+            {
+                RynthLog.Plugin("PluginLoader: orphan sweep DIAG-3 — calling mutex.WaitOne(5s).");
+                try { acquired = mutex.WaitOne(TimeSpan.FromSeconds(5)); }
+                catch (System.Threading.AbandonedMutexException) { acquired = true; }
+                catch (Exception ex)
+                {
+                    RynthLog.Plugin($"PluginLoader: orphan sweep — mutex wait threw {ex.GetType().Name}: {ex.Message}. Proceeding without serialization.");
+                }
+                RynthLog.Plugin($"PluginLoader: orphan sweep DIAG-4 — mutex.WaitOne returned, acquired={acquired}.");
+                if (!acquired)
+                    RynthLog.Plugin("PluginLoader: orphan sweep — mutex not acquired within 5s; proceeding without serialization.");
+            }
+
+            RynthLog.Plugin("PluginLoader: orphan sweep DIAG-5 — calling Directory.GetDirectories.");
+            string[] dirs = Directory.GetDirectories(baseShadowRootDir);
+            RynthLog.Plugin($"PluginLoader: orphan sweep DIAG-6 — got {dirs.Length} dirs.");
+
+            for (int i = 0; i < dirs.Length; i++)
+            {
+                string dir = dirs[i];
+                string name = Path.GetFileName(dir);
+                RynthLog.Plugin($"PluginLoader: orphan sweep DIAG-7.{i} — examining '{name}'.");
+
+                if (name.Length < 2 || name[0] != 'p') continue;
+                if (!int.TryParse(name.AsSpan(1), out int ownerPid)) continue;
+                if (ownerPid == currentPid)
+                {
+                    RynthLog.Plugin($"PluginLoader: orphan sweep DIAG-7.{i} — skipping {name} (own PID).");
+                    continue;
+                }
+
+                // Liveness check via Win32 OpenProcess — bypasses
+                // System.Diagnostics.Process which was crashing this thread
+                // (and by extension the process) under NativeAOT in a
+                // heavily-hooked acclient.exe. We need this gate because
+                // Directory.Delete over a still-mapped DLL — which is what
+                // a LIVE owner's shadow dir contains — also crashes silently
+                // here, bypassing the managed try/catch in
+                // TryDeleteDirectoryReporting. So delete is unsafe without
+                // knowing the owner is dead.
+                RynthLog.Plugin($"PluginLoader: orphan sweep DIAG-7.{i} — checking IsPidAliveWin32({ownerPid}).");
+                bool alive = IsPidAliveWin32(ownerPid);
+                RynthLog.Plugin($"PluginLoader: orphan sweep DIAG-7.{i} — IsPidAliveWin32({ownerPid})={alive}.");
+
+                if (alive)
+                {
+                    skippedAlive++;
+                    RynthLog.Plugin($"PluginLoader: orphan sweep skipping {name} — PID {ownerPid} still running.");
+                    continue;
+                }
+
+                RynthLog.Plugin($"PluginLoader: orphan sweep DIAG-7.{i} — calling TryDeleteDirectoryReporting('{name}').");
+                bool ok = TryDeleteDirectoryReporting(dir);
+                RynthLog.Plugin($"PluginLoader: orphan sweep DIAG-7.{i} — delete returned ok={ok}.");
+                if (ok) deleted++;
+            }
+
+            RynthLog.Plugin($"PluginLoader: orphan sweep complete (deleted={deleted}, skippedAlive={skippedAlive}).");
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Plugin($"PluginLoader: orphan sweep threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            RynthLog.Plugin($"PluginLoader: orphan sweep DIAG-FIN — releasing mutex (acquired={acquired}).");
+            if (acquired && mutex != null)
+            {
+                try { mutex.ReleaseMutex(); } catch { }
+            }
+            mutex?.Dispose();
+            RynthLog.Plugin("PluginLoader: orphan sweep DIAG-FIN — done.");
+        }
+    }
+
+    private static bool TryDeleteDirectoryReporting(string path)
+    {
+        try
+        {
+            Directory.Delete(path, true);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Plugin($"PluginLoader: orphan sweep delete failed for {Path.GetFileName(path)} — {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint dwDesiredAccess, [MarshalAs(UnmanagedType.Bool)] bool bInheritHandle, int dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    private const uint STILL_ACTIVE = 259;
+
+    /// <summary>
+    /// Win32-native liveness check. Replaces the original
+    /// System.Diagnostics.Process.GetProcessById path which AVs the host
+    /// process under NativeAOT in injected acclient.exe — see the comment in
+    /// CleanupOrphanShadowRoots. Trade-off vs. the original: no ProcessName
+    /// verification, so a recycled PID held by an unrelated process keeps the
+    /// orphan dir alive. The cost is a stale shadow tree, not a crash.
+    /// </summary>
+    private static bool IsPidAliveWin32(int pid)
+    {
+        if (pid <= 0) return false;
+        IntPtr h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (h == IntPtr.Zero) return false;
+        try
+        {
+            if (!GetExitCodeProcess(h, out uint exitCode)) return false;
+            return exitCode == STILL_ACTIVE;
+        }
+        finally
+        {
+            CloseHandle(h);
+        }
+    }
+
+    [Obsolete("Use IsPidAliveWin32 — Process.GetProcessById crashes under NativeAOT in injected x86 acclient.exe.")]
+    private static bool IsProcessAlive(int pid)
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.GetProcessById(pid);
+            if (p.HasExited) return false;
+            return string.Equals(p.ProcessName, "acclient", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -173,6 +363,10 @@ internal static class PluginLoader
         IntPtr onLoginCompletePtr = GetProcAddress(handle, "RynthPluginOnLoginComplete");
         if (onLoginCompletePtr != IntPtr.Zero)
             plugin.OnLoginComplete = Marshal.GetDelegateForFunctionPointer<PluginOnLoginCompleteDelegate>(onLoginCompletePtr);
+
+        IntPtr onLogoutPtr = GetProcAddress(handle, "RynthPluginOnLogout");
+        if (onLogoutPtr != IntPtr.Zero)
+            plugin.OnLogout = Marshal.GetDelegateForFunctionPointer<PluginOnLogoutDelegate>(onLogoutPtr);
 
         IntPtr onUiInitializedPtr = GetProcAddress(handle, "RynthPluginOnUIInitialized");
         if (onUiInitializedPtr != IntPtr.Zero)
@@ -243,6 +437,20 @@ internal static class PluginLoader
             plugin.OnUpdateHealth = Marshal.GetDelegateForFunctionPointer<PluginOnUpdateHealthDelegate>(onUpdateHealthPtr);
         }
 
+        IntPtr onCombatDamagePtr = GetProcAddress(handle, "RynthPluginOnCombatDamage");
+        if (onCombatDamagePtr != IntPtr.Zero)
+        {
+            plugin.OnCombatDamagePtr = onCombatDamagePtr;
+            plugin.OnCombatDamage = Marshal.GetDelegateForFunctionPointer<PluginOnCombatDamageDelegate>(onCombatDamagePtr);
+        }
+
+        IntPtr onKillNotificationPtr = GetProcAddress(handle, "RynthPluginOnKillNotification");
+        if (onKillNotificationPtr != IntPtr.Zero)
+        {
+            plugin.OnKillNotificationPtr = onKillNotificationPtr;
+            plugin.OnKillNotification = Marshal.GetDelegateForFunctionPointer<PluginOnKillNotificationDelegate>(onKillNotificationPtr);
+        }
+
         IntPtr onChatWindowTextPtr = GetProcAddress(handle, "RynthPluginOnChatWindowText");
         if (onChatWindowTextPtr != IntPtr.Zero)
         {
@@ -288,6 +496,12 @@ internal static class PluginLoader
             if (strPtr != IntPtr.Zero)
                 plugin.VersionString = Marshal.PtrToStringAnsi(strPtr) ?? "";
         }
+        // The DLL's version resource is stamped at release time with the release and commit;
+        // the plugins' own RynthPluginVersion strings are hand-written and never change.
+        string fileVersion = RynthCore.App.BuildVersion.OfFile(
+            plugin.SourceFilePath.Length > 0 ? plugin.SourceFilePath : plugin.FilePath);
+        if (fileVersion.Length > 0)
+            plugin.VersionString = fileVersion;
 
         string ver = string.IsNullOrEmpty(plugin.VersionString) ? "" : $" v{plugin.VersionString}";
         string caps = BuildCapsList(plugin);
@@ -298,7 +512,14 @@ internal static class PluginLoader
 
     private static string PrepareShadowDirectory(string shadowRootDir, int generation)
     {
-        string sessionDir = Path.Combine(shadowRootDir, $"session-{generation:D4}-pid{Environment.ProcessId}");
+        // Include EntryPoint.InitCount so each engine instance gets its own
+        // shadow root. After an engine hot-reload the previous engine's
+        // plugin DLL stays pinned (FreeLibrary doesn't actually unmap), so
+        // overwriting its shadow path would fail with a sharing violation.
+        int engineInit = EntryPoint.InitCount;
+        string sessionDir = Path.Combine(
+            shadowRootDir,
+            $"session-{generation:D4}-pid{Environment.ProcessId}-eng{engineInit:D2}");
         Directory.CreateDirectory(sessionDir);
         return sessionDir;
     }
@@ -361,6 +582,7 @@ internal static class PluginLoader
     {
         var parts = new List<string>(4) { "init", "shutdown" };
         if (p.OnLoginComplete != null) parts.Add("login");
+        if (p.OnLogout != null) parts.Add("logout");
         if (p.OnUIInitialized != null) parts.Add("ui");
         if (p.OnBusyCountIncremented != null) parts.Add("busy+");
         if (p.OnBusyCountDecremented != null) parts.Add("busy-");
@@ -376,6 +598,8 @@ internal static class PluginLoader
         if (p.OnVendorOpen != null) parts.Add("vendor-open");
         if (p.OnVendorClose != null) parts.Add("vendor-close");
         if (p.OnUpdateHealth != null || p.OnUpdateHealthPtr != IntPtr.Zero) parts.Add("health");
+        if (p.OnCombatDamage != null || p.OnCombatDamagePtr != IntPtr.Zero) parts.Add("combatdmg");
+        if (p.OnKillNotification != null || p.OnKillNotificationPtr != IntPtr.Zero) parts.Add("kill");
         if (p.OnChatWindowText != null) parts.Add("chat-in");
         if (p.OnChatBarEnter != null) parts.Add("chat-out");
         if (p.OnBarAction != null) parts.Add("bar");

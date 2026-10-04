@@ -23,6 +23,7 @@ internal sealed class LoadedPlugin
     public PluginNameDelegate? GetName { get; set; }
     public PluginVersionDelegate? GetVersion { get; set; }
     public PluginOnLoginCompleteDelegate? OnLoginComplete { get; set; }
+    public PluginOnLogoutDelegate? OnLogout { get; set; }
     public PluginOnUIInitializedDelegate? OnUIInitialized { get; set; }
     public PluginOnBusyCountIncrementedDelegate? OnBusyCountIncremented { get; set; }
     public PluginOnBusyCountDecrementedDelegate? OnBusyCountDecremented { get; set; }
@@ -41,6 +42,10 @@ internal sealed class LoadedPlugin
     public PluginOnVendorCloseDelegate? OnVendorClose { get; set; }
     public IntPtr OnUpdateHealthPtr { get; set; }
     public PluginOnUpdateHealthDelegate? OnUpdateHealth { get; set; }
+    public IntPtr OnCombatDamagePtr { get; set; }
+    public PluginOnCombatDamageDelegate? OnCombatDamage { get; set; }
+    public IntPtr OnKillNotificationPtr { get; set; }
+    public PluginOnKillNotificationDelegate? OnKillNotification { get; set; }
     public IntPtr OnChatWindowTextPtr { get; set; }
     public PluginOnChatWindowTextDelegate? OnChatWindowText { get; set; }
     public PluginOnChatBarEnterDelegate? OnChatBarEnter { get; set; }

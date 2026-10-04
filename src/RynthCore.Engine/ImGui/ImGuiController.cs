@@ -10,6 +10,7 @@ using System.Runtime.InteropServices;
 using ImGuiNET;
 using RynthCore.Engine.D3D9;
 using RynthCore.Engine.Plugins;
+using RynthCore.Install;
 
 namespace RynthCore.Engine.ImGuiBackend;
 
@@ -82,6 +83,23 @@ internal static class ImGuiController
         {
             ImGuiNET.ImGui.SetCurrentContext(_context);
             ImGuiIOPtr io = ImGuiNET.ImGui.GetIO();
+
+            // Pin imgui.ini to a stable absolute path so window positions/sizes
+            // persist across plugin reloads (RL) and AC restarts. The default
+            // ImGui behavior writes to the working directory which can differ
+            // between launches. Allocated once, kept alive for the process lifetime.
+            try
+            {
+                string iniPath = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, "imgui.ini");
+                System.IO.Directory.CreateDirectory(RynthInstallPaths.RynthAiDir);
+                IntPtr iniPtr = System.Runtime.InteropServices.Marshal.StringToHGlobalAnsi(iniPath);
+                unsafe { io.NativePtr->IniFilename = (byte*)iniPtr; }
+                RynthLog.Render($"ImGuiController: imgui.ini pinned to {iniPath}");
+            }
+            catch (Exception ex)
+            {
+                RynthLog.Render($"ImGuiController: failed to pin imgui.ini path - {ex.Message}");
+            }
 
             io.ConfigFlags |= ImGuiConfigFlags.DockingEnable;
             io.ConfigFlags |= ImGuiConfigFlags.ViewportsEnable;

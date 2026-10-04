@@ -470,14 +470,15 @@ internal static unsafe class ViewportPlatformBackend
     {
         uint flags = unchecked((uint)vp->Flags);
         bool noDecoration = (flags & (uint)ImGuiViewportFlags.NoDecoration) != 0;
-        bool noTaskbarIcon = (flags & (uint)ImGuiViewportFlags.NoTaskBarIcon) != 0;
         bool topMost = (flags & (uint)ImGuiViewportFlags.TopMost) != 0;
 
         uint dwStyle = noDecoration
             ? WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
             : WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
 
-        uint dwExStyle = noTaskbarIcon ? WS_EX_TOOLWINDOW : WS_EX_APPWINDOW;
+        // Always use WS_EX_TOOLWINDOW so tear-off viewports don't clutter the taskbar / Alt-Tab
+        // list when users run many clients. Owned by _mainHwnd so it still closes with the game.
+        uint dwExStyle = WS_EX_TOOLWINDOW;
         if (topMost) dwExStyle |= WS_EX_TOPMOST;
         dwExStyle |= WS_EX_NOACTIVATE;
 
@@ -615,7 +616,7 @@ internal static unsafe class ViewportPlatformBackend
     private static void ViewportUpdate(ImGuiViewport* vp)
     {
         // No-op on Win32 — imgui_impl_win32 handles monitor updates and other
-        // housekeeping elsewhere. We refresh monitors from ImGuiController.
+        // housekeeping elsewhere. We refresh monitors from EngineFrameController.
     }
 
     private static bool TryGetState(ImGuiViewport* vp, out ViewportState state)
@@ -628,11 +629,17 @@ internal static unsafe class ViewportPlatformBackend
 
     private static IntPtr ViewportWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
+        // If the ImGui context has been torn down (Shutdown already ran), don't
+        // touch any ImGui API — the context memory is freed and any call into it
+        // is a use-after-free. Just forward to the default handler.
+        if (ImGuiContext == IntPtr.Zero)
+            return DefWindowProcW(hWnd, msg, wParam, lParam);
+
         // OS delivers messages (WM_GETICON, WM_PAINT, etc.) asynchronously outside
         // of EndScene. By then our saved context has been restored → GImGui is null,
         // and any ImGui call here AVs. Temporarily set our context for the message.
         IntPtr saved = ImGuiNET.ImGui.GetCurrentContext();
-        if (ImGuiContext != IntPtr.Zero && saved != ImGuiContext)
+        if (saved != ImGuiContext)
             ImGuiNET.ImGui.SetCurrentContext(ImGuiContext);
 
         try
@@ -746,7 +753,16 @@ internal static unsafe class ViewportPlatformBackend
                     break;
 
                 case WM_MOUSEACTIVATE:
-                    return new IntPtr(MA_NOACTIVATE);
+                {
+                    // If AC is the foreground app, don't steal its focus — just process the click.
+                    // If the user is tabbed out (some other app is foreground), allow Windows to
+                    // activate this viewport so the click actually brings it to the front.
+                    IntPtr fg = GetForegroundWindow();
+                    IntPtr game = Win32Backend.GameHwnd;
+                    if (game != IntPtr.Zero && fg == game)
+                        return new IntPtr(MA_NOACTIVATE);
+                    break;
+                }
 
                 case WM_NCHITTEST:
                 {

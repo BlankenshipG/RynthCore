@@ -15,7 +15,10 @@
     <!-- NativeAOT settings -->
     <InvariantGlobalization>true</InvariantGlobalization>
     <IlcOptimizationPreference>Size</IlcOptimizationPreference>
-    <StackTraceSupport>false</StackTraceSupport>
+    <!-- DIAGNOSTIC: was false. true emits method-name metadata so Environment.StackTrace
+         resolves to real symbols. Adds ~5-10 MB to engine.dll. Flip back to false once the
+         silent-ExitProcess investigation is closed. -->
+    <StackTraceSupport>true</StackTraceSupport>
 
     <!-- Keep ImGui.NET's P/Invoke bindings intact -->
     <TrimMode>link</TrimMode>
@@ -41,11 +44,13 @@
     <PackageReference Include="Avalonia.Themes.Simple" Version="11.2.3" />
     <!-- Overrides Avalonia.FreeDesktop transitive Tmds.DBus.Protocol (NU1903 / GHSA-xrw6-gwf8-vvr9). -->
     <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
+    <PackageReference Include="Avalonia.AvaloniaEdit" Version="11.2.0" />
   </ItemGroup>
 
   <ItemGroup>
     <Compile Include="..\RynthCore.App\CharacterCacheStore.cs" Link="Shared\CharacterCacheStore.cs" />
     <Compile Include="..\RynthCore.App\SessionStateStore.cs" Link="Shared\SessionStateStore.cs" />
+    <Compile Include="..\RynthCore.App\BuildVersion.cs" Link="Shared\BuildVersion.cs" />
   </ItemGroup>
 
   <!-- Prevent trimmer from removing ImGui.NET's DllImport methods -->
@@ -62,6 +67,7 @@
     <TrimmerRootAssembly Include="Avalonia.Win32" />
     <TrimmerRootAssembly Include="Avalonia.Skia" />
     <TrimmerRootAssembly Include="Avalonia.Themes.Simple" />
+    <TrimmerRootAssembly Include="AvaloniaEdit" />
   </ItemGroup>
 
   <ItemGroup>
@@ -108,5 +114,10 @@
       DestinationFiles="@(BundledSupportDll->'$(OutputPath)%(Filename)%(Extension)')"
       SkipUnchangedFiles="true" />
   </Target>
+
+  <ItemGroup>
+    <!-- Install-location resolver (installer-chosen RynthCore / RynthSuite folders). -->
+    <Compile Include="..\RynthCore.App\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+  </ItemGroup>
 
 </Project>

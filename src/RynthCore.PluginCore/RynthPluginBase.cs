@@ -6,7 +6,7 @@ namespace RynthCore.PluginCore;
 
 public abstract class RynthPluginBase
 {
-    public virtual uint MinimumApiVersion => RynthCoreHost.CurrentApiVersion;
+    public virtual uint MinimumApiVersion => RynthCoreHost.BaselineApiVersion;
 
     protected RynthCoreApiNative Api { get; private set; }
     protected RynthCoreHost Host { get; private set; }
@@ -27,6 +27,14 @@ public abstract class RynthPluginBase
         Host.Log(message);
     }
 
+    internal void LogInternal(string message)
+    {
+        if (!IsAttached)
+            return;
+
+        Host.Log(message);
+    }
+
     protected static string? ReadWideString(IntPtr textUtf16)
     {
         return textUtf16 != IntPtr.Zero ? Marshal.PtrToStringUni(textUtf16) : null;
@@ -37,6 +45,7 @@ public abstract class RynthPluginBase
     public virtual void OnTick() { }
     public virtual void OnUIInitialized() { }
     public virtual void OnLoginComplete() { }
+    public virtual void OnLogout() { }
     public virtual void OnBarAction() { }
     public virtual void OnRender() { }
     public virtual void OnChatWindowText(string? text, int chatType, ref int eat) { }
@@ -55,6 +64,8 @@ public abstract class RynthPluginBase
     public virtual void OnVendorOpen(uint vendorId) { }
     public virtual void OnVendorClose(uint vendorId) { }
     public virtual void OnUpdateHealth(uint targetId, float healthRatio, uint currentHealth, uint maxHealth) { }
+    public virtual void OnCombatDamage(uint damage, uint damageType, bool crit, bool isAttacker) { }
+    public virtual void OnKillNotification(string? deathMessage) { }
     public virtual void OnEnchantmentAdded(uint spellId, double durationSeconds) { }
     public virtual void OnEnchantmentRemoved(uint enchantmentId) { }
 }

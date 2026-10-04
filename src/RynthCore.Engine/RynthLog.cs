@@ -1,3 +1,5 @@
+using System;
+
 namespace RynthCore.Engine;
 
 /// <summary>
@@ -9,11 +11,11 @@ internal static class RynthLog
 {
     // ── Category toggles (flip to false to silence a subsystem) ──────────
 
-    internal static bool D3D9Enabled    = false;
+    internal static bool D3D9Enabled    = true;
     internal static bool CompatEnabled  = true;
     internal static bool RenderEnabled  = false;   // ImGui, DX9Backend, Win32Backend
     internal static bool PluginEnabled  = true;
-    internal static bool UIEnabled      = false;
+    internal static bool UIEnabled      = true;
 
     // ── Category methods ─────────────────────────────────────────────────
 
@@ -53,11 +55,35 @@ internal static class RynthLog
         WriteAt(EntryPoint.EngineLogLevel.Debug, msg);
     }
 
+    // Level-gated helpers (engine.json "LoggingLevel"). Warning/Error delegate to the always-on
+    // tagged WRN/ERR writers below so they are never filtered and still feed LastIssue.
     internal static void Trace(string msg) => WriteAt(EntryPoint.EngineLogLevel.Trace, msg);
     internal static void Debug(string msg) => WriteAt(EntryPoint.EngineLogLevel.Debug, msg);
+
+    /// <summary>INFO line for uncategorised messages (written at the default Info level and finer).</summary>
     internal static void Info(string msg) => WriteAt(EntryPoint.EngineLogLevel.Info, msg);
-    internal static void Warning(string msg) => WriteAt(EntryPoint.EngineLogLevel.Warning, msg);
-    internal static void Error(string msg) => WriteAt(EntryPoint.EngineLogLevel.Error, msg);
+
+    /// <summary>Alias kept for SK-local call sites; same as <see cref="Warn"/>.</summary>
+    internal static void Warning(string msg) => Warn(msg);
+
+    // Most recent WRN/ERR text + when, surfaced via the GetEngineStatusJson host bridge so a stuck box
+    // can be diagnosed remotely without reading the PC log.
+    internal static volatile string? LastIssue;
+    internal static DateTime LastIssueUtc;
+
+    /// <summary>Always-on WARN line — a recoverable problem worth grepping for.</summary>
+    internal static void Warn(string msg)
+    {
+        LastIssue = msg; LastIssueUtc = DateTime.UtcNow;
+        EntryPoint.LogTagged("engine", msg, "WRN");
+    }
+
+    /// <summary>Always-on ERROR line — a fault/crash/disable. Triage with grep "[ERR]".</summary>
+    internal static void Error(string msg)
+    {
+        LastIssue = msg; LastIssueUtc = DateTime.UtcNow;
+        EntryPoint.LogTagged("engine", msg, "ERR");
+    }
 
     // ── Sink ─────────────────────────────────────────────────────────────
 

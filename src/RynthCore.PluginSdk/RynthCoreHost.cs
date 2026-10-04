@@ -1,11 +1,23 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 namespace RynthCore.PluginSdk;
 
 public readonly unsafe struct RynthCoreHost
 {
-    public const uint CurrentApiVersion = 40;
+    public const uint CurrentApiVersion = 67;
+
+    /// <summary>
+    /// The oldest engine API a plugin built on this SDK loads on by default
+    /// (<see cref="RynthCore.PluginCore.RynthPluginBase.MinimumApiVersion"/>). Players get
+    /// plugin updates automatically but engine updates only when they click, so defaulting
+    /// to <see cref="CurrentApiVersion"/> made every rebuilt plugin refuse the engine most
+    /// players still run. Calls newer than this are version-checked by their wrappers
+    /// (e.g. HasVendorTrade); a plugin that truly needs a newer engine overrides
+    /// MinimumApiVersion. Raise this only with a release that forces the engine update.
+    /// </summary>
+    public const uint BaselineApiVersion = 66;
 
     private readonly RynthCoreApiNative _api;
 
@@ -62,6 +74,7 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetObjectHeading    => _api.GetObjectHeadingFn    != IntPtr.Zero;
     public bool HasGetBusyState        => _api.GetBusyStateFn        != IntPtr.Zero;
     public bool HasForceResetBusyCount => _api.ForceResetBusyCountFn != IntPtr.Zero;
+    public bool HasGetCastBusyState    => _api.GetCastBusyStateFn    != IntPtr.Zero;
     public bool HasGetObjectSpellIds   => _api.GetObjectSpellIdsFn   != IntPtr.Zero;
     public bool HasSetMotion => _api.SetMotionFn != IntPtr.Zero;
     public bool HasStopCompletely => _api.StopCompletelyFn != IntPtr.Zero;
@@ -80,11 +93,14 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetObjectSkill => _api.GetObjectSkillFn != IntPtr.Zero;
     public bool HasIsSpellKnown => _api.IsSpellKnownFn != IntPtr.Zero;
     public bool HasReadPlayerEnchantments => _api.ReadPlayerEnchantmentsFn != IntPtr.Zero;
+    public bool HasReadKnownSpells => _api.ReadKnownSpellsFn != IntPtr.Zero;
     public bool HasGetServerTime => _api.GetServerTimeFn != IntPtr.Zero;
     public bool HasReadObjectEnchantments => _api.ReadObjectEnchantmentsFn != IntPtr.Zero;
     public bool HasWorldToScreen => _api.WorldToScreenFn != IntPtr.Zero;
     public bool HasGetViewportSize => _api.GetViewportSizeFn != IntPtr.Zero;
     public bool HasNav3D => _api.Nav3DClearFn != IntPtr.Zero && _api.Nav3DAddRingFn != IntPtr.Zero && _api.Nav3DAddLineFn != IntPtr.Zero;
+    public bool HasNav3DTriangle => _api.Nav3DAddTriangleFn != IntPtr.Zero;
+    public bool HasNav3DRingHeight => _api.Nav3DAddRingExFn != IntPtr.Zero;
     public bool HasInvokeChatParser => _api.InvokeChatParserFn != IntPtr.Zero;
     public bool HasGetObjectDoubleProperty => _api.GetObjectDoublePropertyFn != IntPtr.Zero;
     public bool HasGetObjectQuadProperty => _api.GetObjectQuadPropertyFn != IntPtr.Zero;
@@ -100,6 +116,19 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetCurrentCombatMode => _api.GetCurrentCombatModeFn != IntPtr.Zero;
     public bool HasSalvagePanel => _api.SalvagePanelOpenFn != IntPtr.Zero && _api.SalvagePanelAddItemFn != IntPtr.Zero && _api.SalvagePanelExecuteFn != IntPtr.Zero;
     public bool HasGetObjectPalettes => _api.Version >= 50 && _api.GetObjectPalettesFn != IntPtr.Zero;
+    public bool HasCommenceJump => _api.Version >= 51 && _api.CommenceJumpFn != IntPtr.Zero;
+    public bool HasDoJump => _api.Version >= 51 && _api.DoJumpFn != IntPtr.Zero;
+    public bool HasLaunchJumpWithMotion => _api.Version >= 52 && _api.LaunchJumpWithMotionFn != IntPtr.Zero;
+    public bool HasGetRadarRect => _api.Version >= 53 && _api.GetRadarRectFn != IntPtr.Zero;
+    public bool HasSetRadarSuppressed    => _api.Version >= 54 && _api.SetRadarSuppressedFn    != IntPtr.Zero;
+    public bool HasSetChatSuppressed     => _api.Version >= 55 && _api.SetChatSuppressedFn     != IntPtr.Zero;
+    public bool HasSetPowerbarSuppressed => _api.Version >= 56 && _api.SetPowerbarSuppressedFn != IntPtr.Zero;
+    public bool HasGiveObjectTo => _api.Version >= 62 && _api.GiveObjectToFn != IntPtr.Zero;
+    public bool HasGetEngineStatusJson   => _api.Version >= 64 && _api.GetEngineStatusJsonFn   != IntPtr.Zero;
+    public bool HasGetPluginSnapshotJson => _api.Version >= 64 && _api.GetPluginSnapshotJsonFn != IntPtr.Zero;
+    public bool HasSendPluginCommand     => _api.Version >= 64 && _api.SendPluginCommandFn     != IntPtr.Zero;
+    public bool HasGetObjectDataIdProperty => _api.Version >= 65 && _api.GetObjectDataIdPropertyFn != IntPtr.Zero;
+    public bool HasGetPluginExportJson     => _api.Version >= 66 && _api.GetPluginExportJsonFn     != IntPtr.Zero;
 
     // ─── Methods ────────────────────────────────────────────────────────────
 
@@ -221,6 +250,94 @@ public readonly unsafe struct RynthCoreHost
     {
         return _api.TapJumpFn != IntPtr.Zero &&
                ((delegate* unmanaged[Cdecl]<int>)_api.TapJumpFn)() != 0;
+    }
+
+    /// <summary>
+    /// Starts a charged jump (mirrors the keyboard spacebar-down path).
+    /// Follow with <see cref="DoJump"/> once the desired charge time has elapsed.
+    /// </summary>
+    public bool CommenceJump()
+    {
+        return _api.CommenceJumpFn != IntPtr.Zero &&
+               ((delegate* unmanaged[Cdecl]<int>)_api.CommenceJumpFn)() != 0;
+    }
+
+    /// <summary>
+    /// Releases a jump begun with <see cref="CommenceJump"/> (mirrors the keyboard spacebar-up path).
+    /// Pass autonomous=true to match UB's Jumper (player-authoritative extent).
+    /// </summary>
+    public bool DoJump(bool autonomous)
+    {
+        return _api.DoJumpFn != IntPtr.Zero &&
+               ((delegate* unmanaged[Cdecl]<int, int>)_api.DoJumpFn)(autonomous ? 1 : 0) != 0;
+    }
+
+    /// <summary>
+    /// Writes forward/back/strafe motion directly into CMotionInterp, calls
+    /// DoJump(autonomous=1), then clears the motion — mirrors UB's UBHelper.Jumper
+    /// algorithm. This is the only reliable way to jump *with momentum*; SetMotion
+    /// does not bake velocity into the physics simulation in time for DoJump.
+    /// Call this *in place of* <see cref="DoJump"/> when you want a directional jump.
+    /// </summary>
+    public bool LaunchJumpWithMotion(bool shift, bool holdW, bool holdX, bool holdZ, bool holdC)
+    {
+        return _api.LaunchJumpWithMotionFn != IntPtr.Zero &&
+               ((delegate* unmanaged[Cdecl]<int, int, int, int, int, int>)_api.LaunchJumpWithMotionFn)(
+                   shift ? 1 : 0, holdW ? 1 : 0, holdX ? 1 : 0, holdZ ? 1 : 0, holdC ? 1 : 0) != 0;
+    }
+
+    /// <summary>
+    /// Returns the retail gmRadarUI element's current screen rect in pixels
+    /// (x0,y0 top-left, x1,y1 bottom-right exclusive). Returns false until the
+    /// radar has rendered at least once this session.
+    /// </summary>
+    public bool TryGetRadarRect(out int x0, out int y0, out int x1, out int y1)
+    {
+        x0 = y0 = x1 = y1 = 0;
+        if (_api.GetRadarRectFn == IntPtr.Zero)
+            return false;
+
+        fixed (int* x0Ptr = &x0)
+        fixed (int* y0Ptr = &y0)
+        fixed (int* x1Ptr = &x1)
+        fixed (int* y1Ptr = &y1)
+        {
+            return ((delegate* unmanaged[Cdecl]<int*, int*, int*, int*, int>)_api.GetRadarRectFn)(
+                x0Ptr, y0Ptr, x1Ptr, y1Ptr) != 0;
+        }
+    }
+
+    /// <summary>
+    /// When enabled, the engine suppresses the vanilla gmRadarUI::DrawObjects
+    /// call so the radar rect is blank and a plugin can own it entirely.
+    /// </summary>
+    public void SetRadarSuppressed(bool enabled)
+    {
+        if (_api.SetRadarSuppressedFn == IntPtr.Zero)
+            return;
+
+        ((delegate* unmanaged[Cdecl]<int, void>)_api.SetRadarSuppressedFn)(enabled ? 1 : 0);
+    }
+
+    /// <summary>
+    /// When enabled, the engine hides the retail gmMainChatUI each frame via
+    /// UIElement::SetVisible(false). Re-asserted every frame so the game can't
+    /// sneak it back on.
+    /// </summary>
+    public void SetPowerbarSuppressed(bool enabled)
+    {
+        if (_api.SetPowerbarSuppressedFn == IntPtr.Zero)
+            return;
+
+        ((delegate* unmanaged[Cdecl]<int, void>)_api.SetPowerbarSuppressedFn)(enabled ? 1 : 0);
+    }
+
+    public void SetChatSuppressed(bool enabled)
+    {
+        if (_api.SetChatSuppressedFn == IntPtr.Zero)
+            return;
+
+        ((delegate* unmanaged[Cdecl]<int, void>)_api.SetChatSuppressedFn)(enabled ? 1 : 0);
     }
 
     public bool SetMotion(uint motion, bool enabled)
@@ -386,6 +503,19 @@ public readonly unsafe struct RynthCoreHost
                ((delegate* unmanaged[Cdecl]<uint, uint, int>)_api.MergeStackInternalFn)(sourceObjectId, targetObjectId) != 0;
     }
 
+    /// <summary>
+    /// Gives an item to an NPC or another player by sending the F7B1 give
+    /// GameAction (CM_Inventory::Event_GiveObjectRequest). This is the correct
+    /// primitive for /mt givep — MoveItemExternal is move-to-container and
+    /// silently fails to give to an NPC. amount=0 gives the whole object;
+    /// positive = partial stack. Requires engine API v62+ (check HasGiveObjectTo).
+    /// </summary>
+    public bool GiveObjectTo(uint objectId, uint targetId, int amount = 0)
+    {
+        return _api.GiveObjectToFn != IntPtr.Zero &&
+               ((delegate* unmanaged[Cdecl]<uint, uint, int, int>)_api.GiveObjectToFn)(objectId, targetId, amount) != 0;
+    }
+
     public bool WriteToChat(string text, int chatType)
     {
         if (_api.WriteToChatFn == IntPtr.Zero || string.IsNullOrEmpty(text))
@@ -523,6 +653,44 @@ public readonly unsafe struct RynthCoreHost
             ((delegate* unmanaged[Cdecl]<void>)_api.ForceResetBusyCountFn)();
     }
 
+    /// <summary>
+    /// The REAL cast gate: 0 = clear to cast, 1 = a cast/action gesture is
+    /// animating. Distinct from <see cref="GetBusyState"/> (the ClientUISystem
+    /// hourglass, which reads 0 while AC still rejects a cast with "You're too
+    /// busy!"). Returns 0 (clear) on an engine that predates this API field —
+    /// callers should pair it with their own throttle so a missing gate
+    /// degrades gracefully rather than spamming.
+    /// </summary>
+    public int GetCastBusyState()
+    {
+        if (_api.GetCastBusyStateFn == IntPtr.Zero) return 0;
+        return ((delegate* unmanaged[Cdecl]<int>)_api.GetCastBusyStateFn)();
+    }
+
+    /// <summary>
+    /// True when no cast/action gesture is animating (clear to issue a cast).
+    /// Defaults to true on an engine without the cast-gate field so older
+    /// engines fall back to the consumer's throttle/park behaviour.
+    /// </summary>
+    public bool CanCastNow => GetCastBusyState() == 0;
+
+    /// <summary>True when the engine exposes the server UseDone (0x1C7) counter.</summary>
+    public bool HasUseDoneSeq => _api.GetUseDoneSeqFn != IntPtr.Zero;
+
+    /// <summary>
+    /// Monotonic count of inbound server UseDone (GameEvent 0x01C7) events. The
+    /// server sends one when it FINISHES an action (cast/use) — completed or
+    /// refused. Record this at cast time and watch for it to change to know the
+    /// server resolved the cast, so combat casts can be paced on real completion
+    /// instead of a blind interval. Returns 0 on an engine without the signal
+    /// (callers must fall back to a timeout). Requires API v63+.
+    /// </summary>
+    public int GetUseDoneSeq()
+    {
+        if (_api.GetUseDoneSeqFn == IntPtr.Zero) return 0;
+        return ((delegate* unmanaged[Cdecl]<int>)_api.GetUseDoneSeqFn)();
+    }
+
     public bool TryGetObjectName(uint objectId, out string name)
     {
         name = string.Empty;
@@ -641,6 +809,24 @@ public readonly unsafe struct RynthCoreHost
         fixed (int* valuePtr = &value)
         {
             return ((delegate* unmanaged[Cdecl]<uint, uint, int*, int>)_api.GetObjectIntPropertyFn)(objectId, stype, valuePtr) != 0;
+        }
+    }
+
+    /// <summary>
+    /// Reads a STypeDID property that lives in the object's PublicWeenieDesc — currently
+    /// Icon=8 (→ _iconID, e.g. 0x06xxxxxx). Works on UNequipped/never-appraised pack items
+    /// (PWD is network-populated; no qualities pointer or appraisal required). Returns false
+    /// when the engine predates API v65 or the read fails.
+    /// </summary>
+    public bool TryGetObjectDataIdProperty(uint objectId, uint stype, out uint value)
+    {
+        value = 0;
+        if (_api.GetObjectDataIdPropertyFn == IntPtr.Zero)
+            return false;
+
+        fixed (uint* valuePtr = &value)
+        {
+            return ((delegate* unmanaged[Cdecl]<uint, uint, uint*, int>)_api.GetObjectDataIdPropertyFn)(objectId, stype, valuePtr) != 0;
         }
     }
 
@@ -808,6 +994,28 @@ public readonly unsafe struct RynthCoreHost
         }
     }
 
+    public int ReadKnownSpells(uint[] spellIds, int maxCount)
+    {
+        if (_api.ReadKnownSpellsFn == IntPtr.Zero || spellIds == null || maxCount <= 0)
+            return -1;
+
+        IntPtr buf = Marshal.AllocHGlobal(maxCount * sizeof(uint));
+        try
+        {
+            int result = ((delegate* unmanaged[Cdecl]<uint*, int, int>)_api.ReadKnownSpellsFn)(
+                (uint*)buf, maxCount);
+            int count = Math.Max(0, Math.Min(result, Math.Min(maxCount, spellIds.Length)));
+            uint* sp = (uint*)buf;
+            for (int i = 0; i < count; i++)
+                spellIds[i] = sp[i];
+            return result;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buf);
+        }
+    }
+
     public double GetServerTime()
     {
         return _api.GetServerTimeFn != IntPtr.Zero
@@ -913,12 +1121,44 @@ public readonly unsafe struct RynthCoreHost
             wx, wy, wz, radius, thickness, colorArgb);
     }
 
+    /// <summary>
+    /// Same as Nav3DAddRing but with explicit wall height in world units. On
+    /// older engines (API &lt; 61) where this isn't available, falls back to
+    /// Nav3DAddRing — the user still gets the ring at the legacy 0.5 m height.
+    /// </summary>
+    public void Nav3DAddRingEx(float wx, float wy, float wz, float radius, float thickness, float height, uint colorArgb)
+    {
+        if (_api.Nav3DAddRingExFn != IntPtr.Zero)
+        {
+            ((delegate* unmanaged[Cdecl]<float, float, float, float, float, float, uint, void>)_api.Nav3DAddRingExFn)(
+                wx, wy, wz, radius, thickness, height, colorArgb);
+            return;
+        }
+        Nav3DAddRing(wx, wy, wz, radius, thickness, colorArgb);
+    }
+
     public void Nav3DAddLine(float x1, float y1, float z1, float x2, float y2, float z2, float thickness, uint colorArgb)
     {
         if (_api.Nav3DAddLineFn == IntPtr.Zero)
             return;
         ((delegate* unmanaged[Cdecl]<float, float, float, float, float, float, float, uint, void>)_api.Nav3DAddLineFn)(
             x1, y1, z1, x2, y2, z2, thickness, colorArgb);
+    }
+
+    /// <summary>
+    /// Submits a filled 3D triangle in world coordinates (D3D: X=EW, Y=height,
+    /// Z=NS). Use for terrain-conforming overlays — passing the actual mesh
+    /// vertices makes the face hug the slope exactly. ARGB colour.
+    /// </summary>
+    public void Nav3DAddTriangle(float x1, float y1, float z1,
+                                 float x2, float y2, float z2,
+                                 float x3, float y3, float z3,
+                                 uint colorArgb)
+    {
+        if (_api.Nav3DAddTriangleFn == IntPtr.Zero)
+            return;
+        ((delegate* unmanaged[Cdecl]<float, float, float, float, float, float, float, float, float, uint, void>)_api.Nav3DAddTriangleFn)(
+            x1, y1, z1, x2, y2, z2, x3, y3, z3, colorArgb);
     }
 
     // ─── Chat parser ────────────────────────────────────────────────────────
@@ -1121,5 +1361,303 @@ public readonly unsafe struct RynthCoreHost
             Marshal.FreeHGlobal(subIdsBuf);
             Marshal.FreeHGlobal(offsetsBuf);
         }
+    }
+
+    // ─── Status export / cross-plugin bridges (v64) ─────────────────────────
+
+    /// <summary>
+    /// Returns the engine-side per-client status fields as a JSON object string
+    /// (everything in the status snapshot EXCEPT the bot sub-object), or null if
+    /// unavailable. A generic "here are my own metrics" accessor. The native
+    /// buffer is freed on the next call on this thread, so this copies it before
+    /// returning. Requires engine API v64+ (check <see cref="HasGetEngineStatusJson"/>).
+    /// </summary>
+    public string? GetEngineStatusJson()
+    {
+        if (_api.GetEngineStatusJsonFn == IntPtr.Zero)
+            return null;
+
+        IntPtr ptr = ((delegate* unmanaged[Cdecl]<IntPtr>)_api.GetEngineStatusJsonFn)();
+        return ptr == IntPtr.Zero ? null : Marshal.PtrToStringAnsi(ptr);
+    }
+
+    /// <summary>
+    /// Returns the named plugin's snapshot JSON (its RynthPluginGetSnapshotJson
+    /// export), brokered by the engine so the caller never resolves a sibling
+    /// plugin's exports directly. Returns null when that plugin isn't loaded or
+    /// produced no snapshot. The native buffer is owned by the target plugin
+    /// (valid until its next snapshot call), so this copies it before returning.
+    /// Requires API v64+ (check <see cref="HasGetPluginSnapshotJson"/>).
+    /// </summary>
+    public string? GetPluginSnapshotJson(string pluginName)
+    {
+        if (_api.GetPluginSnapshotJsonFn == IntPtr.Zero || string.IsNullOrEmpty(pluginName))
+            return null;
+
+        IntPtr namePtr = Marshal.StringToHGlobalAnsi(pluginName);
+        try
+        {
+            IntPtr ptr = ((delegate* unmanaged[Cdecl]<IntPtr, IntPtr>)_api.GetPluginSnapshotJsonFn)(namePtr);
+            return ptr == IntPtr.Zero ? null : Marshal.PtrToStringAnsi(ptr);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(namePtr);
+        }
+    }
+
+    /// <summary>
+    /// Generic sibling of <see cref="GetPluginSnapshotJson"/>: brokers a parameterless JSON-getter
+    /// export (convention RynthPluginGet*Json) on the named plugin and returns its JSON. Used to pull
+    /// a plugin's secondary surfaces (e.g. RynthAi's RynthPluginGetInventoryJson) without GetProcAddress.
+    /// The target owns the returned buffer (valid until its next call on that export), so this copies it.
+    /// Returns null pre-v66 or on failure. Requires API v66+ (check <see cref="HasGetPluginExportJson"/>).
+    /// </summary>
+    public string? GetPluginExportJson(string pluginName, string exportName)
+    {
+        if (_api.GetPluginExportJsonFn == IntPtr.Zero || string.IsNullOrEmpty(pluginName) || string.IsNullOrEmpty(exportName))
+            return null;
+
+        IntPtr namePtr = Marshal.StringToHGlobalAnsi(pluginName);
+        IntPtr exportPtr = Marshal.StringToHGlobalAnsi(exportName);
+        try
+        {
+            IntPtr ptr = ((delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr>)_api.GetPluginExportJsonFn)(namePtr, exportPtr);
+            return ptr == IntPtr.Zero ? null : Marshal.PtrToStringAnsi(ptr);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(namePtr);
+            Marshal.FreeHGlobal(exportPtr);
+        }
+    }
+
+    /// <summary>
+    /// Forwards a (action,value) command to the named plugin via the engine
+    /// broker (its RynthPluginApplyRemoteCommand export). The receiving plugin
+    /// copies the args and applies them on its OWN pump/main thread. Returns true
+    /// if delivered. Requires API v64+ (check <see cref="HasSendPluginCommand"/>).
+    /// </summary>
+    public bool SendPluginCommand(string pluginName, string action, string value)
+    {
+        if (_api.SendPluginCommandFn == IntPtr.Zero || string.IsNullOrEmpty(pluginName) || string.IsNullOrEmpty(action))
+            return false;
+
+        IntPtr namePtr = Marshal.StringToHGlobalAnsi(pluginName);
+        IntPtr actionPtr = Marshal.StringToHGlobalAnsi(action);
+        IntPtr valuePtr = Marshal.StringToHGlobalAnsi(value ?? string.Empty);
+        try
+        {
+            return ((delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, int>)_api.SendPluginCommandFn)(
+                namePtr, actionPtr, valuePtr) != 0;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(namePtr);
+            Marshal.FreeHGlobal(actionPtr);
+            Marshal.FreeHGlobal(valuePtr);
+        }
+    }
+
+    // ─── Vendor trading (API v67) ──────────────────────────────────────────
+    // Decal's WorldFilter.OpenVendor + Actions.VendorBuyAll/VendorSellAll shape as
+    // stateless calls (VendorCart adds the Add/Clear list shape on top). Reads come
+    // from a snapshot the engine takes on AC's main thread when the vendor list
+    // arrives. Buy/sell are checked, queued, re-checked on AC's main thread (funds,
+    // pack slots, burden, ownership) and sent through the client's own
+    // gmVendorUI::SendShopEvent. One transaction is in flight at a time: wait for
+    // GetVendorTradeStatus to finish before sending the next batch.
+
+    /// <summary>True when the engine exposes vendor trading (API v67+).</summary>
+    public bool HasVendorTrade => _api.Version >= 67
+                                  && _api.GetVendorInfoFn != IntPtr.Zero && _api.GetVendorItemsFn != IntPtr.Zero
+                                  && _api.VendorBuyFn != IntPtr.Zero && _api.VendorSellFn != IntPtr.Zero
+                                  && _api.GetVendorTradeStatusFn != IntPtr.Zero;
+
+    /// <summary>The vendor that is open right now, or false if none (or pre-v67 engine).</summary>
+    public bool TryGetVendorInfo(out VendorInfo info)
+    {
+        info = null!;
+        if (_api.Version < 67 || _api.GetVendorInfoFn == IntPtr.Zero)
+            return false;
+
+        VendorInfoNative raw;
+        if (((delegate* unmanaged[Cdecl]<VendorInfoNative*, int>)_api.GetVendorInfoFn)(&raw) == 0)
+            return false;
+
+        info = new VendorInfo
+        {
+            VendorId = raw.VendorId,
+            Name = ReadAnsi(raw.Name, 64),
+            Generation = raw.Generation,
+            ShopMode = raw.ShopMode,
+            ItemTypes = raw.ItemTypes,
+            MinValue = raw.MinValue,
+            MaxValue = raw.MaxValue,
+            DealsMagic = raw.DealsMagic != 0,
+            BuyRate = raw.BuyRate,
+            SellRate = raw.SellRate,
+            AltCurrencyWcid = raw.AltCurrencyWcid,
+            AltCurrencyName = ReadAnsi(raw.AltCurrencyName, 64),
+            AltCurrencyServerCount = raw.AltCurrencyServerCount,
+            AltCurrencyHave = raw.AltCurrencyHave,
+            PlayerCoins = raw.PlayerCoins,
+            ItemCount = raw.ItemCount,
+            TradingAvailable = (raw.Flags & 1u) != 0,
+            TradeInFlight = (raw.Flags & 2u) != 0,
+        };
+        return true;
+    }
+
+    /// <summary>The open vendor's items; empty if no vendor is open (or pre-v67 engine).</summary>
+    public VendorItem[] GetVendorItems()
+    {
+        if (_api.Version < 67 || _api.GetVendorItemsFn == IntPtr.Zero)
+            return Array.Empty<VendorItem>();
+
+        var fn = (delegate* unmanaged[Cdecl]<VendorItemNative*, int, int>)_api.GetVendorItemsFn;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            int total = fn(null, 0);
+            if (total <= 0)
+                return Array.Empty<VendorItem>();
+
+            int capacity = total + 8;   // headroom in case the list is re-sent between calls
+            IntPtr buf = Marshal.AllocHGlobal(capacity * sizeof(VendorItemNative));
+            try
+            {
+                VendorItemNative* items = (VendorItemNative*)buf;
+                int now = fn(items, capacity);
+                if (now < 0)
+                    return Array.Empty<VendorItem>();
+                if (now > capacity)
+                    continue;   // grew past the headroom; size again
+
+                var result = new VendorItem[now];
+                for (int i = 0; i < now; i++)
+                {
+                    VendorItemNative* it = items + i;
+                    result[i] = new VendorItem
+                    {
+                        ObjectId = it->ObjectId,
+                        Wcid = it->Wcid,
+                        Name = ReadAnsi(it->Name, 64),
+                        ItemType = it->ItemType,
+                        IconId = it->IconId,
+                        Amount = it->Amount,
+                        StackSize = it->StackSize,
+                        MaxStackSize = it->MaxStackSize,
+                        Value = it->Value,
+                        UnitValue = it->UnitValue,
+                        UnitPrice = it->UnitPrice,
+                        Burden = it->Burden,
+                        Unlimited = (it->Flags & 1u) != 0,
+                        Stackable = (it->Flags & 2u) != 0,
+                        NeedsContainerSlot = (it->Flags & 4u) != 0,
+                    };
+                }
+                return result;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buf);
+            }
+        }
+        return Array.Empty<VendorItem>();
+    }
+
+    /// <summary>
+    /// Buy from the open vendor (Decal VendorBuyAll). vendorId 0 = whichever vendor is
+    /// open; pass the id you read to make sure it's still that vendor. Returns the request
+    /// id, or 0 if refused (reason in <see cref="TryGetVendorTradeStatus"/>).
+    /// </summary>
+    public uint VendorBuy(uint vendorId, IReadOnlyList<VendorTradeEntryNative> items)
+    {
+        if (_api.Version < 67 || _api.VendorBuyFn == IntPtr.Zero || items == null || items.Count == 0)
+            return 0;
+
+        int n = items.Count;
+        IntPtr buf = Marshal.AllocHGlobal(n * sizeof(VendorTradeEntryNative));
+        try
+        {
+            VendorTradeEntryNative* p = (VendorTradeEntryNative*)buf;
+            for (int i = 0; i < n; i++)
+                p[i] = items[i];
+            return ((delegate* unmanaged[Cdecl]<uint, VendorTradeEntryNative*, int, uint>)_api.VendorBuyFn)(vendorId, p, n);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buf);
+        }
+    }
+
+    /// <summary>Buy <paramref name="amount"/> of one vendor item.</summary>
+    public uint VendorBuy(uint objectId, int amount, uint vendorId = 0) =>
+        VendorBuy(vendorId, new[] { new VendorTradeEntryNative(objectId, amount) });
+
+    /// <summary>
+    /// Sell your own items (whole stacks) to the open vendor (Decal VendorSellAll).
+    /// Items must be in your packs, not equipped, and of a type the vendor buys.
+    /// Returns the request id, or 0 if refused.
+    /// </summary>
+    public uint VendorSell(uint vendorId, IReadOnlyList<uint> itemIds)
+    {
+        if (_api.Version < 67 || _api.VendorSellFn == IntPtr.Zero || itemIds == null || itemIds.Count == 0)
+            return 0;
+
+        int n = itemIds.Count;
+        IntPtr buf = Marshal.AllocHGlobal(n * sizeof(uint));
+        try
+        {
+            uint* p = (uint*)buf;
+            for (int i = 0; i < n; i++)
+                p[i] = itemIds[i];
+            return ((delegate* unmanaged[Cdecl]<uint, uint*, int, uint>)_api.VendorSellFn)(vendorId, p, n);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buf);
+        }
+    }
+
+    /// <summary>Sell one of your items.</summary>
+    public uint VendorSell(uint itemId) => VendorSell(0, new[] { itemId });
+
+    /// <summary>State of the most recent buy/sell request (check RequestId is yours).</summary>
+    public bool TryGetVendorTradeStatus(out VendorTradeStatus status)
+    {
+        status = null!;
+        if (_api.Version < 67 || _api.GetVendorTradeStatusFn == IntPtr.Zero)
+            return false;
+
+        VendorTradeStatusNative raw;
+        if (((delegate* unmanaged[Cdecl]<VendorTradeStatusNative*, int>)_api.GetVendorTradeStatusFn)(&raw) == 0)
+            return false;
+
+        status = new VendorTradeStatus
+        {
+            RequestId = raw.RequestId,
+            State = (VendorTradeState)raw.State,
+            Result = (VendorTradeResult)raw.Result,
+            IsBuy = raw.IsBuy != 0,
+            VendorId = raw.VendorId,
+            EntryCount = raw.EntryCount,
+            Estimate = raw.Estimate,
+            Message = ReadAnsi(raw.Message, 128),
+        };
+        return true;
+    }
+
+    private static string ReadAnsi(byte* p, int capacity)
+    {
+        int len = 0;
+        while (len < capacity && p[len] != 0)
+            len++;
+        if (len == 0)
+            return string.Empty;
+        var chars = new char[len];
+        for (int i = 0; i < len; i++)
+            chars[i] = (char)p[i];   // Latin-1, the client's single-byte names
+        return new string(chars);
     }
 }

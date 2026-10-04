@@ -13,13 +13,10 @@ internal static class UpdateObjectServerDispatchHooks
     private const int NetBlobBufPtrOffset = 0x2C;
     private const int NetBlobBufSizeOffset = 0x30;
     private const uint UpdateObjectOpcode = 0x0000F7DB;
-    private static readonly byte[] DispatchSbUpdateObjectSignature =
+    // Verified unique + lands at 0x006AD710 offline (tools/pe_pattern.py).
+    private static readonly byte?[] DispatchSbUpdateObjectPattern =
     [
-        0x81, 0xEC, 0xB8, 0x01, 0x00, 0x00, 0x53, 0x8B,
-        0x9C, 0x24, 0xC4, 0x01, 0x00, 0x00, 0x85, 0xDB,
-        0x74, 0x0B, 0x8B, 0x84, 0x24, 0xC0, 0x01, 0x00,
-        0x00, 0x85, 0xC0, 0x75, 0x0D, 0xB8, 0x03, 0x00,
-        0x00, 0x00
+        0x81, 0xEC, 0xB8, 0x01, 0x00, 0x00, 0x53, 0x8B, 0x9C, 0x24, 0xC4, 0x01, 0x00, 0x00, 0x85, 0xDB, 0x74, 0x0B, 0x8B, 0x84, 0x24, 0xC0, 0x01, 0x00, 0x00, 0x85, 0xC0, 0x75, 0x0D, 0xB8, 0x03, 0x00, 0x00, 0x00, 0x5B, 0x81, 0xC4, 0xB8, 0x01, 0x00, 0x00, 0xC3, 0x8B, 0x43, 0x2C, 0x56, 0x8B, 0x73, 0x30, 0x89, 0x44, 0x24, 0x08, 0x8B, 0x08, 0x57, 0x8B, 0xF8, 0x83, 0xC0, 0x04, 0x81, 0xF9, 0xDB
     ];
 
     private static IntPtr _originalDispatchSbUpdateObjectPtr;
@@ -41,10 +38,10 @@ internal static class UpdateObjectServerDispatchHooks
             return;
         }
 
-        int funcOff = DispatchSbUpdateObjectVa - textSection.TextBaseVa;
-        if (!PatternScanner.VerifyBytes(textSection.Bytes, funcOff, DispatchSbUpdateObjectSignature))
+        HookResolver.ResolveResult resolved = HookResolver.Resolve(textSection, "UpdateObject.DispatchSbUpdateObject", DispatchSbUpdateObjectPattern, DispatchSbUpdateObjectVa);
+        if (!resolved.Success)
         {
-            _statusMessage = $"CM_Physics::DispatchSB_UpdateObject signature mismatch @ 0x{DispatchSbUpdateObjectVa:X8}.";
+            _statusMessage = $"CM_Physics::DispatchSB_UpdateObject unresolved (VA 0x{DispatchSbUpdateObjectVa:X8}).";
             RynthLog.Compat($"Compat: update-object hook failed - {_statusMessage}");
             return;
         }
@@ -53,7 +50,7 @@ internal static class UpdateObjectServerDispatchHooks
         {
             unsafe
             {
-                _targetAddress = new IntPtr(textSection.TextBaseVa + funcOff);
+                _targetAddress = resolved.Address;
                 delegate* unmanaged[Cdecl]<IntPtr, IntPtr, uint> pDetour = &DispatchSbUpdateObjectDetour;
                 MinHook.Hook(_targetAddress, (IntPtr)pDetour, out _originalDispatchSbUpdateObjectPtr);
             }
@@ -72,6 +69,7 @@ internal static class UpdateObjectServerDispatchHooks
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static unsafe uint DispatchSbUpdateObjectDetour(IntPtr smartBoxPtr, IntPtr blob)
     {
+        RecursionGuard.Tick("UpdateObjectServerDispatchHooks.DispatchSbUpdateObject");
         var pOriginal = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, uint>)_originalDispatchSbUpdateObjectPtr;
         uint objectId = TryReadUpdatedObjectId(blob);
 
@@ -79,11 +77,15 @@ internal static class UpdateObjectServerDispatchHooks
         if (!LoginLifecycleHooks.HasObservedLoginComplete || objectId == 0)
             return status;
 
-        int count = Interlocked.Increment(ref _dispatchCount);
-        if (count <= 8)
-            RynthLog.Verbose($"Compat: update object #{count} id=0x{objectId:X8} status={status}");
+        try
+        {
+            int count = Interlocked.Increment(ref _dispatchCount);
+            if (count <= 8)
+                RynthLog.Verbose($"Compat: update object #{count} id=0x{objectId:X8} status={status}");
 
-        PluginManager.QueueUpdateObject(objectId);
+            PluginManager.QueueUpdateObject(objectId);
+        }
+        catch { }
         return status;
     }
 

@@ -1,9 +1,9 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Text.Json;
 using Avalonia.Controls;
+using Avalonia.Platform.Storage;
 using RynthCore.App;
 
 namespace RynthCore.App.Avalonia;
@@ -26,116 +26,82 @@ internal partial class AccountProfileDialog : Window
 
         AccountBox.Text = profile.AccountName;
         AliasBox.Text = profile.Alias;
+        UserPrefsPathBox.Text = profile.UserPrefsPath;
         PasswordHintText.Text = string.IsNullOrEmpty(profile.Password)
             ? "No password is saved for this profile yet."
             : "A password is already saved for this profile. It stays hidden unless you replace or clear it.";
 
-        PopulateCharacterDropdown(profile.AccountName, GetSelectedServerName(), profile.CharacterName);
-
-        // Re-populate characters when account name or server changes
-        AccountBox.TextChanged += (_, _) =>
-        {
-            string currentChar = GetSelectedCharacterName();
-            PopulateCharacterDropdown(AccountBox.Text?.Trim() ?? string.Empty, GetSelectedServerName(), currentChar);
-        };
-        ServerComboBox.SelectionChanged += (_, _) =>
-        {
-            PopulateCharacterDropdown(AccountBox.Text?.Trim() ?? string.Empty, GetSelectedServerName(), GetSelectedCharacterName());
-        };
-
         SaveButton.Click += (_, _) => SaveAndClose();
         CancelButton.Click += (_, _) => Close(false);
+        BrowseUserPrefsButton.Click += async (_, _) => await BrowseUserPrefsAsync();
+        SnapshotUserPrefsButton.Click += (_, _) => SnapshotLiveUserPrefs();
     }
 
-    private string GetSelectedServerName() =>
-        ServerComboBox.SelectedIndex >= 0 && ServerComboBox.SelectedIndex < _servers.Count
-            ? _servers[ServerComboBox.SelectedIndex].Name
-            : string.Empty;
-
-    private void PopulateCharacterDropdown(string accountName, string serverName, string selectedCharacter)
+    private async System.Threading.Tasks.Task BrowseUserPrefsAsync()
     {
-        List<string> chars = LoadDetectedCharacters(accountName, serverName);
-        if (string.IsNullOrWhiteSpace(selectedCharacter) && chars.Count == 1)
-            selectedCharacter = chars[0];
+        var topLevel = GetTopLevel(this);
+        if (topLevel == null)
+            return;
 
-        // Ensure the existing saved name appears even if the scan file is empty
-        if (!string.IsNullOrEmpty(selectedCharacter) && !chars.Contains(selectedCharacter))
-            chars.Insert(0, selectedCharacter);
+        var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Select a UserPreferences.ini stash",
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("Asheron's Call prefs (*.ini)") { Patterns = ["*.ini"] },
+                new FilePickerFileType("All Files") { Patterns = ["*"] }
+            ]
+        });
 
-        CharacterBox.ItemsSource = chars;
+        if (files.Count == 0)
+            return;
 
-        if (!string.IsNullOrEmpty(selectedCharacter) && chars.Contains(selectedCharacter))
-            CharacterBox.SelectedItem = selectedCharacter;
+        UserPrefsPathBox.Text = Path.GetFullPath(files[0].Path.LocalPath);
     }
 
-    private string GetSelectedCharacterName() =>
-        CharacterBox.SelectedItem as string ?? string.Empty;
-
-    private static List<string> LoadDetectedCharacters(string accountName, string serverName = "")
+    private void SnapshotLiveUserPrefs()
     {
-        try
+        string stashPath = UserPrefsPathBox.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(stashPath))
         {
-            List<string> cachedCharacters = CharacterCacheStore.Read(accountName, serverName);
-            if (cachedCharacters.Count > 0)
-                return cachedCharacters;
-
-            // 3. ThwargLauncher character files
-            return ReadThwargCharacters(accountName, serverName);
-        }
-        catch
-        {
-            return [];
-        }
-    }
-
-    private static List<string> ReadThwargCharacters(string accountName, string serverName = "")
-    {
-        try
-        {
-            string charDir = Path.Combine(
-                System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData),
-                "ThwargLauncher", "characters");
-
-            if (!Directory.Exists(charDir))
-                return [];
-
-            var results = new List<string>();
-            foreach (string file in Directory.GetFiles(charDir, "*.txt"))
+            string accountName = AccountBox.Text?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(accountName))
             {
-                try
-                {
-                    string json = File.ReadAllText(file);
-                    using var doc = JsonDocument.Parse(json);
-                    foreach (var entry in doc.RootElement.EnumerateObject())
-                    {
-                        bool accountMatches = string.IsNullOrWhiteSpace(accountName) ||
-                            entry.Name.EndsWith("-" + accountName, System.StringComparison.OrdinalIgnoreCase);
-                        bool serverMatches = string.IsNullOrWhiteSpace(serverName) ||
-                            entry.Name.StartsWith(serverName + "-", System.StringComparison.OrdinalIgnoreCase);
-
-                        if (!accountMatches || !serverMatches) continue;
-                        if (!entry.Value.TryGetProperty("CharacterList", out var list)) continue;
-
-                        foreach (var charEl in list.EnumerateArray())
-                        {
-                            if (charEl.TryGetProperty("Name", out var nameEl))
-                            {
-                                string name = nameEl.GetString() ?? string.Empty;
-                                if (!string.IsNullOrEmpty(name) && !results.Contains(name))
-                                    results.Add(name);
-                            }
-                        }
-                    }
-                }
-                catch { }
+                UserPrefsHintText.Text = "Snapshot needs an account name (so it can pick a default stash file).";
+                return;
             }
-            return results;
+
+            string appdata = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string safeName = string.Join("_", accountName.Split(Path.GetInvalidFileNameChars()));
+            stashPath = Path.Combine(appdata, "RynthCore", "prefs", $"{safeName}.ini");
         }
-        catch
+
+        string livePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            "Asheron's Call",
+            "UserPreferences.ini");
+
+        if (!File.Exists(livePath))
         {
-            return [];
+            UserPrefsHintText.Text = $"Live UserPreferences.ini not found at {livePath}.";
+            return;
+        }
+
+        try
+        {
+            string? dir = Path.GetDirectoryName(stashPath);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
+            File.Copy(livePath, stashPath, overwrite: true);
+            UserPrefsHintText.Text = $"Snapshot saved to {stashPath}.";
+        }
+        catch (Exception ex)
+        {
+            UserPrefsHintText.Text = $"Snapshot failed: {ex.Message}";
         }
     }
+
     private void SaveAndClose()
     {
         if (string.IsNullOrWhiteSpace(AccountBox.Text))
@@ -157,8 +123,8 @@ internal partial class AccountProfileDialog : Window
             _profile.Password = PasswordBox.Text;
         }
 
-        _profile.CharacterName = GetSelectedCharacterName();
         _profile.Alias = AliasBox.Text?.Trim() ?? string.Empty;
+        _profile.UserPrefsPath = UserPrefsPathBox.Text?.Trim() ?? string.Empty;
 
         Close(true);
     }
