@@ -503,6 +503,231 @@ internal struct RynthCoreAPI
     /// Level/Finish), so the retail attack/magic power bar never renders.
     /// Requires API v56+.</summary>
     public IntPtr SetPowerbarSuppressedFn;
+
+    /// <summary>Function pointer: int GetCastBusyState()
+    /// 0 = clear to cast, 1 = a cast/action gesture is animating. This is the
+    /// REAL cast gate (CMotionInterp sequenced-motion queue), distinct from
+    /// GetBusyState (the ClientUISystem hourglass, which reads 0 while AC still
+    /// rejects a cast with "You're too busy!"). Sampled on the plugin pump; no
+    /// acclient.exe hook. Returns 0 when not reachable. Requires API v58+.</summary>
+    public IntPtr GetCastBusyStateFn;
+
+    /// <summary>Function pointer: int ReadKnownSpells(uint* spellIds, int maxCount)
+    /// Fills the array with the character's known spell ids from a main-thread
+    /// spellbook snapshot. Returns count written, or -1 if unavailable (cold
+    /// snapshot / not logged in). Requires API v59+.</summary>
+    public IntPtr ReadKnownSpellsFn;
+
+    /// <summary>Function pointer:
+    /// void Nav3DAddTriangle(float x1, float y1, float z1,
+    ///                       float x2, float y2, float z2,
+    ///                       float x3, float y3, float z3,
+    ///                       uint colorArgb)
+    /// Submits a filled 3D triangle in world coordinates. Coordinates are D3D:
+    /// X=EW, Y=height, Z=NS. Use this instead of three Nav3DAddLine calls when
+    /// you want a face that conforms exactly to a terrain triangle (slope
+    /// passability overlay). Requires API v60+.</summary>
+    public IntPtr Nav3DAddTriangleFn;
+
+    /// <summary>Function pointer:
+    /// void Nav3DAddRingEx(float wx, float wy, float wz, float radius,
+    ///                     float thickness, float height, uint colorArgb)
+    /// Same as Nav3DAddRing but with an explicit cylinder-wall height in
+    /// world units. Use when you want a tall but thin ring (radar range
+    /// marker) without coupling visual thickness to wall height. Requires
+    /// API v61+.</summary>
+    public IntPtr Nav3DAddRingExFn;
+
+    /// <summary>Function pointer: int GiveObjectTo(uint objectId, uint targetId, int amount)
+    /// Gives an item to an NPC/player via CM_Inventory::Event_GiveObjectRequest
+    /// (the F7B1 give GameAction). amount=0 gives the whole object. This is the
+    /// correct give-to-NPC primitive; MoveItemExternal is move-to-container and
+    /// does NOT give. Requires API v62+. APPENDED-AT-END for ABI safety.</summary>
+    public IntPtr GiveObjectToFn;
+
+    /// <summary>Function pointer: int GetUseDoneSeq()
+    /// Monotonic count of inbound server UseDone (GameEvent 0x01C7) events. The
+    /// server sends UseDone when it FINISHES an action (cast/use) — completed
+    /// (WeenieError.None) or refused (e.g. YoureTooBusy). A plugin records this
+    /// at cast time and watches for it to change to know the server resolved the
+    /// cast, so combat casts can be paced on real completion instead of a blind
+    /// interval (which re-fires into the deferred-windup window and orphans the
+    /// cast). Read-only observation; never touches client m_cBusy. Returns 0 when
+    /// unavailable. Requires API v63+. APPENDED-AT-END for ABI safety.</summary>
+    public IntPtr GetUseDoneSeqFn;
+
+    /// <summary>Function pointer: const char* GetEngineStatusJson()
+    /// Returns the engine-side per-client status fields (host/pid/account/character/server/
+    /// uptime/fps/pluginTicksPerSec/workingSet/inWorld/queueDropped/reconciles/forceClears/
+    /// deaths/vitae/xp+lum rates/burden/area/lastIssue) as an ANSI JSON object, EXCLUDING the
+    /// bot sub-object. A generic "here are my own metrics" accessor — benign, not a remote
+    /// feature. The returned pointer is valid until the next call on the same thread. Returns
+    /// IntPtr.Zero on failure. Requires API v64+. APPENDED-AT-END for ABI safety.</summary>
+    public IntPtr GetEngineStatusJsonFn;
+
+    /// <summary>Function pointer: const char* GetPluginSnapshotJson(const char* pluginName)
+    /// Brokers the named plugin's RynthPluginGetSnapshotJson export and returns its ANSI JSON
+    /// pointer (IntPtr.Zero if that plugin isn't loaded / produced no snapshot). Lets one plugin
+    /// read another's snapshot without GetProcAddress-ing it directly — PluginManager owns the
+    /// module handles. The returned buffer is owned by the target plugin (valid until its next
+    /// snapshot call); copy it immediately. Requires API v64+. APPENDED-AT-END for ABI safety.</summary>
+    public IntPtr GetPluginSnapshotJsonFn;
+
+    /// <summary>Function pointer: int SendPluginCommand(const char* pluginName, const char* action, const char* value)
+    /// Forwards a (action,value) command to the named plugin's RynthPluginApplyRemoteCommand
+    /// export. Returns 1 if delivered, 0 otherwise. The receiving plugin copies the args and
+    /// applies them on its OWN pump/main thread (never on the caller's thread). Requires API
+    /// v64+. APPENDED-AT-END for ABI safety.</summary>
+    public IntPtr SendPluginCommandFn;
+
+    /// <summary>Function pointer: int GetObjectDataIdProperty(uint objectId, uint stype, uint* value)
+    /// Reads a STypeDID property that lives in the object's PublicWeenieDesc (currently Icon=8 →
+    /// _iconID). Read directly from the embedded PWD struct — network-populated, so it works on
+    /// UNequipped/never-appraised pack items with no qualities pointer and no main-thread native
+    /// call. Returns 1 on success (value = the DataID, e.g. 0x06xxxxxx), 0 otherwise. Requires API
+    /// v65+. APPENDED-AT-END for ABI safety.</summary>
+    public IntPtr GetObjectDataIdPropertyFn;
+
+    /// <summary>Function pointer: const char* GetPluginExportJson(const char* pluginName, const char* exportName)
+    /// Generic sibling of GetPluginSnapshotJson: brokers ANY parameterless JSON-getter export on the named
+    /// plugin (by convention RynthPluginGet*Json — takes no args, returns const char*). Lets one plugin read
+    /// another's secondary JSON surfaces (e.g. RynthRemote pulling RynthAi's RynthPluginGetInventoryJson)
+    /// without GetProcAddress-ing it directly — PluginManager owns the module handles. The returned buffer is
+    /// owned by the target plugin (valid until its next call on that export); copy it immediately. Requires
+    /// API v66+. APPENDED-AT-END for ABI safety.</summary>
+    public IntPtr GetPluginExportJsonFn;
+
+    // ── Vendor trading (v67) ─────────────────────────────────────────────
+    // Decal's WorldFilter.OpenVendor + Actions.VendorBuyAll/VendorSellAll, as
+    // stateless batch calls. Reads come from a snapshot the engine takes on AC's
+    // main thread when the server's vendor list (ApproachVendor 0x0062) is
+    // opened; buy/sell are queued and sent on AC's main thread through the
+    // client's own gmVendorUI::SendShopEvent (CM_Vendor::Event_Buy/Event_Sell).
+    // See Compatibility/VendorTrade.cs. APPENDED-AT-END for ABI safety.
+
+    /// <summary>Function pointer: int GetVendorInfo(VendorInfoNative* info)
+    /// Fills <paramref>info</paramref> for the vendor that is open right now. Returns 1
+    /// if a vendor is open, 0 if not (info is zeroed). Any thread. Requires API v67+.</summary>
+    public IntPtr GetVendorInfoFn;
+
+    /// <summary>Function pointer: int GetVendorItems(VendorItemNative* items, int maxCount)
+    /// Copies up to maxCount of the open vendor's items. Returns the TOTAL item count
+    /// (call with maxCount=0 to size a buffer), or -1 if no vendor is open. Any thread.
+    /// Requires API v67+.</summary>
+    public IntPtr GetVendorItemsFn;
+
+    /// <summary>Function pointer: uint VendorBuy(uint vendorId, VendorTradeEntryNative* entries, int count)
+    /// Buys (objectId, amount) pairs from the open vendor (vendorId 0 = whichever is open).
+    /// Returns a request id (&gt;0) once the request passes the snapshot checks and is
+    /// queued, or 0 if it was refused (reason in GetVendorTradeStatus and the log).
+    /// Funds, pack slots and burden are checked again on AC's main thread before the
+    /// packet goes out; poll GetVendorTradeStatus for the outcome. One transaction is in
+    /// flight at a time. Requires API v67+.</summary>
+    public IntPtr VendorBuyFn;
+
+    /// <summary>Function pointer: uint VendorSell(uint vendorId, uint* itemIds, int count)
+    /// Sells the player's own items (whole stacks) to the open vendor. Same return and
+    /// status contract as VendorBuy. Requires API v67+.</summary>
+    public IntPtr VendorSellFn;
+
+    /// <summary>Function pointer: int GetVendorTradeStatus(VendorTradeStatusNative* status)
+    /// Fills the state of the most recent VendorBuy/VendorSell request. Returns 1 if a
+    /// request has been made this session, 0 if not. Any thread. Requires API v67+.</summary>
+    public IntPtr GetVendorTradeStatusFn;
+}
+
+// ─── Vendor trading ABI structs (v67) ───────────────────────────────────
+// Blittable, Pack=4, 4-byte fields + fixed ANSI buffers only. Mirrored exactly
+// by RynthCore.PluginSdk/VendorTypes.cs. Never reorder or resize; add new calls
+// instead of growing these.
+
+/// <summary>The open vendor (VendorProfile from ApproachVendor 0x0062). 192 bytes.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal unsafe struct VendorInfoNative
+{
+    public uint VendorId;
+    /// <summary>Bumps every time the server (re)sends the vendor list: on open and after
+    /// each accepted buy/sell. Compare before/after a trade to see the refresh.</summary>
+    public uint Generation;
+    /// <summary>ShopMode passed to gmVendorUI::OpenVendor (raw client value).</summary>
+    public int ShopMode;
+    /// <summary>ITEM_TYPE mask of what the vendor buys.</summary>
+    public uint ItemTypes;
+    public int MinValue;
+    public int MaxValue;
+    public int DealsMagic;
+    /// <summary>Vendor pays value * BuyRate when you sell.</summary>
+    public float BuyRate;
+    /// <summary>Vendor charges value * SellRate when you buy.</summary>
+    public float SellRate;
+    /// <summary>WCID of the vendor's currency; 0 = pyreals.</summary>
+    public uint AltCurrencyWcid;
+    /// <summary>Alt currency count as the server reported it in the vendor list (-1 if none).</summary>
+    public int AltCurrencyServerCount;
+    /// <summary>Alt currency the engine counted in the player's packs (-1 = not counted yet).</summary>
+    public int AltCurrencyHave;
+    /// <summary>Player's pyreals (CoinValue), refreshed on AC's main thread; -1 unknown.</summary>
+    public int PlayerCoins;
+    public int ItemCount;
+    /// <summary>bit0 = trading available (client functions resolved and layout verified),
+    /// bit1 = a transaction is in flight.</summary>
+    public uint Flags;
+    public uint Reserved0;
+    public fixed byte Name[64];
+    public fixed byte AltCurrencyName[64];
+}
+
+/// <summary>One item on the vendor's list (ItemProfile + its PublicWeenieDesc). 120 bytes.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal unsafe struct VendorItemNative
+{
+    public uint ObjectId;
+    public uint Wcid;
+    public uint ItemType;
+    public uint IconId;
+    /// <summary>How many the vendor has; -1 = unlimited.</summary>
+    public int Amount;
+    public int StackSize;
+    public int MaxStackSize;
+    /// <summary>PWD value of the listed stack.</summary>
+    public int Value;
+    /// <summary>Value of one unit (Value / StackSize for stacks).</summary>
+    public int UnitValue;
+    /// <summary>What one unit costs the player here (server rounding; notes at 1.15x).</summary>
+    public int UnitPrice;
+    public int Burden;
+    /// <summary>bit0 unlimited, bit1 stackable, bit2 needs a container slot (pack/foci).</summary>
+    public uint Flags;
+    public uint Reserved0;
+    public uint Reserved1;
+    public fixed byte Name[64];
+}
+
+/// <summary>One buy line: vendor object id + how many.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal struct VendorTradeEntryNative
+{
+    public uint ObjectId;
+    public int Amount;
+}
+
+/// <summary>State of the most recent trade request. 160 bytes.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal unsafe struct VendorTradeStatusNative
+{
+    public uint RequestId;
+    /// <summary>1 queued, 2 sent (waiting for the server), 3 done, 4 refused (never sent).</summary>
+    public int State;
+    /// <summary>With State 3: 1 = server accepted (vendor list re-sent), 2 = server answered
+    /// without re-sending the list (refused: funds/busy/space), 3 = no answer (timed out).</summary>
+    public int Result;
+    public int IsBuy;
+    public uint VendorId;
+    public int EntryCount;
+    /// <summary>Buy: estimated cost (pyreals or alt currency). Sell: estimated payout.</summary>
+    public int Estimate;
+    public uint Reserved0;
+    public fixed byte Message[128];
 }
 
 
@@ -510,7 +735,7 @@ internal struct RynthCoreAPI
 /// <summary>Current API version. Bump when adding fields to RynthCoreAPI.</summary>
 internal static class PluginContractVersion
 {
-    public const uint Current = 57;
+    public const uint Current = 67;
 }
 
 internal static class ClientActionHookFlags
@@ -598,6 +823,12 @@ internal delegate void PluginOnVendorCloseDelegate(uint vendorId);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate void PluginOnUpdateHealthDelegate(uint targetId, float healthRatio, uint currentHealth, uint maxHealth);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate void PluginOnCombatDamageDelegate(uint damage, uint damageType, uint crit, uint isAttacker);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate void PluginOnKillNotificationDelegate(IntPtr textUtf16);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate void PluginOnChatWindowTextDelegate(IntPtr textUtf16, int chatType, IntPtr eatFlag);
@@ -728,6 +959,9 @@ internal delegate int SplitStackInternalCallbackDelegate(uint objectId, uint tar
 internal delegate int MergeStackInternalCallbackDelegate(uint sourceObjectId, uint targetObjectId);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int GiveObjectToCallbackDelegate(uint objectId, uint targetId, int amount);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate int WriteToChatCallbackDelegate(IntPtr textUtf16, int chatType);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -805,6 +1039,9 @@ internal delegate void PluginOnEnchantmentRemovedDelegate(uint enchantmentId);
 internal unsafe delegate int ReadPlayerEnchantmentsCallbackDelegate(uint* spellIds, double* expiryTimes, int maxCount);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int ReadKnownSpellsCallbackDelegate(uint* spellIds, int maxCount);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate double GetServerTimeCallbackDelegate();
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -826,6 +1063,12 @@ internal delegate void Nav3DAddRingCallbackDelegate(float wx, float wy, float wz
 internal delegate void Nav3DAddLineCallbackDelegate(float x1, float y1, float z1, float x2, float y2, float z2, float thickness, uint colorArgb);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate void Nav3DAddTriangleCallbackDelegate(float x1, float y1, float z1, float x2, float y2, float z2, float x3, float y3, float z3, uint colorArgb);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate void Nav3DAddRingExCallbackDelegate(float wx, float wy, float wz, float radius, float thickness, float height, uint colorArgb);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate int InvokeChatParserCallbackDelegate(IntPtr textUtf16);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -845,6 +1088,8 @@ internal delegate IntPtr GetObjectStringPropertyCallbackDelegate(uint objectId, 
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetObjectWielderInfoCallbackDelegate(uint objectId, uint* wielderID, uint* location);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetContainerContentsCallbackDelegate(uint containerId, uint* itemIds, int maxCount);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -887,6 +1132,12 @@ internal unsafe delegate int GetObjectHeadingCallbackDelegate(uint objectId, flo
 internal delegate int GetBusyStateCallbackDelegate();
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int GetCastBusyStateCallbackDelegate();
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int GetUseDoneSeqCallbackDelegate();
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetObjectSpellIdsCallbackDelegate(uint guid, uint* spellIds, int maxCount);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -921,3 +1172,33 @@ internal delegate void SetPowerbarSuppressedCallbackDelegate(int enabled);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate void SetChatSuppressedCallbackDelegate(int enabled);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate IntPtr GetEngineStatusJsonCallbackDelegate();
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate IntPtr GetPluginSnapshotJsonCallbackDelegate(IntPtr pluginNameAnsi);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int SendPluginCommandCallbackDelegate(IntPtr pluginNameAnsi, IntPtr actionAnsi, IntPtr valueAnsi);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetObjectDataIdPropertyCallbackDelegate(uint objectId, uint stype, uint* value);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate IntPtr GetPluginExportJsonCallbackDelegate(IntPtr pluginNameAnsi, IntPtr exportNameAnsi);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetVendorInfoCallbackDelegate(VendorInfoNative* info);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetVendorItemsCallbackDelegate(VendorItemNative* items, int maxCount);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate uint VendorBuyCallbackDelegate(uint vendorId, VendorTradeEntryNative* entries, int count);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate uint VendorSellCallbackDelegate(uint vendorId, uint* itemIds, int count);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetVendorTradeStatusCallbackDelegate(VendorTradeStatusNative* status);

@@ -1,3 +1,5 @@
+using System;
+
 namespace RynthCore.Engine;
 
 /// <summary>
@@ -9,11 +11,11 @@ internal static class RynthLog
 {
     // ── Category toggles (flip to false to silence a subsystem) ──────────
 
-    internal static bool D3D9Enabled    = false;
+    internal static bool D3D9Enabled    = true;
     internal static bool CompatEnabled  = true;
     internal static bool RenderEnabled  = false;   // ImGui, DX9Backend, Win32Backend
     internal static bool PluginEnabled  = true;
-    internal static bool UIEnabled      = false;
+    internal static bool UIEnabled      = true;
 
     // ── Category methods ─────────────────────────────────────────────────
 
@@ -53,8 +55,27 @@ internal static class RynthLog
         if (EntryPoint.VerboseLogging) Write(msg);
     }
 
-    /// <summary>Always-on log for critical / uncategorised messages.</summary>
+    /// <summary>Always-on log for critical / uncategorised messages (INFO).</summary>
     internal static void Info(string msg) => Write(msg);
+
+    // Most recent WRN/ERR text + when, surfaced via the GetEngineStatusJson host bridge so a stuck box
+    // can be diagnosed remotely without reading the PC log.
+    internal static volatile string? LastIssue;
+    internal static DateTime LastIssueUtc;
+
+    /// <summary>Always-on WARN line — a recoverable problem worth grepping for.</summary>
+    internal static void Warn(string msg)
+    {
+        LastIssue = msg; LastIssueUtc = DateTime.UtcNow;
+        EntryPoint.LogTagged("engine", msg, "WRN");
+    }
+
+    /// <summary>Always-on ERROR line — a fault/crash/disable. Triage with grep "[ERR]".</summary>
+    internal static void Error(string msg)
+    {
+        LastIssue = msg; LastIssueUtc = DateTime.UtcNow;
+        EntryPoint.LogTagged("engine", msg, "ERR");
+    }
 
     // ── Sink ─────────────────────────────────────────────────────────────
 

@@ -11,6 +11,17 @@ internal static class CombatActionHooks
 {
     private const int QueryHealthResponseVa = 0x006AA900;
 
+    // ── Pattern-resolved binding (1a hardening, 2026-06-06) ─────────────
+    // The cast/tick VAs were previously bound by raw VA + in-module/warn-only-prologue checks.
+    // These signatures (verified unique + landing exactly at the VA offline via
+    // tools/pe_pattern.py) are now the source of truth; the VA stays as logged fallback.
+    // GetMagicSystem/FreeHandsAndCastSpell are invoked via the SEH trampoline on AC's main
+    // thread — resolving by pattern changes only how the address is found, not the call path.
+    private static readonly byte?[] QueryHealthResponsePattern = [ 0x8B, 0x44, 0x24, 0x04, 0x85, 0xC0, 0x74, 0x18, 0x8B, 0x48, 0x50 ];
+    private static readonly byte?[] CastSpellClientPattern = [ 0x81, 0xEC, 0x48, 0x01, 0x00, 0x00, 0x53, 0x56 ];
+    private static readonly byte?[] GetMagicSystemPattern = [ 0xA1, 0x4C, 0x14, 0x87, 0x00, 0xC3, 0x90, 0x90 ];
+    private static readonly byte?[] FreeHandsAndCastSpellPattern = [ 0xA1, 0x58, 0xDA, 0x83, 0x00, 0x8B, 0x88, 0xB8, 0x00, 0x00, 0x00, 0x8B, 0x11, 0xFF, 0x92, 0xC0, 0x00, 0x00, 0x00, 0x8B, 0x44 ];
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate bool TargetedMeleeAttackDelegate(uint targetId, int attackHeight, float powerLevel);
 
@@ -61,6 +72,18 @@ internal static class CombatActionHooks
     private static RequestIdDelegate? _requestId;
     private static CastSpellDelegate? _castSpell;
     private static CastSpellClientDelegate? _castSpellClient;
+    private static IntPtr _castSpellClientPtr;
+
+    // RC2-proven explicit-target cast (no SelectItem / global selection). VAs verified
+    // against acclient.map. GetMagicSystem returns the ClientMagicSystem singleton ('this');
+    // FreeHandsAndCastSpell(this, spellId, targetId) takes the target as an EXPLICIT arg, so
+    // it never reads AC's selected-object global ([singleton+0xF4]) the way CastSpell(...,1)
+    // @ 0x00568DE0 does — which is why it survives being marshalled onto AC's game tick.
+    private const int GetMagicSystemVa = 0x00567C00;          // void*  __cdecl   GetMagicSystem()
+    private const int FreeHandsAndCastSpellVa = 0x00567C90;   // void   __thiscall FreeHandsAndCastSpell(this, uint spellId, uint targetId)
+    private static IntPtr _getMagicSystemPtr;
+    private static IntPtr _freeHandsCastPtr;
+    private static int _sehAvLogCount;
     private static QueryHealthResponseDelegate? _queryHealthResponseDetour;
     private static QueryHealthResponseDelegate? _originalQueryHealthResponse;
     private static QueryHealthResponseDelegate? _identifyObjectDetour;
@@ -206,7 +229,7 @@ internal static class CombatActionHooks
             {
                 int requestIdVa = textSection.TextBaseVa + requestIdFuncOff;
                 _requestId = Marshal.GetDelegateForFunctionPointer<RequestIdDelegate>(new IntPtr(requestIdVa));
-                RynthLog.Verbose($"Compat: RequestId (IdentifyObject 0xC8) found at 0x{requestIdVa:X8}");
+                RynthLog.Compat($"Compat: RequestId (IdentifyObject 0xC8) found at 0x{requestIdVa:X8}");
             }
             else
             {
@@ -217,34 +240,84 @@ internal static class CombatActionHooks
             {
                 int castSpellVa = textSection.TextBaseVa + castSpellFuncOff;
                 _castSpell = Marshal.GetDelegateForFunctionPointer<CastSpellDelegate>(new IntPtr(castSpellVa));
-                RynthLog.Verbose($"Compat: CastSpell (0x4A) found at 0x{castSpellVa:X8}");
+                RynthLog.Compat($"Compat: CastSpell (0x4A) found at 0x{castSpellVa:X8}");
             }
             else
             {
                 RynthLog.Compat("Compat: CastSpell (0x4A) not found — magic combat unavailable.");
             }
 
-            // ClientMagicSystem::CastSpell — direct VA from Chorizite.
-            // Static Cdecl: void CastSpell(uint spellId, byte targetIsSelected)
+            // ClientMagicSystem::CastSpell — static Cdecl:
+            //   void CastSpell(uint spellId, byte targetIsSelected)
             // Uses the currently selected target (from SelectItem).
-            if (SmartBoxLocator.IsPointerInModule(new IntPtr(ClientMagicSystemCastSpellVa)))
+            //
+            // The in-module check uses `textSection` (already read above), NOT
+            // SmartBoxLocator.IsPointerInModule. SmartBoxLocator's bounds are
+            // populated only by its own Probe(), which runs lazily at the first
+            // TryGetSmartBox (around login) — long AFTER this early init step
+            // (ClientActionHooks.Initialize). IsPointerInModule therefore always
+            // saw _moduleBase==0 here and fail-closed for EVERY pointer, so this
+            // correct VA was rejected on essentially every launch and casting
+            // was forced onto the mis-bound _castSpell pattern fallback — the
+            // root cause of the AC-side near-null write AV (0x00568DE0 logged
+            // "outside module"; AC crashed at 0x00416C86 [null+0x28] /
+            // 0x0055FA24 [null+0x40]). acclient.exe is byte-identical to retail
+            // (only PE-header metadata differs) so this retail VA is valid here;
+            // it is validated live below per the no-blind-decompile-RVA rule.
+            HookResolver.ResolveResult csRes = HookResolver.Resolve(textSection, "CombatAction.CastSpellClient", CastSpellClientPattern, ClientMagicSystemCastSpellVa);
+            if (csRes.Success)
             {
-                _castSpellClient = Marshal.GetDelegateForFunctionPointer<CastSpellClientDelegate>(
-                    new IntPtr(ClientMagicSystemCastSpellVa));
-                RynthLog.Verbose($"Compat: ClientMagicSystem::CastSpell bound at 0x{ClientMagicSystemCastSpellVa:X8}");
+                _castSpellClient = Marshal.GetDelegateForFunctionPointer<CastSpellClientDelegate>(csRes.Address);
+                _castSpellClientPtr = csRes.Address;
+                RynthLog.Compat($"Compat: ClientMagicSystem::CastSpell bound at 0x{csRes.Address.ToInt32():X8} ({csRes.Detail})");
             }
             else
             {
-                RynthLog.Compat("Compat: ClientMagicSystem::CastSpell VA outside module — unavailable.");
+                RynthLog.Compat($"Compat: ClientMagicSystem::CastSpell VA 0x{ClientMagicSystemCastSpellVa:X8} unresolved — unavailable.");
+            }
+
+            // Explicit-target cast pair (RC2-proven): GetMagicSystem + FreeHandsAndCastSpell,
+            // invoked via the SEH trampoline on AC's main thread. Replaces the SelectItem +
+            // CastSpell(targetIsSelected=1) two-step for TARGETED casts (the global-selection
+            // read that didn't survive being marshalled onto the tick).
+            HookResolver.ResolveResult gmsRes = HookResolver.Resolve(textSection, "CombatAction.GetMagicSystem", GetMagicSystemPattern, GetMagicSystemVa);
+            HookResolver.ResolveResult fhcRes = HookResolver.Resolve(textSection, "CombatAction.FreeHandsAndCastSpell", FreeHandsAndCastSpellPattern, FreeHandsAndCastSpellVa);
+            if (gmsRes.Success && fhcRes.Success)
+            {
+                _getMagicSystemPtr = gmsRes.Address;
+                _freeHandsCastPtr = fhcRes.Address;
+                RynthLog.Compat(
+                    $"Compat: explicit-target cast bound — GetMagicSystem=0x{gmsRes.Address.ToInt32():X8} ({gmsRes.Detail}), " +
+                    $"FreeHandsAndCastSpell=0x{fhcRes.Address.ToInt32():X8} ({fhcRes.Detail}).");
+            }
+            else
+            {
+                RynthLog.Compat(
+                    $"Compat: explicit-target cast VAs unresolved (gms={gmsRes.Success}, fhc={fhcRes.Success}) — " +
+                    "targeted casts fail closed.");
             }
 
             InstallQueryHealthResponseHook();
-            InstallInnerDispatcherHook();
+            // InstallInnerDispatcherHook intentionally disabled 2026-05-14.
+            // Its anchor-then-scan-backward heuristic (find CALL to
+            // QueryHealthResponseVa, then walk back ≤0x1000 bytes looking for
+            // `SUB ESP, 0x1C0`) lands on a function that — on this ACE
+            // build at least — AC traverses during world-entry, and the
+            // MinHook trampoline at that entry point hangs the load (player
+            // stuck on "Entering World", no SendLoginCompleteNotification).
+            // The 0xF658 character-list and 0xC9 IdentifyObject packets we
+            // were collecting here are redundantly captured by SmartBoxHooks'
+            // DispatchSmartBoxEvent / DispatchGameEvent hooks (see
+            // SmartBoxHooks.DispatchSmartBoxEventDetour → ProcessPotentialCharacterMessage
+            // at line ~117). Re-enabling requires a tighter pattern that
+            // *uniquely* identifies the intended inner dispatcher, plus a
+            // verification that AC's world-load path is unaffected.
+            // InstallInnerDispatcherHook();
 
             IsInitialized = true;
             _statusMessage = "Ready.";
 
-            RynthLog.Verbose($"Compat: combat hooks ready - cancel=0x{cancelVa:X8}, mode=0x{changeModeVa:X8}, health=0x{queryHealthVa:X8}, melee=0x{meleeVa:X8}, missile=0x{missileVa:X8}");
+            RynthLog.Compat($"Compat: combat hooks ready - cancel=0x{cancelVa:X8}, mode=0x{changeModeVa:X8}, health=0x{queryHealthVa:X8}, melee=0x{meleeVa:X8}, missile=0x{missileVa:X8}");
             return true;
         }
         catch (Exception ex)
@@ -258,6 +331,9 @@ internal static class CombatActionHooks
 
     public static bool MeleeAttack(uint targetId, int attackHeight, float powerLevel)
     {
+        if (!MainThreadGuard.IsOnMainThread())
+            return AcMainThreadQueue.EnqueueMeleeAttack(targetId, attackHeight, powerLevel);
+
         if (_meleeAttack == null)
             return false;
 
@@ -273,6 +349,9 @@ internal static class CombatActionHooks
 
     public static bool MissileAttack(uint targetId, int attackHeight, float accuracyLevel)
     {
+        if (!MainThreadGuard.IsOnMainThread())
+            return AcMainThreadQueue.EnqueueMissileAttack(targetId, attackHeight, accuracyLevel);
+
         if (_missileAttack == null)
             return false;
 
@@ -288,6 +367,28 @@ internal static class CombatActionHooks
 
     public static bool ChangeCombatMode(int combatMode)
     {
+        // P1 marshalling: off-thread mutators run on AC's main thread (via the
+        // OnEndScene drain) so AC mutates its single-threaded object/animation
+        // (CSequence) state on the thread that updates it — eliminating the
+        // off-thread-mutation corruption class (e.g. the CSequence::update_internal
+        // AV). On the main thread (incl. the drain) this executes directly.
+        if (!MainThreadGuard.IsOnMainThread())
+            return AcMainThreadQueue.EnqueueChangeCombatMode(combatMode);
+
+        // Prefer the CLIENT-level entry point. _changeCombatMode is bound by
+        // scanning for the function that writes network opcode 0x53
+        // (CM_Combat::Event_ChangeCombatMode) — that is the packet sender and
+        // nothing more. It tells the server and leaves the client's own UI
+        // untouched, so the stance widgets never learn and the toolbar icon sits
+        // on Peace while the character is in Magic and casting.
+        //
+        // ClientCombatSystem::SetCombatMode is the layer above: it sets the mode
+        // field, sends the same 0x53, AND notifies the UI. Calling it is what a
+        // toolbar click does. Falls through to the raw sender when the hook isn't
+        // installed, so behaviour is unchanged if the pattern ever fails to resolve.
+        if (CombatModeHooks.RequestCombatMode(combatMode))
+            return true;
+
         if (_changeCombatMode == null)
             return false;
 
@@ -349,36 +450,146 @@ internal static class CombatActionHooks
     public static bool CastSpell(uint targetId, int spellId)
     {
         if (spellId <= 0) return false;
+        if (_castSpellClient == null) return false;
 
-        // Prefer ClientMagicSystem::CastSpell — initiates the full client-side
-        // cast sequence (animation, state, network). The target must already be
-        // selected via SelectItem before calling this.
+        // P2 cast marshalling — drain-BEFORE-tick variant (2026-06-03, attempt 2).
+        // Off the main thread, enqueue the cast; GameTickHooks drains it on AC's
+        // game-logic tick (Client::UseTime) BEFORE _originalUseTime runs, so AC's SAME
+        // tick processes the freshly-set selection + cast (mimics AC's natural
+        // input -> UseTime flow). Attempt 1 (drain AFTER the tick) landed self-buffs but
+        // NOT targeted casts: SelectItem + cast initiated at the END of tick N weren't
+        // processed until tick N+1, by which point the selection was clobbered (target
+        // held hp=50/50, zero damage).
+        //
+        // Off-thread casting is NOT a safe fallback: it races AC's cast/UI state and
+        // AVs UNCAUGHT (0xC0000005 WRITE in UIElement::GetAttribute_Bool, off the main
+        // thread, tid != main) — it killed a 37-min P1 soak. So the cast MUST run on the
+        // main thread; the only open question is landing a targeted cast from the tick,
+        // which the drain-before order is intended to fix. On the main thread (the
+        // UseTime drain, or any main-thread caller) this falls through to the direct
+        // cast below.
+        if (!MainThreadGuard.IsOnMainThread())
+            return AcMainThreadQueue.EnqueueCast(targetId, (uint)spellId);
+
+        // Call ClientMagicSystem::CastSpell directly off the plugin pump thread.
+        // This is the proven-working casting path (buffs + combat resolve in
+        // chat). The earlier EndScene-marshalled variant (AcMainThreadQueue,
+        // drained from OnEndScene) was REVERTED 2026-05-19: EndScene fires AC's
+        // IncrementBusyCount but is not the context that drives the cast state
+        // machine to completion, so combat casts never produced a projectile /
+        // damage / "You cast" chat — busy leaked, AC's single cast slot jammed
+        // "Casting <spell>" client-wide, and even manual casting died. Do NOT
+        // re-introduce queue/EndScene marshalling for casts.
+        // The documented object-teardown AV (0x0055FA24 [null+0x40] /
+        // 0x00416C86 [null+0x28]) is contained per-callsite by the SEH
+        // trampoline below (__try/__except in RynthCore.SehTrampoline.dll),
+        // which is the correct fix for that AV. AC's CastSpell reads its
+        // "currently selected target" when targetIsSelected=1; SelectItem
+        // first so AC's selection matches the caller's intent.
         if (_castSpellClient != null)
         {
             try
             {
-                byte targetIsSelected = targetId != 0 ? (byte)1 : (byte)0;
-                _castSpellClient((uint)spellId, targetIsSelected);
+                // TARGETED cast (targetId != 0): explicit-target path — RC2-proven, NO
+                // SelectItem. GetMagicSystem() -> FreeHandsAndCastSpell(mgr, spellId, targetId).
+                // The old SelectItem + CastSpell(targetIsSelected=1) two-step relied on AC's
+                // global selection ([magicSysSingleton+0xF4], read inside 0x00568DE0) surviving
+                // the marshal onto AC's tick — it didn't (targets held hp=50/50, zero damage).
+                // FreeHandsAndCastSpell takes the target as an explicit arg and auto-readies the
+                // wand, so there is nothing to clobber.
+                if (targetId != 0)
+                {
+                    if (SehTrampoline.IsAvailable && _freeHandsCastPtr != IntPtr.Zero && _getMagicSystemPtr != IntPtr.Zero)
+                    {
+                        IntPtr mgr = SehTrampoline.CdeclPtrVoid(_getMagicSystemPtr, out bool avMgr);
+                        if (avMgr || mgr == IntPtr.Zero)
+                        {
+                            if (System.Threading.Interlocked.Increment(ref _sehAvLogCount) <= 20)
+                                RynthLog.Compat($"[SEH] GetMagicSystem null/AV — targeted cast skipped spell={spellId} target=0x{targetId:X8}");
+                            return false;
+                        }
+                        // Measure the real m_cBusy delta around the call: the direct cast
+                        // increments it (wand-ready + cast, often +2) but never registers
+                        // the queued action whose completion would decrement — the per-cast
+                        // busy leak. BusyCountHooks reconciles the delta once the cast
+                        // gesture completes.
+                        int busyBefore = BusyCountHooks.CaptureRealBusyForCast();
+                        bool okCast = SehTrampoline.FreeHandsCast(_freeHandsCastPtr, mgr, (uint)spellId, targetId);
+                        BusyCountHooks.NoteDirectCastIssued(busyBefore);
+                        if (!okCast && System.Threading.Interlocked.Increment(ref _sehAvLogCount) <= 20)
+                            RynthLog.Compat($"[SEH] AV in FreeHandsAndCastSpell spell={spellId} target=0x{targetId:X8} — caught");
+                        return okCast;
+                    }
+                    return false;   // trampoline / VAs unavailable — fail closed (never the off-thread SelectItem two-step)
+                }
+
+                // SELF cast (targetId == 0): the proven CastSpell(spellId, targetIsSelected=0)
+                // path — no selection dependency; lands buffs reliably.
+                if (SehTrampoline.IsAvailable && _castSpellClientPtr != IntPtr.Zero)
+                {
+                    // Same per-cast busy-leak reconciliation as the targeted path —
+                    // buff self-casts were the dominant leak source (4322 plugin
+                    // clears / 10h soak, nearly all on buffs).
+                    int busyBefore = BusyCountHooks.CaptureRealBusyForCast();
+                    bool ok = SehTrampoline.CdeclVoidUintByte(_castSpellClientPtr, (uint)spellId, 0);
+                    BusyCountHooks.NoteDirectCastIssued(busyBefore);
+                    if (!ok && System.Threading.Interlocked.Increment(ref _sehAvLogCount) <= 20)
+                        RynthLog.Compat($"[SEH] AV in self-CastSpell spell={spellId} — caught");
+                    return ok;
+                }
+
+                {
+                    int busyBefore = BusyCountHooks.CaptureRealBusyForCast();
+                    _castSpellClient((uint)spellId, 0);
+                    BusyCountHooks.NoteDirectCastIssued(busyBefore);
+                }
                 return true;
             }
             catch
             {
-                // Fall through to game action method
+                // Fall through to "refuse" rather than the pattern-scanned
+                // _castSpell — see the comment block on that fallback.
             }
         }
 
-        // Fallback: direct game action 0x4A (network message only)
-        if (_castSpell == null || targetId == 0)
-            return false;
+        // No safe fallback — fail closed. The pattern-scanned game-action-0x4A
+        // wrapper (_castSpell) resolves to the WRONG function on this
+        // acclient.exe: CombatPrologue (83 EC 0C 53 56 57 E8) is shared by many
+        // AC functions and FindPrologueBefore takes the FIRST match, which is
+        // not the cast wrapper, so calling it would crash AC. The 2026-05-14
+        // "binaries are byte-identical so the pattern is fine" reasoning was
+        // wrong: identity makes the pattern consistently wrong on BOTH retail
+        // and ACE, not correct.
+        // ⚠ 2026-05-18, DUMP-VERIFIED: the AVs at 0x00416C86 [null+0x28] and
+        // 0x0055FA24 [null+0x40] that older notes/comments blamed on this
+        // fallback are NOT cast-related. Resolved via acclient.map they are
+        // DBOCache::DestroyObj and CPlayerSystem::CalculateObjectRangeChecks →
+        // List<ObjectRangeInfo>::remove — AC OBJECT-TEARDOWN code tripping over
+        // a corrupted object/range list (async lifecycle corruption class, not
+        // spellcasting). Do NOT chase CastSpell for these. See
+        // rynthcore_castspell_fallback_pitfall.md / rynthcore_crash_investigation.md.
+        // _castSpellClient (the verified ClientMagicSystem::CastSpell VA bound
+        // in Probe) is the only safe path; if it is unavailable we refuse the
+        // cast. BuffManager.CastSpellInner and CombatManager both handle a
+        // false / no-op return without wedging (skip the spell, retry next
+        // cycle), so refusing is strictly safer than crashing the client.
+        return false;
+    }
 
-        try
+    // Called by AcMainThreadQueue.Drain on AC's main thread (EndScene path).
+    // The preceding queued SelectItem entry already set AC's selection, so
+    // cast with targetIsSelected=1. Defensive: never throw into the drain loop.
+    internal static void ExecuteQueuedCast(uint spellId)
+    {
+        if (_castSpellClient == null) return;
+        if (SehTrampoline.IsAvailable && _castSpellClientPtr != IntPtr.Zero)
         {
-            return _castSpell(targetId, spellId);
+            bool ok = SehTrampoline.CdeclVoidUintByte(_castSpellClientPtr, spellId, 1);
+            if (!ok && System.Threading.Interlocked.Increment(ref _sehAvLogCount) <= 20)
+                RynthLog.Compat($"[SEH] AV in CastSpell spell={spellId} — caught, cast skipped");
+            return;
         }
-        catch
-        {
-            return false;
-        }
+        try { _castSpellClient.Invoke(spellId, 1); } catch { }
     }
 
     public static int MapAttackHeight(int uiHeight)
@@ -401,6 +612,9 @@ internal static class CombatActionHooks
         _requestId = null;
         _castSpell = null;
         _castSpellClient = null;
+        _castSpellClientPtr = IntPtr.Zero;
+        _getMagicSystemPtr = IntPtr.Zero;
+        _freeHandsCastPtr = IntPtr.Zero;
         _queryHealthResponseDetour = null;
         _originalQueryHealthResponse = null;
         _identifyObjectDetour = null;
@@ -505,21 +719,37 @@ internal static class CombatActionHooks
         return pOriginal(thisPtr, buffer, size);
     }
 
+    private static int _identifyWireLogCount;
+    private static int _mobHpReadLogCount;
+
     /// <summary>
-    /// Parses the IdentifyObject response (game event 0xC9) to extract health/maxHealth
-    /// from the CreatureProfile section.
-    /// Layout: [eventType(4)][objectId(4)][flags(4)][success(4)][sections based on flags...]
-    /// Wire serialization order (matches ACE, NOT flag-bit order):
-    ///   0x0001 IntStatsTable, 0x1000 Int64StatsTable, 0x0002 BoolStatsTable,
-    ///   0x0004 FloatStatsTable, 0x0008 StringStatsTable, 0x0010 SpellBook,
-    ///   0x0020 ArmorProfile, 0x0040 CreatureProfile, 0x0080 WeaponProfile,
-    ///   0x0100 HookProfile, ...
+    /// Parses the IdentifyObject response (game event 0xC9) to extract
+    /// health/maxHealth from the CreatureProfile section. Wire format is
+    /// authoritative per ACE AppraiseInfoExtensions.Write / CreatureProfile:
+    ///
+    ///   header: [_(4)][objectId(4)][Flags(4)][Success(4)]  (parser base+0..+15)
+    ///   then sections, in ACE *write* order (NOT flag-bit order):
+    ///     0x0001 IntStatsTable     hashtbl, entry 8  (u32 key + i32)
+    ///     0x2000 Int64StatsTable   hashtbl, entry 12 (u32 key + i64)
+    ///     0x0002 BoolStatsTable    hashtbl, entry 8  (u32 key + u32)
+    ///     0x0004 FloatStatsTable   hashtbl, entry 12 (u32 key + f64)
+    ///     0x0008 StringStatsTable  hashtbl, string entries (u32 key + str16L)
+    ///     0x1000 DidStatsTable     hashtbl, entry 8  (u32 key + u32)
+    ///     0x0010 SpellBook         list: i32 count + count*u32
+    ///     0x0080 ArmorProfile      fixed 32 bytes (8 floats)
+    ///     0x0100 CreatureProfile   &lt;-- target
+    ///   hashtbl header = ushort count + ushort numBuckets (4 bytes).
+    ///
+    ///   CreatureProfile: cpFlags(4), Health(4), HealthMax(4),
+    ///     if cpFlags&amp;0x8: Str,End,Quick,Coord,Focus,Self,
+    ///                       Stamina,Mana,StaminaMax,ManaMax (10*4),
+    ///     if cpFlags&amp;0x1: AttrHighlights(2)+AttrColors(2).
     /// </summary>
-    private static void TryParseIdentifyResponse(IntPtr buffer, uint size)
+    internal static void TryParseIdentifyResponse(IntPtr buffer, uint size)
     {
         try
         {
-            // Header: eventType(4) + objectId(4) + flags(4) + success(4) = 16 bytes
+            // Header: _(4) + objectId(4) + flags(4) + success(4) = 16 bytes
             uint objectId = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, 4)));
             uint flags = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, 8)));
             uint success = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, 12)));
@@ -527,71 +757,66 @@ internal static class CombatActionHooks
             if (success == 0 || objectId == 0)
                 return;
 
-            // CreatureProfile = flag 0x1000 in the retail client
-            if ((flags & 0x1000) == 0)
+            const uint CreatureProfile = 0x0100;
+            if ((flags & CreatureProfile) == 0)
                 return;
 
             int offset = 16; // Past the header
             int iSize = (int)size;
 
-            // Skip sections in wire order before CreatureProfile (0x1000):
-            // 0x0001 - IntStatsTable: PHashTable<uint,int> = header(4) + count*8
+            // Skip sections written before CreatureProfile, in ACE write order.
             if ((flags & 0x0001) != 0 && !SkipPackedHashTable(buffer, iSize, ref offset, 8))
-                return;
-            // 0x0002 - BoolStatsTable: PHashTable<uint,int> = header(4) + count*8
+                return; // IntStatsTable
+            if ((flags & 0x2000) != 0 && !SkipPackedHashTable(buffer, iSize, ref offset, 12))
+                return; // Int64StatsTable
             if ((flags & 0x0002) != 0 && !SkipPackedHashTable(buffer, iSize, ref offset, 8))
-                return;
-            // 0x0004 - FloatStatsTable: PHashTable<uint,double> = header(4) + count*12
+                return; // BoolStatsTable
             if ((flags & 0x0004) != 0 && !SkipPackedHashTable(buffer, iSize, ref offset, 12))
-                return;
-            // 0x0008 - StringStatsTable: PHashTable<uint,string> — variable
+                return; // FloatStatsTable
             if ((flags & 0x0008) != 0 && !SkipStringHashTable(buffer, iSize, ref offset))
-                return;
-            // 0x0010 - SpellBook: header(4) + count*4
-            if ((flags & 0x0010) != 0 && !SkipPackedHashTable(buffer, iSize, ref offset, 4))
-                return;
-            // 0x0020, 0x0040, 0x0080 — unknown fixed sections; bail if present
-            if ((flags & 0x00E0) != 0)
-                return;
-            // 0x0100 - Int64StatsTable: PHashTable<uint,int32> = header(4) + count*8
-            // (retail client serialises "Int64" properties as 32-bit values)
-            if ((flags & 0x0100) != 0 && !SkipPackedHashTable(buffer, iSize, ref offset, 8))
-                return;
-            // 0x0200, 0x0400, 0x0800 — unknown sections; bail if present
-            if ((flags & 0x0E00) != 0)
+                return; // StringStatsTable
+            if ((flags & 0x1000) != 0 && !SkipPackedHashTable(buffer, iSize, ref offset, 8))
+                return; // DidStatsTable
+            if ((flags & 0x0010) != 0 && !SkipPackableListUInt(buffer, iSize, ref offset))
+                return; // SpellBook
+            if ((flags & 0x0080) != 0)
+            {
+                offset += 32; // ArmorProfile = 8 floats, fixed
+                if (offset > iSize)
+                    return;
+            }
+
+            // CreatureProfile: cpFlags(4), Health(4), HealthMax(4), ...
+            if (offset + 12 > iSize)
                 return;
 
-            // 0x1000 - CreatureProfile layout:
-            //   flags(4), health(4), maxHealth(4),
-            //   strength(4), endurance(4), quickness(4), coordination(4), focus(4), self(4),
-            //   stamina(4), maxStamina(4), mana(4), maxMana(4)
-            // Total: 4 + 12*4 = 52 bytes
-            if (offset + 52 > iSize)
-                return;
+            uint cpFlags = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, offset)));
+            uint health = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, offset + 4)));
+            uint maxHealth = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, offset + 8)));
 
-            // Skip the 4-byte CreatureProfile header/flags
-            offset += 4;
-            uint health = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, offset)));
-            uint maxHealth = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, offset + 4)));
-            // Skip 6 primary attributes (str, end, quick, coord, focus, self) = 24 bytes
-            // Layout: stamina(4), mana(4), maxStamina(4), maxMana(4)
-            uint stamina = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, offset + 32)));
-            uint mana = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, offset + 36)));
-            uint maxStamina = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, offset + 40)));
-            uint maxMana = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, offset + 44)));
+            uint stamina = 0, maxStamina = 0, mana = 0, maxMana = 0;
+            if ((cpFlags & 0x8) != 0 && offset + 52 <= iSize)
+            {
+                // Str(+12) End(+16) Quick(+20) Coord(+24) Focus(+28) Self(+32)
+                // Stamina(+36) Mana(+40) StaminaMax(+44) ManaMax(+48)
+                stamina = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, offset + 36)));
+                mana = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, offset + 40)));
+                maxStamina = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, offset + 44)));
+                maxMana = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(buffer, offset + 48)));
+            }
 
-            if (maxHealth > 0 && maxHealth < 1_000_000 && objectId != 0)
+            int log = Interlocked.Increment(ref _identifyWireLogCount);
+            if (log <= 20)
+                RynthLog.Compat($"Compat: identify-wire obj=0x{objectId:X8} flags=0x{flags:X4} cp=0x{cpFlags:X} hp={health}/{maxHealth}");
+
+            if (maxHealth > 0 && maxHealth < 1_000_000)
             {
                 var vitals = new CreatureVitals(health, maxHealth, stamina, maxStamina, mana, maxMana);
                 ObjectQualityCache.SetCreatureVitals(objectId, vitals);
 
-                if (ClientObjectHooks.TryGetWeenieObjectPtr(objectId, out IntPtr pWeenie) && pWeenie != IntPtr.Zero)
-                    ObjectQualityCache.SetMaxHealth(pWeenie, maxHealth);
-
-                float ratio = maxHealth > 0 ? (float)health / maxHealth : 0f;
+                float ratio = (float)health / maxHealth;
                 PluginManager.QueueUpdateHealth(objectId, ratio, health, maxHealth);
 
-                // If this is the player, seed exact max vitals
                 uint playerId = ClientHelperHooks.GetPlayerId();
                 if (playerId != 0 && objectId == playerId)
                     PlayerVitalsHooks.SeedMaxVitalsFromIdentify(maxHealth, maxStamina, maxMana);
@@ -635,6 +860,17 @@ internal static class CombatActionHooks
         return offset <= size;
     }
 
+    /// <summary>Skips a PackableList&lt;uint&gt;: int32 count + count*uint32.</summary>
+    private static bool SkipPackableListUInt(IntPtr buffer, int size, ref int offset)
+    {
+        if (offset + 4 > size) return false;
+        int count = Marshal.ReadInt32(IntPtr.Add(buffer, offset));
+        offset += 4;
+        if (count < 0 || count > 100_000) return false;
+        offset += count * 4;
+        return offset <= size;
+    }
+
     private static void InstallQueryHealthResponseHook()
     {
         if (_originalQueryHealthResponse != null)
@@ -643,15 +879,13 @@ internal static class CombatActionHooks
         if (!AcClientModule.TryReadTextSection(out AcClientTextSection textSection))
             return;
 
-        IntPtr responsePtr = new(QueryHealthResponseVa);
-        int textStart = textSection.TextBaseVa;
-        int textEnd = textStart + textSection.Bytes.Length;
-        int responseVa = responsePtr.ToInt32();
-        if (responseVa < textStart || responseVa >= textEnd)
+        HookResolver.ResolveResult resolved = HookResolver.Resolve(textSection, "CombatAction.QueryHealthResponse", QueryHealthResponsePattern, QueryHealthResponseVa);
+        if (!resolved.Success)
         {
-            RynthLog.Compat($"Compat: query-health-response hook skipped - invalid address 0x{QueryHealthResponseVa:X8}");
+            RynthLog.Compat($"Compat: query-health-response hook skipped - unresolved 0x{QueryHealthResponseVa:X8}");
             return;
         }
+        IntPtr responsePtr = resolved.Address;
 
         _queryHealthResponseDetour = QueryHealthResponseDetour;
         IntPtr detourPtr = Marshal.GetFunctionPointerForDelegate(_queryHealthResponseDetour);
@@ -678,25 +912,44 @@ internal static class CombatActionHooks
                 // thread so the direct read is safe.
                 uint maxHealth = 0;
                 uint currentHealth = 0;
-                if (ClientObjectHooks.TryGetWeenieObjectPtr(targetId, out IntPtr pWeenie))
-                {
-                    if (ObjectQualityCache.TryGetMaxHealth(pWeenie, out uint cached))
-                    {
-                        maxHealth = cached;
-                    }
-                    else if (PlayerVitalsHooks.TryReadObjectMaxHealth(pWeenie, out uint queried) && queried > 0)
-                    {
-                        maxHealth = queried;
-                        ObjectQualityCache.SetMaxHealth(pWeenie, queried);
-                    }
+                uint playerId = ClientHelperHooks.GetPlayerId();
 
-                    if (maxHealth > 0)
+                // Appraisal-only (see SmartBoxHooks.TryQueueHealthUpdate):
+                // emit absolute ONLY from a real appraisal's wire-parsed
+                // CreatureProfile; otherwise max=0 → UI shows %. ACE creature
+                // Inq / pointer-cache maxes are unreliable.
+                if (ObjectQualityCache.TryGetCreatureVitals(targetId, out CreatureVitals exact) && exact.MaxHealth > 0)
+                {
+                    maxHealth = exact.MaxHealth;
+                    currentHealth = (uint)Math.Round(maxHealth * Math.Clamp(healthRatio, 0f, 1f));
+                }
+                else if (targetId != 0 && targetId != playerId)
+                {
+                    // No appraisal yet: read the mob's real MaxHealth straight from its
+                    // CACQualities (InqAttribute2nd on the qualities sub-object, SEH-
+                    // guarded). This is what fills in true HP (e.g. Olthoi Swarm
+                    // Harvester = 175) BEFORE the player's appraise skill is high enough
+                    // to produce a CreatureProfile. The earlier bug passed the weenie
+                    // ptr as `this`; InqAttribute2nd derefs this+0x60 for the attribute
+                    // cache, so it MUST get the CACQualities sub-object (resolved inside
+                    // TryReadCreatureMaxHealth). Gated to the main thread inside
+                    // TryGetQualitiesPtr — this detour runs on AC's game thread.
+                    if (ClientObjectHooks.TryReadCreatureMaxHealth(targetId, out uint mobMax)
+                        && mobMax > 0 && mobMax < 1_000_000)
+                    {
+                        maxHealth = mobMax;
                         currentHealth = (uint)Math.Round(maxHealth * Math.Clamp(healthRatio, 0f, 1f));
+                        ObjectQualityCache.SetCreatureVitals(targetId,
+                            new CreatureVitals(currentHealth, maxHealth, 0, 0, 0, 0));
+
+                        int hlog = Interlocked.Increment(ref _mobHpReadLogCount);
+                        if (hlog <= 20)
+                            RynthLog.Compat($"Compat: mob-hp qualities-read id=0x{targetId:X8} maxHp={maxHealth} ratio={healthRatio:F3}");
+                    }
                 }
 
                 // If this response is for the player, derive true MaxHealth from the ratio.
                 // e.g. health=92541, ratio=0.925 → trueMax ≈ 99999
-                uint playerId = ClientHelperHooks.GetPlayerId();
                 if (playerId != 0 && targetId == playerId && healthRatio > 0f && healthRatio <= 1f)
                     PlayerVitalsHooks.UpdateMaxFromHealthRatio(healthRatio);
 

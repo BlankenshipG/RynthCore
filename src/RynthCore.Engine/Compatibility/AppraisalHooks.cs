@@ -80,6 +80,32 @@ internal static class AppraisalHooks
     }
 
     /// <summary>
+    /// Deep-audit finding #33 (2026-06-18): these seven session-scoped
+    /// collections were populated per appraised guid and never cleared or
+    /// bounded — no ClearSession() existed, and this class was conspicuously
+    /// absent from DispatchPendingLogout's reset pipeline (contrast the peer
+    /// ObjectQualityCache, which has both MaxEntries and a logout
+    /// ClearSession()). Guids don't survive a session, so a daily
+    /// multi-boxer accumulates entries indefinitely across relogs — worth
+    /// closing given this stack's documented 32-bit VA-exhaustion
+    /// sensitivity even though growth itself is slow. Call from
+    /// DispatchPendingLogout alongside the other ResetSession() calls.
+    /// </summary>
+    public static void ClearSession()
+    {
+        lock (_cacheLock)
+        {
+            _appraisedGuids.Clear();
+            _lastIdTime.Clear();
+            _intCache.Clear();
+            _boolCache.Clear();
+            _stringCache.Clear();
+            _spellIdCache.Clear();
+            _failedRollLogged.Clear();
+        }
+    }
+
+    /// <summary>
     /// Returns the Unix timestamp (seconds) of when appraisal data was last received for this guid, or 0 if never.
     /// </summary>
     public static long GetLastIdTime(uint guid)
@@ -228,37 +254,61 @@ internal static class AppraisalHooks
             try { RynthLog.Compat($"Compat: appraisal spell cache error guid=0x{guid:X8} - {ex.GetType().Name}: {ex.Message}"); } catch { }
         }
 
+        try
+        {
+            CacheCreatureVitals(guid, profilePtr);
+        }
+        catch (Exception ex)
+        {
+            try { RynthLog.Compat($"Compat: appraisal creature-vitals error guid=0x{guid:X8} - {ex.GetType().Name}: {ex.Message}"); } catch { }
+        }
+
         return result;
     }
 
     private static void CacheIntProps(uint guid, IntPtr profilePtr)
     {
-        if (profilePtr == IntPtr.Zero)
+        if (profilePtr == IntPtr.Zero || !ClientObjectHooks.IsReadablePointer(profilePtr))
             return;
 
         // AppraisalProfile._intStatsTable* is at offset +0x18
-        IntPtr intTablePtr = Marshal.ReadIntPtr(profilePtr + 0x18);
-        if (intTablePtr == IntPtr.Zero)
+        IntPtr intTableFieldAddr = profilePtr + 0x18;
+        if (!ClientObjectHooks.IsReadablePointer(intTableFieldAddr))
+            return;
+        IntPtr intTablePtr = Marshal.ReadIntPtr(intTableFieldAddr);
+        if (intTablePtr == IntPtr.Zero || !ClientObjectHooks.IsReadablePointer(intTablePtr))
             return;
 
         // PackableHashTable<uint,int>: bucket_array at +0x8, bucket_count at +0xC
-        IntPtr bucketArray = Marshal.ReadIntPtr(intTablePtr + 0x08);
-        int bucketCount = Marshal.ReadInt32(intTablePtr + 0x0C);
+        IntPtr bucketArrayFieldAddr = intTablePtr + 0x08;
+        IntPtr bucketCountFieldAddr = intTablePtr + 0x0C;
+        if (!ClientObjectHooks.IsReadablePointer(bucketArrayFieldAddr) || !ClientObjectHooks.IsReadablePointer(bucketCountFieldAddr))
+            return;
+        IntPtr bucketArray = Marshal.ReadIntPtr(bucketArrayFieldAddr);
+        int bucketCount = Marshal.ReadInt32(bucketCountFieldAddr);
 
-        if (bucketArray == IntPtr.Zero || bucketCount <= 0 || bucketCount > 65536)
+        if (bucketArray == IntPtr.Zero || bucketCount <= 0 || bucketCount > 65536 || !ClientObjectHooks.IsReadablePointer(bucketArray))
             return;
 
         var props = new Dictionary<uint, int>(8);
 
+        int totalGuard = 0;
         for (int i = 0; i < bucketCount; i++)
         {
-            IntPtr node = Marshal.ReadIntPtr(bucketArray + i * 4);
-            while (node != IntPtr.Zero)
+            IntPtr bucketSlotAddr = bucketArray + i * 4;
+            if (!ClientObjectHooks.IsReadablePointer(bucketSlotAddr)) continue;
+            IntPtr node = Marshal.ReadIntPtr(bucketSlotAddr);
+
+            int chainGuard = 0;
+            while (node != IntPtr.Zero && chainGuard++ < 4096 && totalGuard++ < 65536)
             {
+                if (!ClientObjectHooks.IsReadablePointer(node)) break;
                 uint key = (uint)Marshal.ReadInt32(node);
                 int val = Marshal.ReadInt32(node + 4);
                 props[key] = val;
-                node = Marshal.ReadIntPtr(node + 8);
+                IntPtr nextAddr = node + 8;
+                if (!ClientObjectHooks.IsReadablePointer(nextAddr)) break;
+                node = Marshal.ReadIntPtr(nextAddr);
             }
         }
 
@@ -275,32 +325,47 @@ internal static class AppraisalHooks
 
     private static void CacheBoolProps(uint guid, IntPtr profilePtr)
     {
-        if (profilePtr == IntPtr.Zero)
+        if (profilePtr == IntPtr.Zero || !ClientObjectHooks.IsReadablePointer(profilePtr))
             return;
 
         // AppraisalProfile._boolStatsTable* is at offset +0x20
-        IntPtr boolTablePtr = Marshal.ReadIntPtr(profilePtr + 0x20);
-        if (boolTablePtr == IntPtr.Zero)
+        IntPtr boolTableFieldAddr = profilePtr + 0x20;
+        if (!ClientObjectHooks.IsReadablePointer(boolTableFieldAddr))
+            return;
+        IntPtr boolTablePtr = Marshal.ReadIntPtr(boolTableFieldAddr);
+        if (boolTablePtr == IntPtr.Zero || !ClientObjectHooks.IsReadablePointer(boolTablePtr))
             return;
 
         // PackableHashTable: bucket_array at +0x8, bucket_count at +0xC
-        IntPtr bucketArray = Marshal.ReadIntPtr(boolTablePtr + 0x08);
-        int bucketCount = Marshal.ReadInt32(boolTablePtr + 0x0C);
+        IntPtr bucketArrayFieldAddr = boolTablePtr + 0x08;
+        IntPtr bucketCountFieldAddr = boolTablePtr + 0x0C;
+        if (!ClientObjectHooks.IsReadablePointer(bucketArrayFieldAddr) || !ClientObjectHooks.IsReadablePointer(bucketCountFieldAddr))
+            return;
+        IntPtr bucketArray = Marshal.ReadIntPtr(bucketArrayFieldAddr);
+        int bucketCount = Marshal.ReadInt32(bucketCountFieldAddr);
 
-        if (bucketArray == IntPtr.Zero || bucketCount <= 0 || bucketCount > 65536)
+        if (bucketArray == IntPtr.Zero || bucketCount <= 0 || bucketCount > 65536 || !ClientObjectHooks.IsReadablePointer(bucketArray))
             return;
 
         var props = new Dictionary<uint, bool>(4);
 
+        int totalGuard = 0;
         for (int i = 0; i < bucketCount; i++)
         {
-            IntPtr node = Marshal.ReadIntPtr(bucketArray + i * 4);
-            while (node != IntPtr.Zero)
+            IntPtr bucketSlotAddr = bucketArray + i * 4;
+            if (!ClientObjectHooks.IsReadablePointer(bucketSlotAddr)) continue;
+            IntPtr node = Marshal.ReadIntPtr(bucketSlotAddr);
+
+            int chainGuard = 0;
+            while (node != IntPtr.Zero && chainGuard++ < 4096 && totalGuard++ < 65536)
             {
+                if (!ClientObjectHooks.IsReadablePointer(node)) break;
                 uint key = (uint)Marshal.ReadInt32(node);
                 int val = Marshal.ReadInt32(node + 4);
                 props[key] = val != 0;
-                node = Marshal.ReadIntPtr(node + 8);
+                IntPtr nextAddr = node + 8;
+                if (!ClientObjectHooks.IsReadablePointer(nextAddr)) break;
+                node = Marshal.ReadIntPtr(nextAddr);
             }
         }
 
@@ -317,45 +382,65 @@ internal static class AppraisalHooks
 
     private static void CacheStringProps(uint guid, IntPtr profilePtr)
     {
-        if (profilePtr == IntPtr.Zero)
+        if (profilePtr == IntPtr.Zero || !ClientObjectHooks.IsReadablePointer(profilePtr))
             return;
 
         // AppraisalProfile._strStatsTable* is at offset +0x28
-        IntPtr strTablePtr = Marshal.ReadIntPtr(profilePtr + 0x28);
-        if (strTablePtr == IntPtr.Zero)
+        IntPtr strTableFieldAddr = profilePtr + 0x28;
+        if (!ClientObjectHooks.IsReadablePointer(strTableFieldAddr))
+            return;
+        IntPtr strTablePtr = Marshal.ReadIntPtr(strTableFieldAddr);
+        if (strTablePtr == IntPtr.Zero || !ClientObjectHooks.IsReadablePointer(strTablePtr))
             return;
 
         // PackableHashTable<uint, PStringBase<char>>: bucket_array at +0x8, bucket_count at +0xC
-        IntPtr bucketArray = Marshal.ReadIntPtr(strTablePtr + 0x08);
-        int bucketCount = Marshal.ReadInt32(strTablePtr + 0x0C);
+        IntPtr bucketArrayFieldAddr = strTablePtr + 0x08;
+        IntPtr bucketCountFieldAddr = strTablePtr + 0x0C;
+        if (!ClientObjectHooks.IsReadablePointer(bucketArrayFieldAddr) || !ClientObjectHooks.IsReadablePointer(bucketCountFieldAddr))
+            return;
+        IntPtr bucketArray = Marshal.ReadIntPtr(bucketArrayFieldAddr);
+        int bucketCount = Marshal.ReadInt32(bucketCountFieldAddr);
 
-        if (bucketArray == IntPtr.Zero || bucketCount <= 0 || bucketCount > 65536)
+        if (bucketArray == IntPtr.Zero || bucketCount <= 0 || bucketCount > 65536 || !ClientObjectHooks.IsReadablePointer(bucketArray))
             return;
 
         var props = new Dictionary<uint, string>(4);
 
+        int totalGuard = 0;
         for (int i = 0; i < bucketCount; i++)
         {
-            IntPtr node = Marshal.ReadIntPtr(bucketArray + i * 4);
-            while (node != IntPtr.Zero)
+            IntPtr bucketSlotAddr = bucketArray + i * 4;
+            if (!ClientObjectHooks.IsReadablePointer(bucketSlotAddr)) continue;
+            IntPtr node = Marshal.ReadIntPtr(bucketSlotAddr);
+
+            int chainGuard = 0;
+            while (node != IntPtr.Zero && chainGuard++ < 4096 && totalGuard++ < 65536)
             {
+                if (!ClientObjectHooks.IsReadablePointer(node)) break;
                 uint key = (uint)Marshal.ReadInt32(node);
 
                 // Node value at +4: PStringBase<char>.m_buffer (PSRefBuffer<char>*)
                 // PSRefBuffer<char> layout: vtable(4) + m_cRef(4) + m_len(4) + m_size(4) + m_hash(4) + m_data[]
                 IntPtr bufferPtr = Marshal.ReadIntPtr(node + 4);
-                if (bufferPtr != IntPtr.Zero)
+                if (bufferPtr != IntPtr.Zero && ClientObjectHooks.IsReadablePointer(bufferPtr))
                 {
-                    int len = Marshal.ReadInt32(bufferPtr + 8);
-                    if (len > 1)
+                    IntPtr lenFieldAddr = bufferPtr + 8;
+                    if (ClientObjectHooks.IsReadablePointer(lenFieldAddr))
                     {
-                        string? str = Marshal.PtrToStringAnsi(bufferPtr + 20, len - 1);
-                        if (!string.IsNullOrEmpty(str))
-                            props[key] = str;
+                        int len = Marshal.ReadInt32(lenFieldAddr);
+                        IntPtr strDataAddr = bufferPtr + 20;
+                        if (len > 1 && len < 4096 && ClientObjectHooks.IsReadablePointer(strDataAddr))
+                        {
+                            string? str = Marshal.PtrToStringAnsi(strDataAddr, len - 1);
+                            if (!string.IsNullOrEmpty(str))
+                                props[key] = str;
+                        }
                     }
                 }
 
-                node = Marshal.ReadIntPtr(node + 8);
+                IntPtr nextAddr = node + 8;
+                if (!ClientObjectHooks.IsReadablePointer(nextAddr)) break;
+                node = Marshal.ReadIntPtr(nextAddr);
             }
         }
 
@@ -403,6 +488,86 @@ internal static class AppraisalHooks
             _spellIdCache[guid] = ids;
 
         RynthLog.Verbose($"Compat: cached {mNum} spell ID(s) for guid=0x{guid:X8}");
+    }
+
+    // Rate-limit counter for the creature-vitals diagnostic log line.
+    private static int _creatureVitalsLogCount;
+    // Guids already logged with a [FAILED-ROLL] line (dedupe; guarded by _cacheLock).
+    private static readonly HashSet<uint> _failedRollLogged = new();
+
+    /// <summary>
+    /// Reads the creature sub-profile (AppraisalProfile+0x08 → CreatureAppraisalProfile) for
+    /// absolute Health/MaxHealth/Stamina/Mana and publishes them to ObjectQualityCache (polled
+    /// via RynthCoreHost.TryGetTargetVitals) and to plugins (OnUpdateHealth push, e.g. RynthAi's
+    /// CreatureProfileStore / RynthJuice numbers).
+    ///
+    /// This is the ONLY opcode that carries a monster's *absolute* max HP — the 0xC9 appraisal
+    /// CreatureProfile. The 0x01C0 combat stream is ratio-only (ACE divides Current/MaxValue
+    /// server-side). This hook (CM_Examine::SendNotice_SetAppraiseInfo @ 0x006B05B0) is the live
+    /// appraisal seam on ACE; the older wire-parse in CombatActionHooks.TryParseIdentifyResponse
+    /// is dead (its InnerDispatcher caller is disabled and the SmartBox caller was removed).
+    ///
+    /// Offsets verified from CreatureAppraisalProfile::InqAttribute2nd (decompile 0x005B6ED0):
+    ///   MaxHealth=+0x28  Health=+0x1C  MaxStamina=+0x2C  Stamina=+0x20  MaxMana=+0x30  Mana=+0x24.
+    /// The +0x08 pointer is non-null only when the appraisal carried a CreatureProfile (creatures
+    /// that are not NPCLooksLikeObject); items/hooks leave it 0 (AppraisalProfile::Clear layout).
+    /// It is the engine's own live struct for this dispatch frame, so the read is safe under the
+    /// same try/catch the sibling Cache* helpers use — no native call, no AC mutation.
+    ///
+    /// Crucially this captures max even on a FAILED assess roll: ACE assigns Health/HealthMax
+    /// before the success gate (CreatureProfile.cs), so no AssessCreature skill is required.
+    /// </summary>
+    private static void CacheCreatureVitals(uint guid, IntPtr profilePtr)
+    {
+        if (profilePtr == IntPtr.Zero)
+            return;
+
+        // AppraisalProfile._creatureProfile* is at offset +0x08.
+        IntPtr creaturePtr = Marshal.ReadIntPtr(profilePtr + 0x08);
+        if (creaturePtr == IntPtr.Zero)
+            return; // non-creature appraisal (item / hook) — no vitals present
+
+        uint maxHealth = unchecked((uint)Marshal.ReadInt32(creaturePtr + 0x28));
+        if (maxHealth == 0 || maxHealth >= 1_000_000)
+            return; // unset / implausible — don't poison the cache
+
+        uint health = unchecked((uint)Marshal.ReadInt32(creaturePtr + 0x1C));
+        uint stamina = unchecked((uint)Marshal.ReadInt32(creaturePtr + 0x20));
+        uint maxStamina = unchecked((uint)Marshal.ReadInt32(creaturePtr + 0x2C));
+        uint mana = unchecked((uint)Marshal.ReadInt32(creaturePtr + 0x24));
+        uint maxMana = unchecked((uint)Marshal.ReadInt32(creaturePtr + 0x30));
+
+        if (health > maxHealth)
+            health = maxHealth; // clamp a transient over-read
+
+        ObjectQualityCache.SetCreatureVitals(guid,
+            new CreatureVitals(health, maxHealth, stamina, maxStamina, mana, maxMana));
+
+        float ratio = (float)health / maxHealth;
+        Plugins.PluginManager.QueueUpdateHealth(guid, ratio, health, maxHealth);
+
+        // ShowAttributes (wire flag 0x8) is CLEAR on a FAILED assess roll; CreatureAppraisalProfile::UnPack
+        // (decompile 0x005B7240, lines 31-42) then EXPLICITLY zeroes stamina/mana/attributes — so
+        // (maxStamina==0 && maxMana==0) is a reliable failed-roll signal, while Health/MaxHealth are written
+        // unconditionally. A failed-roll line therefore PROVES the un-gated capture (max obtained with no
+        // attributes). Failed rolls are rare (most mobs have Deception==0 → success forced) and are the whole
+        // point of this hook, so log them ALWAYS (greppable [FAILED-ROLL] tag); rate-limit the common success case.
+        if (maxStamina == 0 && maxMana == 0)
+        {
+            // Failed roll. Dedupe per guid — the combat target gets re-appraised ~1/0.75s, which would
+            // otherwise spam the log (and bloat it over a grind). Log the first capture per mob only.
+            bool firstForGuid;
+            lock (_cacheLock)
+                firstForGuid = _failedRollLogged.Add(guid);
+            if (firstForGuid)
+                RynthLog.Compat($"Compat: appraisal creature vitals [FAILED-ROLL] guid=0x{guid:X8} hp={health}/{maxHealth} (stam/mana withheld — max captured anyway)");
+        }
+        else
+        {
+            int log = Interlocked.Increment(ref _creatureVitalsLogCount);
+            if (log <= 50)
+                RynthLog.Compat($"Compat: appraisal creature vitals guid=0x{guid:X8} hp={health}/{maxHealth} stam={stamina}/{maxStamina} mana={mana}/{maxMana}");
+        }
     }
 
     /// <summary>

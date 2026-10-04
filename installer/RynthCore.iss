@@ -13,7 +13,7 @@ AppId={{A8B4C2D1-E3F5-4678-9ABC-DEF012345678}
 AppName=RynthCore
 AppVersion=0.0.0
 AppPublisher=RynthCore
-AppPublisherURL=https://github.com/tombohar/RynthCore
+AppPublisherURL=https://aelrynth.com/rynth.html
 DefaultDirName=C:\Games\RynthCore
 DisableDirPage=no
 DefaultGroupName=RynthCore
@@ -40,8 +40,13 @@ Name: desktopicon; Description: "Create a &desktop shortcut"; GroupDescription: 
 
 ; Program files
 [Files]
-; Installs the entire staging layout (launcher, Runtime\, Runtime\Plugins\, etc.)
+; Launcher + engine runtime + Loot Editor go to {app} (default C:\Games\RynthCore\)
 Source: "staging\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+; Plugin DLL goes to its canonical home next to plugin data dirs.
+; Engine does NOT auto-scan this folder — user adds the full DLL path in the
+; launcher's Plugins tab to enable the plugin. See BUILD.md "Deploy RynthAi Plugin".
+Source: "staging\plugins\RynthAi\RynthCore.Plugin.RynthAi.dll"; DestDir: "C:\Games\RynthSuite\RynthAi"; Flags: ignoreversion
 
 ; Data directories (created once; never removed on uninstall)
 [Dirs]
@@ -61,7 +66,29 @@ Name: "C:\Games\RynthSuite\RynthAi\ItemGiver";                   Flags: uninsnev
 [Icons]
 ; Start Menu
 Name: "{group}\RynthCore"; Filename: "{app}\RynthCore.exe"; WorkingDir: "{app}"; Comment: "Launch RynthCore and inject into Asheron's Call"
+Name: "{group}\Loot Editor"; Filename: "{app}\Tools\LootEditor\RynthCore.LootEditor.exe"; WorkingDir: "{app}\Tools\LootEditor"; Comment: "Edit VTank-style loot profiles"
 Name: "{group}\Uninstall RynthCore"; Filename: "{uninstallexe}"
 
 ; Optional Desktop shortcut (created only when the desktopicon task is checked)
 Name: "{autodesktop}\RynthCore"; Filename: "{app}\RynthCore.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+
+[Run]
+; Interactive install: offer to start the launcher on the last page.
+Filename: "{app}\RynthCore.exe"; WorkingDir: "{app}"; Description: "Launch RynthCore"; Flags: nowait postinstall skipifsilent
+; The launcher's updater runs this installer with /SILENT /RELAUNCH after closing itself;
+; bring it back when the upgrade is done.
+Filename: "{app}\RynthCore.exe"; WorkingDir: "{app}"; Flags: nowait runasoriginaluser; Check: CmdLineParamExists('/RELAUNCH')
+
+[Code]
+function CmdLineParamExists(const Value: string): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), Value) = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+end;

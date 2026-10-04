@@ -82,8 +82,8 @@ internal static class LoginLifecycleHooks
             IsInstalled = true;
             _statusMessage = $"Hooked SendLoginCompleteNotification @ 0x{_targetAddress.ToInt32():X8}.";
             _nextStatusLogTick = Environment.TickCount64 + 3000;
-            RynthLog.Verbose(
-                $"Compat: login lifecycle hook ready - SendLoginCompleteNotification=0x{_targetAddress.ToInt32():X8}, callSite=0x{textSection.TextBaseVa + callSiteOff:X8}");
+            RynthLog.Info(
+                $"LoginLifecycleHooks: target=0x{_targetAddress.ToInt32():X8} (funcOff=0x{funcOff:X8}, callSite=0x{textSection.TextBaseVa + callSiteOff:X8}, prologueDistance={(textSection.TextBaseVa + callSiteOff) - _targetAddress.ToInt32()} bytes).");
         }
         catch (Exception ex)
         {
@@ -123,6 +123,7 @@ internal static class LoginLifecycleHooks
 
     private static void SendLoginCompleteNotificationDetour(IntPtr thisPtr)
     {
+        RecursionGuard.Tick("LoginLifecycleHooks.SendLoginCompleteNotification");
         _originalSendLoginCompleteNotification!(thisPtr);
         SignalLoginComplete("CPlayerSystem::SendLoginCompleteNotification");
     }
@@ -136,5 +137,18 @@ internal static class LoginLifecycleHooks
         _statusMessage = $"Login complete observed via {source}.";
         RynthLog.Verbose($"Compat: login complete observed via {source}.");
         LoginComplete?.Invoke();
+    }
+
+    /// <summary>
+    /// Mark login as already complete and fire the <see cref="LoginComplete"/>
+    /// event without waiting for the AC client's
+    /// <c>SendLoginCompleteNotification</c>. Used by the hot-reload path: the
+    /// new engine instance starts after the game is already in-world, so the
+    /// notification will never fire again — we synthesize it so subscribers
+    /// (PluginManager, D3D9 bootstrapper) reach their post-login state.
+    /// </summary>
+    public static void MarkAlreadyComplete(string source)
+    {
+        SignalLoginComplete(source);
     }
 }

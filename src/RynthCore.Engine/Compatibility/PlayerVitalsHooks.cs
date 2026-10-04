@@ -32,6 +32,114 @@ internal static class PlayerVitalsHooks
             KnownPlayerQualitiesPtr = ptr;
     }
 
+    /// <summary>
+    /// Drops the cached qualities ptr on logout so the next buffed-max inq
+    /// call can't dereference a freed allocation. Called by PluginManager's
+    /// logout dispatch.
+    /// </summary>
+    internal static void ResetSession()
+    {
+        KnownPlayerQualitiesPtr = IntPtr.Zero;
+        // Creature health is keyed by object id — ids don't survive the
+        // session, and without this clear the 1024-entry cap filled over a
+        // long session and every NEW creature was silently never tracked.
+        lock (_creatureHpLock)
+            _creatureHp.Clear();
+        ObjectQualityCache.ClearSession();
+    }
+
+    /// <summary>
+    /// Re-seed the qualities ptr and the vital snapshot from the live player object
+    /// without waiting for SendNoticePlayerDescReceived. Used by the engine's
+    /// hot-reload path: after a reload the new engine's static state is fresh,
+    /// so KnownPlayerQualitiesPtr starts at zero and AC won't fire the
+    /// notification again until the player relogs. Returns true if a non-zero
+    /// qualities ptr was found and applied.
+    /// </summary>
+    public static bool TryReseedFromCurrentPlayer()
+    {
+        if (!ClientObjectHooks.TryGetPlayerQualitiesPtr(out IntPtr qualitiesPtr) || qualitiesPtr == IntPtr.Zero)
+            return false;
+
+        KnownPlayerQualitiesPtr = qualitiesPtr;
+        ClientObjectHooks.SetKnownPlayerQualitiesPtr(qualitiesPtr);
+
+        try
+        {
+            // Struct path first — gives us current health/stamina/mana plus
+            // a baseline max (treated as a floor, not the truth).
+            SeedSnapshotFromQualities(qualitiesPtr);
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"PlayerVitalsHooks: TryReseedFromCurrentPlayer struct seed threw {ex.GetType().Name}: {ex.Message}");
+        }
+
+        try
+        {
+            // Buffed-uint path — what AC actually shows on the vital bars.
+            // This OVERRIDES the max values from the struct path.
+            ReseedBuffedMaxFromQualities(qualitiesPtr);
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"PlayerVitalsHooks: TryReseedFromCurrentPlayer buffed-max threw {ex.GetType().Name}: {ex.Message}");
+        }
+
+        return true;
+    }
+
+    private static unsafe void ReseedBuffedMaxFromQualities(IntPtr qualitiesPtr)
+    {
+        if (qualitiesPtr == IntPtr.Zero || _inqAttribute2ndUint == null)
+            return;
+
+        if (!TryInqUint(qualitiesPtr, MaxHealthType, out uint maxHealth) ||
+            !TryInqUint(qualitiesPtr, MaxStaminaType, out uint maxStamina) ||
+            !TryInqUint(qualitiesPtr, MaxManaType, out uint maxMana))
+        {
+            return;
+        }
+
+        bool changed = false;
+        lock (CacheLock)
+        {
+            PlayerVitalsSnapshot current = _snapshot;
+            PlayerVitalsSnapshot updated = current with
+            {
+                MaxHealth = maxHealth != 0 ? maxHealth : current.MaxHealth,
+                MaxStamina = maxStamina != 0 ? maxStamina : current.MaxStamina,
+                MaxMana = maxMana != 0 ? maxMana : current.MaxMana,
+            };
+            if (!EqualityComparer<PlayerVitalsSnapshot>.Default.Equals(current, updated))
+            {
+                _snapshot = updated;
+                changed = true;
+            }
+        }
+
+        if (changed)
+            RynthLog.Compat($"Compat: player vitals buffed-max re-seed hp_max={maxHealth} st_max={maxStamina} mn_max={maxMana}");
+    }
+
+    private static unsafe bool TryInqUint(IntPtr qualitiesPtr, uint stype, out uint value)
+    {
+        value = 0;
+        try
+        {
+            uint result = 0;
+            // raw=0 → buffed effective (the same number AC renders on the bars).
+            int rc = _inqAttribute2ndUint!(qualitiesPtr, stype, &result, 0);
+            if (rc == 0) return false;
+            value = result;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private const int UpdateAttribute2ndVa = 0x00559900;
     private const int UpdateAttribute2ndLevelVa = 0x00559920;
     private const int PrivateUpdateAttribute2ndVa = 0x00559B20;
@@ -40,6 +148,26 @@ internal static class PlayerVitalsHooks
     private const int InqAttribute2ndStructVa = 0x005927F0;
     private const int SendNoticePlayerDescReceivedVa = 0x0047A200;
     private const int MaxUpdateLogs = 18;
+
+    // ── Pattern-resolved binding (1a hardening, 2026-06-05) ─────────────
+    // *Va consts above are FALLBACKs; signatures verified unique + landing at the VA offline
+    // (tools/pe_pattern.py). The 4 Update*Attribute2nd thunks are near-identical templates
+    // differing only in their call target, so they use LITERAL patterns (trailing byte pins
+    // the rel32 low byte to stay unique); the rest are wildcarded (null = rel32 operand).
+    private static readonly byte?[] PatUpdateAttribute2nd = [ 0x8B, 0x44, 0x24, 0x10, 0x8B, 0x54, 0x24, 0x08, 0x50, 0x8B, 0x44, 0x24, 0x08, 0x52, 0x8B, 0x54, 0x24, 0x14, 0x50, 0x52, 0xE8, 0xA7 ];
+    private static readonly byte?[] PatUpdateAttribute2ndLevel = [ 0x8B, 0x44, 0x24, 0x10, 0x8B, 0x54, 0x24, 0x08, 0x50, 0x8B, 0x44, 0x24, 0x08, 0x52, 0x8B, 0x54, 0x24, 0x14, 0x50, 0x52, 0xE8, 0x07, 0xF1 ];
+    private static readonly byte?[] PatPrivateUpdateAttribute2nd = [ 0xA1, 0x58, 0xDA, 0x83, 0x00, 0x85, 0xC0, 0x74, 0x08, 0x8B, 0x80, 0xF4, 0x00, 0x00, 0x00, 0xEB, 0x02, 0x33, 0xC0, 0x8B, 0x54, 0x24, 0x0C, 0x52, 0x8B, 0x54, 0x24, 0x0C, 0x50, 0x8B, 0x44, 0x24, 0x0C, 0x50, 0x52, 0xE8, 0x78 ];
+    private static readonly byte?[] PatPrivateUpdateAttribute2ndLevel = [ 0xA1, 0x58, 0xDA, 0x83, 0x00, 0x85, 0xC0, 0x74, 0x08, 0x8B, 0x80, 0xF4, 0x00, 0x00, 0x00, 0xEB, 0x02, 0x33, 0xC0, 0x8B, 0x54, 0x24, 0x0C, 0x52, 0x8B, 0x54, 0x24, 0x0C, 0x50, 0x8B, 0x44, 0x24, 0x0C, 0x50, 0x52, 0xE8, 0xC8 ];
+    private static readonly byte?[] PatOnStatUpdatedInt = [ 0x8B, 0x44, 0x24, 0x04, 0x48, 0x3D, 0x97, 0x00 ];
+    private static readonly byte?[] PatInqAttribute2ndStruct = [ 0x8B, 0x49, 0x60, 0x85, 0xC9, 0x74, 0x13, 0x8B, 0x44, 0x24, 0x08, 0x8B, 0x54, 0x24, 0x04, 0x50, 0x52, 0xE8, null, null, null, null, 0x85, 0xC0, 0x75, 0x05, 0x33, 0xC0, 0xC2, 0x08, 0x00, 0xB8, 0x01, 0x00, 0x00, 0x00, 0xC2, 0x08, 0x00, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x68 ];
+    private static readonly byte?[] PatSendNoticePlayerDescReceived = [ 0xE8, null, null, null, null, 0x8B, 0x10, 0x68, 0xF0 ];
+    private static readonly byte?[] PatInqAttribute2ndUint = [ 0x51, 0x53, 0x55, 0x57, 0x8B, 0x7C, 0x24, 0x14 ];
+
+    private static IntPtr Resolve(AcClientTextSection text, string name, byte?[] pattern, int fallbackVa)
+    {
+        HookResolver.ResolveResult r = HookResolver.Resolve(text, name, pattern, fallbackVa);
+        return r.Success ? r.Address : IntPtr.Zero;
+    }
 
     private const uint MaxHealthType = 1;
     private const uint HealthType = 2;
@@ -60,6 +188,9 @@ internal static class PlayerVitalsHooks
     private static int _seedLogCount;
     private static PlayerVitalsSnapshot _snapshot;
     private static InqAttribute2ndStructDelegate? _inqAttribute2ndStruct;
+    // Raw address of InqAttribute2nd(struct) — passed to the SEH trampoline so a
+    // monster's partial qualities table can be read without crashing on an AV.
+    private static IntPtr _inqAttribute2ndStructFnPtr;
 
     public static bool IsInstalled { get; private set; }
     public static string StatusMessage => _statusMessage;
@@ -69,7 +200,7 @@ internal static class PlayerVitalsHooks
         if (IsInstalled)
             return;
 
-        if (!AcClientModule.TryReadTextSection(out _))
+        if (!AcClientModule.TryReadTextSection(out AcClientTextSection text))
         {
             _statusMessage = "acclient.exe not available.";
             return;
@@ -77,29 +208,33 @@ internal static class PlayerVitalsHooks
 
         try
         {
-            IntPtr updateAttributePtr = new(UpdateAttribute2ndVa);
-            IntPtr updatePtr = new(UpdateAttribute2ndLevelVa);
-            IntPtr privateUpdateAttributePtr = new(PrivateUpdateAttribute2ndVa);
-            IntPtr privateUpdatePtr = new(PrivateUpdateAttribute2ndLevelVa);
-            IntPtr onStatUpdatedIntPtr = new(OnStatUpdatedIntVa);
-            IntPtr inqAttribute2ndStructPtr = new(InqAttribute2ndStructVa);
-            IntPtr sendNoticePlayerDescReceivedPtr = new(SendNoticePlayerDescReceivedVa);
+            IntPtr updateAttributePtr = Resolve(text, "PlayerVitals.UpdateAttribute2nd", PatUpdateAttribute2nd, UpdateAttribute2ndVa);
+            IntPtr updatePtr = Resolve(text, "PlayerVitals.UpdateAttribute2ndLevel", PatUpdateAttribute2ndLevel, UpdateAttribute2ndLevelVa);
+            IntPtr privateUpdateAttributePtr = Resolve(text, "PlayerVitals.PrivateUpdateAttribute2nd", PatPrivateUpdateAttribute2nd, PrivateUpdateAttribute2ndVa);
+            IntPtr privateUpdatePtr = Resolve(text, "PlayerVitals.PrivateUpdateAttribute2ndLevel", PatPrivateUpdateAttribute2ndLevel, PrivateUpdateAttribute2ndLevelVa);
+            IntPtr onStatUpdatedIntPtr = Resolve(text, "PlayerVitals.OnStatUpdatedInt", PatOnStatUpdatedInt, OnStatUpdatedIntVa);
+            IntPtr inqAttribute2ndStructPtr = Resolve(text, "PlayerVitals.InqAttribute2nd_struct", PatInqAttribute2ndStruct, InqAttribute2ndStructVa);
+            IntPtr sendNoticePlayerDescReceivedPtr = Resolve(text, "PlayerVitals.SendNotice_PlayerDescReceived", PatSendNoticePlayerDescReceived, SendNoticePlayerDescReceivedVa);
 
-            if (!SmartBoxLocator.IsPointerInModule(updateAttributePtr) ||
-                !SmartBoxLocator.IsPointerInModule(updatePtr) ||
-                !SmartBoxLocator.IsPointerInModule(privateUpdateAttributePtr) ||
-                !SmartBoxLocator.IsPointerInModule(privateUpdatePtr) ||
-                !SmartBoxLocator.IsPointerInModule(onStatUpdatedIntPtr) ||
-                !SmartBoxLocator.IsPointerInModule(inqAttribute2ndStructPtr) ||
-                !SmartBoxLocator.IsPointerInModule(sendNoticePlayerDescReceivedPtr))
+            if (updateAttributePtr == IntPtr.Zero || updatePtr == IntPtr.Zero ||
+                privateUpdateAttributePtr == IntPtr.Zero || privateUpdatePtr == IntPtr.Zero ||
+                onStatUpdatedIntPtr == IntPtr.Zero || inqAttribute2ndStructPtr == IntPtr.Zero ||
+                sendNoticePlayerDescReceivedPtr == IntPtr.Zero)
             {
-                _statusMessage =
-                    $"Attribute2nd handlers look invalid (update=0x{updateAttributePtr.ToInt32():X8}, level=0x{updatePtr.ToInt32():X8}, private=0x{privateUpdateAttributePtr.ToInt32():X8}, privateLevel=0x{privateUpdatePtr.ToInt32():X8}, stat=0x{onStatUpdatedIntPtr.ToInt32():X8}, inq2nd=0x{inqAttribute2ndStructPtr.ToInt32():X8}, playerDesc=0x{sendNoticePlayerDescReceivedPtr.ToInt32():X8}).";
+                _statusMessage = "One or more Attribute2nd handlers failed to resolve (pattern + fallback VA both missed).";
                 RynthLog.Compat($"Compat: player vitals hooks failed - {_statusMessage}");
                 return;
             }
 
             _inqAttribute2ndStruct = Marshal.GetDelegateForFunctionPointer<InqAttribute2ndStructDelegate>(inqAttribute2ndStructPtr);
+            _inqAttribute2ndStructFnPtr = inqAttribute2ndStructPtr;
+
+            // Buffed-uint overload — used by hot-reload re-seed and any path
+            // that needs the same number AC's vital bars render. The struct
+            // overload returns base values; this one returns buffed.
+            IntPtr inqAttribute2ndUintPtr = Resolve(text, "PlayerVitals.InqAttribute2nd_uint", PatInqAttribute2ndUint, InqAttribute2ndUintVa);
+            if (inqAttribute2ndUintPtr != IntPtr.Zero)
+                _inqAttribute2ndUint = Marshal.GetDelegateForFunctionPointer<InqAttribute2ndUintDelegate>(inqAttribute2ndUintPtr);
 
             unsafe
             {
@@ -147,6 +282,32 @@ internal static class PlayerVitalsHooks
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Read a creature's REAL MaxHealth from its qualities (2nd-level attribute
+    /// table) via InqAttribute2nd, routed through the SEH trampoline so a
+    /// partial/null MONSTER sub-table AVs into a safe failure instead of killing
+    /// the client. This is the appraisal-free path to a mob's true HP (appraisal
+    /// returns a 50 stub for mobs the char's Assess skill can't read). MAIN
+    /// THREAD ONLY — AC isn't thread-safe. Returns false if the trampoline is
+    /// unavailable, the read AVs, or the value is 0.
+    /// </summary>
+    public static unsafe bool TryReadCreatureMaxHealthSafe(IntPtr weeniePtr, out uint maxHealth)
+    {
+        maxHealth = 0;
+        if (weeniePtr == IntPtr.Zero || _inqAttribute2ndStructFnPtr == IntPtr.Zero)
+            return false;
+        if (!SehTrampoline.IsAvailable)
+            return false; // never call InqAttribute2nd unguarded on a non-player weenie
+
+        SecondaryAttributeNative result = default;
+        int rc = SehTrampoline.ThiscallIntUintPtr(
+            _inqAttribute2ndStructFnPtr, weeniePtr, MaxHealthType, &result, out bool avCaught);
+        if (avCaught || rc == 0 || result._currentLevel == 0)
+            return false;
+        maxHealth = result._currentLevel;
+        return true;
     }
 
     /// <summary>
@@ -254,6 +415,7 @@ internal static class PlayerVitalsHooks
         var original = (delegate* unmanaged[Thiscall]<IntPtr, byte, uint, uint, int, uint>)_originalUpdateAttribute2ndLevelPtr;
         uint result = original(thisPtr, wts, sender, stype, val);
         UpdateCache(sender, stype, val, isPrivate: false);
+        ForwardCreatureHealth(sender, stype, val);
         return result;
     }
 
@@ -281,10 +443,9 @@ internal static class PlayerVitalsHooks
         var original = (delegate* unmanaged[Thiscall]<IntPtr, uint, int, void>)_originalOnStatUpdatedIntPtr;
         original(thisPtr, stype, val);
 
-        // Cache MaxHealth for every object — used by CombatActionHooks to resolve the
-        // absolute target health from the healthRatio in QueryHealthResponse packets.
-        if (stype == MaxHealthType && val > 0)
-            ObjectQualityCache.SetMaxHealth(thisPtr, unchecked((uint)val));
+        // (A per-object MaxHealth-by-pointer cache write used to live here —
+        // removed 2026-06-11: nothing ever read it, and it allocated on
+        // dictionary growth inside this UnmanagedCallersOnly detour.)
 
         if (!SmartBoxLocator.TryGetPlayer(out IntPtr player, out uint playerId, out _))
             return;
@@ -312,6 +473,8 @@ internal static class PlayerVitalsHooks
             return;
 
         UpdateCache(sender, stype, unchecked((int)val->_currentLevel), isPrivate);
+        if (!isPrivate)
+            ForwardCreatureHealth(sender, stype, unchecked((int)val->_currentLevel));
 
         // For max-vital types (MaxHealth=1, MaxStamina=3, MaxMana=5), _currentLevel is the
         // effective buffed maximum — that's already handled by the UpdateCache call above.
@@ -319,6 +482,65 @@ internal static class PlayerVitalsHooks
         // For current-vital types (Health=2, Stamina=4, Mana=6), do NOT derive max from
         // _initLevel + _levelFromCp — that's the unbuffed base max and would overwrite the
         // correct buffed value set by the seed or a direct MaxHealth update.
+    }
+
+    // Live monster (non-player) health, captured from the broadcast vital-update
+    // stream that UpdateCache discards. The server pushes a creature's current
+    // (stype=Health) and max (stype=MaxHealth) attribute levels here for combat
+    // mobs in awareness — NO appraisal needed (so it works on high-level mobs
+    // whose Assess skill we lack) and NO Inq* read (so no non-player-qualities AV).
+    // Pre-sized + capped so the per-creature add can't realloc inside this
+    // main-thread detour. Packed (current<<32 | max) to avoid per-entry alloc.
+    private static readonly Dictionary<uint, ulong> _creatureHp = new(1024);
+    private static readonly object _creatureHpLock = new();
+    private static int _creatureHpLogCount;
+
+    private static void ForwardCreatureHealth(uint sender, uint stype, int val)
+    {
+        if (sender == 0 || val < 0) return;
+        if (stype != HealthType && stype != MaxHealthType) return;
+        uint playerId = ClientHelperHooks.GetPlayerId();
+        if (playerId == 0 || sender == playerId) return; // player handled by UpdateCache
+
+        // Packed entry: bit 63 = "current seen", bit 62 = "max seen",
+        // bits 32-61 = current, bits 0-31 = max. Both halves must be observed
+        // before a ratio is forwarded — fabricating the missing half reported
+        // a near-dead mob as FULL (Health-only: max := cur → 1.0) or a fresh
+        // mob as DEAD (MaxHealth-only: cur = 0 → 0.0), corrupting plugin
+        // combat decisions.
+        const ulong SeenCur = 1UL << 63;
+        const ulong SeenMax = 1UL << 62;
+        const ulong CurMask = 0x3FFF_FFFFUL;
+
+        uint cur, max;
+        bool complete;
+        lock (_creatureHpLock)
+        {
+            // Bounded with self-healing: the old cap silently stopped tracking
+            // every NEW creature once 1024 distinct senders had been seen.
+            // Wholesale clear + reinsert is cheap and recovers within one
+            // server vital-burst per visible mob. (Also cleared at logout.)
+            if (_creatureHp.Count >= 1024 && !_creatureHp.ContainsKey(sender))
+                _creatureHp.Clear();
+
+            _creatureHp.TryGetValue(sender, out ulong packed);
+            cur = (uint)((packed >> 32) & CurMask);
+            max = (uint)packed;
+            if (stype == HealthType) { cur = (uint)val & (uint)CurMask; packed |= SeenCur; }
+            else                     { max = (uint)val;                 packed |= SeenMax; }
+            if (cur > max && (packed & SeenMax) != 0) max = cur; // server can momentarily push cur past a stale max
+            complete = (packed & SeenCur) != 0 && (packed & SeenMax) != 0;
+            _creatureHp[sender] = (packed & (SeenCur | SeenMax)) | ((ulong)cur << 32) | max;
+        }
+
+        if (_creatureHpLogCount < 40)
+        {
+            _creatureHpLogCount++;
+            RynthLog.Compat($"Compat: creature vital sender=0x{sender:X8} stype={stype} val={val} -> cur={cur} max={max} complete={complete}");
+        }
+
+        if (complete && max > 0)
+            Plugins.PluginManager.QueueUpdateHealth(sender, Math.Clamp((float)cur / max, 0f, 1f), cur, max);
     }
 
     private static void UpdateCache(uint sender, uint stype, int val, bool isPrivate)
@@ -370,6 +592,45 @@ internal static class PlayerVitalsHooks
             _updateLogCount++;
             string scope = isPrivate ? "private" : $"sender=0x{sender:X8}";
             RynthLog.Verbose($"Compat: player vital update #{_updateLogCount} {scope} stype={stype} value={value}");
+        }
+
+        // Diagnostic: log every max-vital update so we can see whether the
+        // UpdateAttribute2nd hook is actually firing for stype 1/3/5 after a
+        // hot reload, vs being silenced. Cheap (only fires on max changes).
+        if (changed && (stype == MaxHealthType || stype == MaxStaminaType || stype == MaxManaType))
+        {
+            RynthLog.Compat($"PlayerVitals: max update stype={stype} value={value} private={isPrivate}");
+        }
+
+        // Refresh MaxHealth from the live buffed-uint inq. Runs from the
+        // detour context (game thread, AC just finished an event), so the
+        // nested-pointer derefs inside InqAttribute2nd are safe. Catches
+        // god-mode / enchantment-drop cases where the buffed effective max
+        // changes without a server-pushed UpdateAttribute2nd(MaxHealth) event.
+        TryRefreshLiveMaxVitals();
+    }
+
+    // Called from every UpdateCache() invocation so buff/vitae changes that don't
+    // generate an explicit UpdateAttribute2nd packet are still picked up promptly.
+    private static void TryRefreshLiveMaxVitals()
+    {
+        if (_inqAttribute2ndUint == null) return;
+        IntPtr qualities = KnownPlayerQualitiesPtr;
+        if (qualities == IntPtr.Zero) return;
+        if (!LoginLifecycleHooks.HasObservedLoginComplete) return;
+        if (!ClientObjectHooks.IsReadablePointer(qualities)) return;
+
+        TryInqUint(qualities, MaxHealthType,   out uint liveHp);
+        TryInqUint(qualities, MaxStaminaType,  out uint liveSt);
+        TryInqUint(qualities, MaxManaType,     out uint liveMn);
+
+        lock (CacheLock)
+        {
+            PlayerVitalsSnapshot s = _snapshot;
+            if (liveHp != 0 && s.MaxHealth  != liveHp) s = s with { MaxHealth  = liveHp };
+            if (liveSt != 0 && s.MaxStamina != liveSt) s = s with { MaxStamina = liveSt };
+            if (liveMn != 0 && s.MaxMana    != liveMn) s = s with { MaxMana    = liveMn };
+            _snapshot = s;
         }
     }
 
@@ -490,4 +751,16 @@ internal static class PlayerVitalsHooks
 
     [UnmanagedFunctionPointer(CallingConvention.ThisCall)]
     private unsafe delegate int InqAttribute2ndStructDelegate(IntPtr thisPtr, uint stype, SecondaryAttributeNative* retval);
+
+    /// <summary>
+    /// CACQualities::InqAttribute2nd uint overload at 0x00592D20.
+    /// raw=0 → returns buffed effective value (initLevel + levelFromCp +
+    /// endurance contribution + EnchantAttribute2nd buffs). raw=1 → unbuffed.
+    /// This is the function AC itself uses to render the vital bars.
+    /// </summary>
+    [UnmanagedFunctionPointer(CallingConvention.ThisCall)]
+    private unsafe delegate int InqAttribute2ndUintDelegate(IntPtr thisPtr, uint stype, uint* retval, int raw);
+
+    private const int InqAttribute2ndUintVa = 0x00592D20;
+    private static InqAttribute2ndUintDelegate? _inqAttribute2ndUint;
 }

@@ -3,6 +3,8 @@
 **/obj/
 artifacts/
 TestResults/
+**/__pycache__/
+*.pyc
 
 # IDE and local tooling
 .vs/
@@ -42,3 +44,8 @@ scratch/
 # Installer build artifacts
 installer/staging/
 installer/Output/
+installer/Releases/
+
+# Process Monitor / debug log dumps (session junk)
+*.PML
+Logfile*.XML

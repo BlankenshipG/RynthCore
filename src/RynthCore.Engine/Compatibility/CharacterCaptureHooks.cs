@@ -28,14 +28,46 @@ internal static class CharacterCaptureHooks
     private const int XCharList = 121;
     private const int YTopOfBox = 209;
     private const int YBottomOfBox = 532;
-    private const int AutoLoginDelayMs = 800;
+    private const int AutoLoginDelayMs = 2000;
     private const int AutoLoginWindowWaitMs = 10000;
     private const int AutoLoginWindowPollMs = 250;
-    private const int AutoLoginAttempts = 3;
+    private const int AutoLoginAttempts = 15;
     private const int AutoLoginAttemptDelayMs = 600;
     private const int AutoLoginDoubleClickGapMs = 100;
     private const int DirectAutoLoginAttempts = 40;
     private const int DirectAutoLoginAttemptDelayMs = 250;
+    private const int CharacterManagementUIMode = 0x1000000A;
+    private const int GamePlayUIMode = 0x10000008;
+
+    // Poll-driven auto-login. The packet-driven path (ScheduleAutoLoginIfRequested,
+    // fed by InnerDispatcherDetour) is dead on this client: InnerDispatcherHook was
+    // disabled 2026-05-14 because its pattern walk-back stalls ACE in "Entering
+    // World", and SmartBox does not carry the pre-login 0xF658 char-list packet.
+    // Result: zero CharacterCapture activity, auto-login never fired. This poll
+    // drives login off the native CharacterSet directly (CharacterManagementHooks),
+    // which needs no packet — it just watches the UIFlow mode and retries until
+    // login completes. Replaces the dead trigger; the packet path is left intact
+    // (harmless, never invoked) in case InnerDispatcher is ever re-enabled.
+    private const int AutoLoginPollIntervalMs = 600;
+    private const int AutoLoginPollHardTimeoutMs = 120_000;
+    private const int AutoLoginDirectFailsBeforeClick = 4;
+    private static int _autoLoginPollStarted;
+
+    // Native character-list capture. The 0xF658 packet path is dead (see above),
+    // so ParseAndSaveCharacterList never runs and the launcher's cache
+    // (characters_<server>_<account>.json) was only written by SessionStateRegistry's
+    // login upsert, which records just the launch context's TargetCharacter. An
+    // account launched with no character picked therefore never got a cache file
+    // and its launcher dropdown stayed empty. This poll reads the list straight
+    // from AC's native CharacterSet while char-select is up, whether or not
+    // auto-login is armed. In the world it only checks a managed flag; the native
+    // set is read only in CharacterManagementUI. Logout back to char-select
+    // (LoginLifecycleHooks.ResetObservation) re-arms it, so a new or deleted
+    // character is picked up too. The file is rewritten only when the list changes.
+    private const int CharacterListCapturePollIntervalMs = 500;
+    private static int _characterListCapturePollStarted;
+    private static readonly object CharacterListCaptureLock = new();
+    private static string _lastCharacterListCaptureKey = string.Empty;
 
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
@@ -68,6 +100,258 @@ internal static class CharacterCaptureHooks
     // the user wants to swap characters, they can pick from char-select manually,
     // or relaunch.
     private static int _autoLoginEverFired;
+
+    /// <summary>
+    /// Starts the character-list capture poll (always) and the poll-driven
+    /// auto-login worker. Call once from InitWorker. Auto-login no-ops if no
+    /// TargetCharacter is configured in the launch context, or if the worker is
+    /// already running. Safe to call before the client window or char-select UI
+    /// exists — both workers wait for them.
+    /// </summary>
+    public static void Initialize()
+    {
+        StartCharacterListCapturePoll();
+
+        (_, _, string targetCharacter) = ReadLaunchContext();
+        if (string.IsNullOrWhiteSpace(targetCharacter))
+        {
+            RynthLog.Verbose("CharacterCapture: Initialize - no TargetCharacter in launch context; auto-login disabled.");
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _autoLoginPollStarted, 1) != 0)
+            return;
+
+        var thread = new Thread(AutoLoginPollLoop)
+        {
+            Name = "RynthCore.AutoLoginPoll",
+            IsBackground = true
+        };
+        thread.Start();
+        RynthLog.Info($"CharacterCapture: Poll-driven auto-login armed for '{targetCharacter}'.");
+    }
+
+    /// <summary>
+    /// Watches the native UIFlow mode and drives LogOnCharacter directly off
+    /// AC's native CharacterSet. Retries every tick while char-select is up,
+    /// so a too-early attempt or a missed click just gets re-tried — until
+    /// login completes, the client enters the world, or the hard timeout hits.
+    /// Hard-stops the instant mode==GamePlayUI or LoginComplete is observed:
+    /// poking LogOn pointers while in-game has been correlated with AC self-
+    /// exiting (see ScheduleAutoLoginIfRequested's notes).
+    /// </summary>
+    private static void AutoLoginPollLoop()
+    {
+        (_, _, string targetCharacter) = ReadLaunchContext();
+        if (string.IsNullOrWhiteSpace(targetCharacter))
+            return;
+
+        long charSelectFirstSeenTick = 0;
+        int directFailCount = 0;
+        bool issuedDirect = false;
+
+        try
+        {
+            while (true)
+            {
+                Thread.Sleep(AutoLoginPollIntervalMs);
+
+                if (LoginLifecycleHooks.HasObservedLoginComplete)
+                {
+                    RynthLog.Info($"CharacterCapture: Auto-login complete for '{targetCharacter}' (LoginComplete observed).");
+                    Interlocked.Exchange(ref _autoLoginEverFired, 1);
+                    return;
+                }
+
+                // One-shot: if the (currently dead) packet path ever fires and
+                // latches, stand down so we don't double-drive.
+                if (Volatile.Read(ref _autoLoginEverFired) != 0)
+                {
+                    RynthLog.Verbose($"CharacterCapture: Poll standing down for '{targetCharacter}' - auto-login already fired elsewhere.");
+                    return;
+                }
+
+                if (!CharacterManagementHooks.TryGetCurrentMode(out int mode))
+                    continue; // UIFlow not ready yet — keep waiting.
+
+                if (mode == GamePlayUIMode)
+                {
+                    RynthLog.Compat($"CharacterCapture: Poll stopping for '{targetCharacter}' - client already in GamePlayUI.");
+                    Interlocked.Exchange(ref _autoLoginEverFired, 1);
+                    return;
+                }
+
+                if (mode != CharacterManagementUIMode)
+                {
+                    // Still in connect/logo/transition — don't start the timeout
+                    // clock until char-select has actually appeared.
+                    continue;
+                }
+
+                if (charSelectFirstSeenTick == 0)
+                {
+                    charSelectFirstSeenTick = Environment.TickCount64;
+                    RynthLog.Info($"CharacterCapture: Char-select up — driving direct auto-login for '{targetCharacter}'.");
+                }
+
+                // Save the account's character list before logging on, so the
+                // launcher cache is written even when auto-login is quick.
+                TryCaptureNativeCharacterList();
+
+                // Direct path: read AC's native CharacterSet and call LogOnCharacter.
+                // No packet required. Retries every tick if it didn't take.
+                if (CharacterManagementHooks.TryLogOnCharacter(
+                        targetCharacter, out string matched, out uint avatarId, out int slotIndex, out string status))
+                {
+                    if (!issuedDirect)
+                    {
+                        issuedDirect = true;
+                        RynthLog.Info($"CharacterCapture: Issued LogOnCharacter for '{matched}' (target '{targetCharacter}', avatar 0x{avatarId:X8}). Awaiting world entry.");
+                    }
+                    directFailCount = 0;
+                    // Keep looping — watch for LoginComplete/GamePlayUI. If the
+                    // issue didn't take, next ticks will re-issue.
+                }
+                else
+                {
+                    directFailCount++;
+                    RynthLog.Verbose($"CharacterCapture: Direct auto-login attempt {directFailCount} for '{targetCharacter}' - {status}");
+
+                    // Direct keeps failing (native set not readable / name not
+                    // matched yet). Fall back to a char-list double-click, but
+                    // only when we know the slot — slotIndex is set when the
+                    // name matched in the native set; otherwise use the packet-
+                    // cached index is unavailable here so skip until known.
+                    if (directFailCount >= AutoLoginDirectFailsBeforeClick && slotIndex >= 0)
+                    {
+                        int slotCount = CharacterManagementHooks.GetNativeCharacterSetSlotCount();
+                        if (slotCount > 0)
+                            TryClickCharacterSlot(targetCharacter, slotIndex, slotCount);
+                        directFailCount = 0;
+                    }
+                }
+
+                if (charSelectFirstSeenTick != 0 &&
+                    Environment.TickCount64 - charSelectFirstSeenTick > AutoLoginPollHardTimeoutMs)
+                {
+                    RynthLog.Compat($"CharacterCapture: Auto-login for '{targetCharacter}' gave up after {AutoLoginPollHardTimeoutMs / 1000}s at char-select. Last status: {status}");
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"CharacterCapture: Auto-login poll loop crashed - {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _autoLoginPollStarted, 0);
+        }
+    }
+
+    private static void StartCharacterListCapturePoll()
+    {
+        if (Interlocked.Exchange(ref _characterListCapturePollStarted, 1) != 0)
+            return;
+
+        var thread = new Thread(CharacterListCapturePollLoop)
+        {
+            Name = "RynthCore.CharacterListCapture",
+            IsBackground = true
+        };
+        thread.Start();
+    }
+
+    private static void CharacterListCapturePollLoop()
+    {
+        try
+        {
+            while (!EngineLifecycle.IsShuttingDown)
+            {
+                Thread.Sleep(CharacterListCapturePollIntervalMs);
+
+                // In the world: no native reads at all.
+                if (LoginLifecycleHooks.HasObservedLoginComplete)
+                    continue;
+
+                if (!CharacterManagementHooks.TryGetCurrentMode(out int mode) || mode != CharacterManagementUIMode)
+                    continue;
+
+                TryCaptureNativeCharacterList();
+            }
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"CharacterCapture: Character-list capture poll crashed - {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _characterListCapturePollStarted, 0);
+        }
+    }
+
+    /// <summary>
+    /// Reads the character list from AC's native CharacterSet (char-select only)
+    /// and saves it to the launcher's character cache for this client's
+    /// account/server. Writes only when the list differs from the last one seen
+    /// in this process. Safe to call from any poll thread.
+    /// </summary>
+    private static void TryCaptureNativeCharacterList()
+    {
+        try
+        {
+            if (!CharacterManagementHooks.TryReadCharacterNames(out List<string> characters))
+                return;
+
+            lock (CharacterListCaptureLock)
+            {
+                string key = string.Join("\n", characters);
+                if (string.Equals(key, _lastCharacterListCaptureKey, StringComparison.Ordinal))
+                    return;
+
+                _lastCharacterListCaptureKey = key;
+                RynthLog.Info($"CharacterCapture: Native character set has {characters.Count} chars: {string.Join(", ", characters)}");
+
+                (string accountName, string serverName, _) = ReadLaunchContext();
+                SaveCharacterList(characters, accountName, serverName);
+            }
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"CharacterCapture: Native character-list capture failed - {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Single char-list double-click at the slot for <paramref name="slotIndex"/>.
+    /// Fallback for when the direct native LogOnCharacter path isn't taking.
+    /// </summary>
+    private static void TryClickCharacterSlot(string targetCharacter, int slotIndex, int slotCount)
+    {
+        try
+        {
+            if (CharacterManagementHooks.TryGetCurrentMode(out int m) && m == GamePlayUIMode)
+                return;
+
+            IntPtr hwnd = WaitForGameWindow();
+            if (hwnd == IntPtr.Zero)
+                return;
+
+            SetForegroundWindow(hwnd);
+
+            float nameSize = (YBottomOfBox - YTopOfBox) / (float)slotCount;
+            int yOffset = (int)(YTopOfBox + (nameSize / 2.0f) + (nameSize * slotIndex));
+
+            RynthLog.Verbose($"CharacterCapture: Click fallback for '{targetCharacter}' at slot {slotIndex}/{slotCount} ({XCharList},{yOffset}).");
+            PostMouseClick(hwnd, XCharList, yOffset);
+            Thread.Sleep(AutoLoginDoubleClickGapMs);
+            PostMouseClick(hwnd, XCharList, yOffset);
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"CharacterCapture: Click fallback threw - {ex.Message}");
+        }
+    }
 
     public static void ProcessPotentialCharacterMessage(IntPtr blob, bool isGameEvent = false)
     {
@@ -159,14 +443,26 @@ internal static class CharacterCaptureHooks
             }
 
             characters = new List<string>(characterCount);
+            // Deep-audit finding #28 (2026-06-18): this loop advanced offset
+            // (GUID, nameLen, name bytes, padding, timeout) and never compared
+            // it against blobSize — only nameLen itself was range-checked
+            // (1..127). A short/malformed blob (this server's own login
+            // response, so not adversarial, but still worth bounding) would
+            // walk past the buffer into whatever heap memory follows it.
+            // Bound every read against blobSize; break (not continue) on any
+            // overrun since offset is no longer trustworthy past that point.
             for (int i = 0; i < characterCount; i++)
             {
+                if (offset + 4 > blobSize) break; // GUID
                 offset += 4; // Skip Character GUID
+
+                if (offset + 2 > blobSize) break; // nameLen
                 short nameLen = Marshal.ReadInt16(IntPtr.Add(payloadPtr, offset));
                 offset += 2;
 
                 if (nameLen > 0 && nameLen < 128)
                 {
+                    if (offset + nameLen > blobSize) break; // name bytes
                     byte[] nameBytes = new byte[nameLen];
                     Marshal.Copy(IntPtr.Add(payloadPtr, offset), nameBytes, 0, nameLen);
                     string name = Encoding.Default.GetString(nameBytes);
@@ -177,6 +473,12 @@ internal static class CharacterCaptureHooks
                 if (offset % 4 != 0)
                     offset += 4 - (offset % 4);
                 offset += 4; // Skip Delete Timeout
+
+                if (offset > blobSize)
+                {
+                    offset = (int)blobSize; // cap so the slotCount read below can't overrun either
+                    break;
+                }
             }
 
             characters.Sort(StringComparer.OrdinalIgnoreCase);
@@ -185,7 +487,7 @@ internal static class CharacterCaptureHooks
                 ? Marshal.ReadInt32(IntPtr.Add(payloadPtr, offset))
                 : characters.Count;
 
-            RynthLog.Verbose($"CharacterCapture: Parsed {characters.Count} chars ({slotCount} slots): {string.Join(", ", characters)}");
+            RynthLog.Info($"CharacterCapture: Parsed {characters.Count} chars ({slotCount} slots): {string.Join(", ", characters)}");
 
             if (characters.Count > 0)
             {
@@ -255,7 +557,7 @@ internal static class CharacterCaptureHooks
             if (!string.IsNullOrWhiteSpace(accountName))
             {
                 CharacterCacheStore.Write(accountName, serverName, characters);
-                RynthLog.Verbose(
+                RynthLog.Info(
                     !string.IsNullOrWhiteSpace(serverName)
                         ? $"CharacterCapture: Saved {characters.Count} chars for '{accountName}' on '{serverName}'."
                         : $"CharacterCapture: Saved {characters.Count} chars for '{accountName}' (no server name in context).");
@@ -277,6 +579,26 @@ internal static class CharacterCaptureHooks
         if (string.IsNullOrWhiteSpace(targetCharacter))
             return;
 
+        // If the client is already past character-select, do NOT schedule any
+        // auto-login work. The 0xF658 character-list packet can arrive in
+        // transitional states (logout-to-char-select, hot-reload replay, etc.),
+        // and starting a 10-second polling loop that pokes at native LogOn
+        // pointers while the player is in-game has been correlated with AC
+        // self-exiting via MSVCR70 a few seconds later.
+        if (LoginLifecycleHooks.HasObservedLoginComplete)
+        {
+            RynthLog.Verbose($"CharacterCapture: Skipping auto-login schedule for '{targetCharacter}' - login already complete.");
+            Interlocked.Exchange(ref _autoLoginEverFired, 1);
+            return;
+        }
+
+        if (CharacterManagementHooks.TryGetCurrentMode(out int currentMode) && currentMode == 0x10000008 /* GamePlayUI */)
+        {
+            RynthLog.Compat($"CharacterCapture: Skipping auto-login schedule for '{targetCharacter}' - client is already in GamePlayUI.");
+            Interlocked.Exchange(ref _autoLoginEverFired, 1);
+            return;
+        }
+
         // One-shot per process: if auto-login already fired (and the user has
         // since logged back out), don't re-trigger. This keeps a manual logout
         // from instantly re-logging the same character.
@@ -293,7 +615,7 @@ internal static class CharacterCaptureHooks
             ? new List<string>(characters)
             : [];
         int finalSlots = slotCount > 0 ? slotCount : fallbackCharacters.Count;
-        int fallbackIndex = fallbackCharacters.FindIndex(c => string.Equals(c, targetCharacter, StringComparison.OrdinalIgnoreCase));
+        int fallbackIndex = fallbackCharacters.FindIndex(c => CharacterManagementHooks.CharacterNamesMatch(c, targetCharacter));
         int logoDelayMs = LogoBypassHooks.GetRecommendedAutoLoginDelayMs();
         int scheduledDelayMs = Math.Max(AutoLoginDelayMs, logoDelayMs);
 
@@ -332,6 +654,17 @@ internal static class CharacterCaptureHooks
                 return;
             }
 
+            // Hard early-out: if the client has already entered GamePlayUI, the player
+            // is in the world. Continuing to poll TryLogOnCharacter (which keeps
+            // dereferencing UIFlow + PlayerSystem pointers) has been correlated with
+            // AC self-exiting via MSVCR70 ~20s later. Treat this as "done", not a
+            // failure to be retried.
+            if (CharacterManagementHooks.TryGetCurrentMode(out int gpMode) && gpMode == 0x10000008 /* GamePlayUI */)
+            {
+                RynthLog.Compat($"CharacterCapture: Auto-login for '{targetCharacter}' aborted on attempt {attempt}/{DirectAutoLoginAttempts} - client is already in GamePlayUI. Last direct status: {lastDirectStatus}");
+                return;
+            }
+
             if (CharacterManagementHooks.TryLogOnCharacter(targetCharacter, out string matchedCharacter, out uint avatarId, out string directStatus))
             {
                 RynthLog.Verbose(
@@ -340,16 +673,36 @@ internal static class CharacterCaptureHooks
             }
 
             lastDirectStatus = directStatus;
+
+            // Belt-and-braces: TryLogOnCharacter itself reports "Client is already in
+            // GamePlayUI" when mode==GamePlayUI. If we somehow raced past the
+            // pre-call mode check above, still bail on the status.
+            if (directStatus.IndexOf("already in GamePlayUI", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                RynthLog.Compat($"CharacterCapture: Auto-login for '{targetCharacter}' aborted on attempt {attempt}/{DirectAutoLoginAttempts} - {directStatus}");
+                return;
+            }
+
             if (attempt < DirectAutoLoginAttempts)
                 Thread.Sleep(DirectAutoLoginAttemptDelayMs);
         }
 
         RynthLog.Compat($"CharacterCapture: Direct auto-login did not succeed for '{targetCharacter}' - {lastDirectStatus}");
 
-        int index = fallbackCharacters.FindIndex(c => string.Equals(c, targetCharacter, StringComparison.OrdinalIgnoreCase));
+        int index = fallbackCharacters.FindIndex(c => CharacterManagementHooks.CharacterNamesMatch(c, targetCharacter));
         if (index < 0 || slotCount <= 0)
         {
             RynthLog.Compat($"CharacterCapture: No click fallback is available for '{targetCharacter}' after direct login failure.");
+            return;
+        }
+
+        // Final guard: the click fallback drives a foreground window via PostMessage.
+        // If, by the time we reach the fallback, the client is in GamePlayUI (eg the
+        // user clicked through during the retry window), do NOT spam clicks at the
+        // game viewport.
+        if (CharacterManagementHooks.TryGetCurrentMode(out int fbMode) && fbMode == 0x10000008 /* GamePlayUI */)
+        {
+            RynthLog.Compat($"CharacterCapture: Skipping click fallback for '{targetCharacter}' - client is already in GamePlayUI.");
             return;
         }
 
@@ -367,6 +720,30 @@ internal static class CharacterCaptureHooks
 
         for (int attempt = 1; attempt <= AutoLoginAttempts; attempt++)
         {
+            // Login made it through (either by our earlier click or by the user) — stop clicking.
+            if (LoginLifecycleHooks.HasObservedLoginComplete)
+            {
+                RynthLog.Verbose($"CharacterCapture: Click fallback for '{targetCharacter}' aborted on attempt {attempt}/{AutoLoginAttempts} - login complete.");
+                return;
+            }
+
+            if (CharacterManagementHooks.TryGetCurrentMode(out int clickMode) && clickMode == GamePlayUIMode)
+            {
+                RynthLog.Compat($"CharacterCapture: Click fallback for '{targetCharacter}' aborted on attempt {attempt}/{AutoLoginAttempts} - client is already in GamePlayUI.");
+                return;
+            }
+
+            // Only click while char-select is actually visible. The 0xF658 packet can arrive
+            // before the UI has transitioned (logos still dismissing, etc.) — wasting clicks
+            // outside char-select is what made earlier runs "give up too soon."
+            bool charSelectReady = CharacterManagementHooks.TryGetCurrentMode(out int curMode) && curMode == CharacterManagementUIMode;
+            if (!charSelectReady)
+            {
+                RynthLog.Verbose($"CharacterCapture: Click fallback waiting for char-select UI on attempt {attempt}/{AutoLoginAttempts} (mode=0x{curMode:X8}).");
+                Thread.Sleep(AutoLoginAttemptDelayMs);
+                continue;
+            }
+
             RynthLog.Verbose($"CharacterCapture: Auto-login attempt {attempt}/{AutoLoginAttempts} for '{targetCharacter}' at ({XCharList}, {yOffset}).");
 
             PostMouseClick(hwnd, XCharList, yOffset);

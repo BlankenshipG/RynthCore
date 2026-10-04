@@ -41,7 +41,7 @@ internal static class StatusPanel
         panel.Children.Clear();
 
         AddHeader(panel, "Engine");
-        AddRow(panel, "Build", EntryPoint.BuildStamp);
+        AddRow(panel, "Version", EntryPoint.BuildStamp);
         AddRow(panel, "Game HWND", $"0x{EntryPoint.GameHwnd:X8}");
         AddRow(panel, "Plugin dir", PluginManager.PluginDirectory);
 
@@ -64,7 +64,7 @@ internal static class StatusPanel
             foreach (var p in plugins)
             {
                 string state = p.Failed ? "FAILED" : p.Initialized ? "OK" : "pending";
-                string version = p.VersionString.Length > 0 ? $" v{p.VersionString}" : "";
+                string version = p.VersionString.Length > 0 ? $" {p.VersionString}" : "";
                 AddRow(panel, p.DisplayName + version, state, p.Failed);
             }
         }

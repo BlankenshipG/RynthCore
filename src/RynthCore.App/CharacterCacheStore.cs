@@ -10,6 +10,28 @@ namespace RynthCore.App;
 
 internal static class CharacterCacheStore
 {
+    /// Strict reader — only returns characters from the server-scoped file
+    /// for this (account, server) pair. Will NOT fall through to the
+    /// account-only file. Use this when correctness across accounts/servers
+    /// matters more than tolerance for missing data (e.g. UI dropdowns where
+    /// stale legacy files would leak the wrong account's characters).
+    public static List<string> ReadStrict(string accountName, string serverName)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(accountName) || string.IsNullOrWhiteSpace(serverName))
+                return [];
+
+            string safeAccount = SanitizeFileName(accountName);
+            string safeServer = SanitizeFileName(serverName);
+            return ReadCharacterFile(GetServerScopedPath(safeServer, safeAccount));
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
     public static List<string> Read(string accountName, string serverName = "")
     {
         try
@@ -63,11 +85,16 @@ internal static class CharacterCacheStore
             return;
 
         List<string> characters = Read(accountName, serverName);
-        if (!characters.Contains(characterName, StringComparer.OrdinalIgnoreCase))
+        if (!characters.Any(existing => IsSameCharacter(existing, characterName)))
             characters.Add(characterName);
 
         Write(accountName, serverName, characters);
     }
+
+    // The client shows admin names with a leading '+' ('+Buffi'); a launch-context
+    // name may lack it. Treat both as one character so the list holds no duplicate.
+    private static bool IsSameCharacter(string a, string b) =>
+        string.Equals(a.Trim().TrimStart('+'), b.Trim().TrimStart('+'), StringComparison.OrdinalIgnoreCase);
 
     public static void DeleteForAccount(string accountName)
     {

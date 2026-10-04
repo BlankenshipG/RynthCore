@@ -7,6 +7,7 @@
 
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace RynthCore.Engine;
 
@@ -34,6 +35,11 @@ internal static class CrashLogger
 
     [DllImport("kernel32.dll")]
     private static extern IntPtr AddVectoredExceptionHandler(uint first, VectoredHandler handler);
+
+    private delegate int UnhandledExceptionFilter(IntPtr exceptionInfo);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr SetUnhandledExceptionFilter(UnhandledExceptionFilter handler);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern uint GetModuleFileNameW(IntPtr hModule, char[] lpFilename, uint nSize);
@@ -102,23 +108,44 @@ internal static class CrashLogger
 
     // Pin the delegate so it isn't GC'd while Windows holds the function pointer.
     private static VectoredHandler? _handler;
+    private static UnhandledExceptionFilter? _suefHandler;
     private static bool _installed;
+    // Once-per-process latch; first interesting AV wins.
+    private static int _crashLogged;
+    // First-chance trace counter: dump exception code + addr for the first
+    // N exceptions we observe regardless of "interesting" filter, so we can
+    // confirm VEH is even firing during a real crash.
+    private static int _firstChanceTraceCount;
+    private const int FirstChanceTraceLimit = 20;
 
     public static void Install()
     {
         if (_installed) return;
 
+        // ── DO NOT install the managed VEH / SUEF (proven fatal 2026-05-16) ──
+        // AddVectoredExceptionHandler(CALL_FIRST, managed-delegate) registers a
+        // NativeAOT *managed reverse-P/Invoke* that the OS invokes for EVERY
+        // first-chance SEH exception process-wide — including the many that AC,
+        // d3d9.dll and Avalonia raise-and-handle internally in normal
+        // operation. On an AC-owned thread (render/EndScene) where the runtime
+        // can't safely attach/trap (mid-render, mid-GC), that transition
+        // fail-fasts in RhpReversePInvokeAttachOrTrapThread2 — exactly the
+        // 2026-05-16 10:13 dump (CrashLogger.VectoredHandler is literally on
+        // the fail-fast stack, EndScene→OverlayTextureRenderer.UploadFrame).
+        // It also does GC-capable managed work (Marshal.PtrToStructure,
+        // RynthLog) inside exception dispatch. Same fatal class as the removed
+        // RaiseFailFastException hook. Across the entire multi-session crash
+        // investigation this handler produced ZERO usable crash logs — every
+        // real crash either overflowed past the stack reservation (bypassing
+        // VEH) or the VEH's own transition fail-fasted. It is pure liability:
+        // it converts first-chance exceptions AC would otherwise handle into
+        // guaranteed fail-fast process death. SUEF has the same managed-
+        // callback hazard and also never produced a usable log. Both removed.
+        // External crash capture (procdump -ma -t) replaced this diagnostic.
         try
         {
-            _handler = OnVectoredException;
-            IntPtr cookie = AddVectoredExceptionHandler(1 /*CALL_FIRST*/, _handler);
-            if (cookie == IntPtr.Zero)
-            {
-                RynthLog.Info($"CrashLogger: AddVectoredExceptionHandler failed (err {Marshal.GetLastWin32Error()})");
-                return;
-            }
             _installed = true;
-            RynthLog.Info("CrashLogger: VEH installed.");
+            RynthLog.Info("CrashLogger: managed VEH/SUEF intentionally NOT installed (fatal in NativeAOT-injected acclient — see code comment).");
         }
         catch (Exception ex)
         {
@@ -126,12 +153,54 @@ internal static class CrashLogger
         }
     }
 
+    /// <summary>
+    /// SetUnhandledExceptionFilter target — runs only when no other handler
+    /// catches the exception. Same dump as the VEH path, but explicitly
+    /// labeled so we know which path produced the log.
+    /// </summary>
+    private static int OnUnhandledException(IntPtr pExceptionInfo)
+    {
+        try
+        {
+            RynthLog.Error("==== SUEF (last-chance unhandled) FIRED ====");
+            ProcessException(pExceptionInfo, sourceTag: "SUEF");
+        }
+        catch
+        {
+        }
+        // EXCEPTION_CONTINUE_SEARCH (0) lets WER take over (which on this
+        // box doesn't seem to be configured to log either, but we've at
+        // least written our banner now).
+        return 0;
+    }
+
     private static int OnVectoredException(IntPtr pExceptionInfo)
+    {
+        ProcessException(pExceptionInfo, sourceTag: "VEH");
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    /// <summary>
+    /// Shared exception handling — called from both the VEH (first-chance)
+    /// and SUEF (last-chance) paths. Tagged with which path observed it so
+    /// we can tell whether VEH is even running during a real crash.
+    /// </summary>
+    private static void ProcessException(IntPtr pExceptionInfo, string sourceTag)
     {
         try
         {
             EXCEPTION_POINTERS ep = Marshal.PtrToStructure<EXCEPTION_POINTERS>(pExceptionInfo);
             EXCEPTION_RECORD er = Marshal.PtrToStructure<EXCEPTION_RECORD>(ep.ExceptionRecord);
+
+            // First-chance trace (capped). Logs every SEH exception we observe
+            // for the first N times, regardless of whether it's "interesting".
+            // This proves VEH is firing and lets us see codes we may want to
+            // start treating as fatal.
+            int traceN = Interlocked.Increment(ref _firstChanceTraceCount);
+            if (traceN <= FirstChanceTraceLimit)
+            {
+                RynthLog.Info($"[{sourceTag}] fc#{traceN} code=0x{er.ExceptionCode:X8} addr=0x{er.ExceptionAddress.ToInt64():X8} flags=0x{er.ExceptionFlags:X}");
+            }
 
             // Only log genuinely fatal categories. Normal operation throws SEH
             // exceptions (C++ 0xE06D7363, CLR 0xE0434352, etc.) we should ignore.
@@ -143,16 +212,49 @@ internal static class CrashLogger
                 er.ExceptionCode == EXCEPTION_STACK_OVERFLOW;
 
             if (!interesting)
-                return EXCEPTION_CONTINUE_SEARCH;
+                return;
 
             string module = ResolveModule(er.ExceptionAddress, out IntPtr moduleBase);
+
+            // Historically we returned EXCEPTION_CONTINUE_SEARCH whenever the
+            // faulting address didn't resolve to a module — to suppress the
+            // flood of speculative-null-deref AVs that .NET Framework's CLR
+            // (used by Decal-injected managed plugins) generates as part of
+            // normal nullable reads. Problem: that filter ALSO suppressed
+            // genuine fatal AVs whose target address is NULL, in freed heap,
+            // or in JIT'd code — which is most of what actually kills AC.
+            // We only enable the filter when Decal is loaded; otherwise we
+            // log every interesting AV unconditionally and let the once-per-
+            // process latch (added below) keep the log readable.
+            if (moduleBase == IntPtr.Zero && Compatibility.DecalDetection.IsDecalLoaded)
+                return;
+
+            // Once-per-process latch: log the first interesting fault, then
+            // stop logging subsequent AVs to keep the log focused on the
+            // root cause. The process is going to die anyway, and tail
+            // SEH unwind frequently re-raises the same fault several times.
+            if (Interlocked.Exchange(ref _crashLogged, 1) != 0)
+                return;
+
             long rva = moduleBase != IntPtr.Zero
                 ? er.ExceptionAddress.ToInt64() - moduleBase.ToInt64()
                 : 0;
 
+            string codeName = er.ExceptionCode switch
+            {
+                EXCEPTION_ACCESS_VIOLATION    => "ACCESS_VIOLATION",
+                EXCEPTION_ILLEGAL_INSTRUCTION => "ILLEGAL_INSTRUCTION",
+                EXCEPTION_PRIV_INSTRUCTION    => "PRIV_INSTRUCTION",
+                EXCEPTION_INT_DIVIDE_BY_ZERO  => "DIVIDE_BY_ZERO",
+                EXCEPTION_STACK_OVERFLOW      => "STACK_OVERFLOW",
+                _                             => "UNKNOWN",
+            };
+
+            RynthLog.Info("================================================================");
+            RynthLog.Error($"==== CRASH ({codeName}) [{sourceTag}]  build={EntryPoint.BuildStamp}  initCount={EntryPoint.InitCount}  thread={Environment.CurrentManagedThreadId}");
             RynthLog.Info(
-                $"CRASH: code=0x{er.ExceptionCode:X8} addr=0x{er.ExceptionAddress.ToInt64():X8} " +
-                $"module={ShortModule(module)} base=0x{moduleBase.ToInt64():X8} rva=0x{rva:X}");
+                $"  code=0x{er.ExceptionCode:X8}  addr=0x{er.ExceptionAddress.ToInt64():X8}  " +
+                $"module={ShortModule(module)}  base=0x{moduleBase.ToInt64():X8}  rva=0x{rva:X}");
 
             // Decode AV operation from ExceptionInformation[0..1] (first param =
             // 0 read / 1 write / 8 DEP, second param = faulting data address).
@@ -164,17 +266,16 @@ internal static class CrashLogger
                 uint avKind = (uint)Marshal.ReadInt32(ep.ExceptionRecord, infoOffset);
                 IntPtr avAddr = (IntPtr)Marshal.ReadInt32(ep.ExceptionRecord, infoOffset + 4);
                 string kind = avKind switch { 0 => "read", 1 => "write", 8 => "DEP", _ => $"?{avKind}" };
-                RynthLog.Info($"CRASH AV: {kind} faultAddr=0x{avAddr.ToInt64():X8}");
+                RynthLog.Info($"  AV kind={kind}  faultAddr=0x{avAddr.ToInt64():X8}");
             }
 
             DumpContext(ep.ContextRecord);
+            RynthLog.Info("================================================================");
         }
         catch
         {
             // Logging must not throw — we're in an exception handler.
         }
-
-        return EXCEPTION_CONTINUE_SEARCH;
     }
 
     /// <summary>
@@ -184,7 +285,27 @@ internal static class CrashLogger
     /// FPO-optimized native code (cimgui, acclient) where return addresses
     /// still sit on the stack but EBP is repurposed.
     /// </summary>
-    private static void DumpContext(IntPtr ctx)
+    /// <summary>
+    /// Reused by MainThreadHangWatchdog: format a captured x86 CONTEXT* (from
+    /// GetThreadContext on a suspended thread) as a register dump + stack walk.
+    /// </summary>
+    internal static void DumpExternalContext(IntPtr ctx, string tag) => DumpContext(ctx, tag);
+
+    private static void DumpContext(IntPtr ctx) => DumpContext(ctx, "CRASH");
+
+    /// <summary>module+RVA for a code address, or &lt;unknown&gt; — used by the
+    /// hang watchdog for cheap per-sample eip summaries.</summary>
+    internal static string ResolveCodeAddr(IntPtr addr)
+    {
+        try
+        {
+            string m = ResolveModule(addr, out IntPtr b);
+            return b != IntPtr.Zero ? $"{ShortModule(m)}+0x{addr.ToInt64() - b.ToInt64():X}" : "<unknown>";
+        }
+        catch { return "<err>"; }
+    }
+
+    private static void DumpContext(IntPtr ctx, string tag)
     {
         if (ctx == IntPtr.Zero) return;
 
@@ -207,9 +328,9 @@ internal static class CrashLogger
         }
 
         RynthLog.Info(
-            $"CRASH regs: eip=0x{eip:X8} eax=0x{eax:X8} ebx=0x{ebx:X8} ecx=0x{ecx:X8} " +
+            $"{tag} regs: eip=0x{eip:X8} eax=0x{eax:X8} ebx=0x{ebx:X8} ecx=0x{ecx:X8} " +
             $"edx=0x{edx:X8} esi=0x{esi:X8} edi=0x{edi:X8}");
-        RynthLog.Info($"CRASH regs: ebp=0x{ebp:X8} esp=0x{esp:X8}");
+        RynthLog.Info($"{tag} regs: ebp=0x{ebp:X8} esp=0x{esp:X8}");
 
         WalkEbpFrames((IntPtr)ebp);
         SweepStack((IntPtr)esp);

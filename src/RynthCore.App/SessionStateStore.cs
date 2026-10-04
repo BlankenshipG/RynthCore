@@ -19,6 +19,10 @@ internal sealed class SessionStateRecord
     public DateTime? LoginCompletedAtUtc { get; set; }
     public DateTime LastUpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public bool IsLoggedIn { get; set; }
+    /// Set by the engine when LogoutLifecycleHooks observes a logout (clean
+    /// or server-driven disconnect). Stays set across the post-login reaper
+    /// window so the launcher can detect "stuck on disconnect/char-select".
+    public DateTime? LogoutAtUtc { get; set; }
 }
 
 internal static class SessionStateStore
@@ -32,7 +36,9 @@ internal static class SessionStateStore
 
         record.ProcessId = processId;
         record.LastUpdatedAtUtc = DateTime.UtcNow;
-        File.WriteAllText(GetProcessPath(processId), BuildSessionJson(record), Encoding.UTF8);
+        // Explicit no-BOM UTF-8 — Encoding.UTF8 emits a BOM under NativeAOT which
+        // breaks JsonDocument.Parse on the launcher side.
+        File.WriteAllText(GetProcessPath(processId), BuildSessionJson(record), new System.Text.UTF8Encoding(false));
     }
 
     public static SessionStateRecord? TryReadForProcess(int processId)
@@ -43,7 +49,15 @@ internal static class SessionStateStore
 
         try
         {
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllBytes(path));
+            byte[] bytes = File.ReadAllBytes(path);
+            // Strip UTF-8 BOM if present — the engine writes with Encoding.UTF8
+            // which emits a BOM (EF BB BF) under NativeAOT, and JsonDocument.Parse
+            // on a byte span rejects the BOM as an invalid JSON start character.
+            ReadOnlyMemory<byte> content = bytes;
+            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+                content = new ReadOnlyMemory<byte>(bytes, 3, bytes.Length - 3);
+
+            using JsonDocument document = JsonDocument.Parse(content);
             JsonElement root = document.RootElement;
 
             var record = new SessionStateRecord
@@ -56,7 +70,8 @@ internal static class SessionStateStore
                 LaunchStartedAtUtc = GetDateTime(root, "LaunchStartedAtUtc") ?? DateTime.UtcNow,
                 LoginCompletedAtUtc = GetDateTime(root, "LoginCompletedAtUtc"),
                 LastUpdatedAtUtc = GetDateTime(root, "LastUpdatedAtUtc") ?? DateTime.UtcNow,
-                IsLoggedIn = GetBoolean(root, "IsLoggedIn")
+                IsLoggedIn = GetBoolean(root, "IsLoggedIn"),
+                LogoutAtUtc = GetDateTime(root, "LogoutAtUtc")
             };
 
             if (record.ProcessId == 0)
@@ -138,6 +153,10 @@ internal static class SessionStateStore
                 writer.WriteNull("LoginCompletedAtUtc");
             writer.WriteString("LastUpdatedAtUtc", record.LastUpdatedAtUtc.ToString("O", CultureInfo.InvariantCulture));
             writer.WriteBoolean("IsLoggedIn", record.IsLoggedIn);
+            if (record.LogoutAtUtc.HasValue)
+                writer.WriteString("LogoutAtUtc", record.LogoutAtUtc.Value.ToString("O", CultureInfo.InvariantCulture));
+            else
+                writer.WriteNull("LogoutAtUtc");
             writer.WriteEndObject();
         }
 

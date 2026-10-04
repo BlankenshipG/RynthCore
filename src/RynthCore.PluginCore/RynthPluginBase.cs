@@ -6,7 +6,7 @@ namespace RynthCore.PluginCore;
 
 public abstract class RynthPluginBase
 {
-    public virtual uint MinimumApiVersion => RynthCoreHost.CurrentApiVersion;
+    public virtual uint MinimumApiVersion => RynthCoreHost.BaselineApiVersion;
 
     protected RynthCoreApiNative Api { get; private set; }
     protected RynthCoreHost Host { get; private set; }
@@ -20,6 +20,14 @@ public abstract class RynthPluginBase
     }
 
     protected void Log(string message)
+    {
+        if (!IsAttached)
+            return;
+
+        Host.Log(message);
+    }
+
+    internal void LogInternal(string message)
     {
         if (!IsAttached)
             return;
@@ -56,6 +64,8 @@ public abstract class RynthPluginBase
     public virtual void OnVendorOpen(uint vendorId) { }
     public virtual void OnVendorClose(uint vendorId) { }
     public virtual void OnUpdateHealth(uint targetId, float healthRatio, uint currentHealth, uint maxHealth) { }
+    public virtual void OnCombatDamage(uint damage, uint damageType, bool crit, bool isAttacker) { }
+    public virtual void OnKillNotification(string? deathMessage) { }
     public virtual void OnEnchantmentAdded(uint spellId, double durationSeconds) { }
     public virtual void OnEnchantmentRemoved(uint enchantmentId) { }
 }

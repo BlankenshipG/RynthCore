@@ -25,8 +25,26 @@ internal static class EndSceneHook
     private static long _fpsCounterStart;
     private static int _fpsCounterFrames;
 
+    /// <summary>
+    /// Last measured EndScene frames-per-second, refreshed once per second.
+    /// Updated whether or not the FPS governor is enabled — UI panels (the
+    /// RynthAi footer) read this for a live frame-rate display. Volatile
+    /// because writes happen on the AC pump thread and reads happen on the
+    /// Avalonia dispatcher thread (10 Hz panel tick); double-word atomic on
+    /// x86 and we don't need a tear-free guarantee on this value.
+    /// </summary>
+    internal static volatile float MeasuredFps;
+    private static long _liveFpsCounterStart;
+    private static int _liveFpsCounterFrames;
+
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint lpdwProcessId);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentProcessId();
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int EndSceneDelegate(IntPtr pDevice);
@@ -133,10 +151,17 @@ internal static class EndSceneHook
         if (!_installed)
             return;
 
-        ImGuiController.Shutdown();
-
+        // Order is critical: disable the detour FIRST so AC's render thread
+        // stops entering our code, then drain in-flight calls, THEN tear down
+        // ImGui. If we destroyed the context first, an in-flight EndScene call
+        // would assert on `GImGui != NULL`.
         int status = MinHook.MH_DisableHook(_endSceneAddr);
         RynthLog.D3D9($"EndSceneHook: Disable = {MinHook.StatusString(status)}");
+
+        // Let the render thread return through the trampoline.
+        Thread.Sleep(80);
+
+        EngineFrameController.Shutdown();
 
         status = MinHook.MH_RemoveHook(_endSceneAddr);
         RynthLog.D3D9($"EndSceneHook: Remove = {MinHook.StatusString(status)}");
@@ -184,6 +209,10 @@ internal static class EndSceneHook
 
     private static int EndSceneDetour(IntPtr pDevice)
     {
+        // Liveness beacon for MainThreadHangWatchdog — this detour runs on AC's
+        // main/render thread every frame (even with the ImGui backend disabled),
+        // so a stalled beat means the main thread is wedged. Must never throw.
+        try { MainThreadHangWatchdog.MainThreadBeat(); } catch { }
         try
         {
             if (!_offscreenFilterDisabled && !DX9Backend.IsRenderingToBackBuffer(pDevice))
@@ -208,6 +237,10 @@ internal static class EndSceneHook
 
             // Per-frame chatbox visibility assertion (no-op unless plugin enables suppression).
             try { ChatHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
+            // Per-frame retail-radar visibility assertion (no-op unless plugin enables suppression).
+            try { RadarHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
+            // Per-frame retail-powerbar visibility assertion (no-op unless plugin enables suppression).
+            try { PowerbarHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
 
             if (_renderCount == 1 && _offscreenFilterDisabled && _skipCount > 0)
             {
@@ -230,17 +263,38 @@ internal static class EndSceneHook
 
                 if (!match && actualEndScene != IntPtr.Zero)
                 {
+                    // Deep-audit finding #8 (2026-06-18): the old sequence
+                    // disabled+REMOVED the old hook (freeing the trampoline
+                    // _originalEndScene points at) BEFORE attempting the new
+                    // install. If the new MH_CreateHook then threw,
+                    // _originalEndScene was never reassigned — it still bound
+                    // the now-freed trampoline — yet the code force-set
+                    // _installed=true and this function's bottom called
+                    // through it: a use-after-free. Fixed order: only remove
+                    // the OLD hook after the NEW one is confirmed installed;
+                    // on failure, re-enable the OLD hook and keep using its
+                    // still-valid trampoline instead of a dangling one.
                     RynthLog.D3D9("EndSceneHook: Rehooking at the device's actual EndScene address.");
-                    MinHook.MH_DisableHook(_endSceneAddr);
-                    MinHook.MH_RemoveHook(_endSceneAddr);
-                    _installed = false;
+                    IntPtr oldAddr = _endSceneAddr;
+                    EndSceneDelegate? oldOriginal = _originalEndScene;
+                    MinHook.MH_DisableHook(oldAddr);
 
                     InstallFromEndSceneAddress(actualEndScene);
                     if (_installed)
+                    {
+                        // New hook confirmed live — safe to free the old
+                        // trampoline now.
+                        MinHook.MH_RemoveHook(oldAddr);
                         return _originalEndScene!(pDevice);
+                    }
 
-                    RynthLog.D3D9("EndSceneHook: Rehook failed — continuing with original hook.");
-                    // Restore state so we don't keep trying
+                    RynthLog.D3D9("EndSceneHook: Rehook failed — restoring original hook.");
+                    // New install failed (InstallFromEndSceneAddress leaves
+                    // _installed=false on failure). Restore the OLD hook
+                    // rather than trust a dangling delegate.
+                    _endSceneAddr = oldAddr;
+                    _originalEndScene = oldOriginal;
+                    MinHook.Enable(oldAddr);
                     _installed = true;
                 }
             }
@@ -260,11 +314,39 @@ internal static class EndSceneHook
                 RynthLog.D3D9("EndSceneHook: Warmup complete - initializing ImGui.");
             }
 
-            ImGuiController.OnEndScene(pDevice);
+            // EngineFrameController.OnEndScene runs the always-on engine work
+            // (matrix capture, plugin tick, nav rendering, pending action drains)
+            // every frame. The EnableImGuiBackend gate moved INSIDE the
+            // controller so it scopes only the ImGui-specific block; this call
+            // site no longer needs to gate it.
+            EngineFrameController.OnEndScene(pDevice);
             _uiFrameCount++;
 
-            if (_uiFrameCount == 60)
+            if (_uiFrameCount == 60 && RynthCore.Engine.Plugins.EngineSettings.EnableImGuiBackend)
                 RynthLog.D3D9("EndSceneHook: 60 UI frames - ImGui is stable.");
+            if (_renderCount == UiInitWarmupFrames && !RynthCore.Engine.Plugins.EngineSettings.EnableImGuiBackend)
+                RynthLog.D3D9("EndSceneHook: ImGui backend disabled via engine.json (EnableImGuiBackend=false). Always-on engine work still runs; only ImGui draw calls are skipped.");
+
+            // Avalonia compositor: independent of ImGui. Reads the latest
+            // Avalonia surface from OverlaySurfaceBridge and blits it as a
+            // fullscreen alpha-blended quad onto AC's back buffer. Runs every
+            // frame regardless of EnableImGuiBackend so the Avalonia overlay
+            // is visible even when ImGui per-frame work is disabled. Driven
+            // here exclusively — EngineFrameController.OnEndScene intentionally
+            // does NOT call it (avoids double-blit / TryConsume races).
+            // The UI hides between characters: nothing is drawn at character select or
+            // on the way out, and it's back the moment login completes (an engine
+            // reload synthesises login for a player already in the world).
+            try
+            {
+                if (Compatibility.LoginLifecycleHooks.HasObservedLoginComplete)
+                    OverlayTextureRenderer.Render(pDevice);
+            }
+            catch (Exception ovEx)
+            {
+                if (_uiFrameCount < 30)
+                    RynthLog.D3D9($"EndSceneHook: OverlayTextureRenderer.Render error: {ovEx.GetType().Name}: {ovEx.Message}");
+            }
         }
         catch (Exception ex)
         {
@@ -272,12 +354,32 @@ internal static class EndSceneHook
                 RynthLog.D3D9($"EndSceneHook: Frame {_frameCount} error: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
         }
 
+        // ── Always-on FPS measurement for UI footer ──────────────────
+        // Runs whether or not the governor is enabled so the RynthAi
+        // footer can show a live FPS even when the user hasn't capped.
+        // Cheap: one increment + a once-per-second division.
+        _liveFpsCounterFrames++;
+        long liveNow = Environment.TickCount64;
+        if (_liveFpsCounterStart == 0) _liveFpsCounterStart = liveNow;
+        long liveElapsed = liveNow - _liveFpsCounterStart;
+        if (liveElapsed >= 1000)
+        {
+            MeasuredFps = (float)(_liveFpsCounterFrames * 1000.0 / liveElapsed);
+            _liveFpsCounterFrames = 0;
+            _liveFpsCounterStart = liveNow;
+        }
+
         // ── FPS Governor (matches proven NexSuite2 pattern) ─────────
         if (FpsLimitEnabled)
         {
             IntPtr fgWnd = GetForegroundWindow();
-            // Only "focused" when the AC game window itself is foreground — not viewport popups.
-            bool isFocused = fgWnd != IntPtr.Zero && fgWnd == Win32Backend.GameHwnd;
+            // Focused when AC itself is foreground, OR when any window belonging
+            // to our process is foreground (covers DComp overlay, any Avalonia
+            // child window, etc.). PID comparison is reliable regardless of how
+            // the owner chain was established (GWL_HWNDPARENT vs CreateWindow).
+            GetWindowThreadProcessId(fgWnd, out uint fgPid);
+            bool isFocused = fgWnd != IntPtr.Zero &&
+                (fgWnd == Win32Backend.GameHwnd || fgPid == GetCurrentProcessId());
             int targetFps = isFocused ? FpsTargetFocused : FpsTargetBackground;
             double minFrameMs = 1000.0 / Math.Max(targetFps, 1);
 
