@@ -1,0 +1,115 @@
+{
+    "schema":  1,
+    "product":  "RynthCore + RynthSuite",
+    "version":  "2026.10.4.7",
+    "release":  2026100407,
+    "builtUtc":  "2026-10-04T20:56:13Z",
+    "previous":  "2026.10.4.6",
+    "installer":  {
+                      "file":  "RynthCore-Setup-2026.10.4.7.exe",
+                      "size":  108410347,
+                      "sha256":  "318e9bd5eeef45d8c7a47a35715c5689e97083d148b2df3060af349a4c4142ca"
+                  },
+    "source":  {
+                   "rynthCore":  {
+                                     "branch":  "SK-local",
+                                     "commit":  "fcc68cbdd6f3384cdbd86cb9868416eec26db5f8",
+                                     "dirty":  false
+                                 },
+                   "rynthSuite":  {
+                                      "branch":  "SK-local",
+                                      "commit":  "6791dd6a223d146f7a1c6313e9920356e64ba829",
+                                      "dirty":  false
+                                  }
+               },
+    "components":  [
+                       {
+                           "name":  "Launcher (RynthCore.exe)",
+                           "file":  "core\\RynthCore.exe",
+                           "version":  "2026.10.4.7+fcc68cbdd6f3384cdbd86cb9868416eec26db5f8"
+                       },
+                       {
+                           "name":  "Engine",
+                           "file":  "core\\Runtime\\RynthCore.Engine.dll",
+                           "version":  "2026.10.4.7+fcc68cbdd6f3384cdbd86cb9868416eec26db5f8"
+                       },
+                       {
+                           "name":  "Loader",
+                           "file":  "core\\Runtime\\RynthCore.Loader.dll",
+                           "version":  "2026.10.4.7+fcc68cbdd6f3384cdbd86cb9868416eec26db5f8"
+                       },
+                       {
+                           "name":  "Loot Editor",
+                           "file":  "core\\Tools\\LootEditor\\RynthCore.LootEditor.exe",
+                           "version":  "2026.10.4.7+6791dd6a223d146f7a1c6313e9920356e64ba829"
+                       },
+                       {
+                           "name":  "RynthAi plugin",
+                           "file":  "suite\\RynthAi\\RynthCore.Plugin.RynthAi.dll",
+                           "version":  "0.6.11-legacy-ui+6791dd6a223d146f7a1c6313e9920356e64ba829"
+                       },
+                       {
+                           "name":  "Monster Editor",
+                           "file":  "suite\\RynthAi\\MonsterEditor\\RynthCore.MonsterEditor.exe",
+                           "version":  "2026.10.4.7+6791dd6a223d146f7a1c6313e9920356e64ba829"
+                       },
+                       {
+                           "name":  "RynthChat (experimental)",
+                           "file":  "suite\\RynthChat\\RynthCore.Plugin.RynthChat.dll",
+                           "version":  "0.1.1-experimental+6791dd6a223d146f7a1c6313e9920356e64ba829"
+                       },
+                       {
+                           "name":  "RynthJuice (experimental)",
+                           "file":  "suite\\RynthJuice\\RynthCore.Plugin.RynthJuice.dll",
+                           "version":  "0.1.1-experimental+6791dd6a223d146f7a1c6313e9920356e64ba829"
+                       },
+                       {
+                           "name":  "RynthNav (experimental)",
+                           "file":  "suite\\RynthNav\\RynthCore.Plugin.RynthNav.dll",
+                           "version":  "0.5.5-experimental+6791dd6a223d146f7a1c6313e9920356e64ba829"
+                       },
+                       {
+                           "name":  "RynthTracker (experimental)",
+                           "file":  "suite\\RynthTracker\\RynthCore.Plugin.RynthTracker.dll",
+                           "version":  "0.1.1-experimental+6791dd6a223d146f7a1c6313e9920356e64ba829"
+                       },
+                       {
+                           "name":  "RynthVision (experimental)",
+                           "file":  "suite\\RynthVision\\RynthCore.Plugin.RynthVision.dll",
+                           "version":  "0.1.1-experimental+6791dd6a223d146f7a1c6313e9920356e64ba829"
+                       },
+                       {
+                           "name":  "UbRythai (experimental)",
+                           "file":  "suite\\UbRythai\\RynthCore.Plugin.UbRythai.dll",
+                           "version":  "3.1.10+6791dd6a223d146f7a1c6313e9920356e64ba829"
+                       }
+                   ],
+    "changelog":  [
+                      "RynthCore/Changelog/2026-10-04-aelrynth-sync.md",
+                      "RynthCore/Changelog/2026-10-04-aelrynth-urls.md",
+                      "RynthCore/Changelog/2026-10-04-full-installer-2026.10.4.2.md",
+                      "RynthCore/Changelog/2026-10-04-installer-2026.10.4.1.md",
+                      "RynthCore/Changelog/2026-10-04-installer-2026.10.4.3-experimental-plugins.md",
+                      "RynthCore/Changelog/2026-10-04-installer-2026.10.4.4-dotnet10-prereq.md",
+                      "RynthCore/Changelog/2026-10-04-installer-2026.10.4.5-suite-dir-per-mode.md",
+                      "RynthCore/Changelog/2026-10-04-installer-2026.10.4.6-tool-launch-buttons.md",
+                      "RynthCore/Changelog/2026-10-04-installer-2026.10.4.7-deployment-package.md",
+                      "RynthCore/Changelog/2026-10-04-sk-local-unified.md",
+                      "RynthCore/Changelog/2026-10-04-tmds-dbus-advisory.md",
+                      "RynthSuite/Changelog/2026-10-04-aelrynth-sync.md",
+                      "RynthSuite/Changelog/2026-10-04-aelrynth-urls.md",
+                      "RynthSuite/Changelog/RynthAi-0.5.1-ilt-hub.md",
+                      "RynthSuite/Changelog/RynthAi-0.5.2-diagnostics-security.md",
+                      "RynthSuite/Changelog/RynthAi-0.5.3-install-paths.md",
+                      "RynthSuite/Changelog/RynthAi-0.5.4-tool-launch-buttons.md",
+                      "RynthSuite/Changelog/RynthAi-0.6.10-sk-local-unified.md",
+                      "RynthSuite/Changelog/RynthAi-0.6.11-ub-mob-seed.md",
+                      "RynthSuite/Changelog/RynthSuite-experimental-plugins-installer.md",
+                      "RynthSuite/Changelog/RynthSuite-release-2026.10.4.1.md"
+                  ],
+    "changelogSince":  {
+                           "rynthCore":  "",
+                           "rynthSuite":  "",
+                           "date":  "2026-10-04"
+                       }
+}
