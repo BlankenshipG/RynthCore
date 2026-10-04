@@ -336,7 +336,19 @@ Copy-Item $loaderDll "$CoreStaging\Runtime\" -Force
 $sehDll = "$RepoRoot\native\SehTrampoline\bin\RynthCore.SehTrampoline.dll"
 $sehSrc = "$RepoRoot\native\SehTrampoline\SehTrampoline.c"
 if (-not (Test-Path $sehDll)) { throw "SEH trampoline not found at: $sehDll`nBuild it with native\SehTrampoline\Build-SehTrampoline.ps1" }
-if ((Test-Path $sehSrc) -and (Get-Item $sehSrc).LastWriteTime -gt (Get-Item $sehDll).LastWriteTime) {
+# Source "age": checkouts and merges rewrite SehTrampoline.c and bump its mtime without changing it,
+# so when the file matches HEAD its last commit time is used; local edits fall back to the mtime.
+function Get-SehSourceTime {
+    $ErrorActionPreference = 'Continue'
+    $srcTime = (Get-Item $sehSrc).LastWriteTime
+    git -C $RepoRoot diff --quiet HEAD -- "native/SehTrampoline/SehTrampoline.c" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $ct = git -C $RepoRoot log -1 --format=%ct -- "native/SehTrampoline/SehTrampoline.c" 2>$null
+        if ($ct -match '^\d+$') { $srcTime = [DateTimeOffset]::FromUnixTimeSeconds([long]$ct).LocalDateTime }
+    }
+    $srcTime
+}
+if ((Test-Path $sehSrc) -and (Get-SehSourceTime) -gt (Get-Item $sehDll).LastWriteTime) {
     throw "RynthCore.SehTrampoline.dll is STALE (SehTrampoline.c is newer). Rebuild with native\SehTrampoline\Build-SehTrampoline.ps1"
 }
 Copy-Item $sehDll "$CoreStaging\Runtime\" -Force
