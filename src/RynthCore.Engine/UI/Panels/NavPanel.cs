@@ -229,9 +229,29 @@ internal static class NavPanel
             { e.Handled = true; picker.Close(); }
         };
 
+        // Waypoint list controls live for the panel's lifetime. Rebuild() only refills
+        // waypointStack: a ScrollViewer recreated (or given a new Content) resets its
+        // offset to the top, which made the list jump back every poll and impossible to edit.
+        var waypointStack  = new StackPanel { Spacing = 1 };
+        var waypointScroll = new ScrollViewer
+        {
+            VerticalScrollBarVisibility   = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+            Content = waypointStack,
+        };
+        var waypointHost = new Border { Height = 200, Child = waypointScroll };
+
+        // Last plugin JSON the panel was built from. A rebuild from a user action
+        // (optimistic local edit) clears it so the next poll always resyncs with the plugin.
+        string lastJson = string.Empty;
+        bool   rebuildFromPoll = false;
+
         void Rebuild()
         {
+            if (!rebuildFromPoll) lastJson = string.Empty;
+            Vector keepOffset = waypointScroll.Offset;
             content.Children.Clear();
+            waypointStack.Children.Clear();
             var d = state.Data;
             bool navActive = d.MacroRunning && d.NavigationEnabled;
 
@@ -403,7 +423,6 @@ internal static class NavPanel
                 FontSize   = 10,
             });
 
-            var waypointStack = new StackPanel { Spacing = 1 };
             for (int i = 0; i < d.Points.Count; i++)
             {
                 int  ci         = i;
@@ -482,27 +501,29 @@ internal static class NavPanel
                 waypointStack.Children.Add(row);
             }
 
-            content.Children.Add(new Border
-            {
-                Height = 200,
-                Child = new ScrollViewer
-                {
-                    VerticalScrollBarVisibility   = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
-                    HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
-                    Content = waypointStack,
-                },
-            });
+            content.Children.Add(waypointHost); // same instance every rebuild — keeps scroll offset
+            // Re-apply after layout too: the re-attach / new row extent can coerce it to 0.
+            waypointScroll.Offset = keepOffset;
+            Dispatcher.UIThread.Post(() => waypointScroll.Offset = keepOffset, DispatcherPriority.Loaded);
         }
 
         // ── Poll timer ────────────────────────────────────────────────────────
+        // Rebuilds only when the plugin's nav state actually changed, and never while the
+        // pointer is over the waypoint list (a rebuild between press and release eats the
+        // click on X / row select). Skipped polls leave lastJson alone, so the change is
+        // picked up on the first poll after the pointer leaves.
         var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         timer.Tick += (_, _) =>
         {
             if (_getNavJson == null) TryBind();
             if (picker.ActivePicker != null) return;
-            if (!TryFetch(out var fresh)) return;
+            if (waypointHost.IsPointerOver) return;
+            if (!TryFetch(out var fresh, out string json)) return;
+            if (json == lastJson) return;
             state.Data = fresh;
-            Rebuild();
+            rebuildFromPoll = true;
+            try { Rebuild(); } finally { rebuildFromPoll = false; }
+            lastJson = json;
         };
         timer.Start();
         // Stop with the visual tree — a running DispatcherTimer roots the closed
@@ -580,19 +601,23 @@ internal static class NavPanel
         }
     }
 
-    private static bool TryFetch(out Payload payload)
+    /// <summary>Polls the plugin's nav JSON. <paramref name="json"/> is the raw text, used by
+    /// the poll timer to skip rebuilding the panel when nothing changed.</summary>
+    private static bool TryFetch(out Payload payload, out string json)
     {
         payload = new Payload();
+        json    = string.Empty;
         if (_getNavJson == null) return false;
         try
         {
             IntPtr ptr = _getNavJson();
             if (ptr == IntPtr.Zero) return false;
-            string? json = Marshal.PtrToStringAnsi(ptr);
-            if (string.IsNullOrEmpty(json)) return false;
-            var parsed = JsonSerializer.Deserialize(json, NavPanelJsonContext.Default.Payload);
+            string? raw = Marshal.PtrToStringAnsi(ptr);
+            if (string.IsNullOrEmpty(raw)) return false;
+            var parsed = JsonSerializer.Deserialize(raw, NavPanelJsonContext.Default.Payload);
             if (parsed == null) return false;
             payload = parsed;
+            json    = raw;
             return true;
         }
         catch { return false; }
