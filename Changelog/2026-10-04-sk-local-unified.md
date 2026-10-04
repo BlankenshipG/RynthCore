@@ -33,6 +33,9 @@
   in the release workflow. All restored to full-installer's working versions.
 - `Build-Release-All.ps1` now forwards only parameters `Build-Installer.ps1` declares
   (`-Version`, `-RynthSuiteRoot`, `-IsccPath`).
+- Engine / Injector `.csproj` restored to full-installer: SK's cimgui de-duplication deleted the plain
+  `cimgui.dll` that `Build-Installer.ps1` requires in `Runtime\` (and that plugins import by name), and
+  the DesktopLog reference was no longer used there. The launcher keeps DesktopLog (host diagnostics).
 
 ## Added
 - **ub-Rythai 3.1.10** as an optional experimental installer component
