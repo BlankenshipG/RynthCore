@@ -137,6 +137,7 @@ internal partial class MainWindow : Window
         SessionList.ItemsSource = _sessionItems;
         LoadSettings();
         LoadRuntimeControls();
+        InitLoggingControls();
         ApplyInstallerPluginRegistration();
         LoadPluginDllPaths();
         BuildPluginLoadout();
@@ -2065,7 +2066,8 @@ internal partial class MainWindow : Window
             return;
         }
 
-        LoggingLevelComboBox.SelectedIndex = 0;
+        // Unknown saved value: fall back to Info (index 3 after Off, Error, Warning), not the quietest level.
+        LoggingLevelComboBox.SelectedIndex = 3;
     }
 
     private void OnPrimarySelectionChanged()

@@ -927,7 +927,7 @@ internal static unsafe class Win32Backend
             {
                 // fall through: AC gets the message
             }
-            else if (IsMouseMessage(msg))
+            else if (IsMouseMessage(msg) && !ImGuiOwnsMouseOverAvalonia())
             {
                 bool handled = TryForwardToAvalonia(msg, wParam, lParam);
                 if (handled)
@@ -1007,6 +1007,17 @@ internal static unsafe class Win32Backend
     /// If the cursor is over the Avalonia shell panel, PostMessage the mouse event to
     /// the off-screen Avalonia HWND and return true (caller should suppress game delivery).
     /// </summary>
+    /// <summary>
+    /// ImGui windows are drawn on top of the Avalonia layer, so when the cursor is over
+    /// an ImGui window (or an ImGui widget is active) mouse input must go to ImGui
+    /// instead of the Avalonia panel underneath. An Avalonia drag/resize that is already
+    /// in progress keeps its capture so the release is never lost.
+    /// </summary>
+    private static bool ImGuiOwnsMouseOverAvalonia()
+    {
+        return _wantCaptureMouse && !AvaloniaOverlay.HasPointerCapture;
+    }
+
     private static bool TryForwardToAvalonia(uint msg, IntPtr wParam, IntPtr lParam)
     {
         IntPtr avHwnd = AvaloniaOverlay.AvaloniaHwnd;

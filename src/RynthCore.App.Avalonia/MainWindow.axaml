@@ -316,8 +316,10 @@
                               Content="Rewrite AC window titles per account"
                               ToolTip.Tip="Replaces &quot;Asheron's Call&quot; with &quot;Account / Character @ Server&quot; on tracked clients so multi-box taskbars are readable. Untracked external clients are left alone." />
                     <CheckBox x:Name="InjectAllRunningAcCheckBox" Content="Inject all running AC sessions" />
-                    <TextBlock Text="Logging level" Foreground="#EAF0F4" Margin="0,4,0,0" />
-                    <ComboBox x:Name="LoggingLevelComboBox" SelectedIndex="0">
+                    <TextBlock Text="Logging level (applies live)" Foreground="#EAF0F4" Margin="0,4,0,0" />
+                    <ComboBox x:Name="LoggingLevelComboBox" SelectedIndex="3"
+                              ToolTip.Tip="Engine log threshold. Written to engine.json immediately; running clients pick it up within a second. Off = errors only.">
+                      <ComboBoxItem Content="Off" />
                       <ComboBoxItem Content="Error" />
                       <ComboBoxItem Content="Warning" />
                       <ComboBoxItem Content="Info" />
@@ -360,6 +362,42 @@
                   <CheckBox x:Name="EnableDcompOverlayCheckBox"
                             Content="Use DComp overlay (experimental, GPU-rendered)"
                             ToolTip.Tip="When ON, the engine starts the new DirectComposition overlay instead of the production AvaloniaOverlay. Mutually exclusive — Avalonia is single-app-per-process. Toggle takes effect on next AC client launch (a hot reload won't switch overlays)." />
+                </StackPanel>
+              </Border>
+
+              <!-- Live logging switches: engine categories (engine.json) and RynthAi categories/events
+                   (diagnostics.json). Rows are built in code (MainWindow.Logging.cs). -->
+              <Border Background="#132028" CornerRadius="16" Padding="18">
+                <StackPanel Spacing="8">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Grid.Column="0" Text="Logging" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" VerticalAlignment="Center" />
+                    <Button Grid.Column="1" x:Name="ReloadLoggingButton" Content="Reload" />
+                  </Grid>
+                  <TextBlock Text="Every change is saved immediately and applies to running clients without a restart (engine within 1 s, RynthAi within 2 s). Set any Trace or Debug item to Info to see it in the normal log; Off silences it."
+                             TextWrapping="Wrap"
+                             Foreground="#9AA8B3" />
+                  <Expander Header="Engine categories" IsExpanded="True" HorizontalAlignment="Stretch">
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="The level each category's lines are written at. A line shows when its level is within the global Logging level above (Info = normal log)."
+                                 TextWrapping="Wrap" Foreground="#9AA8B3" />
+                      <StackPanel x:Name="EngineLogCategoriesPanel" Spacing="2" />
+                    </StackPanel>
+                  </Expander>
+                  <Expander Header="RynthAi categories" HorizontalAlignment="Stretch">
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="Where each RynthAi category's trace lines go: Off = dropped, Trace = Logs\Diagnostics\Trace file only, Info = trace file and the normal log."
+                                 TextWrapping="Wrap" Foreground="#9AA8B3" />
+                      <StackPanel x:Name="RynthAiLogCategoriesPanel" Spacing="2" />
+                    </StackPanel>
+                  </Expander>
+                  <Expander Header="RynthAi key events" HorizontalAlignment="Stretch">
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="Named milestones (Hub login, options refresh, ...). Off = dropped, Trace = trace file while that category is traced, Info = normal log."
+                                 TextWrapping="Wrap" Foreground="#9AA8B3" />
+                      <StackPanel x:Name="RynthAiLogEventsPanel" Spacing="2" />
+                    </StackPanel>
+                  </Expander>
+                  <TextBlock x:Name="LoggingStatusText" TextWrapping="Wrap" Foreground="#9AA8B3" />
                 </StackPanel>
               </Border>
 

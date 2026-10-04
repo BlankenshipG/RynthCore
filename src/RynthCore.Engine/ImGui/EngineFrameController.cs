@@ -73,6 +73,11 @@ internal static class EngineFrameController
     /// </summary>
     internal static volatile IntPtr CachedDevice;
     private static int _pluginPumpInFrame; // re-entrancy guard for the pump
+
+    // ImGui draw data built by RunImGuiFrame, submitted later by RenderDeferredImGui
+    // (after the Avalonia blit). Render thread only. Device == 0 means nothing pending.
+    private static ImDrawDataPtr _deferredDrawData;
+    private static IntPtr _deferredDrawDevice;
     private static long _lastFrameTicks;
     private static int _frameCount;
 
@@ -465,6 +470,9 @@ internal static class EngineFrameController
         bool frameStarted = false;
         bool frameEnded = false;
 
+        // A frame that throws before Render must not resubmit last frame's draw data.
+        _deferredDrawDevice = IntPtr.Zero;
+
         try
         {
             _frameCount++;
@@ -536,10 +544,12 @@ internal static class EngineFrameController
 
             ImDrawDataPtr drawData = ImGuiNET.ImGui.GetDrawData();
 
-            DX9Backend.RenderDrawData(drawData, pDevice);
-            // OverlayTextureRenderer.Render is now driven from EndSceneHook.EndSceneDetour
-            // directly so the Avalonia compositor runs even when EnableImGuiBackend=false.
-            // Leaving it out of this call site avoids double-blit when ImGui is also active.
+            // Submission is deferred to RenderDeferredImGui, which EndSceneHook calls
+            // AFTER OverlayTextureRenderer has blitted the Avalonia layer, so ImGui
+            // windows (plugin overlay windows such as the ILT Hub) sit on top of the
+            // Avalonia panels. The draw data stays valid until the next NewFrame.
+            _deferredDrawData = drawData;
+            _deferredDrawDevice = pDevice;
 
             if ((io.ConfigFlags & ImGuiConfigFlags.ViewportsEnable) != 0)
             {
@@ -560,6 +570,35 @@ internal static class EngineFrameController
             }
 
             RynthLog.Info($"EngineFrameController: frame {_frameCount} ImGui error: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            ImGuiNET.ImGui.SetCurrentContext(previousContext);
+        }
+    }
+
+    /// <summary>
+    /// Submits this frame's ImGui draw data. EndSceneHook calls it after
+    /// OverlayTextureRenderer.Render so ImGui windows draw on top of the Avalonia
+    /// layer. Runs whether or not the Avalonia blit ran (character select, Avalonia
+    /// off), and is a no-op when RunImGuiFrame produced nothing this frame.
+    /// </summary>
+    public static void RenderDeferredImGui()
+    {
+        IntPtr device = _deferredDrawDevice;
+        if (device == IntPtr.Zero)
+            return;
+        _deferredDrawDevice = IntPtr.Zero; // one submission per frame, even if it throws
+
+        IntPtr previousContext = ImGuiNET.ImGui.GetCurrentContext();
+        ImGuiNET.ImGui.SetCurrentContext(_context);
+        try
+        {
+            DX9Backend.RenderDrawData(_deferredDrawData, device);
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Info($"EngineFrameController: frame {_frameCount} deferred ImGui draw error: {ex.GetType().Name}: {ex.Message}");
         }
         finally
         {

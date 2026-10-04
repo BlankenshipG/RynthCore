@@ -145,6 +145,7 @@ internal static class EngineLifecycle
         // tick pump and plugins go away — both otherwise keep firing in the old
         // generation's (intentionally still-mapped) module across hot-reloads.
         Step("ChatFileDispatcher.Stop", () => Compatibility.ChatFileDispatcher.Stop());
+        Step("LogSettings.StopWatcher", () => LogSettings.StopWatcher());
         Step("AutoIdService.Stop", () => Compatibility.AutoIdService.Stop());
 
         // Stop the headless tick pump BEFORE plugin shutdown / FreeLibrary.

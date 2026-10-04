@@ -385,6 +385,7 @@ internal static class EngineSettings
                 w.WriteBoolean("PreventIdleLogoff", _preventIdleLogoff);
                 // Preserve the launcher-chosen level; dropping it here would reset logging to Info.
                 w.WriteString("LoggingLevel", _loggingLevel);
+                CopyUnownedFields(w);
                 w.WriteEndObject();
             }
             File.WriteAllBytes(SettingsPath, ms.ToArray());
@@ -392,6 +393,35 @@ internal static class EngineSettings
         catch (Exception ex)
         {
             RynthLog.Plugin($"EngineSettings: Failed to save: {ex.Message}");
+        }
+    }
+
+    // Fields Save() writes itself; everything else in engine.json belongs to the launcher
+    // (LogCategories, EnableDcompOverlay, ...) and is copied through untouched.
+    private static readonly string[] OwnedFields =
+    {
+        "PluginPaths", "EnableImGuiShell", "EnablePlugins", "EnableDatShareHook", "EnableAvaloniaOverlay",
+        "EnableD3D9Hook", "EnableEngine", "EngineHookCount", "EnableImGuiBackend", "EnablePluginOverlayWindows",
+        "EnableHangMinidump", "DrawCustomVitalBars", "PreventIdleLogoff", "LoggingLevel",
+    };
+
+    /// <summary>Writes every top-level engine.json field not in <see cref="OwnedFields"/> as-is.</summary>
+    private static void CopyUnownedFields(Utf8JsonWriter w)
+    {
+        try
+        {
+            if (!File.Exists(SettingsPath)) return;
+            using var doc = JsonDocument.Parse(File.ReadAllText(SettingsPath));
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return;
+            foreach (JsonProperty p in doc.RootElement.EnumerateObject())
+            {
+                if (Array.IndexOf(OwnedFields, p.Name) >= 0) continue;
+                p.WriteTo(w);
+            }
+        }
+        catch
+        {
+            // Unreadable file: write only the owned fields (previous behaviour).
         }
     }
 }

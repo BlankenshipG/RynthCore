@@ -45,6 +45,8 @@ public static class EntryPoint
 
     internal enum EngineLogLevel
     {
+        /// <summary>As a global threshold: nothing but errors. As a category level: never written.</summary>
+        Off = -1,
         Error = 0,
         Warning = 1,
         Info = 2,
@@ -109,10 +111,10 @@ public static class EntryPoint
             }
             catch { }
 
-            // engine.json "LoggingLevel" (launcher Logging level box) sets the threshold first so
-            // every line written below honours it; Debug/Trace also turn on the legacy verbose flag.
-            LoggingLevel = ParseLoggingLevel(EngineSettings.LoggingLevel);
-            VerboseLogging = LoggingLevel >= EngineLogLevel.Debug;
+            // engine.json "LoggingLevel" + "LogCategories" (launcher Logging card) set the threshold
+            // and per-category levels first so every line written below honours them. The watcher
+            // started later re-reads them whenever the launcher edits the file.
+            string logSummary = LogSettings.Reload();
 
             // Set up the unified log sink BEFORE anything else so all
             // subsequent failures are captured in <CoreDir>\Logs (installer-chosen;
@@ -134,8 +136,12 @@ public static class EntryPoint
             RynthLog.Info("================================================================");
             RynthLog.Info($"RynthCore.Engine init  build={BuildStamp}  initCount={_initCount}  pid={Environment.ProcessId}");
             RynthLog.Info($"  os={Environment.OSVersion}  clr={Environment.Version}  cwd={Environment.CurrentDirectory}");
-            RynthLog.Info($"  logging level={LoggingLevel} (verbose={VerboseLogging})");
+            RynthLog.Info($"  logging {logSummary}");
             RynthLog.Info("================================================================");
+
+            // Live logging config: launcher edits to engine.json apply without a client restart.
+            // Stopped in EngineLifecycle.Shutdown before the module can be unloaded.
+            LogSettings.StartWatcher();
 
             CrashLogger.Install();
 
@@ -1375,9 +1381,15 @@ public static class EntryPoint
             Log(message);
     }
 
-    internal static bool ShouldLog(EngineLogLevel level) => level <= LoggingLevel;
+    /// <summary>
+    /// True when a line at <paramref name="level"/> passes the global threshold. Off-level lines
+    /// never pass; an Off threshold blocks everything (errors bypass this gate).
+    /// </summary>
+    internal static bool ShouldLog(EngineLogLevel level)
+        => level != EngineLogLevel.Off && level <= LoggingLevel;
 
-    private static EngineLogLevel ParseLoggingLevel(string? configuredLevel)
+    /// <summary>Parses the global level: Off, Error, Warning/Warn, Info, Debug/Verbose, Trace. Unknown → Info.</summary>
+    internal static EngineLogLevel ParseLoggingLevel(string? configuredLevel)
     {
         if (string.IsNullOrWhiteSpace(configuredLevel))
             return EngineLogLevel.Info;
@@ -1385,8 +1397,10 @@ public static class EntryPoint
         string normalized = configuredLevel.Trim();
         if (string.Equals(normalized, "Verbose", StringComparison.OrdinalIgnoreCase))
             return EngineLogLevel.Debug;
+        if (string.Equals(normalized, "Warn", StringComparison.OrdinalIgnoreCase))
+            return EngineLogLevel.Warning;
 
-        return Enum.TryParse(normalized, ignoreCase: true, out EngineLogLevel parsed)
+        return Enum.TryParse(normalized, ignoreCase: true, out EngineLogLevel parsed) && Enum.IsDefined(parsed)
             ? parsed
             : EngineLogLevel.Info;
     }
