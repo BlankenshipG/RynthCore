@@ -116,8 +116,10 @@ New-Item -ItemType Directory -Force "$rel\plugins", "$rel\build" | Out-Null
 Step "Building the installer ($Version)"
 & (Join-Path $ScriptDir "Build-Installer.ps1") -Version $Version -RynthSuiteRoot $RynthSuiteRoot
 if (-not $?) { throw "Build-Installer.ps1 failed" }
-Copy-Item (Join-Path $ScriptDir "Output\RynthCore-Setup.exe") "$rel\RynthCore-Setup.exe"
-Copy-Item (Join-Path $ScriptDir "staging\plugins\RynthAi\RynthCore.Plugin.RynthAi.dll") "$rel\plugins\"
+# The versioned installer is the primary artifact (the RynthCore-Setup.exe copy is best effort).
+Copy-Item (Join-Path $ScriptDir "Output\RynthCore-Setup-$Version.exe") "$rel\RynthCore-Setup.exe"
+# Build-Installer.ps1 stages RynthSuite files under staging\suite\ (RynthAi -> staging\suite\RynthAi\).
+Copy-Item (Join-Path $ScriptDir "staging\suite\RynthAi\RynthCore.Plugin.RynthAi.dll") "$rel\plugins\"
 
 $suitePlugins = "RynthChat", "RynthTracker", "RynthNav", "RynthVision"
 foreach ($name in $suitePlugins) {

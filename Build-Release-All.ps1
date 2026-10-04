@@ -9,6 +9,9 @@
      RynthAi, the Loot/Monster editors and the experimental plugins (incl. ub-Rythai), stages
      them, archives the previous installer when -Version changes, and compiles RynthCore.iss
      into installer\Output\RynthCore-Setup-<version>.exe (requires Inno Setup 6).
+  3. With -Version, Build-Installer.ps1 also assembles the deployment package
+     installer\Output\Release-<version>\ and installer\Output\RynthCore-<version>-deploy.zip
+     (installer + SHA256SUMS.txt + release-manifest.json + RELEASE-NOTES.md, hash-verified).
 
 .PARAMETER Version
   Installer version (e.g. 2026.10.4.7). Passed through to Build-Installer.ps1.

@@ -20,6 +20,12 @@
     9. Archives the previous installer (installer\previous-release\) when -Version changes
    10. Invokes ISCC.exe to produce installer\Output\RynthCore-Setup-<version>.exe
        (and a RynthCore-Setup.exe copy)
+   11. With -Version: assembles the deployment package installer\Output\Release-<version>\
+       (installer, SHA256SUMS.txt, release-manifest.json with commits + component versions,
+       RELEASE-NOTES.md built from both repos' Changelog folders) and zips it to
+       installer\Output\RynthCore-<version>-deploy.zip, then re-verifies the hashes.
+       Release builds refuse uncommitted changes (see -AllowDirty) so a package always maps
+       to exact commits.
 
     The installer lets the user choose both the RynthCore and the RynthSuite folders; the
     code resolves them at runtime from HKA\Software\Rynth (see src\RynthCore.App\RynthInstallPaths.cs).
@@ -45,6 +51,16 @@
     Fail instead of auto-installing when no .NET 10 SDK is found. By default a missing SDK is
     installed per-user (no admin) to %LOCALAPPDATA%\Microsoft\dotnet via Microsoft's signed
     dotnet-install.ps1, and used for this build.
+
+.PARAMETER AllowDirty
+    Build a -Version release even when RynthCore or RynthSuite has uncommitted changes to tracked
+    files. The package is still produced but its manifest and notes are flagged "dirty".
+
+.PARAMETER NoPackage
+    With -Version, stop after the installer .exe (skip the Release-<version> package and zip).
+
+.EXAMPLE
+    .\Build-Installer.ps1 -Version 2026.10.4.7
 #>
 param(
     [string]$Configuration = "Release",
@@ -56,7 +72,9 @@ param(
     # the version defined in RynthCore.iss is used as-is.
     [string]$Version = "",
     [switch]$SkipBuild,
-    [switch]$NoDotNetInstall
+    [switch]$NoDotNetInstall,
+    [switch]$AllowDirty,
+    [switch]$NoPackage
 )
 
 $ErrorActionPreference = "Stop"
@@ -142,6 +160,34 @@ $ProjectsRoot = Split-Path $RepoRoot -Parent           # e.g. C:\Projects
 # RynthSuite root: explicit param takes priority, otherwise sibling convention.
 if (-not $RynthSuiteRoot) {
     $RynthSuiteRoot = "$ProjectsRoot\RynthSuite"
+}
+
+# ── Source state (release builds) ───────────────────────────────────────────
+# A deployment package must map to exact commits. Tracked changes outside
+# installer\previous-release\ (whose version marker this script rewrites) block a -Version
+# build unless -AllowDirty; untracked files are ignored, as in Publish-Update.ps1.
+function Get-RepoState([string]$Repo) {
+    $ErrorActionPreference = 'Continue'   # native stderr must not become a terminating error on 5.1
+    $dirty = @(git -C $Repo status --porcelain --untracked-files=no 2>$null |
+        Where-Object { $_ -and $_.Substring(3) -notlike 'installer/previous-release/*' })
+    [ordered]@{
+        path   = $Repo
+        branch = (git -C $Repo rev-parse --abbrev-ref HEAD 2>$null)
+        commit = (git -C $Repo rev-parse HEAD 2>$null)
+        dirty  = ($dirty.Count -gt 0)
+        changes = $dirty
+    }
+}
+$CoreState  = Get-RepoState $RepoRoot
+$SuiteState = Get-RepoState $RynthSuiteRoot
+if ($Version -and -not $NoPackage) {
+    foreach ($s in $CoreState, $SuiteState) {
+        if (-not $s.commit) { throw "Not a git checkout: $($s.path) (a release package records exact commits)." }
+        if ($s.dirty -and -not $AllowDirty) {
+            throw "$($s.path) has uncommitted changes -- commit them or pass -AllowDirty:`n  $($s.changes -join "`n  ")"
+        }
+    }
+    Write-Host "Source: RynthCore $($CoreState.branch)@$($CoreState.commit.Substring(0,7)), RynthSuite $($SuiteState.branch)@$($SuiteState.commit.Substring(0,7))$(if ($CoreState.dirty -or $SuiteState.dirty) { ' (DIRTY)' })"
 }
 
 $LauncherProject      = "$RepoRoot\src\RynthCore.App.Avalonia\RynthCore.App.Avalonia.csproj"
@@ -381,8 +427,15 @@ if ($Version) {
     $lastVer = if (Test-Path $lastVersionFile) { (Get-Content $lastVersionFile -Raw).Trim() } else { "" }
     if ($lastVer -and $lastVer -ne $Version) {
         $prevExe = Join-Path $ScriptDir "Output\RynthCore-Setup-$lastVer.exe"
-        if (-not (Test-Path $prevExe)) { $prevExe = Join-Path $ScriptDir "Output\RynthCore-Setup.exe" }
-        if (Test-Path $prevExe) {
+        if (-not (Test-Path $prevExe)) {
+            # The canonical copy may be an older build (e.g. the previous version was built in
+            # another checkout); only archive it when its stamped ProductVersion really is $lastVer.
+            $canonical = Join-Path $ScriptDir "Output\RynthCore-Setup.exe"
+            $prevExe = $null
+            if ((Test-Path $canonical) -and ((Get-Item $canonical).VersionInfo.ProductVersion -eq $lastVer)) { $prevExe = $canonical }
+            elseif (Test-Path $canonical) { Write-Warning "Previous installer $lastVer not found in Output\ (RynthCore-Setup.exe is $((Get-Item $canonical).VersionInfo.ProductVersion)); nothing archived." }
+        }
+        if ($prevExe -and (Test-Path $prevExe)) {
             $archive = Join-Path $previousReleaseDir "RynthCore-Setup-$lastVer.exe"
             Write-Host "Archiving previous installer ($lastVer) -> $archive" -ForegroundColor Cyan
             Copy-Item $prevExe $archive -Force
@@ -441,9 +494,180 @@ if ($Version) {
     # Canonical name for the launcher updater / docs; best effort if the file is locked.
     try { Copy-Item $builtInstaller "$ScriptDir\Output\RynthCore-Setup.exe" -Force }
     catch { Write-Warning "Could not refresh Output\RynthCore-Setup.exe (in use?). Primary artifact: $builtInstaller" }
-    [IO.File]::WriteAllText($lastVersionFile, $Version)
 }
+
+# ── Deployment package (-Version builds) ────────────────────────────────────
+# installer\Output\Release-<version>\ holds everything a deployment needs, and
+# RynthCore-<version>-deploy.zip is that folder zipped:
+#   RynthCore-Setup-<version>.exe   the installer
+#   release-manifest.json           version, commits, component versions, installer hash
+#   RELEASE-NOTES.md                install steps + Changelog entries since the previous release
+#   SHA256SUMS.txt                  hashes of the three files above (sha256sum format)
+# previous-release\last-release-manifest.json keeps the manifest so the next build can list only
+# the Changelog files added or changed since this release's commits.
+
+# UTF-8 without BOM (Windows PowerShell's Set-Content -Encoding UTF8 writes a BOM).
+function Write-Utf8([string]$Path, [string]$Text) {
+    [IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
+}
+function Get-Sha256([string]$Path) { (Get-FileHash $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+
+# Changelog\*.md files added/modified in $Repo since $SinceCommit (when that commit exists),
+# else since $SinceDate (yyyy-mm-dd). Returns repo-relative paths that still exist.
+function Get-ChangelogFiles([string]$Repo, [string]$SinceCommit, [string]$SinceDate) {
+    $ErrorActionPreference = 'Continue'   # git writes "fatal:" to stderr for unknown commits
+    $names = @()
+    $known = $false
+    if ($SinceCommit) {
+        git -C $Repo cat-file -e "$SinceCommit^{commit}" 2>$null
+        $known = ($LASTEXITCODE -eq 0)
+    }
+    if ($known) {
+        $names = @(git -C $Repo diff --name-only --diff-filter=AM $SinceCommit HEAD -- Changelog 2>$null)
+    } elseif ($SinceDate) {
+        $names = @(git -C $Repo log "--since=$SinceDate 00:00" --name-only --diff-filter=AM --format= -- Changelog 2>$null)
+    }
+    @($names | Where-Object { $_ -like '*.md' -and (Test-Path (Join-Path $Repo $_)) } | Sort-Object -Unique)
+}
+
+if ($Version -and -not $NoPackage) {
+    Write-Host ""
+    Write-Host "Assembling deployment package..." -ForegroundColor Cyan
+
+    # The installer must carry this release's version (Inno stamps AppVersion as ProductVersion).
+    $stamped = (Get-Item $builtInstaller).VersionInfo.ProductVersion
+    if ($stamped -ne $Version) { throw "Installer ProductVersion is '$stamped', expected '$Version'." }
+
+    $pkgName = "Release-$Version"
+    $pkgDir  = Join-Path $ScriptDir "Output\$pkgName"
+    $zipPath = Join-Path $ScriptDir "Output\RynthCore-$Version-deploy.zip"
+    if (Test-Path $pkgDir)  { Remove-Item $pkgDir -Recurse -Force }
+    if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+    New-Item -ItemType Directory -Path $pkgDir -Force | Out-Null
+
+    $setupName = "RynthCore-Setup-$Version.exe"
+    Copy-Item $builtInstaller (Join-Path $pkgDir $setupName) -Force
+    $setupHash = Get-Sha256 (Join-Path $pkgDir $setupName)
+
+    # Versions of what the installer ships, read from the staged files' version resources.
+    $componentFiles = [ordered]@{
+        'Launcher (RynthCore.exe)' = "$CoreStaging\RynthCore.exe"
+        'Engine'                   = "$CoreStaging\Runtime\RynthCore.Engine.dll"
+        'Loader'                   = "$CoreStaging\Runtime\RynthCore.Loader.dll"
+        'Loot Editor'              = "$CoreStaging\Tools\LootEditor\RynthCore.LootEditor.exe"
+        'RynthAi plugin'           = "$SuiteStaging\RynthAi\RynthCore.Plugin.RynthAi.dll"
+        'Monster Editor'           = "$SuiteStaging\RynthAi\MonsterEditor\RynthCore.MonsterEditor.exe"
+    }
+    foreach ($name in $ExperimentalPlugins) { $componentFiles["$name (experimental)"] = "$SuiteStaging\$name\RynthCore.Plugin.$name.dll" }
+    $components = foreach ($kv in $componentFiles.GetEnumerator()) {
+        $vi = (Get-Item $kv.Value).VersionInfo
+        $ver = if ($vi.ProductVersion) { $vi.ProductVersion } else { $vi.FileVersion }
+        [ordered]@{ name = $kv.Key; file = $kv.Value.Substring($StagingRoot.Length + 1); version = "$ver" }
+    }
+
+    # Changelog entries since the previous release (its manifest's commits, else its build date).
+    $lastManifestFile = Join-Path $previousReleaseDir "last-release-manifest.json"
+    $prevManifest = $null
+    if (Test-Path $lastManifestFile) {
+        try { $prevManifest = Get-Content $lastManifestFile -Raw | ConvertFrom-Json } catch { $prevManifest = $null }
+    }
+    $sinceDate = ""
+    if ($lastVer -and $lastVer -ne $Version) {
+        $lp = $lastVer.Split('.')
+        if ($lp.Count -eq 4) { $sinceDate = '{0:D4}-{1:D2}-{2:D2}' -f [int]$lp[0], [int]$lp[1], [int]$lp[2] }
+    }
+    $coreSince  = if ($prevManifest) { $prevManifest.source.rynthCore.commit }  else { "" }
+    $suiteSince = if ($prevManifest) { $prevManifest.source.rynthSuite.commit } else { "" }
+    $notesFrom = @(
+        @{ Repo = 'RynthCore';  Root = $RepoRoot;       Files = (Get-ChangelogFiles $RepoRoot $coreSince $sinceDate) },
+        @{ Repo = 'RynthSuite'; Root = $RynthSuiteRoot; Files = (Get-ChangelogFiles $RynthSuiteRoot $suiteSince $sinceDate) }
+    )
+
+    $manifest = [ordered]@{
+        schema     = 1
+        product    = 'RynthCore + RynthSuite'
+        version    = $Version
+        release    = $release
+        builtUtc   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        previous   = $lastVer
+        installer  = [ordered]@{ file = $setupName; size = (Get-Item (Join-Path $pkgDir $setupName)).Length; sha256 = $setupHash }
+        source     = [ordered]@{
+            rynthCore  = [ordered]@{ branch = $CoreState.branch;  commit = $CoreState.commit;  dirty = $CoreState.dirty }
+            rynthSuite = [ordered]@{ branch = $SuiteState.branch; commit = $SuiteState.commit; dirty = $SuiteState.dirty }
+        }
+        components = @($components)
+        changelog  = @($notesFrom | ForEach-Object { $r = $_.Repo; $_.Files | ForEach-Object { "$r/$_" } })
+    }
+    $manifestJson = $manifest | ConvertTo-Json -Depth 6
+    Write-Utf8 (Join-Path $pkgDir 'release-manifest.json') $manifestJson
+
+    # RELEASE-NOTES.md: install/verify steps, component table, then the Changelog entries
+    # (their headings demoted two levels so they nest under "Changes").
+    $sb = New-Object System.Text.StringBuilder
+    $short = { param($s) if ($s.commit) { "$($s.branch)@$($s.commit.Substring(0,7))$(if ($s.dirty) { ' (uncommitted changes!)' })" } else { 'unknown' } }
+    [void]$sb.AppendLine("# RynthCore + RynthSuite $Version")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("Release $release, built $($manifest.builtUtc). Previous release: $(if ($lastVer) { $lastVer } else { 'none recorded' }).")
+    [void]$sb.AppendLine("Source: RynthCore $(& $short $CoreState), RynthSuite $(& $short $SuiteState).")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("## Install")
+    [void]$sb.AppendLine("- Close Asheron's Call clients and the RynthCore launcher, then run ``$setupName``. It upgrades earlier RynthCore / RynthBundle installs in place.")
+    [void]$sb.AppendLine("- The installer asks for the RynthCore and RynthSuite folders; RynthAi, the Loot Editor and the Monster Editor are included, experimental plugins are optional components.")
+    [void]$sb.AppendLine("- When the .NET 10 Desktop Runtime (x86) is missing it is downloaded from Microsoft during setup.")
+    [void]$sb.AppendLine("- Silent install: ``$setupName /VERYSILENT /DIR=""C:\Games\RynthCore"" /SUITEDIR=""C:\Games\RynthSuite""``")
+    [void]$sb.AppendLine("- Verify the download: ``(Get-FileHash .\$setupName).Hash`` must equal ``$setupHash`` (also in SHA256SUMS.txt).")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("## Components")
+    [void]$sb.AppendLine("| Component | Version |")
+    [void]$sb.AppendLine("|---|---|")
+    foreach ($c in $components) { [void]$sb.AppendLine("| $($c.name) | $($c.version) |") }
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("## Changes$(if ($lastVer -and $lastVer -ne $Version) { " since $lastVer" })")
+    $anyNotes = $false
+    foreach ($src in $notesFrom) {
+        foreach ($rel in $src.Files) {
+            $anyNotes = $true
+            [void]$sb.AppendLine()
+            [void]$sb.AppendLine("### $($src.Repo): $([IO.Path]::GetFileName($rel))")
+            $text = [IO.File]::ReadAllText((Join-Path $src.Root $rel))   # UTF-8 (Get-Content would read ANSI on 5.1)
+            foreach ($line in ($text -split "`r?`n")) {
+                if ($line -match '^#') { [void]$sb.AppendLine("##$line") } else { [void]$sb.AppendLine($line) }
+            }
+        }
+    }
+    if (-not $anyNotes) { [void]$sb.AppendLine(); [void]$sb.AppendLine("_No Changelog entries were added since the previous release._") }
+    Write-Utf8 (Join-Path $pkgDir 'RELEASE-NOTES.md') $sb.ToString()
+
+    # SHA256SUMS.txt in sha256sum format ("<hash> *<file>"), covering every other package file.
+    $sumLines = Get-ChildItem $pkgDir -File | Sort-Object Name | ForEach-Object { "$(Get-Sha256 $_.FullName) *$($_.Name)" }
+    Write-Utf8 (Join-Path $pkgDir 'SHA256SUMS.txt') (($sumLines -join "`n") + "`n")
+
+    Compress-Archive -Path (Join-Path $pkgDir '*') -DestinationPath $zipPath -CompressionLevel Optimal
+
+    # Re-verify: extract the zip and check every file against SHA256SUMS.txt.
+    $verifyDir = Join-Path $env:TEMP "RynthCore-deploy-verify-$([guid]::NewGuid().ToString('N'))"
+    try {
+        Expand-Archive -Path $zipPath -DestinationPath $verifyDir -Force
+        foreach ($line in $sumLines) {
+            $expected, $file = $line -split ' \*', 2
+            $actual = Get-Sha256 (Join-Path $verifyDir $file)
+            if ($actual -ne $expected) { throw "Deployment zip verification failed for ${file}: $actual != $expected" }
+        }
+    } finally {
+        Remove-Item $verifyDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-Utf8 $lastManifestFile $manifestJson
+    $zipMb = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
+    Write-Host "  Package: $pkgDir" -ForegroundColor Green
+    Write-Host "  Zip:     $zipPath (${zipMb} MB, verified)" -ForegroundColor Green
+    Write-Host "  Changelog entries: $($manifest.changelog.Count)"
+}
+
+# Record the version last, so a failed package step is retried (not skipped) on the next run.
+if ($Version) { [IO.File]::WriteAllText($lastVersionFile, $Version) }
 
 Write-Host ""
 Write-Host "SUCCESS" -ForegroundColor Green
 Write-Host "Installer: $builtInstaller"
+if ($Version -and -not $NoPackage) { Write-Host "Deploy:    $zipPath" }
