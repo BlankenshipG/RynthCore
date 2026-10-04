@@ -8,14 +8,43 @@ namespace RynthCore.Engine.Compatibility;
 
 internal static class BusyCountHooks
 {
-    private const int IncrementBusyCountVa = 0x00565610;
-    private const int DecrementBusyCountVa = 0x00565630;
-
-    // ClientUISystem::UpdateCursorState — per-frame cursor evaluation
-    private const int UpdateCursorStateVa = 0x005653D0;
+    // Fallback VAs (4,841,472-byte client). Pattern-scan is now the source of truth.
+    private const int IncrementBusyCountFallbackVa = 0x00565610;
+    private const int DecrementBusyCountFallbackVa = 0x00565630;
+    private const int UpdateCursorStateFallbackVa  = 0x005653D0;
 
     // ClientUISystem struct field offset for m_cBusy (confirmed via runtime dump)
     private const int OffsetMCBusy = 0x14;
+
+    // ClientUISystem::IncrementBusyCount — entire function is short:
+    //   mov edx,[ecx+14]; inc edx; mov eax,edx; cmp eax,1; mov [ecx+14],edx;
+    //   jne +5; jmp UpdateCursorState; ret
+    private static readonly byte?[] IncrementBusyCountPattern =
+    [
+        0x8B, 0x51, 0x14, 0x42, 0x8B, 0xC2, 0x83, 0xF8,
+        0x01, 0x89, 0x51, 0x14, 0x75, 0x05,
+        0xE9, null, null, null, null,        // jmp rel32 -> UpdateCursorState
+        0xC3
+    ];
+
+    // ClientUISystem::DecrementBusyCount — also short:
+    //   dec [ecx+14]; jne +5; jmp UpdateCursorState; ret
+    private static readonly byte?[] DecrementBusyCountPattern =
+    [
+        0xFF, 0x49, 0x14, 0x75, 0x05,
+        0xE9, null, null, null, null,        // jmp rel32 -> UpdateCursorState
+        0xC3
+    ];
+
+    // ClientUISystem::UpdateCursorState — large prologue with cmp/setcc pair.
+    private static readonly byte?[] UpdateCursorStatePattern =
+    [
+        0x83, 0xEC, 0x08, 0x53, 0x55, 0x56, 0x57, 0x89,
+        0x4C, 0x24, 0x10,
+        0xE8, null, null, null, null,        // call rel32
+        0x85, 0xC0, 0x0F, 0x95, 0xC3, 0x33, 0xC0, 0x84,
+        0xDB
+    ];
 
     [UnmanagedFunctionPointer(CallingConvention.ThisCall)]
     private delegate void BusyCountDelegate(IntPtr thisPtr);
@@ -29,6 +58,7 @@ internal static class BusyCountHooks
     private static BusyCountDelegate? _decrementBusyCountDetour;
     private static IntPtr _incrementTargetAddress;
     private static IntPtr _decrementTargetAddress;
+    private static IntPtr _updateCursorStateAddress;
     private static string _statusMessage = "Not probed yet.";
     private static int _incrementDispatchCount;
     private static int _decrementDispatchCount;
@@ -41,18 +71,67 @@ internal static class BusyCountHooks
     /// <summary>Returns 0 if the character is idle, positive if a UI action is in progress.</summary>
     public static int GetBusyState() => Math.Max(0, _netBusyCount);
 
-    /// <summary>Force-reset the client's busy count to zero and re-evaluate the cursor.
-    /// Directly writes m_cBusy=0 then calls UpdateCursorState so the game
-    /// switches from hourglass back to the default arrow.</summary>
-    public static void ForceResetBusyCount()
+    /// <summary>
+    /// Force-reset the client's busy count to zero and re-evaluate the cursor.
+    /// <paramref name="clearMotion"/> additionally flushes the command
+    /// interpreter (ClearAllCommands/TakeControlFromServer/PlayerTeleported) —
+    /// ⚠ DANGEROUS and OFF by default: AC only runs that triplet inside full
+    /// teleport flows that also reset the physics sequence. Fired standalone
+    /// around a live gesture it can leave the player's CSequence with a null
+    /// current anim node → AC's next animation tick AVs at acclient 0x5264A9
+    /// reading null+0xC (CSequence::update_internal). Diagnosed live
+    /// 2026-06-11: the loot busy-watchdog called this every ~2s for an hour
+    /// (every corpse open leaks +1 m_cBusy) and one clear landed in the
+    /// gesture window. The busy UNSTICK itself only needs the decrement loop +
+    /// cursor refresh below. Even when requested, the motion flush is skipped
+    /// while a cast/action gesture is animating.
+    /// </summary>
+    // Session counters surfaced in the heartbeat so a soak shows the busy-fix
+    // machinery working: fcl = force-clears performed, rec = cast/item-action
+    // reconciles performed. A healthy post-fix soak should see rec climb during
+    // combat/looting and fcl stay near-flat (force-clear is now just a backstop).
+    private static long _forceClearCount;
+    private static long _reconcileCount;
+    public static long ForceClearCount => Interlocked.Read(ref _forceClearCount);
+    public static long ReconcileCount => Interlocked.Read(ref _reconcileCount);
+
+    // Off-thread force-reset requests latch here and are consumed by
+    // CheckWatchdog on the main thread (post-tick). ≤1 tick latency —
+    // irrelevant for a 2-5s watchdog; coalesces bursts for free.
+    private static int _forceResetRequested;
+
+    public static void ForceResetBusyCount(bool clearMotion = false)
     {
+        // ⚠ MAIN THREAD ONLY (2026-06-12 cross-incident forensics, top-ranked
+        // corruption writer): the plugin host API called this raw from the
+        // pump thread 284-471×/session — up to 20 native DecrementBusyCount
+        // calls (each falling through into UpdateCursorState's UI/object-graph
+        // walk) plus a raw m_cBusy write, concurrent with AC's main thread.
+        // Leading suspect for the LFH heap detonation (ntdll+0x87D99, free()
+        // during object teardown, last off-thread clear ≤1s before the AV).
+        // Off-thread callers latch a request consumed post-tick instead.
+        if (!MainThreadGuard.IsOnMainThread())
+        {
+            Interlocked.Exchange(ref _forceResetRequested, 1);
+            return;
+        }
+
         if (!IsInstalled || _lastThisPtr == IntPtr.Zero)
             return;
+        Interlocked.Increment(ref _forceClearCount);
+
+        // Never mutate through a stale pointer: after logout/close AC frees the
+        // ClientUISystem singleton, and the decrement/cursor calls below would
+        // run native code against freed memory (uncatchable under NativeAOT).
+        if (!ClientObjectHooks.IsReadablePointer(_lastThisPtr + OffsetMCBusy))
+        {
+            RynthLog.Compat("BusyCountHooks: ForceResetBusyCount skipped — cached ClientUISystem pointer is no longer readable.");
+            _lastThisPtr = IntPtr.Zero;
+            return;
+        }
 
         int was = _netBusyCount;
 
-        // Call the original decrement a few times to let the client run
-        // its own cleanup path (cursor reset, etc) for any non-zero count.
         if (_originalDecrementBusyCount != null)
         {
             int calls = Math.Max(was, 3);
@@ -62,24 +141,35 @@ internal static class BusyCountHooks
 
         Interlocked.Exchange(ref _netBusyCount, 0);
 
-        // Directly zero m_cBusy — DecrementBusyCount guards with if(m_cBusy>0)
-        // so it's a no-op when our tracked count drifts from the real value.
         try { Marshal.WriteInt32(_lastThisPtr + OffsetMCBusy, 0); }
         catch { /* non-fatal */ }
 
-        // Clear pending commands and restore client control
-        CommandInterpreterHooks.ClearAllCommands();
-        CommandInterpreterHooks.TakeControlFromServer();
-        CommandInterpreterHooks.PlayerTeleported();
-
-        // Force the game's own cursor evaluation with the cleared state
-        try
+        if (clearMotion)
         {
-            var updateCursor = Marshal.GetDelegateForFunctionPointer<UpdateCursorStateDelegate>(
-                new IntPtr(UpdateCursorStateVa));
-            updateCursor(_lastThisPtr);
+            bool gesture = false;
+            try { if (!PlayerPhysicsHooks.TryGetCastGestureInProgress(out gesture)) gesture = false; }
+            catch { gesture = false; }
+            if (gesture)
+            {
+                RynthLog.Compat("BusyCountHooks: motion flush SKIPPED — a gesture is animating (the CSequence-corruption window).");
+            }
+            else
+            {
+                CommandInterpreterHooks.ClearAllCommands();
+                CommandInterpreterHooks.TakeControlFromServer();
+                CommandInterpreterHooks.PlayerTeleported();
+            }
         }
-        catch { /* non-fatal */ }
+
+        if (_updateCursorStateAddress != IntPtr.Zero)
+        {
+            try
+            {
+                var updateCursor = Marshal.GetDelegateForFunctionPointer<UpdateCursorStateDelegate>(_updateCursorStateAddress);
+                updateCursor(_lastThisPtr);
+            }
+            catch { /* non-fatal */ }
+        }
 
         RynthLog.Verbose($"Compat: force-reset busy count (was {was})");
     }
@@ -95,75 +185,318 @@ internal static class BusyCountHooks
             return;
         }
 
-        int incrementOff = IncrementBusyCountVa - textSection.TextBaseVa;
-        int decrementOff = DecrementBusyCountVa - textSection.TextBaseVa;
-        if (!LooksHookable(textSection.Bytes, incrementOff, out byte incrementByte))
-        {
-            _statusMessage = $"ClientUISystem::IncrementBusyCount looks invalid @ 0x{IncrementBusyCountVa:X8}.";
-            RynthLog.Compat($"Compat: busy-count hook failed - {_statusMessage}");
-            return;
-        }
+        var inc = HookResolver.Resolve(textSection, "BusyCountHooks.IncrementBusyCount",
+            IncrementBusyCountPattern, IncrementBusyCountFallbackVa);
+        var dec = HookResolver.Resolve(textSection, "BusyCountHooks.DecrementBusyCount",
+            DecrementBusyCountPattern, DecrementBusyCountFallbackVa);
+        var cursor = HookResolver.Resolve(textSection, "BusyCountHooks.UpdateCursorState",
+            UpdateCursorStatePattern, UpdateCursorStateFallbackVa);
 
-        if (!LooksHookable(textSection.Bytes, decrementOff, out byte decrementByte))
+        if (cursor.Success) _updateCursorStateAddress = cursor.Address;
+
+        if (!inc.Success || !dec.Success)
         {
-            _statusMessage = $"ClientUISystem::DecrementBusyCount looks invalid @ 0x{DecrementBusyCountVa:X8}.";
-            RynthLog.Compat($"Compat: busy-count hook failed - {_statusMessage}");
+            _statusMessage = $"Resolve failed — increment={inc.Detail}, decrement={dec.Detail}.";
+            RynthLog.Compat($"BusyCountHooks: {_statusMessage}");
             return;
         }
 
         try
         {
-            _incrementTargetAddress = new IntPtr(textSection.TextBaseVa + incrementOff);
+            _incrementTargetAddress = inc.Address;
             _incrementBusyCountDetour = IncrementBusyCountDetour;
             IntPtr incrementDetourPtr = Marshal.GetFunctionPointerForDelegate(_incrementBusyCountDetour);
-            _originalIncrementBusyCount = Marshal.GetDelegateForFunctionPointer<BusyCountDelegate>(MinHook.HookCreate(_incrementTargetAddress, incrementDetourPtr));
+            _originalIncrementBusyCount = Marshal.GetDelegateForFunctionPointer<BusyCountDelegate>(
+                MinHook.HookCreate(_incrementTargetAddress, incrementDetourPtr));
 
-            _decrementTargetAddress = new IntPtr(textSection.TextBaseVa + decrementOff);
+            _decrementTargetAddress = dec.Address;
             _decrementBusyCountDetour = DecrementBusyCountDetour;
             IntPtr decrementDetourPtr = Marshal.GetFunctionPointerForDelegate(_decrementBusyCountDetour);
-            _originalDecrementBusyCount = Marshal.GetDelegateForFunctionPointer<BusyCountDelegate>(MinHook.HookCreate(_decrementTargetAddress, decrementDetourPtr));
+            _originalDecrementBusyCount = Marshal.GetDelegateForFunctionPointer<BusyCountDelegate>(
+                MinHook.HookCreate(_decrementTargetAddress, decrementDetourPtr));
 
             Thread.MemoryBarrier();
             MinHook.Enable(_incrementTargetAddress);
             MinHook.Enable(_decrementTargetAddress);
 
             IsInstalled = true;
-            _statusMessage = $"Hooked busy-count seams @ 0x{_incrementTargetAddress.ToInt32():X8}/0x{_decrementTargetAddress.ToInt32():X8}.";
-            RynthLog.Verbose($"Compat: busy-count hooks installed");
+            _statusMessage = $"Hooked busy-count seams (inc=0x{_incrementTargetAddress.ToInt32():X8}, dec=0x{_decrementTargetAddress.ToInt32():X8}).";
+            RynthLog.Compat($"BusyCountHooks: hooks installed.");
         }
         catch (Exception ex)
         {
             _statusMessage = ex.Message;
-            RynthLog.Compat($"Compat: busy-count hook failed - {ex.Message}");
+            RynthLog.Compat($"BusyCountHooks: install threw {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    private static int _incFires, _decFires;
+
+    // ── Auto-watchdog: force-clear busy if it stays >0 too long ──────────
+    // Engine-side safety net so the bot self-heals when its busy tracking
+    // desyncs from AC's m_cBusy (e.g., a hook miss, RDP-eaten chat input
+    // preventing the user from running /ra clearbusy manually, or AC's
+    // own busy state going stuck after a server-rejected action).
+    //
+    // Trigger: any of our main-thread detours can call CheckWatchdog().
+    // SmartBoxHooks.DispatchGameEventDetour wires this in — it fires
+    // frequently on AC's main thread while in-world, so the watchdog
+    // gets a tick at least every server event.
+    //
+    // Heuristic: if busy has been positive for > BusyWatchdogTimeoutMs
+    // with no transitions back to zero, fire ForceResetBusyCount. We
+    // do this regardless of why it got stuck — combat-urgent or not —
+    // because the alternative is an inert bot.
+    private static long _busyBecamePositiveTickMs;
+    private static long _lastWatchdogFireTickMs;
+    private const long BusyWatchdogTimeoutMs = 5_000;
+    private const long BusyWatchdogCooldownMs = 2_000;
+
+    // Real-field watchdog. The shadow counter (_netBusyCount) DESYNCS from AC's
+    // real m_cBusy whenever AC mutates the field through a path we don't hook (or
+    // a detour is missed): the counter drifts to ~0 while the real field stays
+    // pinned > 0. A pinned real m_cBusy makes AC LOCALLY refuse combat-mode
+    // changes (its SetCombatMode never even fires) and casts ("You're too
+    // busy!") — wedging the bot in NonCombat (can't re-enter Magic to buff/fight)
+    // with NEITHER counter-based watchdog firing, because the counter says idle.
+    // So the watchdog must also trust the REAL field, read straight from
+    // [ClientUISystem + OffsetMCBusy]. (Diagnosed 2026-06-09: SetCombatMode
+    // stopped firing for 30+ min while ChangeCombatMode was re-sent and 191
+    // "too busy" refusals piled up, yet zero force-clears — classic desync.)
+    private static long _realBusyPositiveTickMs;
+    private const long RealBusyWatchdogTimeoutMs = 4_000;
+
+    private static int ReadRealBusy()
+    {
+        IntPtr p = _lastThisPtr;
+        if (p == IntPtr.Zero) return -1;
+        // The try/catch below cannot catch a non-null-page AV under NativeAOT
+        // (only null-page faults map to NullReferenceException). If AC freed
+        // the ClientUISystem singleton (logout/close teardown) a stale pointer
+        // read is fail-fast — probe the page first. TOCTOU-narrow but this is
+        // a watchdog: skipping one beat is free.
+        if (!ClientObjectHooks.IsReadablePointer(p + OffsetMCBusy)) return -1;
+        try { return Marshal.ReadInt32(p + OffsetMCBusy); }
+        catch { return -1; }
+    }
+
+    /// <summary>
+    /// Drop the cached ClientUISystem pointer at logout / client-close so the
+    /// watchdog and ForceResetBusyCount can't touch a freed singleton (the
+    /// 0x0056547B close-AV class). The increment/decrement detours re-capture
+    /// it on the next legit AC call.
+    /// </summary>
+    public static void ResetSession()
+    {
+        _lastThisPtr = IntPtr.Zero;
+        Volatile.Write(ref _realBusyPositiveTickMs, 0);
+        _pendingCastBusyDelta = 0;
+        _pendingCastGestureSeen = false;
+    }
+
+    // ── Direct-action busy reconciliation (source fix for the per-action leak) ──
+    // The engine's direct AC calls — casts (FreeHandsAndCastSpell / CastSpell)
+    // AND item actions (UseObject corpse-open / equip / item-use, UseObjectOn) —
+    // make AC increment m_cBusy synchronously, but they never register the queued
+    // action whose completion handler performs the matching decrements (that
+    // lives in the player-initiated flow we bypass). Result: EVERY such call
+    // leaked busy, caught only downstream by watchdogs (casts: 4322 plugin-side
+    // clears in one 10h soak; corpse opens: a force-clear every ~2s during loot
+    // grinds). Source fix: measure the real m_cBusy delta synchronously around
+    // the call (both run on AC's main thread, nothing interleaves, so the delta
+    // is exactly ours), then once the action GESTURE has completed
+    // ([CMI+0x80] empties — a use-reach is a sequenced motion just like a cast
+    // wind-up) — or after a timeout if it never starts (server refusal) — invoke
+    // the REAL DecrementBusyCount exactly delta times through the HOOKED entry,
+    // so the shadow counter and plugin busy events stay in sync. Deterministic,
+    // no ClearAllCommands side effects, never touches counts owned by others.
+    // A single accumulator serves both casts and item actions (all are
+    // engine-issued busy that should clear at the next gesture-end).
+    private static int _pendingCastBusyDelta;
+    private static long _pendingCastIssuedAtMs;
+    private static bool _pendingCastGestureSeen;
+    private static int _reconcileLogCount;
+    private const long CastBusyReconcileTimeoutMs = 4_000;
+
+    /// <summary>Snapshot the real m_cBusy immediately before a direct cast/item-action call (-1 = unreadable).</summary>
+    public static int CaptureRealBusyForCast() => ReadRealBusy();
+
+    /// <summary>
+    /// Arm reconciliation right after a direct cast/item-action call, given the
+    /// pre-call snapshot. Main thread only (these calls already run there).
+    /// </summary>
+    public static void NoteDirectCastIssued(int busyBefore)
+    {
+        if (busyBefore < 0) return;
+        int after = ReadRealBusy();
+        if (after < 0) return;
+        int delta = after - busyBefore;
+        if (delta <= 0) return;
+        _pendingCastBusyDelta += delta;
+        _pendingCastIssuedAtMs = Environment.TickCount64;
+        _pendingCastGestureSeen = false;
+    }
+
+    private static void ReconcileCastBusy(long now)
+    {
+        int pending = _pendingCastBusyDelta;
+        if (pending <= 0) return;
+
+        bool gesture = false;
+        try { if (!PlayerPhysicsHooks.TryGetCastGestureInProgress(out gesture)) gesture = false; }
+        catch { gesture = false; }
+
+        if (gesture)
+        {
+            // Cast animation running — completion is the decrement point.
+            _pendingCastGestureSeen = true;
+            return;
+        }
+
+        // Decrement once the observed gesture has ENDED, or after the timeout
+        // when no gesture was ever seen (refused cast / instant failure). The
+        // timeout matches the real-field watchdog window, so worst case this
+        // path is no slower than the old crutch.
+        if (!_pendingCastGestureSeen && now - _pendingCastIssuedAtMs <= CastBusyReconcileTimeoutMs)
+            return;
+
+        _pendingCastBusyDelta = 0;
+        _pendingCastGestureSeen = false;
+
+        IntPtr p = _lastThisPtr;
+        if (p == IntPtr.Zero || _decrementTargetAddress == IntPtr.Zero) return;
+        if (!ClientObjectHooks.IsReadablePointer(p + OffsetMCBusy)) return;
+
+        // Clamp to the live field — if AC (or a watchdog) already cleared part
+        // of it, never push m_cBusy negative.
+        int real = ReadRealBusy();
+        int n = Math.Min(pending, real);
+        if (n <= 0) return;
+
+        try
+        {
+            // Call the HOOKED decrement entry (not the trampoline): our detour
+            // fires, so _netBusyCount and the plugin busy-decremented events
+            // stay consistent for free.
+            var dec = Marshal.GetDelegateForFunctionPointer<BusyCountDelegate>(_decrementTargetAddress);
+            for (int i = 0; i < n; i++) dec(p);
+            Interlocked.Increment(ref _reconcileCount);
+            if (_reconcileLogCount < 50 || _reconcileLogCount % 100 == 0)
+                RynthLog.Compat($"BusyCountHooks: direct-action busy reconciled — decremented {n} (real now {ReadRealBusy()}, total reconciles {_reconcileLogCount + 1}).");
+            _reconcileLogCount++;
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Auto-clear busy state if it has been positive for too long.
+    /// Safe to call from any thread; only performs work on AC's main
+    /// thread (via MainThreadGuard) since ForceResetBusyCount writes
+    /// AC memory and calls AC functions that aren't thread-safe.
+    /// </summary>
+    public static void CheckWatchdog()
+    {
+        long now = Environment.TickCount64;
+
+        // ── Real-field watchdog (catches counter desync) ─────────────────────
+        // Trust AC's REAL m_cBusy over our shadow counter: when they diverge a
+        // pinned real field is what actually wedges the client (mode-change /
+        // cast refusal) while _netBusyCount reads ~0 and the counter watchdog
+        // below never fires. A legit action returns the field to 0 within ~2-3s
+        // (resetting the timer); only a genuinely stuck field reaches the 4s
+        // timeout. Field read is harmless off-thread, but ForceResetBusyCount
+        // mutates AC, so only clear on the main thread.
+        if (MainThreadGuard.IsOnMainThread())
+        {
+            // Reconcile our own cast increments FIRST — a clean deterministic
+            // decrement here means the stuck-field watchdog below (and the
+            // plugin-side clears) have nothing left to catch.
+            ReconcileCastBusy(now);
+
+            // Consume any off-thread force-reset request (plugin watchdogs):
+            // the actual clear runs HERE, on the main thread.
+            if (Interlocked.Exchange(ref _forceResetRequested, 0) == 1)
+                ForceResetBusyCount();
+
+            int realBusy = ReadRealBusy();
+            if (realBusy > 0)
+            {
+                long sinceR = Volatile.Read(ref _realBusyPositiveTickMs);
+                if (sinceR == 0)
+                {
+                    Volatile.Write(ref _realBusyPositiveTickMs, now);
+                }
+                else if (now - sinceR > RealBusyWatchdogTimeoutMs
+                         && now - Volatile.Read(ref _lastWatchdogFireTickMs) > BusyWatchdogCooldownMs)
+                {
+                    Volatile.Write(ref _lastWatchdogFireTickMs, now);
+                    RynthLog.Compat($"BusyCountHooks: REAL m_cBusy stuck at {realBusy} for {now - sinceR}ms (counter={_netBusyCount}) — force-clearing desync.");
+                    ForceResetBusyCount();
+                    Volatile.Write(ref _realBusyPositiveTickMs, 0);
+                    Volatile.Write(ref _busyBecamePositiveTickMs, 0);
+                    return;
+                }
+            }
+            else
+            {
+                // 0 = idle; -1 = unreadable (no pointer / freed page). Either
+                // way disarm the timer — leaving it armed across an unreadable
+                // stretch caused an instant force-clear when reads resumed
+                // (e.g. first beat after the next login).
+                Volatile.Write(ref _realBusyPositiveTickMs, 0);
+            }
+        }
+
+        // ── Counter-based watchdog (original) ────────────────────────────────
+        long stuckSince = Volatile.Read(ref _busyBecamePositiveTickMs);
+        if (stuckSince == 0)
+            return;
+
+        long elapsed = now - stuckSince;
+        if (elapsed < BusyWatchdogTimeoutMs)
+            return;
+
+        if (!MainThreadGuard.IsOnMainThread())
+            return;
+
+        long lastFire = Volatile.Read(ref _lastWatchdogFireTickMs);
+        if (now - lastFire < BusyWatchdogCooldownMs)
+            return;
+
+        Volatile.Write(ref _lastWatchdogFireTickMs, now);
+        RynthLog.Compat($"BusyCountHooks: watchdog auto-resetting — busy stuck at {_netBusyCount} for {elapsed}ms.");
+        ForceResetBusyCount();
+        Volatile.Write(ref _busyBecamePositiveTickMs, 0);
     }
 
     private static void IncrementBusyCountDetour(IntPtr thisPtr)
     {
+        RecursionGuard.Tick("BusyCountHooks.Increment");
         _lastThisPtr = thisPtr;
-        _originalIncrementBusyCount!(thisPtr);
+        if (++_incFires <= 3)
+            RynthLog.Compat($"BusyCountHooks: Increment fired #{_incFires} this=0x{thisPtr.ToInt32():X8}");
+        try { _originalIncrementBusyCount!(thisPtr); }
+        catch (Exception ex) { try { RynthLog.Compat($"BusyCountHooks: Increment original threw {ex.GetType().Name}: {ex.Message}"); } catch { } throw; }
         Interlocked.Increment(ref _incrementDispatchCount);
-        Interlocked.Increment(ref _netBusyCount);
+        int after = Interlocked.Increment(ref _netBusyCount);
+        if (after == 1)
+            Volatile.Write(ref _busyBecamePositiveTickMs, Environment.TickCount64);
         PluginManager.QueueBusyCountIncremented();
     }
 
     private static void DecrementBusyCountDetour(IntPtr thisPtr)
     {
+        RecursionGuard.Tick("BusyCountHooks.Decrement");
         if (_lastThisPtr == IntPtr.Zero)
             _lastThisPtr = thisPtr;
-        _originalDecrementBusyCount!(thisPtr);
+        if (++_decFires <= 3)
+            RynthLog.Compat($"BusyCountHooks: Decrement fired #{_decFires} this=0x{thisPtr.ToInt32():X8}");
+        try { _originalDecrementBusyCount!(thisPtr); }
+        catch (Exception ex) { try { RynthLog.Compat($"BusyCountHooks: Decrement original threw {ex.GetType().Name}: {ex.Message}"); } catch { } throw; }
         Interlocked.Increment(ref _decrementDispatchCount);
-        Interlocked.Decrement(ref _netBusyCount);
+        int after = Interlocked.Decrement(ref _netBusyCount);
+        if (after <= 0)
+            Volatile.Write(ref _busyBecamePositiveTickMs, 0);
         PluginManager.QueueBusyCountDecremented();
-    }
-
-    private static bool LooksHookable(byte[] textBytes, int offset, out byte firstByte)
-    {
-        firstByte = 0;
-        if (offset < 0 || offset >= textBytes.Length)
-            return false;
-
-        firstByte = textBytes[offset];
-        return firstByte is not (0x00 or 0xCC or 0xC3);
     }
 }

@@ -616,7 +616,7 @@ internal static unsafe class ViewportPlatformBackend
     private static void ViewportUpdate(ImGuiViewport* vp)
     {
         // No-op on Win32 — imgui_impl_win32 handles monitor updates and other
-        // housekeeping elsewhere. We refresh monitors from ImGuiController.
+        // housekeeping elsewhere. We refresh monitors from EngineFrameController.
     }
 
     private static bool TryGetState(ImGuiViewport* vp, out ViewportState state)
@@ -629,11 +629,17 @@ internal static unsafe class ViewportPlatformBackend
 
     private static IntPtr ViewportWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
+        // If the ImGui context has been torn down (Shutdown already ran), don't
+        // touch any ImGui API — the context memory is freed and any call into it
+        // is a use-after-free. Just forward to the default handler.
+        if (ImGuiContext == IntPtr.Zero)
+            return DefWindowProcW(hWnd, msg, wParam, lParam);
+
         // OS delivers messages (WM_GETICON, WM_PAINT, etc.) asynchronously outside
         // of EndScene. By then our saved context has been restored → GImGui is null,
         // and any ImGui call here AVs. Temporarily set our context for the message.
         IntPtr saved = ImGuiNET.ImGui.GetCurrentContext();
-        if (ImGuiContext != IntPtr.Zero && saved != ImGuiContext)
+        if (saved != ImGuiContext)
             ImGuiNET.ImGui.SetCurrentContext(ImGuiContext);
 
         try

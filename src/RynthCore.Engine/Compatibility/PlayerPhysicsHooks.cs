@@ -21,6 +21,18 @@ internal static class PlayerPhysicsHooks
     // The CMotionInterp pointer is the first field of MovementManager.
     private const int MovementManagerOffset = 0xC4;
 
+    // CMotionInterp +0x80 = head of the sequenced/one-shot motion node list
+    // (singly-linked, head=+0x80 / tail=+0x84; nodes popped+heap-freed as each
+    // motion completes — confirmed via offline RE of acclient.exe: ctor 0x529810
+    // zeroes it, pop sites 0x528AD0/0x528B40, stop-all 0x528A50). A spell-cast
+    // wind-up/release gesture is queued here while it animates and the list
+    // empties when it finishes. Locomotion uses the +0x4C/+0x54 channels
+    // directly and does NOT enqueue here, so a non-empty list is a clean
+    // "an action gesture is in progress" signal. We read ONLY the head pointer
+    // value and never dereference it, so this is safe against AC freeing nodes
+    // on its own thread.
+    private const int CMotionPendingMotionsHeadOffset = 0x80;
+
     // CMotionInterp::get_max_speed — Chorizite RVA 0x001278C0, our client is +0x1000
     // from Chorizite (confirmed via set_heading/get_heading/CommenceJump addresses).
     private const int ReferenceGetMaxSpeed = 0x005288C0;
@@ -98,7 +110,27 @@ internal static class PlayerPhysicsHooks
 
         try
         {
+            // Deep-audit finding #3/#14/#15 pattern (2026-06-18): this is called
+            // off-thread (plugin/UI, e.g. RynthVision's InspectTerrain from the
+            // Avalonia UI thread) as well as from the main-thread render path, so
+            // a torn/freed player pointer must fail closed instead of risking an
+            // uncatchable NativeAOT AV. Probe every dereference with
+            // IsReadablePointer before reading it; try/catch alone is not enough.
             IntPtr pos = player + PhysicsPositionOffset;
+
+            if (!ClientObjectHooks.IsReadablePointer(pos + PositionObjCellIdOffset) ||
+                !ClientObjectHooks.IsReadablePointer(pos + PositionQwOffset) ||
+                !ClientObjectHooks.IsReadablePointer(pos + PositionQxOffset) ||
+                !ClientObjectHooks.IsReadablePointer(pos + PositionQyOffset) ||
+                !ClientObjectHooks.IsReadablePointer(pos + PositionQzOffset) ||
+                !ClientObjectHooks.IsReadablePointer(pos + PositionOriginXOffset) ||
+                !ClientObjectHooks.IsReadablePointer(pos + PositionOriginYOffset) ||
+                !ClientObjectHooks.IsReadablePointer(pos + PositionOriginZOffset))
+            {
+                _statusMessage = "Player position struct not readable.";
+                return false;
+            }
+
             objCellId = unchecked((uint)Marshal.ReadInt32(pos + PositionObjCellIdOffset));
             qw = ReadFloat(pos + PositionQwOffset);
             qx = ReadFloat(pos + PositionQxOffset);
@@ -180,11 +212,17 @@ internal static class PlayerPhysicsHooks
     /// so it's reliable whenever pose reads work. Does not depend on any
     /// hardcoded function VAs.
     /// </summary>
+    private static int _setHeadingCalls;
+    private static bool ShouldLogHeading(int n) => n <= 3 || (n & 0xF) == 0;
+
     public static bool SetPlayerHeadingDirect(float decalHeadingDeg)
     {
+        int n = System.Threading.Interlocked.Increment(ref _setHeadingCalls);
         if (!SmartBoxLocator.TryGetPlayer(out IntPtr player, out _, out string failure))
         {
             _statusMessage = failure;
+            if (ShouldLogHeading(n))
+                RynthLog.Compat($"Move: SetPlayerHeadingDirect({decalHeadingDeg:0.0}) #{n} — no player: {failure}");
             return false;
         }
 
@@ -204,11 +242,15 @@ internal static class PlayerPhysicsHooks
 
             IsInitialized = true;
             _statusMessage = "Ready.";
+            if (ShouldLogHeading(n))
+                RynthLog.Compat($"Move: SetPlayerHeadingDirect({decalHeadingDeg:0.0}) #{n} -> qw={newQw:0.000} qz={newQz:0.000} (player=0x{player.ToInt32():X8})");
             return true;
         }
         catch (Exception ex)
         {
             _statusMessage = ex.Message;
+            if (ShouldLogHeading(n))
+                RynthLog.Compat($"Move: SetPlayerHeadingDirect({decalHeadingDeg:0.0}) #{n} threw {ex.GetType().Name}: {ex.Message}");
             return false;
         }
     }
@@ -226,6 +268,16 @@ internal static class PlayerPhysicsHooks
     /// </summary>
     public static bool LaunchJumpWithMotion(bool shift, bool holdW, bool holdX, bool holdZ, bool holdC)
     {
+        // Deep-audit finding #2 (2026-06-18): this Marshal.WriteInt32's
+        // directly into CMotionInterp's forward/strafe/turn fields with NO
+        // thread gate at all — worse than the CommandInterpreterHooks jump
+        // trio (which at least goes through a thiscall try/catch), since a
+        // raw write racing AC's own motion-graph tick is a guaranteed torn
+        // write, not just an AV risk. Reachable off-thread via Jumper.cs's
+        // ReleaseJump on the Decal-coexistence pump thread.
+        if (!MainThreadGuard.IsOnMainThread())
+            return AcMainThreadQueue.EnqueueLaunchJumpWithMotion(shift, holdW, holdX, holdZ, holdC);
+
         if (!TryGetCMotionInterp(out IntPtr cmi))
         {
             RynthLog.Compat("LaunchJumpWithMotion: CMotionInterp unavailable");
@@ -298,6 +350,34 @@ internal static class PlayerPhysicsHooks
         }
     }
 
+    /// <summary>
+    /// AC's local cast gate. True when CMotionInterp has a sequenced/one-shot
+    /// motion queued — i.e. a spell-cast (or other action) gesture is currently
+    /// animating. Empty queue = idle/ready. Returns the read success (false when
+    /// the player/CMotionInterp isn't reachable yet — pre-login / between
+    /// worlds); callers should treat "couldn't read" as "no opinion" and fall
+    /// back to their own throttle. Reads only the list-head pointer value and
+    /// never walks it, so it cannot fault on nodes AC frees concurrently.
+    /// </summary>
+    public static bool TryGetCastGestureInProgress(out bool inProgress)
+    {
+        inProgress = false;
+
+        if (!TryGetCMotionInterp(out IntPtr cmi) || cmi == IntPtr.Zero)
+            return false;
+
+        try
+        {
+            IntPtr head = Marshal.ReadIntPtr(cmi + CMotionPendingMotionsHeadOffset);
+            inProgress = head != IntPtr.Zero;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static bool TryGetCMotionInterp(out IntPtr cmotionInterp)
     {
         cmotionInterp = IntPtr.Zero;
@@ -327,10 +407,9 @@ internal static class PlayerPhysicsHooks
 
         if (_getMaxSpeed == null)
         {
-            IntPtr ptr = new(ReferenceGetMaxSpeed);
-            if (!SmartBoxLocator.IsPointerInModule(ptr))
+            _getMaxSpeed = ResolveBind<GetMaxSpeedDelegate>("PlayerPhysics.GetMaxSpeed", PatGetMaxSpeed, ReferenceGetMaxSpeed);
+            if (_getMaxSpeed == null)
                 return false;
-            _getMaxSpeed = Marshal.GetDelegateForFunctionPointer<GetMaxSpeedDelegate>(ptr);
         }
 
         try
@@ -418,25 +497,39 @@ internal static class PlayerPhysicsHooks
         return BindPhysicsDelegates();
     }
 
+    // ── Pattern-resolved binding (1a hardening, 2026-06-05) ──────────────
+    // *Va consts above are FALLBACKs; these signatures (verified unique + landing at the VA
+    // offline via tools/pe_pattern.py) are the source of truth. GetHeading is a tail-call
+    // thunk (add ecx,0x50; jmp impl) — 4 bytes suffice for uniqueness. null = wildcard.
+    private static readonly byte?[] PatGetHeading = [ 0x83, 0xC1, 0x50, 0xE9 ];
+    private static readonly byte?[] PatSetHeading = [ 0x83, 0xEC, 0x40, 0x56, 0x8B, 0xF1, 0x8D, 0x46 ];
+    private static readonly byte?[] PatGetMaxSpeed = [ 0x51, 0x56, 0x8B, 0xF1, 0x8B, 0x4E, 0x04, 0x85, 0xC9, 0xC7 ];
+
+    private static T? ResolveBind<T>(string name, byte?[] pattern, int fallbackVa) where T : Delegate
+    {
+        if (!AcClientModule.TryReadTextSection(out AcClientTextSection text))
+            return null;
+        HookResolver.ResolveResult r = HookResolver.Resolve(text, name, pattern, fallbackVa);
+        return r.Success ? Marshal.GetDelegateForFunctionPointer<T>(r.Address) : null;
+    }
+
     private static bool BindPhysicsDelegates()
     {
         if (_getHeading != null && _setHeading != null)
             return true;
 
-        IntPtr getHeadingPtr = new(ReferencePhysicsGetHeading);
-        IntPtr setHeadingPtr = new(ReferencePhysicsSetHeading);
-        if (!SmartBoxLocator.IsPointerInModule(getHeadingPtr) || !SmartBoxLocator.IsPointerInModule(setHeadingPtr))
+        _getHeading = ResolveBind<PhysicsGetHeadingDelegate>("PlayerPhysics.GetHeading", PatGetHeading, ReferencePhysicsGetHeading);
+        _setHeading = ResolveBind<PhysicsSetHeadingDelegate>("PlayerPhysics.SetHeading", PatSetHeading, ReferencePhysicsSetHeading);
+        if (_getHeading == null || _setHeading == null)
         {
-            _statusMessage =
-                $"Physics heading pointers look invalid (get=0x{getHeadingPtr.ToInt32():X8}, set=0x{setHeadingPtr.ToInt32():X8}).";
+            _getHeading = null;
+            _setHeading = null;
+            _statusMessage = "Physics heading addresses failed to resolve.";
             RynthLog.Compat($"Compat: player physics heading bind failed - {_statusMessage}");
             return false;
         }
 
-        _getHeading = Marshal.GetDelegateForFunctionPointer<PhysicsGetHeadingDelegate>(getHeadingPtr);
-        _setHeading = Marshal.GetDelegateForFunctionPointer<PhysicsSetHeadingDelegate>(setHeadingPtr);
-        RynthLog.Verbose(
-            $"Compat: player heading hooks ready - get=0x{getHeadingPtr.ToInt32():X8}, set=0x{setHeadingPtr.ToInt32():X8}");
+        RynthLog.Verbose("Compat: player heading hooks ready (pattern-resolved).");
         return true;
     }
 }

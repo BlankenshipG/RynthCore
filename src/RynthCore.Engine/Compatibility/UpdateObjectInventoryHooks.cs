@@ -9,12 +9,10 @@ namespace RynthCore.Engine.Compatibility;
 internal static class UpdateObjectInventoryHooks
 {
     private const int UpdateObjectInventoryExpectedVa = 0x0055A190;
-    private static readonly byte[] UpdateObjectInventorySignature =
+    // Verified unique + lands at 0x0055A190 offline (tools/pe_pattern.py).
+    private static readonly byte?[] UpdateObjectInventoryPattern =
     [
-        0x8B, 0x44, 0x24, 0x04, 0x50, 0xE8, 0x96, 0xE7,
-        0xFA, 0xFF, 0x8B, 0x4C, 0x24, 0x08, 0x51, 0x8D,
-        0x48, 0x3C, 0xE8, 0x69, 0xFF, 0xFF, 0xFF, 0xC2,
-        0x08, 0x00
+        0x8B, 0x44, 0x24, 0x04, 0x50, 0xE8, null, null, null, null, 0x8B, 0x4C
     ];
 
     // Derived from UpdateObjectInventory disasm: lea ecx, [eax+0x3C]
@@ -49,10 +47,10 @@ internal static class UpdateObjectInventoryHooks
 
         try
         {
-            int updateFuncOff = ResolveUpdateObjectInventoryOffset(textSection.Bytes, textSection.TextBaseVa, out bool updateUsedScan);
+            int updateFuncOff = ResolveUpdateObjectInventoryOffset(textSection, out bool updateUsedScan);
             if (updateFuncOff < 0)
             {
-                _statusMessage = "ACCObjectMaint::UpdateObjectInventory signature not found.";
+                _statusMessage = "ACCObjectMaint::UpdateObjectInventory unresolved.";
                 RynthLog.Compat($"Compat: update-object-inventory hook failed - {_statusMessage}");
                 return;
             }
@@ -78,31 +76,34 @@ internal static class UpdateObjectInventoryHooks
         }
     }
 
-    private static int ResolveUpdateObjectInventoryOffset(byte[] text, int textBaseVa, out bool usedPatternScan)
+    private static int ResolveUpdateObjectInventoryOffset(AcClientTextSection textSection, out bool usedPatternScan)
     {
         usedPatternScan = false;
 
-        int expectedOff = UpdateObjectInventoryExpectedVa - textBaseVa;
-        if (PatternScanner.VerifyBytes(text, expectedOff, UpdateObjectInventorySignature))
-            return expectedOff;
+        HookResolver.ResolveResult resolved = HookResolver.Resolve(
+            textSection, "UpdateInventory.UpdateObjectInventory", UpdateObjectInventoryPattern, UpdateObjectInventoryExpectedVa);
+        if (!resolved.Success)
+            return -1;
 
-        int scannedOff = PatternScanner.FindPattern(text, UpdateObjectInventorySignature);
-        if (scannedOff >= 0)
-        {
-            usedPatternScan = true;
-            return scannedOff;
-        }
-
-        return -1;
+        usedPatternScan = resolved.Source == HookResolver.ResolveSource.PatternScan;
+        return resolved.Address.ToInt32() - textSection.TextBaseVa;
     }
 
     private static void UpdateObjectInventoryDetour(IntPtr thisPtr, uint objectId, IntPtr newInventory)
     {
         _originalUpdateObjectInventory!(thisPtr, objectId, newInventory);
-        if (objectId == 0)
-            return;
 
-        PluginManager.QueueUpdateObjectInventory(objectId);
+        // Deep-audit finding #12 (2026-06-18): every sibling server-dispatch
+        // detour (UpdateObjectServerDispatchHooks, VectorUpdateServerDispatchHooks,
+        // SmartBoxHooks) wraps its queue call; this one didn't — an escaping
+        // throw here (e.g. OOM during the queue's lock+Enqueue) fail-fasts the
+        // client. Call-through stays outside the try, matching the fix note.
+        try
+        {
+            if (objectId != 0)
+                PluginManager.QueueUpdateObjectInventory(objectId);
+        }
+        catch { }
     }
 
     public static unsafe int GetContainerContents(uint containerId, uint* itemIds, int maxCount)
@@ -187,9 +188,30 @@ internal static class UpdateObjectInventoryHooks
     /// </summary>
     private static int ScanByContainerId(uint containerId, Span<uint> itemIds)
     {
+        // Check every object the client knows, from the identity snapshot. The old fixed
+        // range stopped at 0x8000FFFF, but a server hands out ids well past that once it
+        // has run a while, so newer items (and packs, with everything in them) were
+        // invisible to the bot: no bundles to craft from, inventory lookups finding nothing.
+        uint[] live = ClientObjectHooks.LiveObjectIds;
+        if (live.Length > 0)
+        {
+            int found = 0;
+            foreach (uint id in live)
+            {
+                if (found >= itemIds.Length) break;
+                if (id == containerId) continue;
+                if (!ClientObjectHooks.TryGetObjectOwnershipInfo(id, out uint c, out uint w, out _))
+                    continue;
+                if (c == containerId || w == containerId)
+                    itemIds[found++] = id;
+            }
+            itemIds[..found].Sort();   // same ascending order the range scan gave
+            return found;
+        }
+
         int written = 0;
 
-        // Scan dynamic object range (0x80000001 – 0x8000FFFF)
+        // No snapshot yet: scan the first dynamic object range (0x80000001 – 0x8000FFFF)
         for (uint id = 0x80000001; id <= 0x8000FFFF && written < itemIds.Length; id++)
         {
             if (id == containerId) continue;

@@ -82,14 +82,15 @@ internal static class EnchantmentHooks
 
         int count = ReadEnchantmentsFromQualities(qualPtr, spellIds, expiryTimes, maxCount);
 
-        if (!_loggedFirstRead && count > 0)
+        if (_enchReadLogCount < 8)
         {
-            _loggedFirstRead = true;
-            RynthLog.Verbose($"[EnchRead] first player read: {count} enchantments");
+            System.Threading.Interlocked.Increment(ref _enchReadLogCount);
+            RynthLog.Info($"[EnchRead] player read #{_enchReadLogCount}: {count} enchantments (qualPtr=0x{qualPtr.ToInt64():X8})");
         }
 
         return count;
     }
+    private static int _enchReadLogCount;
 
     /// <summary>
     /// Reads active enchantments from any game object's CEnchantmentRegistry.
@@ -142,6 +143,29 @@ internal static class EnchantmentHooks
     /// </summary>
     private static unsafe int ReadEnchantmentsFromQualities(IntPtr qualPtr, uint* spellIds, double* expiryTimes, int maxCount)
     {
+        // While AC is inside a DB object-cache teardown (DbCacheTeardownHooks sets this
+        // on AC's main thread for the duration of DestroyObjectCaches — which fires at
+        // world-load, zone change, logout, AND final close), refuse to walk the
+        // CEnchantmentRegistry linked lists: AC is concurrently freeing those nodes, and
+        // an off-thread (plugin-pump) walk over a half-freed node is the recurring
+        // 0x00416C86 (DBOCache::DestroyObj, [null+0x28]) AV.
+        if (DbCacheTeardownHooks.TeardownActive)
+            return -1;
+
+        // Deep-audit finding #23 (2026-06-18): ReadObjectEnchantments (the
+        // other caller of this method) validates the qualities pointer's own
+        // vtable-in-module before ever reaching here; the player path used to
+        // skip straight to walking the registry off a cached pointer with no
+        // such check. KnownPlayerQualitiesPtr is zeroed on logout and
+        // TeardownActive covers the dominant relog race, but a
+        // committed-but-stale pointer surviving both (mainly a
+        // Decal-coexistence exposure) would otherwise be walked as if it
+        // were still a real CACQualities object — a use-after-free read.
+        // Reuses the same canonical-vtable check the skill-read path already
+        // relies on instead of a fresh page-probe-only check.
+        if (!SmartBoxLocator.IsMemoryReadable(qualPtr, 4) || !ClientObjectHooks.IsCacQualitiesObject(qualPtr))
+            return -1;
+
         IntPtr regAddr = qualPtr + QualitiesRegistryOffset;
         if (!SmartBoxLocator.IsMemoryReadable(regAddr, 4))
             return -1;
@@ -149,6 +173,42 @@ internal static class EnchantmentHooks
 
         if (registryPtr == IntPtr.Zero) return 0;
 
+        // Validate the registry's own vtable too, mirroring ReadObjectEnchantments.
+        if (!SmartBoxLocator.IsMemoryReadable(registryPtr, 4))
+            return -1;
+        IntPtr registryVtable = Marshal.ReadIntPtr(registryPtr);
+        if (!SmartBoxLocator.IsPointerInModule(registryVtable))
+            return -1;
+
+        // Stability check (2026-09-02 "infinite buffing loop" bug): AC's own
+        // main thread mutates these linked lists as buffs land/expire, and in
+        // Decal-coexistence mode this reader runs off-thread on the 30Hz
+        // plugin pump (no EndScene-driven main-thread tick exists there) — a
+        // walk here can race that mutation. A torn/truncated walk silently
+        // under-reports the active buff set; BuffManager.RefreshFromLiveMemory
+        // treats a short read as "buffs expired" and clears its timers,
+        // making a just-completed rebuff pass look like nothing landed and
+        // instantly restarting it. Walk twice and only trust an exact match;
+        // on a mismatch, skip this tick (return -1, already a safe no-op for
+        // every caller) rather than report a truncated set.
+        int countA = WalkAllLists(registryPtr, spellIds, expiryTimes, maxCount);
+
+        uint* idsB = stackalloc uint[maxCount];
+        double* expB = stackalloc double[maxCount];
+        int countB = WalkAllLists(registryPtr, idsB, expB, maxCount);
+
+        if (countA != countB)
+            return -1;
+        for (int i = 0; i < countA; i++)
+        {
+            if (spellIds[i] != idsB[i] || expiryTimes[i] != expB[i])
+                return -1;
+        }
+        return countA;
+    }
+
+    private static unsafe int WalkAllLists(IntPtr registryPtr, uint* spellIds, double* expiryTimes, int maxCount)
+    {
         int count = 0;
         count = WalkEnchantList(registryPtr + RegistryMultListOffset,     spellIds, expiryTimes, maxCount, count);
         count = WalkEnchantList(registryPtr + RegistryAddListOffset,      spellIds, expiryTimes, maxCount, count);

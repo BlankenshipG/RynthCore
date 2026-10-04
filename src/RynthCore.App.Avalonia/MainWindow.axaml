@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:RynthCore.App.Avalonia"
         x:Class="RynthCore.App.Avalonia.MainWindow"
         Width="1280"
         Height="860"
@@ -70,6 +71,13 @@
                      FontSize="24"
                      FontWeight="Bold"
                      Foreground="#26C1A6" />
+          <TextBlock x:Name="HeaderVersionText"
+                     FontSize="11"
+                     Foreground="#9AA8B3" />
+          <TextBlock x:Name="HeaderUpdateText"
+                     IsVisible="False"
+                     FontSize="12"
+                     Foreground="#F2C14E" />
         </StackPanel>
 
         <GridSplitter Grid.Column="2"
@@ -231,6 +239,23 @@
             <StackPanel Spacing="12" Margin="6">
               <Border Background="#132028" CornerRadius="16" Padding="18">
                 <StackPanel Spacing="8">
+                  <TextBlock Text="Updates" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
+                  <TextBlock x:Name="UpdateStatusText"
+                             Text="Not checked yet."
+                             TextWrapping="Wrap"
+                             Foreground="#9AA8B3" />
+                  <WrapPanel Orientation="Horizontal">
+                    <Button x:Name="CheckUpdatesButton" Content="Check for updates" Margin="0,0,8,6" />
+                    <Button x:Name="UpdatePluginsButton" Content="Update plugins" IsVisible="False" Margin="0,0,8,6" />
+                    <Button x:Name="InstallCoreUpdateButton" Content="Install RynthCore update" IsVisible="False" Margin="0,0,8,6" />
+                  </WrapPanel>
+                  <CheckBox x:Name="AutoUpdatePluginsCheckBox"
+                            Content="Update plugins automatically (a running bot keeps its version until AC restarts)"
+                            Foreground="#EAF0F4" />
+                </StackPanel>
+              </Border>
+              <Border Background="#132028" CornerRadius="16" Padding="18">
+                <StackPanel Spacing="8">
                   <TextBlock Text="Plugins" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
                   <TextBlock Text="Manage the runtime modules loaded into RynthCore. Add plugins by browsing for their DLL file."
                              TextWrapping="Wrap"
@@ -284,13 +309,51 @@
                     <CheckBox x:Name="SkipIntroVideosCheckBox" Content="Skip intro videos" />
                     <CheckBox x:Name="SkipLoginLogosCheckBox" Content="Skip login logos" />
                     <CheckBox x:Name="AutoInjectAfterLaunchCheckBox" Content="Auto inject after launch" />
-                    <CheckBox x:Name="WatchForAcStartCheckBox" Content="Watch for AC start" />
+                    <CheckBox x:Name="WatchForAcStartCheckBox"
+                              Content="Auto-inject into externally-launched AC"
+                              ToolTip.Tip="Watches for acclient.exe processes started by other launchers (Decal, UBLoader, ThwargLauncher). Once the client's graphics state is stable, RynthCore is injected automatically. Skips processes the launcher started itself or that already have RynthCore loaded." />
+                    <CheckBox x:Name="OverrideWindowTitleCheckBox"
+                              Content="Rewrite AC window titles per account"
+                              ToolTip.Tip="Replaces &quot;Asheron's Call&quot; with &quot;Account / Character @ Server&quot; on tracked clients so multi-box taskbars are readable. Untracked external clients are left alone." />
+
+                    <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto" Margin="0,8,0,0">
+                      <TextBlock Grid.Row="0" Grid.Column="0" Text="Inter-launch stagger (ms)" Foreground="#EAF0F4" VerticalAlignment="Center" Margin="0,0,8,6" />
+                      <NumericUpDown Grid.Row="0" Grid.Column="1" x:Name="LaunchStaggerMsBox" Minimum="0" Maximum="5000" Increment="50" Width="120" Margin="0,0,0,6" />
+
+                      <TextBlock Grid.Row="1" Grid.Column="0" Text="Crash-relaunch limit per window" Foreground="#EAF0F4" VerticalAlignment="Center" Margin="0,0,8,6" />
+                      <NumericUpDown Grid.Row="1" Grid.Column="1" x:Name="CrashRelaunchLimitBox" Minimum="1" Maximum="20" Increment="1" Width="120" Margin="0,0,0,6" />
+
+                      <TextBlock Grid.Row="2" Grid.Column="0" Text="Crash-relaunch window (minutes)" Foreground="#EAF0F4" VerticalAlignment="Center" Margin="0,0,8,0" />
+                      <NumericUpDown Grid.Row="2" Grid.Column="1" x:Name="CrashRelaunchWindowBox" Minimum="1" Maximum="60" Increment="1" Width="120" />
+                    </Grid>
+
+                    <CheckBox x:Name="KillStuckClientsCheckBox"
+                              Content="Kill stuck clients (pre- and post-login)"
+                              ToolTip.Tip="Kills RynthCore-mode acclient.exe processes we launched that are stuck in either: (1) never reached login within the timeout (patcher hangs, char-select sit, login errors), or (2) logged out / disconnected and sat there longer than the timeout (disconnect dialog, idle char-select). Decal-mode clients are skipped (no engine = no login signal)."
+                              Margin="0,8,0,4" />
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBlock Grid.Column="0" Text="Stuck-client timeout (seconds)" Foreground="#EAF0F4" VerticalAlignment="Center" Margin="0,0,8,0" />
+                      <NumericUpDown Grid.Column="1" x:Name="StuckClientTimeoutBox" Minimum="15" Maximum="600" Increment="15" Width="120" />
+                    </Grid>
+
                     <Button x:Name="SaveBehaviorButton"
                             Content="Save Launch Behavior"
                             HorizontalAlignment="Left" />
                   </StackPanel>
                 </Border>
               </Grid>
+
+              <Border Background="#132028" CornerRadius="16" Padding="18">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="Engine Settings" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
+                  <TextBlock Text="These flags are read by RynthCore.Engine on each AC client launch. They write to %APPDATA%\RynthCore\engine.json — other engine flags in that file are preserved untouched."
+                             TextWrapping="Wrap"
+                             Foreground="#9AA8B3" />
+                  <CheckBox x:Name="EnableDcompOverlayCheckBox"
+                            Content="Use DComp overlay (experimental, GPU-rendered)"
+                            ToolTip.Tip="When ON, the engine starts the new DirectComposition overlay instead of the production AvaloniaOverlay. Mutually exclusive — Avalonia is single-app-per-process. Toggle takes effect on next AC client launch (a hot reload won't switch overlays)." />
+                </StackPanel>
+              </Border>
 
               <Border Background="#132028" CornerRadius="16" Padding="18">
                 <StackPanel Spacing="8">
@@ -301,8 +364,10 @@
                   <WrapPanel Orientation="Horizontal" ItemWidth="176" ItemHeight="40">
                     <Button x:Name="InjectRunningAcButton" Content="Inject Into Running AC" Margin="0,0,8,8" />
                     <Button x:Name="RefreshSessionsButton" Content="Refresh Sessions" Margin="0,0,8,8" />
+                    <Button x:Name="ResetOverlayBarButton" Content="Reset Overlay Bar" Margin="0,0,8,8"
+                            ToolTip.Tip="Drags the in-game RynthCore overlay bar back to the top-left corner. Use this if the bar was moved off-screen and can no longer be reached. Applies to every running RynthCore client." />
                   </WrapPanel>
-                  <TextBlock Text="Manual inject targets the first detected acclient.exe session."
+                  <TextBlock Text="Manual inject targets the first detected acclient.exe session. Reset Overlay Bar signals all running RynthCore clients via the dispatch file."
                              TextWrapping="Wrap"
                              Foreground="#9AA8B3" />
                 </StackPanel>
@@ -329,6 +394,10 @@
               </Border>
             </StackPanel>
           </ScrollViewer>
+        </TabItem>
+
+        <TabItem Header="Memory">
+          <local:MemoryTabView />
         </TabItem>
 
         <TabItem Header="Notes">
