@@ -708,7 +708,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     private static readonly (string Label, string Section)[] HubSections =
     {
         ("Character", "character"), ("Quests", "quests"), ("Pets", "pets"),
-        ("Banking", "banking"), ("Gear", "gear"), ("Games", "games"),
+        ("Banking", "banking"), ("Gear", "gear"), ("Games", "games"), ("Guardian", "guardian"),
     };
 
     private static void CharMenu()

@@ -691,6 +691,9 @@ internal static class EngineFrameController
 
             ImGuiNET.ImGui.NewFrame();
             frameStarted = true;
+            // Before any window: a drag from a popped-out Inventory or AC's inventory becomes
+            // a payload the client's drop targets (Mini Remote slots) see this frame.
+            ItemDragBridge.SubmitMainFrame(io);
             ImGuiTextFocus.BeginFrame();
             if (_dropImGuiTextFocus)
             {

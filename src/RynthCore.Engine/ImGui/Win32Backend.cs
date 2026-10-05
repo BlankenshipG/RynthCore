@@ -971,11 +971,15 @@ internal static unsafe class Win32Backend
             // HUD drag (keeps our SetCapture from fighting NewFrame's). No-op
             // unless the HUD is drawn.
             if (IsMouseMessage(msg))
+            {
                 TrackMouseButtons(msg, wParam);
+                ItemDragBridge.OnGameMouse(msg, wParam, lParam, _heldButtonsBelongToGame);
+            }
             else if (msg == WM_KILLFOCUS)
             {
                 _heldMouseButtons = 0;
                 _heldButtonsBelongToGame = false;
+                ItemDragBridge.Reset();
             }
 
             // ── Avalonia panel hit-test & input forwarding ────────────────
@@ -1073,6 +1077,14 @@ internal static unsafe class Win32Backend
                     if (newActivePid == GetCurrentProcessId())
                         return CallWindowProcA(_originalWndProc, hWnd, msg, (IntPtr)WA_ACTIVE, lParam);
                 }
+            }
+
+            // An AC inventory item dragged onto an ImGui window: AC must not drop it on the
+            // ground behind the window. It gets the release where the drag began instead.
+            if (ItemDragBridge.TryRedirectNativeDrop(msg, out IntPtr pressLParam))
+            {
+                CallWindowProcA(_originalWndProc, hWnd, WM_MOUSEMOVE, (IntPtr)MK_LBUTTON, pressLParam);
+                return CallWindowProcA(_originalWndProc, hWnd, msg, wParam, pressLParam);
             }
 
             // Pass through to original WndProc
