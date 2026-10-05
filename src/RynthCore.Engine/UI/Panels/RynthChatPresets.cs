@@ -6,8 +6,9 @@
 //
 //  Presets match the raw line text (no timestamp / sender prefix). Most are
 //  limited to non-chat channels so a player typing the same words in Local or
-//  a channel is never eaten. Avalonia UI thread only, like the rest of the
-//  RynthChat filter state.
+//  a channel is never eaten. ChatRouter evaluates them on the plugin pump
+//  (after the custom rules); editors change Enabled / Tab from any thread and
+//  then call ChatModel.FiltersChanged so every kept line is routed again.
 // ============================================================================
 
 using System;
@@ -42,9 +43,10 @@ internal static class RynthChatPresets
         internal Scope  Where       { get; }
         internal Regex  Pattern     { get; }
 
-        // User state (persisted via RynthChatPanel settings).
-        internal bool   Enabled;
-        internal string Tab = "";   // "" = hide matching lines
+        // User state (persisted in rynthchat_settings.json "presets" by ChatModel).
+        // Volatile: written by an editor, read by the pump's router.
+        internal volatile bool   Enabled;
+        internal volatile string Tab = "";   // "" = hide matching lines
 
         internal Preset(string id, string group, string label, string description, string example, Scope where, string pattern)
         {

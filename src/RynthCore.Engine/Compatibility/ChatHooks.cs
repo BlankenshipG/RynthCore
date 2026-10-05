@@ -52,6 +52,11 @@ internal static class ChatHooks
     private static ListenToElementMessageDelegate? _listenDetour;
 
     private static IntPtr _gmMainChatInstance;
+    private static IntPtr _gmMainChatVtable;     // the instance's vtable when captured
+    // Set when a logoff is requested, cleared when the logout completes: AC frees
+    // the chatbox during the logoff, and ListenToElementMessage can still fire on
+    // the dying one, so it is not captured again in between.
+    private static volatile bool _logoffInProgress;
     private static IntPtr _uiElementSetVisibleAddress;
     private static bool _hookInstalled;
     private static string _statusMessage = "Not initialized.";
@@ -123,8 +128,11 @@ internal static class ChatHooks
     private static void ListenDetour(IntPtr thisPtr, IntPtr msgInfo)
     {
         RecursionGuard.Tick("ChatHooks.Listen");
-        if (thisPtr != IntPtr.Zero)
+        if (thisPtr != IntPtr.Zero && !_logoffInProgress && thisPtr != _gmMainChatInstance)
+        {
+            _gmMainChatVtable = ClientObjectHooks.IsReadablePointer(thisPtr) ? Marshal.ReadIntPtr(thisPtr) : IntPtr.Zero;
             _gmMainChatInstance = thisPtr;
+        }
         if (++_listenFires <= 3)
             RynthLog.Compat($"ChatHooks: Listen fired #{_listenFires} this=0x{thisPtr.ToInt32():X8}");
         try { _originalListen!(thisPtr, msgInfo); }
@@ -145,6 +153,12 @@ internal static class ChatHooks
         IntPtr inst = _gmMainChatInstance;
         if (inst == IntPtr.Zero) return;
         if (_uiElementSetVisibleAddress == IntPtr.Zero) return;
+        if (!StillAlive(inst))
+        {
+            RynthLog.Compat($"ChatHooks: chatbox 0x{inst.ToInt32():X8} is gone (freed); dropped until it is captured again.");
+            _gmMainChatInstance = IntPtr.Zero;
+            return;
+        }
 
         if (RynthChatOwnsChat)
         {
@@ -168,9 +182,40 @@ internal static class ChatHooks
         }
     }
 
+    /// <summary>
+    /// Second guard against a freed chatbox: its memory must still be readable
+    /// and still start with the vtable it had when captured. (A freed object's
+    /// first bytes are overwritten by the heap; the 2026-09-28 14:41 crash called
+    /// SetVisible on one and jumped to 0x0000FFFF.)
+    /// </summary>
+    private static bool StillAlive(IntPtr inst)
+    {
+        if (!ClientObjectHooks.IsReadablePointer(inst)) return false;
+        IntPtr vtable = Marshal.ReadIntPtr(inst);
+        if (_gmMainChatVtable == IntPtr.Zero) _gmMainChatVtable = vtable;
+        return vtable == _gmMainChatVtable;
+    }
+
+    /// <summary>
+    /// A logoff was requested (LogoffOriginProbe): drop the chatbox now. The logout
+    /// notice (ResetCachedInstance) comes after AC has already freed it, and the
+    /// per-frame SetVisible in between crashed on the freed object (2026-09-28).
+    /// AC's main thread.
+    /// </summary>
+    public static void OnLogoffRequested()
+    {
+        _logoffInProgress = true;
+        _gmMainChatInstance = IntPtr.Zero;
+        _gmMainChatVtable = IntPtr.Zero;
+        _isHiddenAsserted = true;
+    }
+
+    /// <summary>The logout completed (PluginManager's logout dispatch): the next chatbox is a new one.</summary>
     public static void ResetCachedInstance()
     {
         _gmMainChatInstance = IntPtr.Zero;
+        _gmMainChatVtable = IntPtr.Zero;
+        _logoffInProgress = false;
         _isHiddenAsserted = true;   // re-assert on the next instance, as at start-up
     }
 }

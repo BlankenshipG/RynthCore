@@ -161,6 +161,16 @@ Filename: "{app}\RynthCore.exe"; WorkingDir: "{app}"; Description: "Launch Rynth
 ; bring it back when the upgrade is done.
 Filename: "{app}\RynthCore.exe"; WorkingDir: "{app}"; Flags: nowait runasoriginaluser; Check: CmdLineParamExists('/RELAUNCH')
 
+[UninstallRun]
+; Decal + RynthCore (experimental): remove the Decal bridge's registration, only
+; what the launcher added (see docs/DECAL_BRIDGE_PLAN.md). Builds made with Decal installed ship
+; the bridge ({app}\DecalBridge, staged by Build-Installer.ps1); this always runs; with nothing
+; registered it changes nothing. Runs before the files are removed. It removes both entries
+; the installer writes (see RegisterDecalBridge in [Code]): the per-user one, and the
+; machine-wide one - directly when the uninstaller is elevated, otherwise after Windows'
+; administrator prompt, which appears only when a machine-wide entry exists.
+Filename: "{app}\RynthCore.exe"; Parameters: "--decal-bridge-unregister"; Flags: runhidden waituntilterminated; RunOnceId: "RynthCoreDecalBridgeUnregister"
+
 [Code]
 const
   DefaultSuiteDir = 'C:\Games\RynthSuite';
@@ -486,4 +496,107 @@ begin
   Result := Result + NewLine + MemoComponentsInfo;
   if MemoTasksInfo <> '' then
     Result := Result + NewLine + MemoTasksInfo;
+end;
+
+(* -------------------------------------------------------------------------------------
+  Decal + RynthCore (experimental): register the RynthCore Decal bridge on every install
+  AND every update (the launcher's updater runs this installer with /SILENT), in BOTH
+  places a Decal client can read its filter list from:
+
+    1. Machine-wide: HKLM\SOFTWARE\WOW6432Node\Decal\NetworkFilters\{5B3E0D57-...}
+       (32-bit view). An elevated AC (RynthCore or AC run as administrator), or any AC when
+       UAC or its registry virtualization is off, reads ONLY this key - the per-user entry
+       is invisible to it (a player's Decal + RynthCore client never loaded the bridge,
+       2026-10-03). A non-elevated AC without a per-user copy reads it too.
+    2. Per-user: this user's VirtualStore copy of that key, ONLY if the copy already exists.
+       A non-elevated AC is virtualized and, once a copy exists, reads nothing but the copy.
+       A missing copy is never created: it would hide every HKLM filter added later from
+       this user's non-elevated clients.
+
+  Both entries are harmless while no account uses Decal + RynthCore: every Decal client
+  loads the bridge, which stays idle (no hooks, no threads) unless the RynthCore loader is
+  in the same client. Uninstall removes both ([UninstallRun] --decal-bridge-unregister).
+
+  Rights. This installer runs with the lowest privileges (PrivilegesRequired=lowest; the
+  updater starts it without elevation). Writing HKLM needs administrator rights, so:
+    - Setup already elevated (installed "for all users", or started by an elevated
+      launcher): written directly, no prompt.
+    - Not elevated: Windows' administrator prompt is shown ONCE - only when Decal is
+      installed, the machine-wide entry is missing or points at another folder, and this
+      user has a Decal + RynthCore account (decal-accounts.json). Saying no is harmless:
+      the launcher checks before every Decal + RynthCore launch and repairs it (writing it
+      directly when it runs elevated, the case that needs it).
+  The commands are RynthCore.exe's own (Program.cs): --decal-bridge-register-machine and
+  --decal-bridge-install-user, so the installer and the launcher write identical entries.
+  ------------------------------------------------------------------------------------- *)
+const
+  BridgeEntryKey = 'SOFTWARE\Decal\NetworkFilters\{5B3E0D57-2C41-4F8A-9D6E-8C1B70DECA11}';
+  BridgeObject = 'RynthCore.DecalBridge.BridgeFilter';
+
+function DecalInstalled: Boolean;
+begin
+  Result := RegKeyExists(HKLM32, 'SOFTWARE\Decal\Agent');
+end;
+
+function BridgeDir: String;
+begin
+  Result := ExpandConstant('{app}\DecalBridge');
+end;
+
+function MachineBridgeEntryCurrent: Boolean;
+var
+  P, O: String;
+  E: Cardinal;
+begin
+  Result := RegQueryStringValue(HKLM32, BridgeEntryKey, 'Path', P) and
+            (CompareText(RemoveBackslashUnlessRoot(P), BridgeDir) = 0) and
+            RegQueryStringValue(HKLM32, BridgeEntryKey, 'Object', O) and (O = BridgeObject) and
+            RegQueryDWordValue(HKLM32, BridgeEntryKey, 'Enabled', E) and (E = 1);
+end;
+
+function UsesDecalBridge: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{userappdata}\RynthCore\decal-accounts.json'));
+end;
+
+procedure RegisterDecalBridge;
+var
+  Exe, Params: String;
+  Code: Integer;
+begin
+  if not DecalInstalled then Exit;
+  if not FileExists(BridgeDir + '\RynthCore.DecalBridge.dll') then Exit;
+  Exe := ExpandConstant('{app}\RynthCore.exe');
+  Params := '--decal-bridge-register-machine "' + BridgeDir + '"';
+  if not MachineBridgeEntryCurrent then
+  begin
+    if IsAdmin then
+    begin
+      if not Exec(Exe, Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then
+        Log('Decal bridge: machine-wide registration did not start: ' + SysErrorMessage(Code))
+      else
+        Log('Decal bridge: machine-wide registration exit code ' + IntToStr(Code));
+    end
+    else if UsesDecalBridge then
+    begin
+      if not ShellExec('runas', Exe, Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then
+        Log('Decal bridge: elevated machine-wide registration not done (declined or failed): ' + SysErrorMessage(Code))
+      else
+        Log('Decal bridge: elevated machine-wide registration exit code ' + IntToStr(Code));
+    end
+    else
+      Log('Decal bridge: machine-wide entry missing; not elevated and no Decal + RynthCore account - left to the launcher.');
+  end;
+  { Per-user half, as the user who started Setup (the same user unless Setup was elevated
+    with other credentials). }
+  if not ExecAsOriginalUser(Exe, '--decal-bridge-install-user "' + BridgeDir + '"', ExpandConstant('{app}'),
+                            SW_HIDE, ewWaitUntilTerminated, Code) then
+    Log('Decal bridge: per-user step did not start: ' + SysErrorMessage(Code));
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  { After the files, before [Run] (which relaunches the launcher after an update). }
+  if CurStep = ssPostInstall then
+    RegisterDecalBridge;
 end;

@@ -30,6 +30,11 @@ namespace RynthCore.Engine.Compatibility;
 /// </summary>
 internal static class GameTickHooks
 {
+    /// <summary>Set once the Decal-coexistence plugin pump starts (no EndScene hook in that
+    /// client): the UseTime detour then also runs EngineFrameController.RunHeadlessPrefetch.
+    /// Never set in a client without Decal.</summary>
+    internal static volatile bool HeadlessPrefetch;
+
     private const int UseTimeVa = 0x00411FA0;   // Client::UseTime — thiscall, returns bool in AL
 
     // Client::UseTime returns a bool (AL): AC's main loop drives it as
@@ -118,7 +123,12 @@ internal static class GameTickHooks
         // off-thread callers of IsPortaling in coexistence mode would see a
         // perpetually stale cache since nothing else ever reads it on-thread.
         // The getter itself does the guarded read + cache write; discard the value.
-        try { _ = TeleportStateHooks.IsPortaling; }
+        bool portaling = false;
+        try { portaling = TeleportStateHooks.IsPortaling; }
+        catch { }
+        // Death / portal space / teleport lines, for lining crashes up with what
+        // the character was doing (PlayerLifecycleLog).
+        try { PlayerLifecycleLog.SampleOnGameThread(portaling); }
         catch { }
 
         // Run AC's own game-logic + physics + animation pass.
@@ -174,6 +184,17 @@ internal static class GameTickHooks
         // requirement, and they go through the separate cast slot.)
         try { AcMainThreadQueue.Drain(); }
         catch { }
+        // Main-thread snapshots the pump reads instead of AC memory (player id,
+        // cast gate, pose, ...). Post-tick, so they reflect this tick's physics.
+        try { MainThreadSnapshots.Tick(); }
+        catch { }
+        // Decal clients only (no EndScene hook): the prefetches EngineFrameController
+        // runs per frame. False for every other client - one flag check.
+        if (HeadlessPrefetch)
+        {
+            try { ImGuiBackend.EngineFrameController.RunHeadlessPrefetch(); }
+            catch { }
+        }
         // Busy watchdog: also post-tick now. Its decrement / cursor-refresh
         // touch m_cBusy, not the motion sequence, so order is immaterial here;
         // keeping all engine-issued mutations after AC's pass is the invariant.

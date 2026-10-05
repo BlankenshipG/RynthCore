@@ -6,6 +6,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using ImGuiNET;
@@ -38,9 +39,22 @@ internal static unsafe class Win32Backend
     private const uint WM_SYSKEYDOWN = 0x0104;
     private const uint WM_SYSKEYUP = 0x0105;
     private const uint WM_CHAR = 0x0102;
+    private const uint WM_DEADCHAR = 0x0103;
+    private const uint WM_SYSCHAR = 0x0106;
+    private const uint WM_SYSDEADCHAR = 0x0107;
+    private const uint WM_UNICHAR = 0x0109;
     private const uint WM_SETCURSOR = 0x0020;
     private const uint WM_XBUTTONDOWN = 0x020B;
     private const uint WM_XBUTTONUP = 0x020C;
+    private const uint WM_LBUTTONDBLCLK = 0x0203;
+    private const uint WM_RBUTTONDBLCLK = 0x0206;
+    private const uint WM_MBUTTONDBLCLK = 0x0209;
+    // MK_* button bits (WM_MOUSEMOVE wParam)
+    private const int MK_LBUTTON = 0x0001;
+    private const int MK_RBUTTON = 0x0002;
+    private const int MK_MBUTTON = 0x0010;
+    private const int MK_XBUTTON1 = 0x0020;
+    private const int MK_XBUTTON2 = 0x0040;
     private const uint WM_CLOSE = 0x0010;
 
     // Set on the first WM_CLOSE so we kick off the engine teardown exactly
@@ -71,7 +85,7 @@ internal static unsafe class Win32Backend
     public const uint WM_RYNTH_RUN_ACTION = 0x8002;
 
     // 0x8003 was WM_RYNTH_DESTROY_HWND (destroy a panel via the game window).
-    // Retired: LayeredWindow now posts WM_RYNTH_SELF_DESTROY (0x8005) to the
+    // Retired: LayeredWindow now posts WM_RYNTH_SELF_DESTROY (0x8051) to the
     // panel itself so it is destroyed on its real owner thread. Don't reuse 0x8003.
 
     /// <summary>Destroys floating-panel HWNDs on the game thread (their owner).
@@ -79,6 +93,24 @@ internal static unsafe class Win32Backend
     /// Shutdown before unhooking); wParam == 0 removes only panels an earlier
     /// load left behind (posted by Init). See LayeredWindow.DestroyThreadPanelWindows.</summary>
     public const uint WM_RYNTH_SWEEP_PANELS = 0x8004;
+
+    /// <summary>Posted by <see cref="PostToGameThread"/>: runs the queued actions on
+    /// the game thread without the caller waiting (pop-out windows are created this
+    /// way from inside EndScene, where creating an HWND inline is not safe).</summary>
+    public const uint WM_RYNTH_POST_ACTION = 0x8005;
+
+    private static readonly System.Collections.Concurrent.ConcurrentQueue<Action> _postedActions = new();
+
+    /// <summary>
+    /// Queues <paramref name="action"/> to run on the game thread from the game
+    /// WndProc, and returns at once. Any thread. False when there is no game window.
+    /// </summary>
+    public static bool PostToGameThread(Action action)
+    {
+        if (_gameHwnd == IntPtr.Zero) return false;
+        _postedActions.Enqueue(action);
+        return PostMessage(_gameHwnd, WM_RYNTH_POST_ACTION, IntPtr.Zero, IntPtr.Zero);
+    }
 
     private const int VK_CONTROL = 0x11;
     private const int VK_SHIFT = 0x10;
@@ -128,9 +160,6 @@ internal static unsafe class Win32Backend
 
     [DllImport("user32.dll")]
     private static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
-
-    [DllImport("user32.dll")]
-    private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
 
     [DllImport("user32.dll")]
     private static extern bool GetCursorPos(out POINT lpPoint);
@@ -256,6 +285,9 @@ internal static unsafe class Win32Backend
     /// <summary>The game's main window handle.</summary>
     public static IntPtr GameHwnd => _gameHwnd;
 
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
     /// <summary>
     /// Populate <see cref="GameHwnd"/> from outside the ImGui Init path.
     /// Used by Avalonia-only overlay mode where ImGui is disabled but Avalonia
@@ -378,6 +410,32 @@ internal static unsafe class Win32Backend
     private static readonly Queue<QueuedInputMessage> _pendingInput = new();
     private static volatile bool _wantCaptureMouse;
     private static volatile bool _wantCaptureKeyboard;
+
+    /// <summary>
+    /// True while the game window eats mouse input for the ImGui layer: the capture
+    /// flag the last ImGui frame published (Insert toggle and focus applied). Read
+    /// during the next frame, it says whether a click that arrived in between went
+    /// to ImGui (true) or to AC (false). AC thread.
+    /// </summary>
+    public static bool MouseCaptured => _wantCaptureMouse;
+    /// <summary>Stopwatch timestamp of the last ImGui frame that published capture
+    /// flags. The WndProc ignores (and clears) flags older than CaptureStaleMs, so a
+    /// frame that stops running (minimized, device lost, detour disabled during RL)
+    /// can't leave input being eaten with nothing drawn.</summary>
+    private static long _captureFlagsTicks;
+    private const int CaptureStaleMs = 250;
+    /// <summary>Mouse buttons currently held, as MK_* bits, observed on every mouse message.</summary>
+    private static int _heldMouseButtons;
+    /// <summary>True when the press that started the current held-button run was not
+    /// ImGui's (the cursor was not over an ImGui window). Until every button is
+    /// released, ImGui eats none of the mouse traffic: an RMB camera drag that
+    /// crosses an ImGui window keeps its moves and its RBUTTONUP.</summary>
+    private static bool _heldButtonsBelongToGame;
+
+    /// <summary>io.WantTextInput from the last ImGui frame: an ImGui text box is
+    /// being typed in. Vetoes chat Enter-capture the way AvaloniaTextInputActive
+    /// does for Avalonia TextBoxes.</summary>
+    public static volatile bool ImGuiTextInputActive;
     private static bool _hasMouseCapture;
     private static bool _uiCaptureEnabled;
     private static bool _hasFocus;
@@ -473,7 +531,13 @@ internal static unsafe class Win32Backend
         _wndProcDelegate = WndProcHook;
         IntPtr hookPtr = Marshal.GetFunctionPointerForDelegate(_wndProcDelegate);
         _installedWndProcPtr = hookPtr;
-        _originalWndProc = SetWindowLong32(hWnd, GWL_WNDPROC, hookPtr);
+        // Under the native loader the window keeps the loader's permanent subclass
+        // (installed once per process); this generation only plugs its handler in.
+        _viaLoaderSubclass = Hooking.LoaderServices.Available;
+        if (_viaLoaderSubclass)
+            _originalWndProc = Hooking.LoaderServices.SubclassInstall(hWnd, hookPtr, out IntPtr previous) ? previous : IntPtr.Zero;
+        else
+            _originalWndProc = SetWindowLong32(hWnd, GWL_WNDPROC, hookPtr);
         // RynthLog.UI (not .Render — RenderEnabled is false) so chain
         // composition across generations is reconstructible from the log.
         RynthLog.UI($"Win32Backend: subclass installed — hook=0x{hookPtr:X8}, previous WndProc=0x{_originalWndProc:X8}.");
@@ -498,6 +562,7 @@ internal static unsafe class Win32Backend
 
     private static IntPtr _installedWndProcPtr;
     private static volatile bool _forwardOnly;
+    private static bool _viaLoaderSubclass;
 
     public static void Shutdown()
     {
@@ -524,7 +589,14 @@ internal static unsafe class Win32Backend
         // valid because engine module pages are intentionally leaked across
         // reloads, and a no-longer-initialized backend just forwards.
         IntPtr currentProc = GetWindowLong32(_gameHwnd, GWL_WNDPROC);
-        if (currentProc == _installedWndProcPtr || currentProc == IntPtr.Zero)
+        if (_viaLoaderSubclass)
+        {
+            // The loader's subclass stays in the chain for good and now passes every
+            // message straight through: nothing points at this generation any more.
+            Hooking.LoaderServices.SubclassRelease(_gameHwnd);
+            RynthLog.UI("Win32Backend: Shutdown — handler removed from the loader's subclass (pass-through).");
+        }
+        else if (currentProc == _installedWndProcPtr || currentProc == IntPtr.Zero)
         {
             SetWindowLong32(_gameHwnd, GWL_WNDPROC, _originalWndProc);
             RynthLog.UI("Win32Backend: Shutdown — WndProc restored (we were chain head).");
@@ -577,48 +649,51 @@ internal static unsafe class Win32Backend
 
     private static int _newFrameLogCount;
 
-    public static void NewFrame()
+    /// <summary>
+    /// Reads the game client size and publishes it to the Avalonia overlay.
+    /// Runs every frame while the ImGui backend is enabled, including frames
+    /// where no ImGui window is open and NewFrame is skipped.
+    /// </summary>
+    public static void UpdateClientMetrics(out int width, out int height)
     {
-        // Deferred focus restore: AvaloniaSubclassWndProc sets this flag when
-        // WM_SETFOCUS lands on the off-screen Avalonia HWND. We reclaim focus
-        // here (game thread owns _gameHwnd) so there's no cross-thread wait.
-        ImGuiIOPtr io = ImGuiNET.ImGui.GetIO();
-
-        // Update display size
         GetClientRect(_gameHwnd, out RECT rect);
-        int w = rect.Right - rect.Left;
-        int h = rect.Bottom - rect.Top;
+        width = rect.Right - rect.Left;
+        height = rect.Bottom - rect.Top;
 
-        _newFrameLogCount++;
-
-        AvaloniaOverlay.ClientPixelWidth = w;
-        AvaloniaOverlay.ClientPixelHeight = h;
-        if ((_lastKnownClientWidth != w || _lastKnownClientHeight != h) && w > 1 && h > 1)
+        AvaloniaOverlay.ClientPixelWidth = width;
+        AvaloniaOverlay.ClientPixelHeight = height;
+        if ((_lastKnownClientWidth != width || _lastKnownClientHeight != height) && width > 1 && height > 1)
         {
-            _lastKnownClientWidth = w;
-            _lastKnownClientHeight = h;
+            _lastKnownClientWidth = width;
+            _lastKnownClientHeight = height;
             AvaloniaOverlay.NotifyGameSurfaceMetricsChanged();
             AvaloniaOverlay.RequestCapture();
         }
+    }
+
+    public static void NewFrame(int clientWidth, int clientHeight)
+    {
+        ImGuiIOPtr io = ImGuiNET.ImGui.GetIO();
+        _newFrameLogCount++;
 
         // If GetClientRect returns 0x0 or 1x1, the HWND might be wrong.
         // DisplaySize will be set from D3D viewport in EngineFrameController instead.
-        if (w > 1 && h > 1)
-            io.DisplaySize = new System.Numerics.Vector2(w, h);
+        if (clientWidth > 1 && clientHeight > 1)
+            io.DisplaySize = new System.Numerics.Vector2(clientWidth, clientHeight);
 
         FlushQueuedInput(io);
 
-        // Refresh the cursor position. With ViewportsEnable, ImGui expects
-        // absolute screen coords so it can route clicks to the correct viewport.
-        // Without it, client-relative coords are the simpler contract.
+        // Refresh the cursor position (client-relative; multi-viewport is not used).
         GetCursorPos(out POINT cursorPos);
-        if ((io.ConfigFlags & ImGuiConfigFlags.ViewportsEnable) == 0)
-            ScreenToClient(_gameHwnd, ref cursorPos);
+        ScreenToClient(_gameHwnd, ref cursorPos);
         io.AddMousePosEvent(cursorPos.X, cursorPos.Y);
         SyncFocusState(io);
 
         bool insertDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
-        if (insertDown && !_insertWasDown)
+        // GetAsyncKeyState reads the physical key whatever window has focus: without
+        // the focus test, Insert (or Shift/Ctrl+Insert paste/copy) pressed in another
+        // client or app flipped this client's capture off unseen.
+        if (insertDown && !_insertWasDown && _hasFocus)
         {
             _uiCaptureEnabled = !_uiCaptureEnabled;
             RynthLog.Render($"Win32Backend: ImGui capture {(_uiCaptureEnabled ? "ENABLED" : "DISABLED")} (Insert)");
@@ -670,11 +745,27 @@ internal static unsafe class Win32Backend
             // CreateWindowExW etc. aren't stuck behind unrelated input handling.
             if (msg == WM_RYNTH_RUN_ACTION)
             {
-                Action? a = _pendingGameThreadAction;
+                // Take the action once. A send that timed out is still delivered
+                // later; without the take, that late delivery ran whatever action
+                // was pending by then and the action's own send ran it again
+                // (two LayeredWindows for one popout, one of them orphaned).
+#pragma warning disable CS0420 // Interlocked access to a volatile field is still atomic.
+                Action? a = Interlocked.Exchange(ref _pendingGameThreadAction, null);
+#pragma warning restore CS0420
                 if (a != null)
                 {
                     try { a(); }
                     catch (Exception ex) { RynthLog.Info($"Win32Backend: WM_RYNTH_RUN_ACTION threw {ex.GetType().Name}: {ex.Message}"); }
+                }
+                return IntPtr.Zero;
+            }
+
+            if (msg == WM_RYNTH_POST_ACTION)
+            {
+                while (_postedActions.TryDequeue(out Action? posted))
+                {
+                    try { posted(); }
+                    catch (Exception ex) { RynthLog.Info($"Win32Backend: posted action threw {ex.GetType().Name}: {ex.Message}"); }
                 }
                 return IntPtr.Zero;
             }
@@ -765,7 +856,7 @@ internal static unsafe class Win32Backend
             // ── Chat capture: consume all key input for the chat TextBox ────
             // Game HWND keeps Win32 focus throughout; callbacks dispatch Text
             // updates to the panel on Avalonia's UI thread — no Avalonia focus needed.
-            if (ChatCaptureActive && IsKeyMessage(msg))
+            if (ChatCaptureActive && (IsKeyMessage(msg) || IsExtraCharMessage(msg)))
             {
                 if (msg == WM_CHAR)
                 {
@@ -843,7 +934,10 @@ internal static unsafe class Win32Backend
             // RynthChatOwnsChat: only while RynthChat is open AND hiding the retail chatbox —
             // whichever chat is visible gets Enter. Otherwise Enter belongs to AC's own chat,
             // which used to be unusable whenever RynthChat was installed, even closed.
+            // !ImGuiTextInputActive: the same rule for an ImGui text box.
+            ExpireStaleCaptureFlags();
             if (msg == WM_KEYDOWN && (int)wParam == VK_RETURN && !IsExtendedKey(lParam) && !ChatCaptureActive && !AvaloniaTextInputActive
+                && !ImGuiTextInputActive && !ImGuiPopOuts.HasTextFocus
                 && RynthCore.Engine.Compatibility.ChatHooks.RynthChatOwnsChat)
             {
                 if (OnChatCaptureActivated != null)
@@ -876,8 +970,13 @@ internal static unsafe class Win32Backend
             // the ImGui EnqueueInput/capture-eat below so ImGui never tracks the
             // HUD drag (keeps our SetCapture from fighting NewFrame's). No-op
             // unless the HUD is drawn.
-            if (IsMouseMessage(msg) && VitalHud.TryHandleMouse(hWnd, msg, wParam, lParam))
-                return IntPtr.Zero;
+            if (IsMouseMessage(msg))
+                TrackMouseButtons(msg, wParam);
+            else if (msg == WM_KILLFOCUS)
+            {
+                _heldMouseButtons = 0;
+                _heldButtonsBelongToGame = false;
+            }
 
             // ── Avalonia panel hit-test & input forwarding ────────────────
             // Only in the world: between characters the overlay isn't drawn, so its
@@ -919,18 +1018,41 @@ internal static unsafe class Win32Backend
             }
             // ─────────────────────────────────────────────────────────────
 
+            // A popped-out ImGui panel is typing (its window never has focus, so its keys
+            // arrive here), or the wheel turned over one: the pop-out gets it. A click
+            // on the game ends a pop-out's text edit (ImGuiPopOuts.RouteInput).
+            if (ImGuiPopOuts.RouteInput(msg, wParam, lParam))
+            {
+                // Key-ups still reach the game: a key held before the text edit
+                // began must be released there (the "keeps moving" rule below).
+                if (msg == WM_KEYUP || msg == WM_SYSKEYUP)
+                    return CallWindowProcA(_originalWndProc, hWnd, msg, wParam, lParam);
+                return IntPtr.Zero;
+            }
+
             // Only enqueue if we did NOT already forward to Avalonia above.
             // (When AvaloniaTextInputActive is true and a key fires, we returned early.)
             if (IsMouseMessage(msg) || IsKeyMessage(msg) || IsFocusMessage(msg))
                 EnqueueInput(msg, wParam, lParam);
 
-            // If ImGui wants mouse input, eat mouse messages so the game doesn't get them
-            if (_wantCaptureMouse && IsMouseMessage(msg))
+            // ImGui wants the mouse (io.WantCaptureMouse): eat it, unless the held
+            // buttons were pressed for the game (see _heldButtonsBelongToGame).
+            if (_wantCaptureMouse && IsMouseMessage(msg) && !_heldButtonsBelongToGame)
                 return IntPtr.Zero;
 
-            // If ImGui wants keyboard input, eat keyboard messages
-            if (_wantCaptureKeyboard && IsKeyMessage(msg))
+            // An ImGui text box is being typed in (io.WantTextInput): keep keys from
+            // the game, except key-ups. A key held before the click must still get
+            // its release, or AC's edge-triggered input stays latched (the "character
+            // keeps moving" bug); a stray key-up reaching AC is harmless.
+            // A pop-out's text box counts the same (RouteInput above took its keys; the
+            // dead-key / Alt+key char messages it doesn't route are dropped here).
+            if ((_wantCaptureKeyboard || ImGuiPopOuts.HasTextFocus) && IsTextKeyMessage(msg))
                 return IntPtr.Zero;
+
+            // Field check: a key-down or char about to reach AC while a RynthCore text box
+            // was active in the last frame is a leak. One log line per typing burst.
+            if (IsTextKeyMessage(msg))
+                NoteKeyReachingGame(msg, wParam);
 
             // ── Background FPS unlock: lie to AC so it never idle-throttles ──
             if (msg == WM_ACTIVATEAPP && EndSceneHook.FpsLimitEnabled)
@@ -1040,7 +1162,7 @@ internal static unsafe class Win32Backend
                          AvaloniaOverlay.TryGetBarButtonTitleAt(releasePoint.X, releasePoint.Y, out string? releasedButtonTitle) &&
                          string.Equals(_pendingBarButtonTitle, releasedButtonTitle, StringComparison.OrdinalIgnoreCase))
                 {
-                    AvaloniaOverlay.ActivateBarButton(releasedButtonTitle!);
+                    PanelRouter.Toggle(releasedButtonTitle!);
                 }
 
                 // Persist bar position on drag-end. All the live moves were
@@ -1175,7 +1297,7 @@ internal static unsafe class Win32Backend
                     if (!string.IsNullOrEmpty(_pendingBarButtonTitle) &&
                         string.Equals(_pendingBarButtonTitle, barButtonTitle, StringComparison.OrdinalIgnoreCase))
                     {
-                        AvaloniaOverlay.ActivateBarButton(barButtonTitle!);
+                        PanelRouter.Toggle(barButtonTitle!);
                     }
 
                     _avIsButtonCapture = false;
@@ -1278,7 +1400,7 @@ internal static unsafe class Win32Backend
         return false;
     }
 
-    private static ImGuiKey VkToImGuiKey(int vk)
+    internal static ImGuiKey VkToImGuiKey(int vk)
     {
         return vk switch
         {
@@ -1344,6 +1466,19 @@ internal static unsafe class Win32Backend
             || msg == WM_CHAR;
     }
 
+    /// <summary>Char messages besides WM_CHAR: dead keys (accents) and Alt+key chars.</summary>
+    private static bool IsExtraCharMessage(uint msg)
+    {
+        return msg == WM_DEADCHAR || msg == WM_SYSCHAR || msg == WM_SYSDEADCHAR || msg == WM_UNICHAR;
+    }
+
+    /// <summary>What a text box keeps from AC: key-downs and every char message. Never
+    /// key-ups (a key held before the edit began must still be released in AC).</summary>
+    private static bool IsTextKeyMessage(uint msg)
+    {
+        return msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_CHAR || IsExtraCharMessage(msg);
+    }
+
     private static bool IsFocusMessage(uint msg)
     {
         return msg == WM_SETFOCUS || msg == WM_KILLFOCUS || msg == WM_ACTIVATEAPP;
@@ -1353,16 +1488,7 @@ internal static unsafe class Win32Backend
     {
         short x = (short)((long)lParam & 0xFFFF);
         short y = (short)(((long)lParam >> 16) & 0xFFFF);
-        if ((io.ConfigFlags & ImGuiConfigFlags.ViewportsEnable) != 0)
-        {
-            POINT p = new POINT { X = x, Y = y };
-            ClientToScreen(_gameHwnd, ref p);
-            io.AddMousePosEvent(p.X, p.Y);
-        }
-        else
-        {
-            io.AddMousePosEvent(x, y);
-        }
+        io.AddMousePosEvent(x, y);
     }
 
     private static void UpdateMouseButton(ImGuiIOPtr io, int buttonIndex, int virtualKey)
@@ -1371,13 +1497,191 @@ internal static unsafe class Win32Backend
         SetMouseButtonState(io, buttonIndex, isDown);
     }
 
-    public static void UpdateCaptureFlags(bool wantMouse, bool wantKeyboard)
+    /// <summary>
+    /// Publishes what the ImGui frame just built wants: <paramref name="wantMouse"/>
+    /// is io.WantCaptureMouse, <paramref name="wantTextInput"/> a text box holds the
+    /// keyboard (io.WantTextInput, or a box that went active this frame).
+    /// Keyboard capture follows text input only (not IsAnyItemActive), so holding
+    /// a slider never swallows game keys. The Insert toggle (_uiCaptureEnabled)
+    /// and game focus gate the mouse only.
+    ///
+    /// The keyboard is not gated (2026-10-04, keys typed into Chat Filters also
+    /// reached AC): ImGui is fed every key whatever the gate says (EnqueueInput), so a
+    /// box left open with the gate shut typed into the box AND the game. A key that
+    /// reaches the game WndProc means AC has keyboard focus anyway; Insert-off ends
+    /// the text edit instead (EngineFrameController), so keys go back to the game.
+    /// </summary>
+    public static void UpdateCaptureFlags(bool wantMouse, bool wantTextInput)
     {
-        // ImGui.NET's WantCaptureMouse/WantCaptureKeyboard read from wrong native
-        // offsets (struct layout mismatch, same class of bug as ImDrawCmd stride).
-        // Use _uiCaptureEnabled directly — Insert key gives user explicit control.
-        _wantCaptureMouse = _uiCaptureEnabled && _hasFocus && wantMouse;
-        _wantCaptureKeyboard = _uiCaptureEnabled && _hasFocus && wantKeyboard;
+        bool live = _uiCaptureEnabled && _hasFocus;
+        _wantCaptureMouse = live && wantMouse;
+        _wantCaptureKeyboard = wantTextInput;
+        ImGuiTextInputActive = wantTextInput;
+        if (wantTextInput) _keyboardExpiryLogged = false;
+        Volatile.Write(ref _captureFlagsTicks, Stopwatch.GetTimestamp());
+    }
+
+    /// <summary>The Insert toggle: false while the player has released the UI. AC thread.</summary>
+    public static bool UiCaptureEnabled => _uiCaptureEnabled;
+
+    public static string DescribeCapture() =>
+        $"wantMouse={_wantCaptureMouse} wantText={_wantCaptureKeyboard} popOutText={ImGuiPopOuts.TextFocusTitle ?? "-"} insertToggle={_uiCaptureEnabled} focus={_hasFocus} heldButtons=0x{_heldMouseButtons:X} heldForGame={_heldButtonsBelongToGame}";
+
+    /// <summary>No ImGui frame this tick: ImGui wants nothing.</summary>
+    public static void ClearCaptureFlags()
+    {
+        _wantCaptureMouse = false;
+        _wantCaptureKeyboard = false;
+        ImGuiTextInputActive = false;
+    }
+
+    /// <summary>
+    /// Keyboard capture outlives a missing frame for this long, counted from the first
+    /// message after the last frame (see ExpireStaleCaptureFlags). Longer than the mouse's:
+    /// the FPS governor can run a client at 1 fps.
+    /// </summary>
+    private const int KeyboardStaleMs = 1500;
+    private static long _firstMessageSinceFrameTicks;
+    private static bool _keyboardExpiryLogged;
+
+    /// <summary>
+    /// Clears capture flags that no ImGui frame has refreshed recently.
+    /// Mouse: 250 ms after the last frame, as before. Keyboard: only once messages have
+    /// kept arriving for KeyboardStaleMs with no frame. Counting from the frame let a
+    /// stall leak keys: AC's thread runs both the frames and this WndProc, so the keys
+    /// typed during a slow stretch (a long frame or pop-out readback, AC busy) are
+    /// dispatched together right after it, and every one of them found the flag "stale"
+    /// and went to AC while the box was still open.
+    /// </summary>
+    private static void ExpireStaleCaptureFlags()
+    {
+        if (!_wantCaptureMouse && !_wantCaptureKeyboard && !ImGuiTextInputActive)
+            return;
+        long now = Stopwatch.GetTimestamp();
+        long frame = Volatile.Read(ref _captureFlagsTicks);
+        if (_wantCaptureMouse && now - frame > Stopwatch.Frequency * CaptureStaleMs / 1000)
+            _wantCaptureMouse = false;
+        if (!_wantCaptureKeyboard && !ImGuiTextInputActive)
+            return;
+        if (_firstMessageSinceFrameTicks < frame)
+        {
+            _firstMessageSinceFrameTicks = now;   // the first message since that frame
+            return;
+        }
+        long waited = now - _firstMessageSinceFrameTicks;
+        if (waited <= Stopwatch.Frequency * KeyboardStaleMs / 1000)
+            return;
+        _wantCaptureKeyboard = false;
+        ImGuiTextInputActive = false;
+        if (!_keyboardExpiryLogged)
+        {
+            _keyboardExpiryLogged = true;
+            RynthLog.UI($"[Input] keyboard capture released: no ImGui frame for {(now - frame) * 1000 / Stopwatch.Frequency} ms while a text box was open (owner: {ImGuiTextFocus.ActiveOwner ?? "unknown"}).");
+        }
+    }
+
+    // ── Leak diagnostic ─────────────────────────────────────────────────
+    private const int LeakBurstGapMs = 2000;   // keys closer together than this are one burst
+    private const int MaxLeakLines = 100;      // per engine load
+    private static long _leakBurstEndTicks;
+    private static int _leakLines;
+    private static int _leakKeysInBurst;
+
+    /// <summary>
+    /// A key-down or char is about to reach AC. If a RynthCore text box was active in the
+    /// last frame (ImGuiTextFocus, which reads the box itself, not the capture flags), that
+    /// is a keyboard leak: log it, once per typing burst. AC thread (WndProc).
+    /// </summary>
+    private static void NoteKeyReachingGame(uint msg, IntPtr wParam)
+    {
+        string? owner = ImGuiTextFocus.ActiveOwner;
+        if (owner == null) return;
+        long now = Stopwatch.GetTimestamp();
+        bool newBurst = now > _leakBurstEndTicks;
+        _leakBurstEndTicks = now + Stopwatch.Frequency * LeakBurstGapMs / 1000;
+        if (!newBurst)
+        {
+            _leakKeysInBurst++;
+            return;
+        }
+        int previous = _leakKeysInBurst;
+        _leakKeysInBurst = 1;
+        if (_leakLines >= MaxLeakLines) return;
+        _leakLines++;
+        string name = msg switch
+        {
+            WM_KEYDOWN => "WM_KEYDOWN",
+            WM_SYSKEYDOWN => "WM_SYSKEYDOWN",
+            WM_CHAR => "WM_CHAR",
+            WM_SYSCHAR => "WM_SYSCHAR",
+            WM_DEADCHAR => "WM_DEADCHAR",
+            WM_SYSDEADCHAR => "WM_SYSDEADCHAR",
+            WM_UNICHAR => "WM_UNICHAR",
+            _ => $"0x{msg:X4}",
+        };
+        RynthLog.UI($"[Input] key reached AC while an ImGui text box was active (owner: {owner}; {name} 0x{(long)wParam:X}"
+            + (previous > 1 ? $"; previous burst {previous} keys" : "") + $"; {DescribeCapture()}).");
+    }
+
+    /// <summary>
+    /// Drops queued input while no ImGui frame runs (nothing would drain it) and
+    /// resets ImGui's key/button state so a key or button released while idle
+    /// doesn't read as held when frames resume. AC thread, ImGui context current.
+    /// </summary>
+    public static void DiscardQueuedInput()
+    {
+        lock (_inputLock)
+            _pendingInput.Clear();
+    }
+
+    public static void ResetImGuiInputState(ImGuiIOPtr io)
+    {
+        for (int i = 0; i < _mouseButtons.Length; i++)
+            SetMouseButtonState(io, i, false);
+        io.ClearInputKeys();
+    }
+
+    /// <summary>MK_* bit for a button message's button (0 for non-button messages).</summary>
+    private static int MouseButtonBit(uint msg, IntPtr wParam) => msg switch
+    {
+        WM_LBUTTONDOWN or WM_LBUTTONUP or WM_LBUTTONDBLCLK => MK_LBUTTON,
+        WM_RBUTTONDOWN or WM_RBUTTONUP or WM_RBUTTONDBLCLK => MK_RBUTTON,
+        WM_MBUTTONDOWN or WM_MBUTTONUP or WM_MBUTTONDBLCLK => MK_MBUTTON,
+        WM_XBUTTONDOWN or WM_XBUTTONUP => (((long)wParam >> 16) & 0xFFFF) == 1 ? MK_XBUTTON1 : MK_XBUTTON2,
+        _ => 0,
+    };
+
+    /// <summary>
+    /// Tracks held buttons and who owns the current press (see
+    /// _heldButtonsBelongToGame). Runs for every mouse message before anyone
+    /// handles it, so the bookkeeping never depends on which layer took it.
+    /// </summary>
+    private static void TrackMouseButtons(uint msg, IntPtr wParam)
+    {
+        if (msg == WM_MOUSEMOVE)
+        {
+            // MOUSEMOVE carries the real button state; resync so a release we
+            // never saw (outside the window, focus change) can't leave a button stuck.
+            _heldMouseButtons = (int)((long)wParam & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON | MK_XBUTTON1 | MK_XBUTTON2));
+            if (_heldMouseButtons == 0) _heldButtonsBelongToGame = false;
+            return;
+        }
+
+        int bit = MouseButtonBit(msg, wParam);
+        if (bit == 0) return;
+
+        bool down = msg is WM_LBUTTONDOWN or WM_RBUTTONDOWN or WM_MBUTTONDOWN or WM_XBUTTONDOWN
+            or WM_LBUTTONDBLCLK or WM_RBUTTONDBLCLK or WM_MBUTTONDBLCLK;
+        if (down)
+        {
+            if (_heldMouseButtons == 0)
+                _heldButtonsBelongToGame = !_wantCaptureMouse;
+            _heldMouseButtons |= bit;
+        }
+        else
+        {
+            _heldMouseButtons &= ~bit;
+        }
     }
 
     public static bool IsUiCaptureEnabled()

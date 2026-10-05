@@ -115,6 +115,11 @@ internal static class PowerbarHooks
 
     public static void Initialize()
     {
+        // "Hide retail vitals" rides this init step (EntryPoint's list of steps is
+        // not edited for it); it resolves and hooks on its own and never throws.
+        try { RetailVitalsHooks.Initialize(); }
+        catch (Exception ex) { RynthLog.Compat($"PowerbarHooks: RetailVitalsHooks.Initialize threw {ex.GetType().Name}: {ex.Message}"); }
+
         if (_hookInstalled)
             return;
 

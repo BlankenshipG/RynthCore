@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace RynthCore.Engine.Compatibility;
 
@@ -212,10 +213,53 @@ internal static class ClientCombatHooks
         if (_playerInReadyPosition == null || _getCombatSystem == null)
             return false;
 
+        // Off AC's main thread (host IsPlayerReadyFn: RynthNet's login probe polls it
+        // every 2 s from the plugin pump): the value sampled on the main thread
+        // (<= ~200 ms old). ClientCombatSystem::PlayerInReadyPosition walks the
+        // player's motion state and the combat singleton, both freed and rebuilt
+        // around login / logout, exactly when this is polled.
+        if (!MainThreadGuard.IsOnMainThread())
+            return Volatile.Read(ref _readySnapshot) != 0;
+
+        bool ready = ReadPlayerReadyLive();
+        Volatile.Write(ref _readySnapshot, ready ? 1 : 0);
+        return ready;
+    }
+
+    // 1 = the main thread last saw the player in a ready position.
+    private static int _readySnapshot;
+    private static long _nextReadySampleMs;
+    private const int ReadySampleIntervalMs = 200;
+
+    /// <summary>
+    /// Main thread only (MainThreadSnapshots.Tick). Samples PlayerInReadyPosition for
+    /// off-thread IsPlayerReady callers, about five times a second. With no player
+    /// object (char-select, portal teardown) it publishes "not ready" without
+    /// calling into the combat system.
+    /// </summary>
+    internal static void SampleReady()
+    {
+        if (!MainThreadGuard.IsOnMainThread() || _playerInReadyPosition == null || _getCombatSystem == null)
+            return;
+        long now = Environment.TickCount64;
+        if (now < _nextReadySampleMs)
+            return;
+        _nextReadySampleMs = now + ReadySampleIntervalMs;
+
+        bool ready = ClientHelperHooks.GetPlayerId() != 0 && ReadPlayerReadyLive();
+        Volatile.Write(ref _readySnapshot, ready ? 1 : 0);
+    }
+
+    // MAIN THREAD ONLY.
+    private static bool ReadPlayerReadyLive()
+    {
+        if (!MainThreadGuard.IsOnMainThread() || _playerInReadyPosition == null || _getCombatSystem == null)
+            return false;
         try
         {
             IntPtr cs = _getCombatSystem();
             if (cs == IntPtr.Zero) return false;
+            if (!ClientObjectHooks.IsReadablePointer(cs)) return false;
             return _playerInReadyPosition(cs, 1) != 0;
         }
         catch { return false; }
@@ -257,5 +301,6 @@ internal static class ClientCombatHooks
         _autoTarget = null;
         _sendAttackHeightChanged = null;
         _initialized = false;
+        Volatile.Write(ref _readySnapshot, 0);
     }
 }

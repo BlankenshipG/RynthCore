@@ -50,7 +50,7 @@ internal static class CrashDump
     /// Write a minidump of the current process to Logs\dumps\. Best-effort;
     /// never throws. Returns true on success and sets <paramref name="dumpPath"/>.
     /// </summary>
-    internal static bool WriteSelfDump(string reason, out string dumpPath)
+    internal static bool WriteSelfDump(string reason, out string dumpPath, string prefix = "hang")
     {
         dumpPath = string.Empty;
         try
@@ -59,7 +59,7 @@ internal static class CrashDump
             Directory.CreateDirectory(dir);
 
             string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            dumpPath = Path.Combine(dir, $"hang_{Environment.ProcessId}_{stamp}.dmp");
+            dumpPath = Path.Combine(dir, $"{prefix}_{Environment.ProcessId}_{stamp}.dmp");
 
             using var fs = new FileStream(dumpPath, FileMode.Create, FileAccess.Write, FileShare.None);
             bool ok = MiniDumpWriteDump(

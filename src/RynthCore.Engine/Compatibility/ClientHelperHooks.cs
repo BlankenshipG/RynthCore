@@ -66,10 +66,47 @@ internal static class ClientHelperHooks
     // Byte-identical sibling of Event_StackableMerge (differs only in the action
     // opcode immediate: give writes 0xCD, merge 0x54). Cdecl, returns bool.
     // Chorizite map: 002ACA60 -> live VA 0x006ACA60. Sends the F7B1 give
-    // GameAction. amount = stack count to give (0 = whole object).
-    // Args (live-disasm + call-site UIAttemptGive confirmed): item, targetNpc, amount.
+    // GameAction. amount = stack count to give (ACE refuses amount <= 0).
+    // Args: TARGET FIRST, then the item, then amount. The function writes 0xCD, then
+    // [esp+0x1C], [esp+0x20], [esp+0x24] in that order, and ACE's GiveObjectRequest reads
+    // targetGuid, objectGuid, amount. Its one caller, ACCWeenieObject::UIAttemptGive
+    // (call at 0x0058E46F), pushes amount, this->id (the item, [esi+8]), then the target.
+    // (Re-checked 2026-10-01; the old delegate had the two ids swapped.)
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate byte EventGiveObjectRequestDelegate(uint objectId, uint targetId, int amount);
+    private delegate byte EventGiveObjectRequestDelegate(uint targetId, uint objectId, int amount);
+
+    // CM_Inventory::Event_GetAndWieldItem(ulong itemId, ulong equipMask) — the 0x001A
+    // GetAndWieldItem game action ("wield this item at these locations"). Same generated
+    // shape as its two siblings above (cdecl, returns bool), opcode immediate 0x1A.
+    // Chorizite map: 002AB950 -> live VA 0x006AC950 (the "FUN_006AC950" once mistaken for
+    // the merge helper, which is why that attempt tried to equip Pyreals). Arg order from
+    // the disassembly (itemId at [esp+0x1C], mask at [esp+0x20] after the prologue) and the
+    // one caller, ACCWeenieObject::UIAttemptWield @0x0058E3C0: push mask; push this->id.
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate byte EventGetAndWieldItemDelegate(uint objectId, uint equipMask);
+
+    // CM_Inventory::Event_DropItem(ulong itemId) — the 0x001B DropItem game action (put the
+    // item on the ground at the player's feet). Same generated shape as the three above
+    // (cdecl, returns bool) with one argument, so +0x08 after the first inner call and the
+    // 0x1B opcode as the last pattern byte. Chorizite map entrypoint 0x006AC880; its caller
+    // is ACCWeenieObject::UIAttemptPutIn3D (call at 0x0058E545). Arg: itemId at [esp+0x1C]
+    // after the prologue (sub esp,0Ch + three pushes).
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate byte EventDropItemDelegate(uint objectId);
+
+    // CM_Inventory::Event_NoLongerViewingContents(ulong containerId) - the 0x0195
+    // NoLongerViewingContents game action, the packet the client sends to close an external
+    // container (corpse, chest). Same generated shape as Event_DropItem (cdecl, returns bool,
+    // one argument) with opcode 0x0195. Entry 0x006ACBB0. Its one caller is
+    // ClientUISystem::SetGroundContainer(newId, notifyServer) @0x005652B0, which sends it for
+    // the old ground container when notifyServer is set: the container window's close and
+    // opening a second container both go through there. ACE (Player.HandleActionNoLongerViewingContents)
+    // closes the container if this player is its viewer and answers with CloseGroundContainer
+    // (0x0052); the client's own handler for that tears the window down
+    // (SetGroundContainer(0, false)), clears the pending-request slot for that container
+    // (ACCWeenieObject::RecordResponse) and runs ACCObjectMaint::StopViewingObjectContents.
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate byte EventNoLongerViewingContentsDelegate(uint containerId);
 
     [UnmanagedFunctionPointer(CallingConvention.ThisCall)]
     private delegate void UseObjectDelegate(IntPtr clientUiSystem, uint objectId);
@@ -105,6 +142,12 @@ internal static class ClientHelperHooks
     private const int EventStackableMergeVa = 0x006ACDD0;
     // CM_Inventory::Event_GiveObjectRequest — public give-to-NPC API (FALLBACK only; pattern-scanned).
     private const int EventGiveObjectRequestVa = 0x006ACA60;
+    // CM_Inventory::Event_GetAndWieldItem — wield into a chosen slot (FALLBACK only; pattern-scanned).
+    private const int EventGetAndWieldItemVa = 0x006AC950;
+    // CM_Inventory::Event_DropItem — drop an item on the ground (FALLBACK only; pattern-scanned).
+    private const int EventDropItemVa = 0x006AC880;
+    // CM_Inventory::Event_NoLongerViewingContents - close an external container (FALLBACK only; pattern-scanned).
+    private const int EventNoLongerViewingContentsVa = 0x006ACBB0;
     private const int UseObjectVa = 0x00565750;
     private const int PlayerSystemVa = 0x0087119C;
     private const int InqPlayerCoordsVa = 0x00560E00;
@@ -126,6 +169,9 @@ internal static class ClientHelperHooks
     private static MoveItemInternalDelegate? _moveItemInternal;
     private static EventStackableMergeDelegate? _eventStackableMerge;
     private static EventGiveObjectRequestDelegate? _eventGiveObjectRequest;
+    private static EventGetAndWieldItemDelegate? _eventGetAndWieldItem;
+    private static EventDropItemDelegate? _eventDropItem;
+    private static EventNoLongerViewingContentsDelegate? _eventNoLongerViewingContents;
     private static InqPlayerCoordsDelegate? _inqPlayerCoords;
     private static GetPlayerIdDelegate? _getPlayerId;
     private static AddTextToScrollDelegate? _addTextToScroll;
@@ -151,6 +197,9 @@ internal static class ClientHelperHooks
     public static bool HasSplitStackInternal => _moveItemInternal != null;
     public static bool HasMergeStackInternal => _eventStackableMerge != null;
     public static bool HasGiveObjectTo => _eventGiveObjectRequest != null;
+    public static bool HasWieldItem => _eventGetAndWieldItem != null;
+    public static bool HasDropItem => _eventDropItem != null;
+    public static bool HasCloseContainer => _eventNoLongerViewingContents != null;
     public static bool HasGetCurCoords => _inqPlayerCoords != null;
     public static bool HasGetPlayerId => _getPlayerId != null;
     public static bool HasGetGroundContainerId => true;
@@ -178,7 +227,22 @@ internal static class ClientHelperHooks
     // so do NOT trim it. Generated + verified unique (1 match @0x006ACA60) via
     // pe_pattern.py GEN against both acclient copies.
     private static readonly byte?[] PatEventGiveObjectRequest = [ 0x83, 0xEC, 0x0C, 0x53, 0x56, 0x57, 0xE8, null, null, null, null, 0x89, 0x44, 0x24, 0x14, 0x6A, 0x00, 0x8D, 0x44, 0x24, 0x10, 0x50, 0x8D, 0x4C, 0x24, 0x18, 0xC7, 0x44, 0x24, 0x18, 0x2C, 0x2C, 0x80, 0x00, 0xC7, 0x44, 0x24, 0x14, 0x00, 0x00, 0x00, 0x00, 0xE8, null, null, null, null, 0x8B, 0xF0, 0x83, 0xC6, 0x10, 0x56, 0xE8, null, null, null, null, 0x83, 0xC4, 0x04, 0x56, 0x8D, 0x4C, 0x24, 0x10, 0x51, 0x8D, 0x4C, 0x24, 0x18, 0x89, 0x44, 0x24, 0x14, 0x8B, 0xF8, 0xE8, null, null, null, null, 0x8B, 0x54, 0x24, 0x0C, 0x8B, 0x4C, 0x24, 0x1C, 0xC7, 0x02, 0xCD ];
-    private static readonly byte?[] PatInqPlayerCoords = [ 0x83, 0xEC, 0x10, 0x53, 0x8B, 0x5C, 0x24, 0x1C, 0x55, 0x56 ];
+    // CM_Inventory::Event_GetAndWieldItem @0x006AC950. Same template as the two above but with
+    // one fewer argument (so +0x0C, not +0x10, after the first inner call) and the 0x1A opcode
+    // as the last byte. Generated + verified unique (1 match @0x006AC950) via pe_pattern.py GEN
+    // against both acclient copies (C:\Turbine and C:\Games\RynthCore\AcClient).
+    private static readonly byte?[] PatEventGetAndWieldItem = [ 0x83, 0xEC, 0x0C, 0x53, 0x56, 0x57, 0xE8, null, null, null, null, 0x89, 0x44, 0x24, 0x14, 0x6A, 0x00, 0x8D, 0x44, 0x24, 0x10, 0x50, 0x8D, 0x4C, 0x24, 0x18, 0xC7, 0x44, 0x24, 0x18, 0x2C, 0x2C, 0x80, 0x00, 0xC7, 0x44, 0x24, 0x14, 0x00, 0x00, 0x00, 0x00, 0xE8, null, null, null, null, 0x8B, 0xF0, 0x83, 0xC6, 0x0C, 0x56, 0xE8, null, null, null, null, 0x83, 0xC4, 0x04, 0x56, 0x8D, 0x4C, 0x24, 0x10, 0x51, 0x8D, 0x4C, 0x24, 0x18, 0x89, 0x44, 0x24, 0x14, 0x8B, 0xF8, 0xE8, null, null, null, null, 0x8B, 0x54, 0x24, 0x0C, 0x8B, 0x4C, 0x24, 0x1C, 0xC7, 0x02, 0x1A ];
+    // CM_Inventory::Event_DropItem @0x006AC880. The same template again with one argument
+    // (+0x08 after the first inner call) and the 0x1B opcode as the last byte. Verified
+    // unique (1 match @0x006AC880) over the engine's scan window against both acclient
+    // copies (C:\Turbine and C:\Games\RynthCore\AcClient), 2026-09-30.
+    private static readonly byte?[] PatEventDropItem = [ 0x83, 0xEC, 0x0C, 0x53, 0x56, 0x57, 0xE8, null, null, null, null, 0x89, 0x44, 0x24, 0x14, 0x6A, 0x00, 0x8D, 0x44, 0x24, 0x10, 0x50, 0x8D, 0x4C, 0x24, 0x18, 0xC7, 0x44, 0x24, 0x18, 0x2C, 0x2C, 0x80, 0x00, 0xC7, 0x44, 0x24, 0x14, 0x00, 0x00, 0x00, 0x00, 0xE8, null, null, null, null, 0x8B, 0xF0, 0x83, 0xC6, 0x08, 0x56, 0xE8, null, null, null, null, 0x83, 0xC4, 0x04, 0x56, 0x8D, 0x4C, 0x24, 0x10, 0x51, 0x8D, 0x4C, 0x24, 0x18, 0x89, 0x44, 0x24, 0x14, 0x8B, 0xF8, 0xE8, null, null, null, null, 0x8B, 0x54, 0x24, 0x0C, 0x8B, 0x4C, 0x24, 0x1C, 0xC7, 0x02, 0x1B ];
+    // CM_Inventory::Event_NoLongerViewingContents @0x006ACBB0. Byte-identical to Event_DropItem
+    // except the opcode immediate (0x0195, so the last two bytes are 0x95 0x01 where DropItem has
+    // 0x1B). Verified unique (1 match @0x006ACBB0) over the engine's scan window against
+    // C:\Games\RynthCore\AcClient\acclient.exe, 2026-10-04.
+    private static readonly byte?[] PatEventNoLongerViewingContents = [ 0x83, 0xEC, 0x0C, 0x53, 0x56, 0x57, 0xE8, null, null, null, null, 0x89, 0x44, 0x24, 0x14, 0x6A, 0x00, 0x8D, 0x44, 0x24, 0x10, 0x50, 0x8D, 0x4C, 0x24, 0x18, 0xC7, 0x44, 0x24, 0x18, 0x2C, 0x2C, 0x80, 0x00, 0xC7, 0x44, 0x24, 0x14, 0x00, 0x00, 0x00, 0x00, 0xE8, null, null, null, null, 0x8B, 0xF0, 0x83, 0xC6, 0x08, 0x56, 0xE8, null, null, null, null, 0x83, 0xC4, 0x04, 0x56, 0x8D, 0x4C, 0x24, 0x10, 0x51, 0x8D, 0x4C, 0x24, 0x18, 0x89, 0x44, 0x24, 0x14, 0x8B, 0xF8, 0xE8, null, null, null, null, 0x8B, 0x54, 0x24, 0x0C, 0x8B, 0x4C, 0x24, 0x1C, 0xC7, 0x02, 0x95, 0x01 ];
+    private static readonly byte?[] PatInqPlayerCoords =[ 0x83, 0xEC, 0x10, 0x53, 0x8B, 0x5C, 0x24, 0x1C, 0x55, 0x56 ];
     private static readonly byte?[] PatGetPlayerId = [ 0xA1, 0x58, 0xDA, 0x83, 0x00, 0x85, 0xC0, 0x74, 0x07 ];
     private static readonly byte?[] PatAddTextToScroll = [ 0x81, 0xEC, 0x48, 0x09, 0x00, 0x00, 0x8A, 0x84 ];
     private static readonly byte?[] PatUseWithTargetEvent = [ 0x83, 0xEC, 0x0C, 0x53, 0x56, 0x57, 0xE8, null, null, null, null, 0x89, 0x44, 0x24, 0x14, 0x6A, 0x00, 0x8D, 0x44, 0x24, 0x10, 0x50, 0x8D, 0x4C, 0x24, 0x18, 0xC7, 0x44, 0x24, 0x18, 0x2C, 0x2C, 0x80, 0x00, 0xC7, 0x44, 0x24, 0x14, 0x00, 0x00, 0x00, 0x00, 0xE8, null, null, null, null, 0x8B, 0xF0, 0x83, 0xC6, 0x0C, 0x56, 0xE8, null, null, null, null, 0x83, 0xC4, 0x04, 0x56, 0x8D, 0x4C, 0x24, 0x10, 0x51, 0x8D, 0x4C, 0x24, 0x18, 0x89, 0x44, 0x24, 0x14, 0x8B, 0xF8, 0xE8, null, null, null, null, 0x8B, 0x54, 0x24, 0x0C, 0x8B, 0x4C, 0x24, 0x1C, 0xC7, 0x02, 0x35 ];
@@ -238,6 +302,9 @@ internal static class ClientHelperHooks
             _moveItemInternal = Bind<MoveItemInternalDelegate>(text, "ClientHelper.MoveItemInternal", PatMoveItemInternal, MoveItemInternalVa);
             _eventStackableMerge = Bind<EventStackableMergeDelegate>(text, "ClientHelper.Event_StackableMerge", PatEventStackableMerge, EventStackableMergeVa);
             _eventGiveObjectRequest = Bind<EventGiveObjectRequestDelegate>(text, "ClientHelper.Event_GiveObjectRequest", PatEventGiveObjectRequest, EventGiveObjectRequestVa);
+            _eventGetAndWieldItem = Bind<EventGetAndWieldItemDelegate>(text, "ClientHelper.Event_GetAndWieldItem", PatEventGetAndWieldItem, EventGetAndWieldItemVa);
+            _eventDropItem = Bind<EventDropItemDelegate>(text, "ClientHelper.Event_DropItem", PatEventDropItem, EventDropItemVa);
+            _eventNoLongerViewingContents = Bind<EventNoLongerViewingContentsDelegate>(text, "ClientHelper.Event_NoLongerViewingContents", PatEventNoLongerViewingContents, EventNoLongerViewingContentsVa);
             _inqPlayerCoords = Bind<InqPlayerCoordsDelegate>(text, "ClientHelper.InqPlayerCoords", PatInqPlayerCoords, InqPlayerCoordsVa);
             _getPlayerId = Bind<GetPlayerIdDelegate>(text, "ClientHelper.GetPlayerId", PatGetPlayerId, GetPlayerIdVa);
             _addTextToScroll = Bind<AddTextToScrollDelegate>(text, "ClientHelper.AddTextToScroll", PatAddTextToScroll, AddTextToScrollVa);
@@ -252,6 +319,12 @@ internal static class ClientHelperHooks
             _totalStackAddr = HookResolver.ResolveData(text, "ClientHelper.total_stack", PatXrefTotalStack, 2, TotalStackVa).Address.ToInt32();
             _playerSystemAddr = HookResolver.ResolveData(text, "ClientHelper.CPlayerSystem", PatXrefPlayerSystem, 2, PlayerSystemVa).Address.ToInt32();
             _commSystemAddr = HookResolver.ResolveData(text, "ClientHelper.CommunicationSystem", PatXrefCommunicationSystem, 2, CommunicationSystemVa).Address.ToInt32();
+            // v72 player-to-player trade actions (CM_Trade / ClientTradeSystem).
+            try { PlayerTrade.Probe(text); }
+            catch (Exception ex) { RynthLog.Compat($"Compat: player trade binding failed - {ex.Message}"); }
+            // Skills panel raises (CM_Train senders).
+            try { PlayerTraining.Probe(text); }
+            catch (Exception ex) { RynthLog.Compat($"Compat: raise senders binding failed - {ex.Message}"); }
             _initialized = true;
             _statusMessage = "Ready.";
             RynthLog.Verbose("Compat: helper hooks ready - validated select/state/chat helpers plus mapped interaction and inventory helpers.");
@@ -298,6 +371,35 @@ internal static class ClientHelperHooks
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// Click-to-select from an ImGui overlay (a Radar dot, a monster nameplate):
+    /// selects <paramref name="objectId"/> the way a click on it in the 3D world
+    /// does. The faces park the id with AcMainThreadQueue.EnqueueOverlaySelect;
+    /// its drain lands here on AC's main thread, where the checks run right
+    /// before the select: the client is in the world (logged in, no logout or
+    /// DB-cache teardown under way, not portaling) and the object still exists
+    /// (the client still resolves its weenie). Off-thread it marshals like
+    /// every other mutator. False when nothing was selected.
+    /// </summary>
+    public static bool SelectFromOverlay(uint objectId)
+    {
+        if (!MainThreadGuard.IsOnMainThread())
+            return AcMainThreadQueue.EnqueueOverlaySelect(objectId);
+
+        if (objectId == 0 || _setSelectedObject == null)
+            return false;
+        if (!LoginLifecycleHooks.HasObservedLoginComplete || LogoutLifecycleHooks.HasObservedLogout
+            || DbCacheTeardownHooks.TeardownActive || TeleportStateHooks.IsPortaling || GetPlayerId() == 0)
+            return false;
+        if (!ClientObjectHooks.TryGetWeenieObjectPtr(objectId, out _))
+            return false;   // despawned / died / left range since the click
+        if (GetSelectedItemId() == objectId)
+            return true;    // already the selection: nothing to redo
+
+        AcActionTrace.Record("OverlaySelect", objectId);
+        return SetSelectedObjectId(objectId);
     }
 
     public static uint GetSelectedItemId()
@@ -610,7 +712,9 @@ internal static class ClientHelperHooks
     /// CM_Inventory::Event_GiveObjectRequest (cdecl) at 0x006ACA60 — the F7B1 give
     /// GameAction, the same path the drag-onto-NPC UI uses. This is the CORRECT
     /// give-to-NPC primitive; MoveItemExternal is move-to-container and does not
-    /// give. amount=0 gives the whole object; positive = partial stack.
+    /// give. amount=0 gives the whole object; positive = partial stack. The wire needs a
+    /// real count (ACE answers "Give amount not valid!" to 0), so 0 is turned into the
+    /// item's stack size here (1 for a single item).
     /// </summary>
     public static bool GiveObjectTo(uint objectId, uint targetId, int amount = 0)
     {
@@ -627,7 +731,9 @@ internal static class ClientHelperHooks
 
         try
         {
-            byte rv = _eventGiveObjectRequest(objectId, targetId, amount);
+            if (amount == 0)
+                amount = WholeStackAmount(objectId);
+            byte rv = _eventGiveObjectRequest(targetId, objectId, amount);
             RynthLog.Verbose($"Compat: Event_GiveObjectRequest item=0x{objectId:X8} -> target=0x{targetId:X8} amount={amount} rv={rv}");
             return rv != 0;
         }
@@ -638,12 +744,128 @@ internal static class ClientHelperHooks
         }
     }
 
+    /// <summary>
+    /// The count that gives a whole object: its stack size, or 1 for a single item (or
+    /// when the item can't be read). Main thread (TryReadItemFields is false off it).
+    /// </summary>
+    internal static int WholeStackAmount(uint objectId) =>
+        ClientObjectHooks.TryReadItemFields(objectId, out ClientObjectHooks.ItemPwdFields f) && f.StackSize > 1
+            ? (int)Math.Min(f.StackSize, int.MaxValue)
+            : 1;
+
+    /// <summary>
+    /// Wield an item into the given equip slot(s) through CM_Inventory::Event_GetAndWieldItem
+    /// (cdecl) at 0x006AC950 — the 0x001A GetAndWieldItem game action, the packet the
+    /// paperdoll drag sends (ACCWeenieObject::UIAttemptWield calls it). equipMask is an
+    /// EquipMask / INVENTORY_LOC value (e.g. 0x00100000 MeleeWeapon, 0x00200000 Shield,
+    /// 0x00400000 MissileWeapon, 0x01000000 Held, 0x02000000 TwoHanded; rings/bracelets
+    /// have a left and a right bit). The server checks the slot against the item's
+    /// ValidLocations and answers with the wield, or InventoryServerSaveFailed (0x00A0) plus
+    /// a WeenieError. Unlike UIAttemptWield this sends the packet only: no client busy count,
+    /// no pending-wield UI state — the same raw-send contract as GiveObjectTo.
+    /// </summary>
+    public static bool WieldItem(uint objectId, uint equipMask)
+    {
+        // Inventory sends run on AC's main thread, like MoveItemExternal / GiveObjectTo.
+        if (!MainThreadGuard.IsOnMainThread())
+            return _eventGetAndWieldItem != null && IsValidObjectId(objectId) && equipMask != 0
+                && AcMainThreadQueue.EnqueueWieldItem(objectId, equipMask);
+
+        if (_eventGetAndWieldItem == null) return false;
+        if (!IsValidObjectId(objectId) || equipMask == 0) return false;
+
+        try
+        {
+            byte rv = _eventGetAndWieldItem(objectId, equipMask);
+            RynthLog.Verbose($"Compat: Event_GetAndWieldItem item=0x{objectId:X8} mask=0x{equipMask:X8} rv={rv}");
+            return rv != 0;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"Compat: Event_GetAndWieldItem threw - {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Drop an item on the ground through CM_Inventory::Event_DropItem (cdecl) at 0x006AC880,
+    /// the 0x001B DropItem game action that ACCWeenieObject::UIAttemptPutIn3D sends. The
+    /// server walks nothing (it drops at the player's feet) and answers with the item's new
+    /// place, or InventoryServerSaveFailed (0x00A0). Packet only, like WieldItem: no client
+    /// busy count, no pending-request UI state. Used by the Inventory panel.
+    /// </summary>
+    public static bool DropItem(uint objectId)
+    {
+        // Inventory sends run on AC's main thread, like WieldItem / GiveObjectTo.
+        if (!MainThreadGuard.IsOnMainThread())
+            return _eventDropItem != null && IsValidObjectId(objectId)
+                && AcMainThreadQueue.EnqueueDropItem(objectId);
+
+        if (_eventDropItem == null) return false;
+        if (!IsValidObjectId(objectId)) return false;
+
+        try
+        {
+            byte rv = _eventDropItem(objectId);
+            RynthLog.Verbose($"Compat: Event_DropItem item=0x{objectId:X8} rv={rv}");
+            return rv != 0;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"Compat: Event_DropItem threw - {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Close an external container (a corpse, a chest) the way the client does when its window
+    /// is closed: CM_Inventory::Event_NoLongerViewingContents (cdecl) at 0x006ACBB0, the 0x0195
+    /// NoLongerViewingContents game action. Packet only, like DropItem: no busy count (m_cBusy),
+    /// no pending-request slot (it is not an inventory request; RecordRequest is not called).
+    /// The server closes the container if this player is viewing it and answers with
+    /// CloseGroundContainer (0x0052), whose client handler closes the window and raises
+    /// StopViewingObjectContents to the plugins. A container this player isn't viewing is
+    /// ignored by the server (no answer). Runs on AC's main thread, in the action ring, so a
+    /// close queued just before the next UseObject goes out first, in the same frame.
+    /// </summary>
+    public static bool CloseContainer(uint containerId)
+    {
+        // An inventory game-action send, like DropItem / WieldItem: main thread only.
+        if (!MainThreadGuard.IsOnMainThread())
+            return _eventNoLongerViewingContents != null && IsValidObjectId(containerId)
+                && AcMainThreadQueue.EnqueueCloseContainer(containerId);
+
+        if (_eventNoLongerViewingContents == null) return false;
+        if (!IsValidObjectId(containerId)) return false;
+
+        try
+        {
+            byte rv = _eventNoLongerViewingContents(containerId);
+            RynthLog.Verbose($"Compat: Event_NoLongerViewingContents container=0x{containerId:X8} rv={rv}");
+            return rv != 0;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"Compat: Event_NoLongerViewingContents threw - {ex.Message}");
+            return false;
+        }
+    }
+
     public static bool TryGetCurCoords(out double northSouth, out double eastWest)
     {
         northSouth = 0;
         eastWest = 0;
 
         if (_inqPlayerCoords == null)
+            return false;
+
+        // Off AC's main thread: no coords. The only caller (PluginManager.GetCurCoords,
+        // on the plugin pump) reaches this as the fallback when the raw SmartBox pose
+        // read fails, i.e. during login/portal/logout while AC's player state is
+        // changing. Calling CPlayerSystem::InqPlayerCoords there runs AC code
+        // off-thread and try/catch cannot stop a native AV. Plugins already handle
+        // "no coords", and InqPlayerCoords only returns cached data anyway.
+        if (!MainThreadGuard.IsOnMainThread())
             return false;
 
         try
@@ -670,14 +892,29 @@ internal static class ClientHelperHooks
         }
     }
 
+    // Last player id read on AC's main thread. The native leaf (0x0048E5F0) reads
+    // the SmartBox global and then a field of it; off-thread that dereferences an
+    // AC object the main thread can free during logout/teardown, and try/catch
+    // cannot stop a native AV. Off-thread callers (host GetPlayerIdFn on the pump,
+    // snapshot owner checks, HUDs) get this value instead: at most one frame old,
+    // refreshed every EndScene by EngineFrameController, 0 = no player / not ready.
+    private static int _cachedPlayerId;
+
     public static uint GetPlayerId()
     {
         if (_getPlayerId == null)
             return 0;
 
+        // Main-thread callers (PrefetchPlayerStats, IsFullOwnedContainer, the EndScene
+        // prefetches) keep the live native read exactly as before, and publish it.
+        if (!MainThreadGuard.IsOnMainThread())
+            return unchecked((uint)Volatile.Read(ref _cachedPlayerId));
+
         try
         {
-            return _getPlayerId();
+            uint id = _getPlayerId();
+            Volatile.Write(ref _cachedPlayerId, unchecked((int)id));
+            return id;
         }
         catch
         {
@@ -733,6 +970,12 @@ internal static class ClientHelperHooks
     // MoveItemInternal/External early-return-enqueue off-thread), so the PWD ownership
     // read, ITEMS_CAPACITY read, and GetNumContainedItems walk are all authoritative
     // and the off-thread read-AV class does not apply.
+    /// <summary>
+    /// The full-pack guard MoveItemInternal / MoveItemExternal apply, for callers that send
+    /// through another path (the Inventory panel's split). Main thread.
+    /// </summary>
+    internal static bool IsOwnedContainerFull(uint target) => IsFullOwnedContainer(target);
+
     private static bool IsFullOwnedContainer(uint target)
     {
         uint player = GetPlayerId();
@@ -871,6 +1114,15 @@ internal static class ClientHelperHooks
         if (_sendNoticeOpenSalvagePanel == null || toolId == 0)
             return false;
 
+        // Off AC's main thread (RynthAi SalvageManager / Meta tick on the plugin
+        // pump): marshal. The salvage trio posts a UI notice and mutates the live
+        // gmSalvageUI UIElement tree; off-thread it races AC's own UI walk, the
+        // same class as the SetSelectedObject 0x60D1D AV. The ring is FIFO with
+        // one consumer, so open -> add -> execute keep their order. Drain calls
+        // back into this method on the main thread, where the gate is satisfied.
+        if (!MainThreadGuard.IsOnMainThread())
+            return AcMainThreadQueue.EnqueueSalvageOpen(toolId);
+
         try
         {
             _sendNoticeOpenSalvagePanel(toolId);
@@ -891,6 +1143,10 @@ internal static class ClientHelperHooks
     /// </summary>
     public static bool SalvagePanelAddItem(uint itemId)
     {
+        // Decal bridge mode: salvage is left to Decal (our OpenSalvagePanel hook isn't
+        // installed, so the instance is never captured) - Decal's SalvagePanelAdd instead.
+        if (DecalBridgeHost.Active && !SalvageHooks.IsInstalled)
+            return DecalBridgeHost.TrySalvagePanelAdd(itemId);
         if (_gmSalvageUIAddNewItem == null || itemId == 0)
             return false;
 
@@ -900,6 +1156,14 @@ internal static class ClientHelperHooks
             RynthLog.Compat("Compat: SalvagePanelAddItem - gmSalvageUI instance not captured yet");
             return false;
         }
+
+        // Off-thread: enqueue AFTER the instance pre-check, so a false still means
+        // "panel not captured" (SalvageManager re-queues the item on it). The
+        // queued entry carries only the item id: on the main thread this method
+        // runs again and re-reads the instance, since the panel may have closed
+        // or been rebuilt in between.
+        if (!MainThreadGuard.IsOnMainThread())
+            return AcMainThreadQueue.EnqueueSalvageAddItem(itemId);
 
         try
         {
@@ -919,6 +1183,8 @@ internal static class ClientHelperHooks
     /// </summary>
     public static bool SalvagePanelExecute()
     {
+        if (DecalBridgeHost.Active && !SalvageHooks.IsInstalled)
+            return DecalBridgeHost.TrySalvagePanelSalvage();   // bridge mode: Decal's SalvagePanelSalvage
         if (_gmSalvageUISalvage == null)
             return false;
 
@@ -928,6 +1194,11 @@ internal static class ClientHelperHooks
             RynthLog.Compat("Compat: SalvagePanelExecute - gmSalvageUI instance not captured yet");
             return false;
         }
+
+        // Off-thread: same shape as SalvagePanelAddItem (instance re-read on the
+        // main thread when the entry drains).
+        if (!MainThreadGuard.IsOnMainThread())
+            return AcMainThreadQueue.EnqueueSalvageExecute();
 
         try
         {
@@ -974,8 +1245,12 @@ internal static class ClientHelperHooks
         _moveItemInternal = null;
         _eventStackableMerge = null;
         _eventGiveObjectRequest = null;
+        _eventGetAndWieldItem = null;
+        _eventDropItem = null;
+        _eventNoLongerViewingContents = null;
         _inqPlayerCoords = null;
         _getPlayerId = null;
+        Volatile.Write(ref _cachedPlayerId, 0);
         _addTextToScroll = null;
         _useWithTargetEvent = null;
         _sendNoticeOpenSalvagePanel = null;
@@ -1016,6 +1291,13 @@ internal static class ClientHelperHooks
     private static IntPtr ReadPointer(int address)
     {
         return Marshal.ReadIntPtr(new IntPtr(address));
+    }
+
+    /// <summary>The ClientUISystem singleton, or Zero before the UI exists. Read-only (diagnostics).</summary>
+    internal static IntPtr ReadUiSystemPtr()
+    {
+        IntPtr slot = new IntPtr(_uiSystemAddr);
+        return ClientObjectHooks.IsReadablePointer(slot) ? Marshal.ReadIntPtr(slot) : IntPtr.Zero;
     }
 
     // WidePString (AC1Legacy::PStringBase<ushort>) helper fns — pattern-resolved (1a, 2026-06-05).

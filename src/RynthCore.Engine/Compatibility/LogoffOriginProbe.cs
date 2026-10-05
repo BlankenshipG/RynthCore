@@ -230,6 +230,10 @@ internal static unsafe class LogoffOriginProbe
 
     private static void OnRequest(string fn, string args)
     {
+        // First, before any logging: AC frees UI objects during the logoff.
+        ChatHooks.OnLogoffRequested();
+        RadarHooks.OnLogoffRequested();
+        RetailVitalsHooks.OnLogoffRequested();
         long now = Environment.TickCount64;
         IntPtr caller = LogoutLifecycleHooks.LogCaller(fn, "LogoffProbe");
         string callerText = DescribeAcclientAddress(caller);

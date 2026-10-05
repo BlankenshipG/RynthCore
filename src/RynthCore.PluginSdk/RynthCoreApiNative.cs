@@ -125,5 +125,102 @@ public struct RynthCoreApiNative
     public IntPtr VendorBuyFn;               // uint VendorBuy(uint vendorId, VendorTradeEntryNative*, int count)
     public IntPtr VendorSellFn;              // uint VendorSell(uint vendorId, uint* itemIds, int count)
     public IntPtr GetVendorTradeStatusFn;    // int  GetVendorTradeStatus(VendorTradeStatusNative*)
-    public IntPtr GetMergeStackResultFn;     // v68: int GetMergeStackResult(uint src, uint tgt, int* amount, int* ageMs)
+    public IntPtr GetPluginInterfaceFn;      // v68: void* GetPluginInterface(const char* plugin, const char* iface, uint version)
+    public IntPtr GetLiveObjectIdsFn;        // v69: int GetLiveObjectIds(uint* buffer, int capacity) -> total count
+    // v70: action outcomes + wield-to-slot (and the engine raises OnEnchantmentAdded/Removed)
+    public IntPtr GetLastUseDoneFn;          // int GetLastUseDone(int* seq, uint* error)
+    public IntPtr GetLastWeenieErrorFn;      // int GetLastWeenieError(int* seq, uint* error, uint* eventType, uint* objectId)
+    public IntPtr WieldItemFn;               // int WieldItem(uint objectId, uint equipMask)
+    // v71: script windows (display list in, events out; RynthSuite Docs/RYNTHLUA_WINDOWS_DESIGN.md §4)
+    public IntPtr UiSubmitFn;                // int UiSubmit(const uint8_t* data, int length)
+    public IntPtr UiPollEventsFn;            // int UiPollEvents(uint8_t* buffer, int capacity, int* remaining)
+    public IntPtr UiGetInfoFn;               // int UiGetInfo(UiInfoNative* info)
+    // v72: player-to-player trade (state polled; actions queued for AC's main thread)
+    public IntPtr GetTradeStateFn;           // int GetTradeState(TradeStateNative* state)
+    public IntPtr GetTradeItemsFn;           // int GetTradeItems(int side, uint* buffer, int capacity) -> total
+    public IntPtr TradeOpenFn;               // int TradeOpen(uint targetId)
+    public IntPtr TradeAddFn;                // int TradeAdd(uint itemId, uint slot)
+    public IntPtr TradeAcceptFn;             // int TradeAccept(void)
+    public IntPtr TradeDeclineFn;            // int TradeDecline(void)
+    public IntPtr TradeResetFn;              // int TradeReset(void)
+    public IntPtr TradeCloseFn;              // int TradeClose(void)
+    // v73: every property type off the main thread
+    public IntPtr GetObjectInstanceIdPropertyFn; // int GetObjectInstanceIdProperty(uint objectId, uint stype, uint* value)
+    // v74: VTank's macro under the Decal bridge (one bot per client)
+    public IntPtr GetVTankStateFn;           // int GetVTankState(int* sequence) -> flags (bit0 watching, bit1 running)
+    // v75: the character's titles and which server this is
+    public IntPtr GetCharacterTitlesFn;      // int GetCharacterTitles(uint* ids, int maxCount, uint* currentTitle) -> count, -1 unknown
+    public IntPtr GetServerInfoFn;           // int GetServerInfo(byte* worldName, int capacity) -> flags (bit0 Aelrynth, bit1 staging, bit2 world name known)
+    // v76: close an external container (corpse, chest) like the client's window close
+    public IntPtr CloseContainerFn;          // int CloseContainer(uint containerId) -> 1 sent or queued
+    // v77: outcome of the latest merge-stack request (cdecl thunk)
+    public IntPtr GetMergeStackResultFn;     // int GetMergeStackResult(uint src, uint tgt, int* amount, int* ageMs)
+}
+
+/// <summary>
+/// v72 GetTradeState result (Pack 4, 96 bytes; later versions only append).
+/// Mirrors RynthCore.Engine/Plugins/PluginContract.cs TradeStateNative exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public unsafe struct TradeStateNative
+{
+    /// <summary>In: sizeof(TradeStateNative). Out: bytes the engine wrote.</summary>
+    public uint Size;
+    /// <summary>bit0 open, bit1 you accepted, bit2 partner accepted, bit3 engine sees trade
+    /// events, bit4 all trade actions bound.</summary>
+    public uint Flags;
+    /// <summary>+1 for every trade that opens.</summary>
+    public uint Generation;
+    /// <summary>+1 for every trade event.</summary>
+    public uint Sequence;
+    public uint PartnerId;
+    public uint InitiatorId;
+    public int SelfItemCount;
+    public int PartnerItemCount;
+    public uint LastEventType;
+    public uint FailureCount;
+    public uint LastFailureItemId;
+    public uint LastFailureReason;
+    public uint LastCloseReason;
+    public uint LastAcceptedBy;
+    public uint LastDeclinedBy;
+    public uint LastResetBy;
+    public uint CompletedCount;
+    public uint PartnerAcceptCount;
+    public fixed uint Reserved[6];
+}
+
+/// <summary>
+/// v71 UiGetInfo result (Pack 4, 480 bytes in format 1; later versions only append).
+/// Mirrors RynthCore.Engine/Plugins/PluginContract.cs UiInfoNative exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public unsafe struct UiInfoNative
+{
+    /// <summary>In: sizeof(UiInfoNative). Out: bytes the engine wrote.</summary>
+    public uint Size;
+    /// <summary>bit0 ImGui available, bit1 in world, bit2 pop-outs available.</summary>
+    public uint Flags;
+    /// <summary>Highest display-list format the engine replays.</summary>
+    public ushort MaxFormatVersion;
+    /// <summary>The ops replayed within MaxFormatVersion: 2 = + Image, ImageButton, InputInt, InputFloat,
+    /// DragInt, DragFloat (2026-09-30). 0 on older engines (the field was reserved) = Phase 1 ops only.</summary>
+    public ushort OpLevel;
+    public uint MaxOpsPerWindow;
+    public uint MaxBytesPerWindow;
+    public uint MaxWindowsPerOwner;
+    public uint MaxBytesPerSubmit;
+    public float DisplayWidth;
+    public float DisplayHeight;
+    public float UiScale;
+    public float TextLineHeight;
+    public float FrameHeight;
+    public float ItemSpacingX;
+    public float ItemSpacingY;
+    public float FramePaddingX;
+    public float FramePaddingY;
+    /// <summary>Default font advance of ' '..'~' (95), pixels at UiScale.</summary>
+    public fixed float AsciiAdvance[95];
+    public uint FrameCounter;
+    public fixed uint Reserved[8];
 }

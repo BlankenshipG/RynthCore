@@ -437,6 +437,39 @@ public sealed class EngineInjectionService
             onProcessCreated);
     }
 
+    /// <summary>
+    /// Spike (Decal bridge): launches AC suspended, injects Decal's Inject.dll +
+    /// DecalStartup (as <see cref="LaunchSuspendedAndInjectDecal"/>), then, unless
+    /// <paramref name="enginePath"/> is null, the RynthCore loader, and resumes.
+    /// Decal goes first, as it would for a player whose client Decal launched.
+    /// </summary>
+    public InjectionResult LaunchSuspendedAndInjectDecalThenEngine(
+        string clientPath,
+        string arguments,
+        string decalInjectDllPath,
+        string? enginePath,
+        Action<string>? log = null,
+        Action<int>? onProcessCreated = null)
+    {
+        return LaunchSuspendedAndInvoke(
+            clientPath,
+            arguments,
+            stackLabel: enginePath == null ? "Decal" : "Decal + RynthCore",
+            failureContextPath: enginePath ?? decalInjectDllPath,
+            successMessage: enginePath == null
+                ? "Launched AC and injected Decal successfully."
+                : "Launched AC and injected Decal, then RynthCore, successfully.",
+            inject: (proc, perCallLog) =>
+            {
+                InjectionResult decal = InjectDecalIntoProcess(proc, decalInjectDllPath, perCallLog);
+                if (!decal.Success || enginePath == null)
+                    return decal;
+                return InjectIntoProcess(proc, enginePath, perCallLog);
+            },
+            log,
+            onProcessCreated);
+    }
+
     private InjectionResult LaunchSuspendedAndInvoke(
         string clientPath,
         string arguments,
@@ -840,6 +873,12 @@ public sealed class EngineInjectionService
         "RynthCore.Loader.dll",
         "RynthCore.Engine.dll",
     };
+
+    /// <summary>True when the RynthCore Decal bridge (a Decal network filter) is loaded in the
+    /// client: any Decal client of this Windows user while the bridge is registered, with or
+    /// without RynthCore. The core update replaces that DLL, so it waits for these too.</summary>
+    public bool IsDecalBridgeLoaded(Process targetProcess) =>
+        IsModuleLoaded(targetProcess, "RynthCore.DecalBridge.dll");
 
     public bool IsRynthCoreLoaded(Process targetProcess)
     {

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Offline tests for the launcher's Available plugins list, plugin installs with download
+    progress and Cancel (RynthUpdater.Available.cs, DownloadProgress.cs), and the front page's
+    update card (UpdateCardModel.cs). A throwaway key signs a feed served by a local
+    HttpListener; plugins install into temp folders. Never opens the launcher window, never
+    reads or writes outside %TEMP%.
+    Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>LauncherUpdateTests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\RynthCore.App.Avalonia\RynthUpdater.cs" Link="Linked\RynthUpdater.cs" />
+    <Compile Include="..\..\src\RynthCore.App.Avalonia\RynthUpdater.NavData.cs" Link="Linked\RynthUpdater.NavData.cs" />
+    <Compile Include="..\..\src\RynthCore.App.Avalonia\RynthUpdater.Available.cs" Link="Linked\RynthUpdater.Available.cs" />
+    <Compile Include="..\..\src\RynthCore.App.Avalonia\DownloadProgress.cs" Link="Linked\DownloadProgress.cs" />
+    <Compile Include="..\..\src\RynthCore.App.Avalonia\UpdateCardModel.cs" Link="Linked\UpdateCardModel.cs" />
+    <Compile Include="..\..\src\RynthCore.App.Avalonia\UpdateTrust.cs" Link="Linked\UpdateTrust.cs" />
+  </ItemGroup>
+
+</Project>

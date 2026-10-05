@@ -49,6 +49,13 @@ internal static class CombatModeHooks
     public static bool IsInstalled { get; private set; }
     public static string StatusMessage => _statusMessage;
 
+    /// <summary>The ClientCombatSystem singleton, or Zero. Read-only (diagnostics).</summary>
+    internal static IntPtr ReadCombatSystemPtr()
+    {
+        IntPtr slot = (IntPtr)_combatSystemPtrAddr;
+        return ClientObjectHooks.IsReadablePointer(slot) ? Marshal.ReadIntPtr(slot) : IntPtr.Zero;
+    }
+
     // Deep-audit finding #4 (2026-06-18): this used to raw-dereference the
     // ClientCombatSystem singleton unconditionally, including off AC's main
     // thread — a teardown-window read (relog/portal, singleton being torn

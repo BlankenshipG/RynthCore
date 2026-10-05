@@ -27,9 +27,11 @@ internal partial class AccountProfileDialog : Window
         AccountBox.Text = profile.AccountName;
         AliasBox.Text = profile.Alias;
         UserPrefsPathBox.Text = profile.UserPrefsPath;
-        PasswordHintText.Text = string.IsNullOrEmpty(profile.Password)
-            ? "No password is saved for this profile yet."
-            : "A password is already saved for this profile. It stays hidden unless you replace or clear it.";
+        PasswordHintText.Text = profile.PasswordNeedsReentry
+            ? "Password needs re-entering: the saved one can't be read on this Windows user (settings copied from another user or PC?). Type it again to launch this account."
+            : !profile.HasSavedPassword
+                ? "No password is saved for this profile yet."
+                : "A password is saved for this profile, encrypted for this Windows user. It stays hidden unless you replace or clear it.";
 
         SaveButton.Click += (_, _) => SaveAndClose();
         CancelButton.Click += (_, _) => Close(false);
@@ -116,12 +118,14 @@ internal partial class AccountProfileDialog : Window
         _profile.AccountName = AccountBox.Text.Trim();
         if (ClearPasswordCheckBox.IsChecked == true)
         {
-            _profile.Password = string.Empty;
+            _profile.ClearPassword();
         }
         else if (!string.IsNullOrEmpty(PasswordBox.Text))
         {
-            _profile.Password = PasswordBox.Text;
+            // Encrypted at once (DPAPI, this Windows user); the plain text isn't kept on the profile.
+            _profile.SetPassword(PasswordBox.Text);
         }
+        PasswordBox.Text = string.Empty;
 
         _profile.Alias = AliasBox.Text?.Trim() ?? string.Empty;
         _profile.UserPrefsPath = UserPrefsPathBox.Text?.Trim() ?? string.Empty;
