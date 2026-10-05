@@ -6,7 +6,13 @@ namespace RynthCore.PluginSdk;
 
 public readonly unsafe struct RynthCoreHost
 {
-    public const uint CurrentApiVersion = 68;
+    /// <summary>
+    /// The engine API this SDK's table (<see cref="RynthCoreApiNative"/>) covers. It is the engine's
+    /// own constant, compiled in from src\RynthCore.Engine\Plugins\PluginContractVersion.cs, so the
+    /// two can't drift (this said 68 for eight versions); tools\PluginManifestTests checks the
+    /// SDK's table really reaches it.
+    /// </summary>
+    public const uint CurrentApiVersion = RynthCore.Engine.Plugins.PluginContractVersion.Current;
 
     /// <summary>
     /// The oldest engine API a plugin built on this SDK loads on by default
@@ -138,6 +144,17 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetServerInfo => _api.Version >= 75 && _api.GetServerInfoFn != IntPtr.Zero;
     /// <summary>v76: <see cref="CloseContainer"/> (close a corpse or chest like the client's window close).</summary>
     public bool HasCloseContainer => _api.Version >= 76 && _api.CloseContainerFn != IntPtr.Zero;
+    /// <summary>v77: <see cref="GetScreenMode"/>, <see cref="GetUiHookFlags"/> and the UI callbacks
+    /// (OnScreenChanged, OnClientCleanup, OnTooltipShow/Hide, OnDragStart, OnItemDropped).</summary>
+    public bool HasUiHooks => _api.Version >= 77 && _api.GetScreenModeFn != IntPtr.Zero && _api.GetUiHookFlagsFn != IntPtr.Zero;
+
+    /// <summary>v78: <see cref="SetServerMessageInterest"/> (reassembled server messages on RynthPluginOnServerMessage).</summary>
+    public bool HasServerMessages => _api.Version >= 78 && _api.SetServerMessageInterestFn != IntPtr.Zero;
+
+    /// <summary>v79: <see cref="TryGetTrainingInfo"/>, <see cref="Raise"/> and <see cref="TrainSkill"/>
+    /// (spend unassigned XP and skill credits like the character window).</summary>
+    public bool HasTraining => _api.Version >= 79 && _api.GetTrainingInfoFn != IntPtr.Zero
+                               && _api.RaiseFn != IntPtr.Zero && _api.TrainSkillFn != IntPtr.Zero;
     public bool HasGetPluginExportJson     => _api.Version >= 66 && _api.GetPluginExportJsonFn     != IntPtr.Zero;
     public bool HasGetPluginInterface      => _api.Version >= 68 && _api.GetPluginInterfaceFn      != IntPtr.Zero;
     public bool HasGetLiveObjectIds        => _api.Version >= 69 && _api.GetLiveObjectIdsFn        != IntPtr.Zero;
@@ -1685,6 +1702,110 @@ public readonly unsafe struct RynthCoreHost
     {
         return HasCloseContainer &&
                ((delegate* unmanaged[Cdecl]<uint, int>)_api.CloseContainerFn)(containerId) != 0;
+    }
+
+    /// <summary>
+    /// v77: the client's screen, the UIFlow mode (<see cref="RynthScreenMode"/>): the world,
+    /// character select, the intro... <see cref="RynthScreenMode.Unknown"/> before the engine
+    /// has seen one, and on an engine before v77 (check <see cref="HasUiHooks"/>).
+    /// <paramref name="previousMode"/> is the screen before it. Any thread.
+    /// </summary>
+    public int GetScreenMode(out int previousMode)
+    {
+        previousMode = 0;
+        if (!HasUiHooks) return 0;
+        int prev = 0;
+        int mode = ((delegate* unmanaged[Cdecl]<int*, int>)_api.GetScreenModeFn)(&prev);
+        previousMode = prev;
+        return mode;
+    }
+
+    /// <summary>
+    /// v77: which UI hooks are live on this client (<see cref="RynthUiHookFlags"/>), i.e. which of
+    /// the v77 callbacks can arrive. <see cref="RynthUiHookFlags.None"/> on an engine before v77.
+    /// Any thread.
+    /// </summary>
+    public RynthUiHookFlags GetUiHookFlags()
+        => HasUiHooks ? (RynthUiHookFlags)((delegate* unmanaged[Cdecl]<uint>)_api.GetUiHookFlagsFn)() : RynthUiHookFlags.None;
+
+    // ─── Spending experience (API v79) ─────────────────────────────────────
+    // See TrainingTypes.cs. The engine reads the player's numbers on AC's main thread every
+    // 2 s while a plugin keeps asking (TryGetTrainingInfo), and raises only against numbers
+    // at most info.StaleAfterMs old: a Stale result means "ask again in a moment".
+
+    /// <summary>
+    /// v79: unassigned XP, credits and, in <paramref name="entries"/> (may be null), one entry per
+    /// attribute, vital and skill with the XP for +1 and +10. <paramref name="entryCount"/> = the
+    /// entries there are (at most entries.Length are written). False on an engine before v79 or
+    /// while there are no numbers yet (not in the world, or the first read is still coming).
+    /// Any thread.
+    /// </summary>
+    public bool TryGetTrainingInfo(out TrainingInfoNative info, TrainingEntryNative[]? entries, out int entryCount)
+    {
+        info = default;
+        entryCount = 0;
+        if (!HasTraining) return false;
+        TrainingInfoNative raw = default;
+        raw.Size = (uint)sizeof(TrainingInfoNative);
+        var fn = (delegate* unmanaged[Cdecl]<TrainingInfoNative*, TrainingEntryNative*, int, int>)_api.GetTrainingInfoFn;
+        int n;
+        if (entries is { Length: > 0 })
+            fixed (TrainingEntryNative* p = entries) n = fn(&raw, p, entries.Length);
+        else
+            n = fn(&raw, null, 0);
+        info = raw;
+        entryCount = Math.Max(0, n);
+        return raw.Size >= 8 && (raw.Flags & TrainingInfoFlags.HaveNumbers) != 0 && n > 0;
+    }
+
+    /// <summary>
+    /// v79: raise one attribute (1..6), vital (1 health, 3 stamina, 5 mana) or trained/specialized
+    /// skill by <paramref name="ranks"/> (1..100) with unassigned XP, like the character window's
+    /// "+". <paramref name="expectedXp"/> is the cost the user confirmed (the entry's CostOne /
+    /// CostTen); the engine refuses with <see cref="RaiseResult.CostChanged"/> when the cost now
+    /// differs (0 skips that check). <paramref name="xpSent"/> = the XP sent. Any thread.
+    /// </summary>
+    public RaiseResult Raise(TrainingKind kind, uint stype, uint ranks, long expectedXp, out long xpSent)
+    {
+        xpSent = 0;
+        if (!HasTraining) return RaiseResult.EngineTooOld;
+        long sent = 0;
+        int r = ((delegate* unmanaged[Cdecl]<uint, uint, uint, long, long*, int>)_api.RaiseFn)((uint)kind, stype, ranks, expectedXp, &sent);
+        xpSent = sent;
+        return (RaiseResult)r;
+    }
+
+    /// <summary>
+    /// v79: train an untrained skill with skill credits (exactly the entry's TrainCredits, which
+    /// the caller passes as <paramref name="expectedCredits"/>; 0 skips that check). Any thread.
+    /// </summary>
+    public RaiseResult TrainSkill(uint stype, int expectedCredits)
+        => HasTraining
+            ? (RaiseResult)((delegate* unmanaged[Cdecl]<uint, int, int>)_api.TrainSkillFn)(stype, expectedCredits)
+            : RaiseResult.EngineTooOld;
+
+    /// <summary>
+    /// v78: which reassembled server messages this plugin wants on its
+    /// <c>RynthPluginOnServerMessage(uint opcode, byte* data, int length)</c> export (Cdecl;
+    /// see <see cref="Net.ServerMessage"/> for the export and <see cref="Net.ServerOpcode"/> /
+    /// <see cref="Net.GameEventType"/> for the ids the SDK parses). Replaces the previous set;
+    /// two empty lists turn it off. <paramref name="opcodes"/>: top-level opcodes, 0xF7B0 for
+    /// every game event, <see cref="Net.ServerOpcode.All"/> for everything.
+    /// <paramref name="gameEvents"/>: single game event types. Call from Init, Tick or an event
+    /// handler (the engine identifies the plugin by the call). Returns 1 streaming, 2 accepted
+    /// but the engine's stream is switched off, 0 no export, -1 unknown caller, -3 bad
+    /// arguments, -4 engine predates v78. Check <see cref="HasServerMessages"/>.
+    /// </summary>
+    public int SetServerMessageInterest(ReadOnlySpan<uint> opcodes, ReadOnlySpan<uint> gameEvents)
+    {
+        if (!HasServerMessages)
+            return -4;
+        fixed (uint* ops = opcodes)
+        fixed (uint* evs = gameEvents)
+        {
+            return ((delegate* unmanaged[Cdecl]<uint*, int, uint*, int, int>)_api.SetServerMessageInterestFn)(
+                ops, opcodes.Length, evs, gameEvents.Length);
+        }
     }
 
     /// <summary>

@@ -858,9 +858,12 @@ internal static class MonsterHud
                 const float margin = 60f;
                 if (MonsterHudSettings.KeepOnScreen)
                 {
-                    // Pinned to the edge: room above the anchor for the name, bar and debuff row (a label: the name).
-                    Vector2 c = ClampToScreen(ref f, sx, sy, (label ? 50f : 70f) * f.UiScale * userScale,
-                        (label ? 22f : 56f) * f.UiScale * userScale);
+                    // Pinned to the edge: room above the anchor for the name, bar and debuff row (a label: the name),
+                    // grown with the plate type's bar / text size.
+                    float sideMul = label ? LabelTextSize(p.Kind) : MathF.Max(MonsterHudSettings.MonsterBarWidth, MonsterHudSettings.MonsterTextSize);
+                    float topMul = label ? LabelTextSize(p.Kind) : MathF.Max(MonsterHudSettings.MonsterBarHeight, MonsterHudSettings.MonsterTextSize);
+                    Vector2 c = ClampToScreen(ref f, sx, sy, (label ? 50f : 70f) * f.UiScale * userScale * sideMul,
+                        (label ? 22f : 56f) * f.UiScale * userScale * topMul);
                     p.Anchor = new Vector2(MathF.Round(c.X), MathF.Round(c.Y));
                     p.OnScreen = true;
                 }
@@ -1004,7 +1007,7 @@ internal static class MonsterHud
         if (p.IsLabel)
         {
             // Name only: the same bold bake as a monster's name, no bar, badge or icons.
-            p.NameSize = MathF.Round(ImGuiFonts.Get(UiFont.UiBold11).FontSize * s);
+            p.NameSize = MathF.Round(ImGuiFonts.Get(UiFont.UiBold11).FontSize * s * LabelTextSize(p.Kind));
             p.NameFont = ImGuiFonts.Sharp(p.NameSize, bold: true);
             p.NameW = TextWidth(p.NameFont, p.NameSize, p.Name);
             p.BadgeW = 0f;
@@ -1016,14 +1019,17 @@ internal static class MonsterHud
             return;
         }
 
-        p.BarW = MathF.Round(112f * k);
-        p.BarH = MathF.Round((MonsterHudSettings.ShowHpNumbers ? 12f : 7f) * k);
+        // Bar width / height and text size each have their own multiplier (1 = the default look).
+        float text = MonsterHudSettings.MonsterTextSize;
+        p.BarW = MathF.Round(112f * k * MonsterHudSettings.MonsterBarWidth);
+        p.BarH = MathF.Round((MonsterHudSettings.ShowHpNumbers ? 12f : 7f) * k * MonsterHudSettings.MonsterBarHeight);
 
         // Sizes follow the 11 px bold / 9 px regular bakes; the font drawn is the smallest bake at
         // least that big, so a scaled-up plate shrinks a bigger bake instead of stretching (blur).
-        p.NameSize = MathF.Round(ImGuiFonts.Get(UiFont.UiBold11).FontSize * s);
+        // Picking a baked font per size: nothing is re-baked when a text size changes.
+        p.NameSize = MathF.Round(ImGuiFonts.Get(UiFont.UiBold11).FontSize * s * text);
         p.NameFont = ImGuiFonts.Sharp(p.NameSize, bold: true);
-        p.SmallSize = MathF.Round(ImGuiFonts.Get(UiFont.Ui9).FontSize * s);
+        p.SmallSize = MathF.Round(ImGuiFonts.Get(UiFont.Ui9).FontSize * s * text);
         p.SmallFont = ImGuiFonts.Sharp(p.SmallSize, bold: false);
 
         p.NameW = MonsterHudSettings.ShowNames && p.Name.Length > 0 ? TextWidth(p.NameFont, p.NameSize, p.Name) : 0f;
@@ -1039,10 +1045,14 @@ internal static class MonsterHud
         float nameH = (p.NameW > 0 || p.BadgeW > 0) ? p.NameSize + 2f * k : 0f;
         // The weak pill (left) and distance (right) hang off the bar's ends: keep them
         // inside the crowd-avoidance box, symmetric so the plate stays centred.
-        float side = (p.Weak != null || MonsterHudSettings.ShowDistance) ? 2f * 30f * k : 0f;
+        float side = (p.Weak != null || MonsterHudSettings.ShowDistance) ? 2f * 30f * k * text : 0f;
         p.Width = MathF.Max(p.BarW + side, nameLine) + 8f * k;
         p.Height = nameH + p.BarH + p.BelowBar;
     }
+
+    /// <summary>A name label's text size: players' or NPCs' (vendors count as NPCs).</summary>
+    private static float LabelTextSize(byte kind) =>
+        kind == RadarKind.Player ? MonsterHudSettings.PlayerTextSize : MonsterHudSettings.NpcTextSize;
 
     /// <summary>Screen rect of a plate at a given upward nudge: (x0, y0, x1, y1).</summary>
     private static Vector4 RectAt(Plate p, float nudge, float uiScale)

@@ -172,6 +172,7 @@ internal static class EngineLifecycle
         // The chat log is written on the tick pump (UiDataHub), now stopped. Left open,
         // it outlived this generation and locked the next one out of the file.
         Step("ChatModel.CloseLog", () => UI.Data.ChatModel.CloseLog());
+        Step("ServerMessageStream.Shutdown", () => Net.ServerMessageStream.Shutdown());
 
         Step("PluginManager.ShutdownAll (defensive)", () => PluginManager.ShutdownAll());
 

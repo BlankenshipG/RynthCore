@@ -165,6 +165,14 @@ GROUPS = {
     "TimeSyncHooks": [
         ("ClientNet_HandleTimeSynch", 0x005448F0),
     ],
+    "UiFlowHooks": [
+        ("UIFlow_UseNewMode", 0x00479AA0), ("Client_Cleanup", 0x004118D0),
+    ],
+    "UiElementHooks": [
+        ("UIElementManager_StartTooltip", 0x0045DF70), ("UIElementManager_ResetTooltip", 0x0045C440),
+        ("UIElementManager_CheckTooltip", 0x0045B7C0), ("UIElementManager_StartDragandDrop", 0x0045E120),
+        ("UIElement_CatchDroppedItem", 0x00461860), ("UIElement_ItemList_InqDropIconInfo", 0x004E3380),
+    ],
     "PlayerTrade": [
         ("Event_OpenTradeNegotiations", 0x006AE260), ("Event_AddToTrade", 0x006AE030),
         ("Event_ResetTrade", 0x006AE330), ("Event_CloseTradeNegotiations", 0x006AE140),

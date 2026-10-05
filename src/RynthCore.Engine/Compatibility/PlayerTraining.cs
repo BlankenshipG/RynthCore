@@ -31,6 +31,10 @@
 //
 //  Every call runs on AC's main thread: off it (or with defer) the request goes
 //  through AcMainThreadQueue (ActionKind.Train) and the drain calls back in.
+//  Only in the world (TrainingApi.InWorld), checked again when the drain sends:
+//  a raise queued just before a logout is dropped, not sent to the next screen.
+//  The plugin API (v79) reaches these through TrainingApi, which also works the
+//  XP out and checks it (TrainingCosts).
 // ============================================================================
 
 using System;
@@ -112,6 +116,11 @@ internal static unsafe class PlayerTraining
     {
         if (!Bound(kind) || !ValidTarget(kind, stype) || xp == 0)
             return false;
+        if (!TrainingApi.InWorld)
+        {
+            RynthLog.Compat($"PlayerTraining: {kind} {stype} not sent - not in the world");
+            return false;
+        }
         if (defer || !MainThreadGuard.IsOnMainThread())
             return AcMainThreadQueue.EnqueueTrain((uint)kind, stype, xp);
 

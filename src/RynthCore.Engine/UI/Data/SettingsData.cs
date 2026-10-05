@@ -156,6 +156,9 @@ internal sealed class RynthAiSettings
     public bool RebuffWhenIdle { get; set; }
     public int RebuffSecondsRemaining { get; set; } = 300;
     public int RebuffTopOffSecondsRemaining { get; set; } = 1200;
+    // Cast our own buff even when gear already gives it (servers with buff augments). Default
+    // on; a RynthAi that predates it doesn't send it, and must not read as off.
+    public bool CastBuffsOverItemBuffs { get; set; } = true;
     public int BuffMinSkillLevelTier1 { get; set; } = 35;
     public int BuffMinSkillLevelTier2 { get; set; } = 85;
     public int BuffMinSkillLevelTier3 { get; set; } = 135;
@@ -176,6 +179,10 @@ internal sealed class RynthAiSettings
     public bool LootJumpEnabled { get; set; }
     public int LootJumpHeight { get; set; } = 10;
     public int LootOwnership { get; set; }
+    // Recover your own death corpse whole (default on), and travel back to it after a death
+    // (default off). A RynthAi that predates them doesn't send them; on must not read as off.
+    public bool LootOwnCorpse { get; set; } = true;
+    public bool TravelToOwnCorpse { get; set; }
     public bool EnableAutostack { get; set; } = true;
     public bool ReadUnknownScrolls { get; set; } = true;   // VTank's default
     public bool EnableCombineSalvage { get; set; } = true;
@@ -646,6 +653,8 @@ internal static class SettingsSchema
                 "Recast a self buff when its remaining duration drops below this value.\nDefault 300 (5 minutes). Lower values rebuff more eagerly."),
             Int("Also Refresh Under (seconds left)", s => s.RebuffTopOffSecondsRemaining, (s, v) => s.RebuffTopOffSecondsRemaining = v, 30, 3600, 60,
                 "When a buff is due, also recast every other buff with less than this much time left,\nso they land together. Buffs with more time are left alone. Default 1200 (20 minutes).\nAt or below 'Rebuff With', only the expiring buff is recast."),
+            Bool("Cast buffs even when an item gives them", s => s.CastBuffsOverItemBuffs, (s, v) => s.CastBuffsOverItemBuffs = v,
+                "Cast your own buff even when worn gear already gives that buff.\nFor servers with buff augments, where your own cast is stronger or lasts longer.\nOn by default: on retail it costs a few extra casts."),
             Spacer(),
             Section("Buff Difficulty (Min Buffed Skill)"),
             Tiers(
@@ -678,6 +687,10 @@ internal static class SettingsSchema
             Spacer(),
             Section("Corpse Ownership"),
             Combo("Loot From", LootOwnershipModes, s => s.LootOwnership, (s, v) => s.LootOwnership = v),
+            Bool("Recover My Corpse", s => s.LootOwnCorpse, (s, v) => s.LootOwnCorpse = v,
+                "When your own corpse (\"Corpse of <you>\") is within loot range, open it and take every\nitem on it, whatever the loot profile and Loot From say. Needs Enable Looting.\n/ra owncorpse says where your last corpse is."),
+            Bool("Travel Back To My Corpse", s => s.TravelToOwnCorpse, (s, v) => s.TravelToOwnCorpse = v,
+                "After a death, walk back to where you died with RynthNav (outdoor deaths only),\nfighting on the way as usual, recover the corpse, then carry on. Needs the macro\nrunning and RynthNav loaded. /ra owncorpse stop cancels."),
             Spacer(),
             Section("Inventory Management"),
             Bool("Enable Autostack", s => s.EnableAutostack, (s, v) => s.EnableAutostack = v),

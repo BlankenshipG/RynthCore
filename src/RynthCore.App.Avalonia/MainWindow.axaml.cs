@@ -456,15 +456,34 @@ internal partial class MainWindow : Window
             Foreground = Brush.Parse("#6F7F8A"),
         });
 
-        var install = new Button
+        Control install;
+        if (!a.CanInstall)
         {
-            Content = "Install",
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(12, 0, 0, 0),
-            IsEnabled = !_updateBusy,
-        };
-        ToolTip.SetTip(install, $"Download {a.Entry.Name} (checked against the signed update feed) into {Path.GetDirectoryName(a.Path)} and add it to your plugins.");
-        install.Click += async (_, _) => await InstallAvailablePluginAsync(a);
+            // Its manifest needs a newer engine than this RynthCore: say so instead of offering it.
+            install = new TextBlock
+            {
+                Text = a.Blocker,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(12, 0, 0, 0),
+                Foreground = Brush.Parse("#F2C14E"),
+                TextWrapping = TextWrapping.Wrap,
+                MaxWidth = 200,
+            };
+            ToolTip.SetTip(install, $"This {a.Entry.Name} build needs a newer RynthCore than the one installed. Update RynthCore, then install it.");
+        }
+        else
+        {
+            var button = new Button
+            {
+                Content = "Install",
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(12, 0, 0, 0),
+                IsEnabled = !_updateBusy,
+            };
+            ToolTip.SetTip(button, $"Download {a.Entry.Name} (checked against the signed update feed) into {Path.GetDirectoryName(a.Path)} and add it to your plugins.");
+            button.Click += async (_, _) => await InstallAvailablePluginAsync(a);
+            install = button;
+        }
 
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*, Auto") };
         Grid.SetColumn(stack, 0);
@@ -2270,6 +2289,8 @@ internal partial class MainWindow : Window
             lines.Add($"Updated this session: {string.Join(", ", _pluginsUpdatedThisSession)}. Loads the next time AC starts.");
         var local = c?.Plugins.Where(p => p.State == RynthUpdater.PluginState.LocalBuild).Select(p => p.Entry.Name).Distinct().ToList();
         if (local is { Count: > 0 }) lines.Add($"Left alone (newer local builds): {string.Join(", ", local)}.");
+        var waiting = c?.PluginsWaitingForCore.GroupBy(p => p.Entry.Name).Select(g => $"{g.Key} ({g.First().Blocker})").ToList();
+        if (waiting is { Count: > 0 }) lines.Add($"Waiting for a RynthCore update: {string.Join(", ", waiting)}.");
         UpdateStatusText.Text = string.Join("\n", lines);
         PluginsTabProgressBar.IsVisible = card.ShowProgress;
         PluginsTabProgressBar.IsIndeterminate = card.ShowProgress && card.ProgressPercent == null;

@@ -327,14 +327,21 @@ internal static class EndSceneHook
             _renderCount++;
             _frameCount++;
 
-            // Per-frame chatbox visibility assertion (no-op unless plugin enables suppression).
-            try { ChatHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
-            // Per-frame retail-radar visibility assertion (no-op unless plugin enables suppression).
-            try { RadarHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
-            // Per-frame retail-powerbar visibility assertion (no-op unless plugin enables suppression).
-            try { PowerbarHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
-            // Per-frame retail health/stamina/mana bars visibility ("Hide retail vitals").
-            try { RetailVitalsHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
+            // These four call into gameplay-UI panels they cached (gmMainChatUI, the radar, the
+            // powerbar, the vitals bars). AC frees those when it leaves the world; outside the
+            // world (UiFlowHooks: a screen change seen by the UseNewMode hook or the mode poll)
+            // they don't run. Mode not known yet = as before.
+            if (UiFlowHooks.InWorldOrUnknown && !UiFlowHooks.ClientCleanupStarted)
+            {
+                // Per-frame chatbox visibility assertion (no-op unless plugin enables suppression).
+                try { ChatHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
+                // Per-frame retail-radar visibility assertion (no-op unless plugin enables suppression).
+                try { RadarHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
+                // Per-frame retail-powerbar visibility assertion (no-op unless plugin enables suppression).
+                try { PowerbarHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
+                // Per-frame retail health/stamina/mana bars visibility ("Hide retail vitals").
+                try { RetailVitalsHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
+            }
 
             if (_renderCount == 1 && _offscreenFilterDisabled && _skipCount > 0)
             {

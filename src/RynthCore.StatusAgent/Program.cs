@@ -53,6 +53,13 @@ if (publisher.Enabled)
 else
     AgentLog.Info("No endpoint configured -> LOCAL PRINT-ONLY mode (nothing is sent anywhere).");
 
+// The client's spell table (portal.dat), loaded once in the background: names + icons for the Buffs tab.
+var spells = new SpellTableService(cfg.IconDatPath);
+// The landscape map (cell.dat -> one cached JPEG), rendered on the first /worldmap request.
+var worldMap = new WorldMapService(cfg.CellDatPath, cfg.StatusDirectory);
+// RynthNav's Atlas (NavData\locations.json), searched for the phone's Travel tab.
+var navAtlas = new NavAtlasService(cfg.NavAtlasPath);
+
 // Opt-in pull endpoint: an app can fetch status with no backend.
 LocalStatusServer? server = null;
 WebRtcVideoService? video = null;   // HD WebRTC video mode (opt-in); disposed in finally
@@ -80,7 +87,7 @@ else if (cfg.ServeHttp)
     MapService maps = new MapService(cfg.MapsDirectory);
     server = new LocalStatusServer(cfg.ServePrefix, cfg.ServeToken, commandDir,
                                    cfg.EnableScreenStream, cfg.StreamQuality, cfg.StreamIntervalMs, video, videoSocket,
-                                   runArchive, cfg.StatusDirectory, icons, maps);
+                                   runArchive, cfg.StatusDirectory, icons, maps, worldMap, navAtlas);
     if (server.TryStart(out string serveErr))
     {
         AgentLog.Info($"Serving status at {cfg.ServePrefix}status (GET){(string.IsNullOrEmpty(cfg.ServeToken) ? "" : ", token required")}.");
@@ -159,7 +166,7 @@ return 0;
 // One status cycle: read all client status, roll it up, and serve / file / POST it.
 async Task RunCycleAsync()
 {
-    List<ClientStatus> clients = StatusReader.ReadAll(cfg);
+    List<ClientStatus> clients = StatusReader.ReadAll(cfg, spells);
     runArchive.Observe(clients);   // fold this cycle into per-session run history (started/updated/finished)
     var payload = new AggregatePayload
     {
@@ -167,6 +174,14 @@ async Task RunCycleAsync()
         AgentVersion = version,
         GeneratedAtUtc = DateTimeOffset.UtcNow,
         ClientCount = clients.Count,
+        // What works on this PC, so the phone stops assuming DrakBot-era "everything".
+        Capabilities = RemoteParity.Capabilities(cfg,
+            iconDat: File.Exists(cfg.IconDatPath),
+            dungeonMaps: Directory.Exists(cfg.MapsDirectory),
+            worldMap: worldMap.Available,
+            characterSheets: clients.Any(c => File.Exists(Path.Combine(cfg.StatusDirectory, $"RynthCore.{c.Pid}.character.json"))),
+            navAtlas: navAtlas.Available,
+            raiseXp: clients.Any(c => c.RaiseXp)),
         Clients = clients,
     };
 
@@ -178,6 +193,7 @@ async Task RunCycleAsync()
         AgentLog.Debug(System.Text.Encoding.UTF8.GetString(bytes));
 
     server?.UpdateLatest(bytes);
+    server?.UpdateRaiseClients(clients);
 
     if (cfg.WriteAggregateFile)
     {

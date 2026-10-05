@@ -153,6 +153,15 @@ public struct RynthCoreApiNative
     public IntPtr GetServerInfoFn;           // int GetServerInfo(byte* worldName, int capacity) -> flags (bit0 Aelrynth, bit1 staging, bit2 world name known)
     // v76: close an external container (corpse, chest) like the client's window close
     public IntPtr CloseContainerFn;          // int CloseContainer(uint containerId) -> 1 sent or queued
+    // v77: the client's screen (UIFlow mode) and which UI hooks (screen, cleanup, tooltip, drag, drop) are live
+    public IntPtr GetScreenModeFn;           // int GetScreenMode(int* previousMode) -> mode, 0 unknown
+    public IntPtr GetUiHookFlagsFn;          // uint GetUiHookFlags(void) -> RynthUiHookFlags
+    // v78: reassembled server messages (RynthPluginOnServerMessage export; see Net\ServerMessage.cs)
+    public IntPtr SetServerMessageInterestFn; // int SetServerMessageInterest(uint* opcodes, int n, uint* gameEvents, int m) -> 1 streaming, 2 stream off, 0 no export, -1 unknown caller, -3 bad args
+    // v79: spending experience like the character window's "+" (see TrainingTypes.cs)
+    public IntPtr GetTrainingInfoFn;         // int GetTrainingInfo(TrainingInfoNative* info, TrainingEntryNative* entries, int max) -> entries there are
+    public IntPtr RaiseFn;                   // int Raise(uint kind, uint stype, uint ranks, long expectedXp, long* xpSent) -> RaiseResult
+    public IntPtr TrainSkillFn;              // int TrainSkill(uint stype, int expectedCredits) -> RaiseResult
 }
 
 /// <summary>

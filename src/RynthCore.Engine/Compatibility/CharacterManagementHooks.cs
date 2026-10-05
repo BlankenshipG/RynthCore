@@ -144,6 +144,8 @@ internal static class CharacterManagementHooks
         {
             Volatile.Write(ref _publishedMode, mode);
             Volatile.Write(ref _modePublished, 1);
+            // Seeds UiFlowHooks' mode; drives its screen events when the UseNewMode hook isn't live.
+            UiFlowHooks.OnModePolled(mode);
         }
         else
         {

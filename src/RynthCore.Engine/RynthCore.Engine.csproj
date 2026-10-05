@@ -73,10 +73,14 @@
     <Compile Include="..\RynthCore.App\CharacterCacheStore.cs" Link="Shared\CharacterCacheStore.cs" />
     <Compile Include="..\RynthCore.App\SessionStateStore.cs" Link="Shared\SessionStateStore.cs" />
     <Compile Include="..\RynthCore.App\BuildVersion.cs" Link="Shared\BuildVersion.cs" />
-    <!-- DXT1/3/5 for AC icons in script windows (UI/ScriptWindows/AcIconDecoder.cs); the StatusAgent's copy (MonoGame, Ms-PL). -->
+    <!-- DXT1/3/5 for AC icons in script windows (UI/ScriptWindows/AcIconDecoder.cs); the StatusAgent's decoder (RynthCore's own, MIT). -->
     <Compile Include="..\RynthCore.StatusAgent\Dat\DxtUtil.cs" Link="Shared\DxtUtil.cs" />
     <!-- The byte-ring protocol shared with the Decal bridge plugin (docs/DECAL_BRIDGE_PLAN.md). -->
     <Compile Include="..\RynthCore.DecalBridge\BridgeProtocol.cs" Link="Shared\BridgeProtocol.cs" />
+    <!-- Plugin manifests: read from each plugin DLL before loading it (Plugins/PluginManifestGate.cs). -->
+    <Compile Include="..\RynthCore.PluginSdk\Manifest\*.cs" Link="Shared\Manifest\%(Filename)%(Extension)" />
+    <!-- The SDK's server-message parsers: /rc netmsg log checks them against the live server (Net/ServerMessageStream.cs). -->
+    <Compile Include="..\RynthCore.PluginSdk\Net\*.cs" Link="Shared\Net\%(Filename)%(Extension)" />
   </ItemGroup>
 
   <!-- Prevent trimmer from removing ImGui.NET's DllImport methods -->

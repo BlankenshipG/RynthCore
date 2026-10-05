@@ -3,7 +3,8 @@
 //  ImGui face of the RynthVision settings (UI/Panels/RynthVisionPanel.cs),
 //  in three tabs:
 //    Terrain      the plugin's overlays (radar ring, unclimbable slopes,
-//                 impassable water), colours (AARRGGBB hex + swatch), tuning
+//                 impassable water), colours (AARRGGBB hex + swatch) each
+//                 with an opacity slider (the colour's alpha byte), tuning
 //                 sliders (Ctrl+click to type a value), water terrain types,
 //                 and "Log terrain types here";
 //    Nameplates   the RynthVision nameplates (monster plates, debuff icons,
@@ -115,10 +116,15 @@ internal sealed class VisionFace : IImGuiPanel
         if (ImGuiNET.ImGui.Checkbox("Unclimbable slopes", ref s.Slopes)) Save(VisionKeys.Slopes);
         if (ImGuiNET.ImGui.Checkbox("Impassable water", ref s.Water)) Save(VisionKeys.Water);
 
-        Header("Colors (hex AARRGGBB)");
+        Header("Colors (hex AARRGGBB) and opacity");
+        ImGuiNET.ImGui.PushItemWidth(Math.Max(120, ImGuiNET.ImGui.GetContentRegionAvail().X - 8));
         busy |= ColorRow(SlopeColorF, _slopeHex, ref s.SlopeColor);
+        busy |= OpacitySlider(SlopeOpacityF, _slopeHex, ref s.SlopeColor);
         busy |= ColorRow(WaterColorF, _waterHex, ref s.WaterColor);
+        busy |= OpacitySlider(WaterOpacityF, _waterHex, ref s.WaterColor);
         busy |= ColorRow(RadarColorF, _radarHex, ref s.RadarColor);
+        busy |= OpacitySlider(RadarOpacityF, _radarHex, ref s.RadarColor);
+        ImGuiNET.ImGui.PopItemWidth();
 
         Header("Tuning");
         ImGuiNET.ImGui.PushItemWidth(Math.Max(120, ImGuiNET.ImGui.GetContentRegionAvail().X - 8));
@@ -188,6 +194,10 @@ internal sealed class VisionFace : IImGuiPanel
     private static readonly Field SlopeColorF = Field.Color("Slope", VisionKeys.SlopeColor);
     private static readonly Field WaterColorF = Field.Color("Water", VisionKeys.WaterColor);
     private static readonly Field RadarColorF = Field.Color("Radar", VisionKeys.RadarColor);
+    // Opacity is the colour's alpha byte: the slider saves the colour field.
+    private static readonly Field SlopeOpacityF = Field.Slider("Slope opacity", VisionKeys.SlopeColor);
+    private static readonly Field WaterOpacityF = Field.Slider("Water opacity", VisionKeys.WaterColor);
+    private static readonly Field RadarOpacityF = Field.Slider("Radar ring opacity", VisionKeys.RadarColor);
     private static readonly Field RadarRangeF = Field.Slider("Radar range", VisionKeys.RadarRange);
     private static readonly Field RingThickF = Field.Slider("Ring thickness", VisionKeys.RingThick);
     private static readonly Field RingHeightF = Field.Slider("Ring height (m)", VisionKeys.RingHeight);
@@ -225,6 +235,24 @@ internal sealed class VisionFace : IImGuiPanel
         dl.AddRect(sw, sw + new Vector2(22, 16), Mute);
         NextLine(p, 26);
         return typing;
+    }
+
+    /// <summary>
+    /// The colour's alpha as 0-100 %: label, then the slider. Rewrites the alpha byte (RGB kept) and the hex
+    /// box as it moves, saves the colour on release. Untouched, the colour is never rewritten. True while in use.
+    /// </summary>
+    private bool OpacitySlider(Field f, byte[] hex, ref uint argb)
+    {
+        ImGuiNET.ImGui.TextUnformatted(f.Label);
+        float pct = ArgbOpacity.Percent(argb);
+        if (ImGuiNET.ImGui.SliderFloat(f.Id, ref pct, 0f, 100f, "%.0f%%", ImGuiSliderFlags.AlwaysClamp))
+        {
+            argb = ArgbOpacity.WithPercent(argb, pct);
+            WriteUtf8(hex, argb.ToString("X8"));
+        }
+        if (ImGuiNET.ImGui.IsItemDeactivatedAfterEdit()) Save(f.Key);
+        ImGuiNET.ImGui.SetItemTooltip("0% = invisible, 100% = solid. Ctrl+click to type a value");
+        return ImGuiNET.ImGui.IsItemActive();
     }
 
     /// <summary>Label, then the slider; saves on release (or after Ctrl+click typing). True while in use.</summary>

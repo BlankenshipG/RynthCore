@@ -347,10 +347,12 @@ internal static class SmartBoxHooks
                 // v70: the sequence and its error code as one 64-bit value, so a reader
                 // on the plugin pump never pairs one UseDone's number with another's code.
                 System.Threading.Interlocked.Exchange(ref _useDoneLast, ((long)(uint)seq << 32) | err);
-                if (_useDoneLogCount < 25)
+                // Every one while RynthLog.ActionDoneTraceEnabled (the default; 2026-10-05: the
+                // first 25 of a session couldn't show which completion a held cast was waiting on).
+                if (RynthLog.ActionDoneTraceEnabled || _useDoneLogCount < 25)
                 {
                     _useDoneLogCount++;
-                    RynthLog.Compat($"UseDone seq={seq} err=0x{err:X}");
+                    RynthLog.Compat($"UseDone seq={seq} err=0x{err:X}{(err == 0x1D ? " (too busy)" : err == 0 ? " (done)" : "")}");
                 }
                 break;
             }

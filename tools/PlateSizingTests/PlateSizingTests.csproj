@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Offline checks for the nameplate sizing settings and the Vision overlay opacity sliders
+    (2026-10-05): src\RynthCore.Engine\ImGui\MonsterHud\MonsterHudSettings.cs and
+    src\RynthCore.Engine\UI\Data\ArgbOpacity.cs, compiled in. Defaults equal today's look,
+    the nameplate_settings.txt lines round-trip (old files without the new keys still load),
+    out-of-range values clamp, and an untouched opacity never changes a colour.
+    No file I/O: the settings file is written to and read from memory, and the background
+    writer is a stub that never runs its work (so %LocalAppData%\RynthCore is never touched).
+    Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>PlateSizingTests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\RynthCore.Engine\ImGui\MonsterHud\MonsterHudSettings.cs" Link="Engine\MonsterHudSettings.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ArgbOpacity.cs" Link="Engine\ArgbOpacity.cs" />
+  </ItemGroup>
+
+</Project>

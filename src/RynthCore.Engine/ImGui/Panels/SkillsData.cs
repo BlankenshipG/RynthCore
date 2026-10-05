@@ -25,6 +25,7 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Threading;
+using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.UI;
 using RynthCore.Engine.UI.ScriptWindows;
 
@@ -53,6 +54,8 @@ internal sealed class SkillDatTables
     public uint[] TrainedXp = Array.Empty<uint>();
     public uint[] SpecializedXp = Array.Empty<uint>();
     public ulong[] LevelXp = Array.Empty<ulong>();
+    /// <summary>The same arrays as one object (Compatibility/TrainingCosts).</summary>
+    public XpTableData Xp = new();
 }
 
 internal static class SkillDat
@@ -137,51 +140,31 @@ internal static class SkillDat
         return r.Ok && t.Skills.Count > 0;
     }
 
+    // The XpTable layout and the cost arithmetic live in Compatibility/TrainingCosts.cs (shared
+    // with the plugin API's raise calls and tested against a real portal.dat).
     private static bool ParseXp(byte[] raw, SkillDatTables t)
     {
-        var r = new Reader(raw);
-        r.U32();                               // file id
-        int attrs = (int)r.U32(), vitals = (int)r.U32(), trained = (int)r.U32(), spec = (int)r.U32();
-        int levels = (int)r.U32();
-        if (!r.Ok || attrs < 0 || vitals < 0 || trained < 0 || spec < 0 || levels < 0
-            || attrs > 10000 || vitals > 10000 || trained > 10000 || spec > 10000 || levels > 10000)
-            return false;
-        t.AttributeXp = r.U32s(attrs + 1);
-        t.VitalXp = r.U32s(vitals + 1);
-        t.TrainedXp = r.U32s(trained + 1);
-        t.SpecializedXp = r.U32s(spec + 1);
-        var lv = new ulong[levels + 1];
-        for (int i = 0; i <= levels; i++) lv[i] = r.U64();
-        t.LevelXp = lv;
-        return r.Ok;
+        if (!TrainingCosts.TryParseXpTable(raw, out XpTableData xp)) return false;
+        t.Xp = xp;
+        t.AttributeXp = xp.AttributeXp;
+        t.VitalXp = xp.VitalXp;
+        t.TrainedXp = xp.TrainedXp;
+        t.SpecializedXp = xp.SpecializedXp;
+        t.LevelXp = xp.LevelXp;
+        return true;
     }
 
     // ── XP arithmetic (the server's: Player.SpendAttributeXp / SpendSkillXp) ──
 
     /// <summary>True when <paramref name="ranks"/> is the table's top rank (nothing left to buy).</summary>
-    public static bool IsMax(uint[] table, uint ranks) => table.Length == 0 || ranks + 1 >= (uint)table.Length;
+    public static bool IsMax(uint[] table, uint ranks) => TrainingCosts.IsMax(table, ranks);
 
     /// <summary>XP to buy <paramref name="n"/> more ranks from <paramref name="ranks"/> with <paramref name="spent"/> already spent; -1 past the top.</summary>
-    public static long CostOf(uint[] table, uint ranks, uint spent, int n)
-    {
-        if (n < 1) return 0;
-        long target = (long)ranks + n;
-        if (target >= table.Length) return -1;
-        return Math.Max(0L, (long)table[target] - spent);
-    }
+    public static long CostOf(uint[] table, uint ranks, uint spent, int n) => TrainingCosts.CostOf(table, ranks, spent, n);
 
     /// <summary>How many ranks in a row <paramref name="available"/> XP buys (0 when not even one), up to the top rank.</summary>
-    public static int Affordable(uint[] table, uint ranks, uint spent, long available)
-    {
-        int lo = 0, hi = Math.Max(0, table.Length - 1 - (int)Math.Min(ranks, (uint)int.MaxValue));
-        while (lo < hi)
-        {
-            int mid = (lo + hi + 1) / 2;
-            long c = CostOf(table, ranks, spent, mid);
-            if (c >= 0 && c <= available) lo = mid; else hi = mid - 1;
-        }
-        return lo;
-    }
+    public static int Affordable(uint[] table, uint ranks, uint spent, long available) =>
+        TrainingCosts.Affordable(table, ranks, spent, available);
 
     /// <summary>Bounds-checked little-endian reader; Ok turns false on overrun.</summary>
     private ref struct Reader

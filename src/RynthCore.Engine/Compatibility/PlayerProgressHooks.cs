@@ -12,7 +12,8 @@
 //    Want / Current / RefreshSoon   any thread (the panel: AC's render thread).
 //
 //  Demand-driven: nothing is read unless a reader called Want in the last 2 s,
-//  then at most every 500 ms. Reads go into one preallocated work buffer; a new
+//  then at most every 500 ms (WantSlow, the plugin API's GetTrainingInfo: in the
+//  last 5 s, then at most every 2 s). Reads go into one preallocated work buffer; a new
 //  snapshot object is published (and allocated) only when something changed,
 //  so an idle open panel costs a compare every half second.
 // ============================================================================
@@ -173,6 +174,8 @@ internal static class PlayerProgressHooks
 {
     private const int RefreshMs = 500;
     private const int WantWindowMs = 2000;
+    private const int SlowRefreshMs = 2000;
+    private const int SlowWantWindowMs = 5000;
 
     // StatMod type flags (ACE EnchantmentTypeFlags) that mark a buff on a stat.
     internal const uint ModAttribute = 0x1, ModSecondAttribute = 0x2, ModSkill = 0x10;
@@ -180,7 +183,9 @@ internal static class PlayerProgressHooks
     private const uint ModAnyStat = ModAttribute | ModSecondAttribute | ModSkill;
 
     private static long _wantedUntilMs;
+    private static long _slowWantedUntilMs;
     private static long _nextReadMs;
+    private static long _lastReadMs;
     private static int _version;
     private static PlayerProgress? _published;
 
@@ -198,8 +203,22 @@ internal static class PlayerProgressHooks
     public static void Want() =>
         Volatile.Write(ref _wantedUntilMs, Environment.TickCount64 + WantWindowMs);
 
+    /// <summary>
+    /// A background reader (the plugin API, TrainingApi) wants data for the next 5 s, read at
+    /// most every 2 s, so a plugin polling every few seconds doesn't keep the 2 Hz panel rate up.
+    /// Any thread.
+    /// </summary>
+    public static void WantSlow() =>
+        Volatile.Write(ref _slowWantedUntilMs, Environment.TickCount64 + SlowWantWindowMs);
+
     /// <summary>Read again at the next main-thread tick (after a raise). Any thread.</summary>
     public static void RefreshSoon() => Volatile.Write(ref _nextReadMs, 0);
+
+    /// <summary>
+    /// Environment.TickCount64 of the last successful read, changed or not (0 = never), so a
+    /// reader can tell how old <see cref="Current"/>'s numbers are. Any thread.
+    /// </summary>
+    public static long LastReadMs => Volatile.Read(ref _lastReadMs);
 
     /// <summary>The last published read, or null. Never written again once published. Any thread.</summary>
     public static PlayerProgress? Current => Volatile.Read(ref _published);
@@ -213,21 +232,25 @@ internal static class PlayerProgressHooks
         if (!MainThreadGuard.IsOnMainThread())
             return;
         long now = Environment.TickCount64;
-        if (now > Volatile.Read(ref _wantedUntilMs) || now < Volatile.Read(ref _nextReadMs))
+        bool panel = now <= Volatile.Read(ref _wantedUntilMs);
+        if ((!panel && now > Volatile.Read(ref _slowWantedUntilMs)) || now < Volatile.Read(ref _nextReadMs))
             return;
-        Volatile.Write(ref _nextReadMs, now + RefreshMs);
+        Volatile.Write(ref _nextReadMs, now + (panel ? RefreshMs : SlowRefreshMs));
 
         if (!ClientObjectHooks.ReadPlayerProgressLive(Work))
             return;
         CopyStatBuffs(Work);
 
         PlayerProgress? current = Volatile.Read(ref _published);
-        if (current != null && current.SameAs(Work))
-            return;
-        var snapshot = new PlayerProgress();
-        snapshot.CopyFrom(Work);
-        snapshot.Version = ++_version;
-        Volatile.Write(ref _published, snapshot);
+        if (current == null || !current.SameAs(Work))
+        {
+            var snapshot = new PlayerProgress();
+            snapshot.CopyFrom(Work);
+            snapshot.Version = ++_version;
+            Volatile.Write(ref _published, snapshot);
+        }
+        // After publishing: a reader that sees this time sees this read's numbers.
+        Volatile.Write(ref _lastReadMs, Environment.TickCount64);
     }
 
     /// <summary>The player's enchantments that change a skill, attribute or vital (not vitae).</summary>

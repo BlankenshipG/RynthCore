@@ -123,6 +123,17 @@ internal static unsafe class ImGuiPopOuts
     /// <summary>The pop-out typing into a text box, or null (for the input log). AC thread.</summary>
     public static string? TextFocusTitle => _keyboard is { WantTextInput: true } k ? k.Title : null;
 
+    /// <summary>
+    /// True when the cursor is over <paramref name="title"/>'s pop-out window right now
+    /// (UiDropTargets: an AC item released over a popped-out panel). AC thread.
+    /// </summary>
+    public static bool IsCursorOver(string title)
+    {
+        if (!Pops.TryGetValue(title, out PopOut? pop) || pop.Window == null || pop.Window.Hwnd == IntPtr.Zero)
+            return false;
+        return GetCursorPos(out POINT cursor) && WindowFromPoint(cursor) == pop.Window.Hwnd;
+    }
+
     /// <summary>The screen position of the game window's client origin (to place a pop-out where the docked panel was).</summary>
     public static Vector2 ClientOriginOnScreen()
     {

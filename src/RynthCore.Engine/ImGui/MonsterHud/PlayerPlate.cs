@@ -280,15 +280,18 @@ internal static class PlayerPlate
         float k = l.K = MonsterHudSettings.Scale * uiScale;
         bool numbers = l.Numbers = MonsterHudSettings.SelfNumbers;
         // With numbers on, the bars grow to fit bold, outlined text that reads over any fill.
-        l.BarW = MathF.Round((numbers ? 124f : 96f) * k);
-        l.BarH = MathF.Round((numbers ? 15f : 5f) * k);
+        // Width, height and text each have their own multiplier on top (1 = the default look).
+        l.BarW = MathF.Round((numbers ? 124f : 96f) * k * MonsterHudSettings.SelfBarWidth);
+        l.BarH = MathF.Round((numbers ? 15f : 5f) * k * MonsterHudSettings.SelfBarHeight);
         l.Gap = MathF.Max(2f, MathF.Round(2f * k));
         l.Round = MathF.Max(1f, 1.5f * k);
-        // Sized from the 11 px bold bake, drawn from the smallest bake at least that big (no blur when scaled up).
-        l.SmallSize = MathF.Round(ImGuiFonts.Get(UiFont.UiBold11).FontSize * MonsterHudSettings.Scale);
+        // Sized from the 11 px bold bake, drawn from the smallest bake at least that big (no blur when scaled up;
+        // nothing is re-baked when the text size changes).
+        float text = MonsterHudSettings.Scale * MonsterHudSettings.SelfTextSize;
+        l.SmallSize = MathF.Round(ImGuiFonts.Get(UiFont.UiBold11).FontSize * text);
         l.Small = ImGuiFonts.Sharp(l.SmallSize, bold: true);
         l.BlockH = 3 * l.BarH + 2 * l.Gap;
-        l.NameSize = MathF.Round(ImGuiFonts.Get(UiFont.UiBold11).FontSize * MonsterHudSettings.Scale);
+        l.NameSize = MathF.Round(ImGuiFonts.Get(UiFont.UiBold11).FontSize * text);
         l.NameFont = ImGuiFonts.Sharp(l.NameSize, bold: true);
         l.NameH = MonsterHudSettings.SelfName ? l.NameSize + 3f * k : 0f;
         return l;
@@ -358,7 +361,9 @@ internal static class PlayerPlate
         float tw = MonsterHud.TextWidth(font, size, text);
         var pos = new Vector2(MathF.Round(left + (w - tw) * 0.5f), MathF.Round(top + (h - size) * 0.5f));
         // A dark band behind the text, then an outline, so it reads over bright and dark fills alike.
-        dl.AddRectFilled(new Vector2(pos.X - 3f, top + 1f), new Vector2(pos.X + tw + 3f, top + h - 1f), MonsterHud.Mul(0x70000000u, a), 2f);
+        // (Text sized bigger than the bar: the band grows to the text.)
+        dl.AddRectFilled(new Vector2(pos.X - 3f, MathF.Min(top + 1f, pos.Y)), new Vector2(pos.X + tw + 3f, MathF.Max(top + h - 1f, pos.Y + size)),
+            MonsterHud.Mul(0x70000000u, a), 2f);
         MonsterHud.OutlinedText(dl, font, size, pos, a, text);
         dl.AddText(font, size, pos, MonsterHud.Mul(NumCol, a), text);
     }

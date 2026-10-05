@@ -31,6 +31,9 @@ internal static class EngineSettings
     private static DecalBridgeMode _decalBridgeMode = DecalBridgeMode.Auto;
     private static bool _decalInGameImGui = true;
     private static bool _decalStandDown = true;
+    // "DisabledUiHooks": the UI hooks (Compatibility/UiHookRegistry) switched off by name.
+    private static readonly HashSet<string> _disabledUiHooks = new(StringComparer.OrdinalIgnoreCase);
+    private static bool _serverMessageStream = true;
     private static bool _loaded;
 
     public static IReadOnlyList<string> PluginPaths
@@ -252,6 +255,39 @@ internal static class EngineSettings
         }
     }
 
+    /// <summary>"DisabledUiHooks" in engine.json: an array of UI hook names
+    /// (Compatibility/UiHookRegistry: UseNewMode, ClientCleanup, StartTooltip, ResetTooltip,
+    /// CheckTooltip, StartDragandDrop, CatchDroppedItem). A listed hook is not installed at
+    /// the next start. Missing = every hook on. /rc hooks on|off &lt;name&gt; edits it.</summary>
+    public static bool IsUiHookEnabled(string name)
+    {
+        EnsureLoaded();
+        return !_disabledUiHooks.Contains(name);
+    }
+
+    /// <summary>Switches a UI hook on or off for the next start, and saves engine.json.</summary>
+    public static void SetUiHookEnabled(string name, bool enabled)
+    {
+        EnsureLoaded();
+        bool changed = enabled ? _disabledUiHooks.Remove(name) : _disabledUiHooks.Add(name);
+        if (changed)
+            Save();
+    }
+
+    /// <summary>"ServerMessageStream" in engine.json (default true): the kill switch for the
+    /// reassembled server-message stream (Net/ServerMessageStream.cs, plugin API v78). Even when
+    /// true, nothing is copied off the receive hook until a plugin asks for messages (or
+    /// /rc netmsg log|capture is on). false = the RecvFrom detour does exactly what it did
+    /// before the stream existed; /rc netmsg on can't override it.</summary>
+    public static bool ServerMessageStream
+    {
+        get
+        {
+            EnsureLoaded();
+            return _serverMessageStream;
+        }
+    }
+
     public static void AddPluginPath(string path)
     {
         EnsureLoaded();
@@ -374,10 +410,24 @@ internal static class EngineSettings
                 (dsdEl.ValueKind == JsonValueKind.True || dsdEl.ValueKind == JsonValueKind.False))
                 _decalStandDown = dsdEl.GetBoolean();
 
+            if (doc.RootElement.TryGetProperty("ServerMessageStream", out var smsEl) &&
+                (smsEl.ValueKind == JsonValueKind.True || smsEl.ValueKind == JsonValueKind.False))
+                _serverMessageStream = smsEl.GetBoolean();
+
             if (doc.RootElement.TryGetProperty("PreventIdleLogoff", out var pilEl) &&
                 (pilEl.ValueKind == JsonValueKind.True || pilEl.ValueKind == JsonValueKind.False))
             {
                 _preventIdleLogoff = pilEl.GetBoolean();
+            }
+
+            if (doc.RootElement.TryGetProperty("DisabledUiHooks", out var duhEl) &&
+                duhEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in duhEl.EnumerateArray())
+                {
+                    if (el.ValueKind == JsonValueKind.String && el.GetString() is { Length: > 0 } hookName)
+                        _disabledUiHooks.Add(hookName.Trim());
+                }
             }
         }
         catch (Exception ex)
@@ -417,6 +467,15 @@ internal static class EngineSettings
                     w.WriteBoolean("DecalInGameImGui", false);
                 if (!_decalStandDown)     // default true: leave the file as it was
                     w.WriteBoolean("DecalStandDown", false);
+                if (_disabledUiHooks.Count > 0)   // default none: leave the file as it was
+                {
+                    w.WriteStartArray("DisabledUiHooks");
+                    foreach (string hookName in _disabledUiHooks)
+                        w.WriteStringValue(hookName);
+                    w.WriteEndArray();
+                }
+                if (!_serverMessageStream) // default true: leave the file as it was
+                    w.WriteBoolean("ServerMessageStream", false);
                 w.WriteEndObject();
             }
             File.WriteAllBytes(SettingsPath, ms.ToArray());

@@ -279,6 +279,53 @@ public unsafe sealed class RynthPluginRuntime<TPlugin>
         catch (Exception ex) { LogException("OnEnchantmentRemoved", ex); }
     }
 
+    // ── v77 UI callbacks ─────────────────────────────────────────────────
+    // Exports: RynthPluginOnScreenChanged(int, int), RynthPluginOnClientCleanup(),
+    // RynthPluginOnTooltipShow(uint, uint), RynthPluginOnTooltipHide(),
+    // RynthPluginOnDragStart(uint, uint, uint), RynthPluginOnItemDropped(uint, uint, uint); all cdecl.
+
+    public void OnScreenChanged(int oldMode, int newMode)
+    {
+        if (!IsInitialized) return;
+        try { _plugin!.OnScreenChanged(oldMode, newMode); }
+        catch (Exception ex) { LogException("OnScreenChanged", ex); }
+    }
+
+    public void OnClientCleanup()
+    {
+        if (!IsInitialized) return;
+        try { _plugin!.OnClientCleanup(); }
+        catch (Exception ex) { LogException("OnClientCleanup", ex); }
+    }
+
+    public void OnTooltipShow(uint objectId, uint spellId)
+    {
+        if (!IsInitialized) return;
+        try { _plugin!.OnTooltipShow(objectId, spellId); }
+        catch (Exception ex) { LogException("OnTooltipShow", ex); }
+    }
+
+    public void OnTooltipHide()
+    {
+        if (!IsInitialized) return;
+        try { _plugin!.OnTooltipHide(); }
+        catch (Exception ex) { LogException("OnTooltipHide", ex); }
+    }
+
+    public void OnDragStart(uint objectId, uint spellId, uint iconId)
+    {
+        if (!IsInitialized) return;
+        try { _plugin!.OnDragStart(objectId, spellId, iconId); }
+        catch (Exception ex) { LogException("OnDragStart", ex); }
+    }
+
+    public void OnItemDropped(uint objectId, uint spellId, uint targetElementId)
+    {
+        if (!IsInitialized) return;
+        try { _plugin!.OnItemDropped(objectId, spellId, targetElementId); }
+        catch (Exception ex) { LogException("OnItemDropped", ex); }
+    }
+
     private void LogException(string method, Exception ex)
     {
         if (Interlocked.Increment(ref _exceptionCount) > MaxLoggedExceptions)
