@@ -77,6 +77,13 @@ internal static class EngineFrameController
     private static long _drawSubmits;
     private static long _nextHeartbeatAt;
 
+    // Device for this frame's built ImGui draw data, submitted by RenderDeferredImGui after the
+    // Avalonia blit. Render thread only; Zero = nothing pending. The draw data stays valid until
+    // the next NewFrame on the main context.
+    private static IntPtr _deferredSubmitDevice;
+    // Build + pop-out time of the frame waiting in _deferredSubmitDevice (UiFrameStats adds the submit).
+    private static long _deferredUiTicks;
+
     private static long _lastFrameTicks;
     private static int _frameCount;
 
@@ -254,6 +261,8 @@ internal static class EngineFrameController
         // EngineSettings.EnableImGuiBackend, so world→screen capture, nav-
         // marker rendering, and plugin lifecycle stay alive when the ImGui
         // surface is disabled.
+        // A frame that throws before its build must not resubmit last frame's draw data.
+        _deferredSubmitDevice = IntPtr.Zero;
         try
         {
             // Resolve game HWND and seed EntryPoint.GameHwnd. Required even
@@ -369,10 +378,10 @@ internal static class EngineFrameController
             // calls it at all.
 
             // ── ImGui-gated work ─────────────────────────────────────────
-            // The frame is BUILT here and SUBMITTED after the Nav3D fallback and
-            // the vital HUD, so ImGui windows sit above both. The Avalonia quad
-            // (EndSceneHook, after this returns) stays topmost while both stacks
-            // run, matching input order: Avalonia gets the first hit test.
+            // The frame is BUILT here and SUBMITTED by RenderDeferredImGui, which
+            // EndSceneHook calls after the Avalonia quad, so ImGui windows sit above
+            // the Nav3D fallback, the vital HUD and the Avalonia panels. Input order
+            // matches: Win32Backend gives ImGui the mouse while it wants it.
             bool imguiEnabled = Plugins.EngineSettings.EnableImGuiBackend;
             bool imguiBuilt = false;
             long uiTicks = 0;
@@ -395,12 +404,19 @@ internal static class EngineFrameController
             if (imguiEnabled)
             {
                 long t0 = Stopwatch.GetTimestamp();
-                if (imguiBuilt)
-                    SubmitImGuiFrame(pDevice);
                 // Popped-out panels: their own contexts, windows and render targets.
                 if (_imguiInitialized)
                     ImGuiPopOuts.RenderAll(pDevice, _uiScale, PanelsLive);
-                UiFrameStats.Record(uiTicks + (Stopwatch.GetTimestamp() - t0));
+                long ticks = uiTicks + (Stopwatch.GetTimestamp() - t0);
+                if (imguiBuilt)
+                {
+                    _deferredUiTicks = ticks;
+                    _deferredSubmitDevice = pDevice;
+                }
+                else
+                {
+                    UiFrameStats.Record(ticks);
+                }
             }
         }
         catch (Exception ex)
@@ -784,6 +800,24 @@ internal static class EngineFrameController
         }
         _prevImGuiText = imguiText;
         _prevAvaloniaText = avaloniaText;
+    }
+
+    /// <summary>
+    /// Submits this frame's ImGui draw data. EndSceneHook calls it after
+    /// OverlayTextureRenderer.Render so ImGui windows draw on top of the Avalonia layer.
+    /// Runs whether or not the Avalonia blit ran (character select, Avalonia off), and is
+    /// a no-op when <see cref="OnEndScene"/> built nothing this frame. Never throws.
+    /// </summary>
+    public static void RenderDeferredImGui()
+    {
+        IntPtr device = _deferredSubmitDevice;
+        if (device == IntPtr.Zero)
+            return;
+        _deferredSubmitDevice = IntPtr.Zero; // one submission per frame, even if it throws
+
+        long t0 = Stopwatch.GetTimestamp();
+        SubmitImGuiFrame(device);
+        UiFrameStats.Record(_deferredUiTicks + (Stopwatch.GetTimestamp() - t0));
     }
 
     /// <summary>Draws the frame <see cref="BuildImGuiFrame"/> produced.</summary>
