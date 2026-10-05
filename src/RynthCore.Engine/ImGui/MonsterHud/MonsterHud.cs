@@ -220,7 +220,7 @@ internal static class MonsterHud
     /// plate, or a press that began on one is still held. Read after the frame is
     /// built, on AC's render thread.
     /// </summary>
-    public static bool WantsMouse => _wantsMouse;
+    public static bool WantsMouse => _wantsMouse || PlayerPlate.WantsMouse;
 
     /// <summary>Plates being tracked (diagnostics).</summary>
     public static int PlateCount => Plates.Count;
@@ -237,6 +237,7 @@ internal static class MonsterHud
     {
         // Draw recomputes it; a frame that doesn't draw the plates never wants the mouse.
         _wantsMouse = false;
+        PlayerPlate.ClearMouse();
         try
         {
             if (!MonsterHudSettings.Loaded)
@@ -716,13 +717,15 @@ internal static class MonsterHud
     /// <summary>AC's render thread, inside the ImGui frame (between NewFrame and Render).</summary>
     public static void Draw(float uiScale)
     {
-        if (!_hasContent) { ResetClick(); return; }
+        if (!_hasContent) { ResetClick(); PlayerPlate.DropDrag(); return; }
         try
         {
-            if (!TryBeginFrame(uiScale, out Frame f)) { ResetClick(); return; }
+            if (!TryBeginFrame(uiScale, out Frame f)) { ResetClick(); PlayerPlate.DropDrag(); return; }
             DrawPlates(ref f, MonsterHudSettings.Enabled);
             PlayerPlate.Draw(ref f);
             CombatText.Draw(ref f);
+            // The player plate fixed on screen: ImGui's background list (the normal UI pass), not the layer above.
+            PlayerPlate.DrawScreen(ref f);
         }
         catch (Exception ex)
         {

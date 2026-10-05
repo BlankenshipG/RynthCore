@@ -1104,6 +1104,59 @@ internal static unsafe class DX9Backend
         _navTrigReady = true;
     }
 
+    // AC's 3D view viewport, read at EndScene (AC has put it back by then; the EndScene
+    // fallback has always drawn the markers with it). AC's render thread only.
+    private static D3DVIEWPORT9 _sceneViewport;
+    private static bool _hasSceneViewport;
+
+    /// <summary>
+    /// EndScene, before anything of ours touches the viewport: remembers AC's 3D view
+    /// viewport for <see cref="RenderNav3D(IntPtr, bool)"/> at the UI pass, where AC has
+    /// set a full-screen one. AC's render thread.
+    /// </summary>
+    public static void CaptureSceneViewport(IntPtr pDevice)
+    {
+        if (!_coreInitialized || _getViewport == null || pDevice == IntPtr.Zero) return;
+        D3DVIEWPORT9 vp;
+        if (_getViewport(pDevice, &vp) >= 0 && vp.Width > 0 && vp.Height > 0)
+        {
+            _sceneViewport = vp;
+            _hasSceneViewport = true;
+        }
+    }
+
+    /// <summary>
+    /// <see cref="RenderNav3D(IntPtr)"/>; with <paramref name="sceneViewport"/> (AC's UI
+    /// pass) the markers draw in AC's 3D view viewport (from the last EndScene) when the
+    /// current one differs, and the current one is put back afterwards.
+    /// </summary>
+    public static void RenderNav3D(IntPtr pDevice, bool sceneViewport)
+    {
+        if (!sceneViewport || !_hasSceneViewport || !_coreInitialized || pDevice == IntPtr.Zero ||
+            _getViewport == null || _setViewport == null)
+        {
+            RenderNav3D(pDevice);
+            return;
+        }
+        D3DVIEWPORT9 current;
+        if (_getViewport(pDevice, &current) < 0)
+        {
+            RenderNav3D(pDevice);
+            return;
+        }
+        D3DVIEWPORT9 scene = _sceneViewport;
+        bool same = current.X == scene.X && current.Y == scene.Y && current.Width == scene.Width &&
+                    current.Height == scene.Height && current.MinZ == scene.MinZ && current.MaxZ == scene.MaxZ;
+        if (same)
+        {
+            RenderNav3D(pDevice);
+            return;
+        }
+        _setViewport(pDevice, &scene);
+        try { RenderNav3D(pDevice); }
+        finally { _setViewport(pDevice, &current); }
+    }
+
     public static void RenderNav3D(IntPtr pDevice)
     {
         // Nav3D only needs the cached function pointers + nav trig + GameMatrixCapture;

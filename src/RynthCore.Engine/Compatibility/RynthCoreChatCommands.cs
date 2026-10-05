@@ -45,6 +45,10 @@ namespace RynthCore.Engine.Compatibility;
 ///         (<see cref="ServerInfo"/>) and why; aelrynth/other force it for this session.</item>
 ///   <item><c>/rc mastery</c> — the Aelrynth mastery feed's state (<see cref="MasteryFeed"/>),
 ///         and ask the server for /mastery-data again.</item>
+///   <item><c>/rc worldlayer [auto|uipass|transition|endscene]</c> — where the world overlays
+///         (nameplates, combat text, Nav3D markers) draw in AC's frame
+///         (<see cref="D3D9.Nav3DRenderInjector"/>): alone it reports the path and counters;
+///         a mode forces it for this session (A/B checks). Auto at every start; not saved.</item>
 /// </list>
 /// </summary>
 internal static class RynthCoreChatCommands
@@ -138,6 +142,14 @@ internal static class RynthCoreChatCommands
         {
             try { HandleMasteryCommand(); }
             catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc mastery failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc worldlayer [auto|uipass|transition|endscene] : where the world overlays draw
+        if (IsVerb(sub, "worldlayer", out string worldArgs))
+        {
+            try { HandleWorldLayerCommand(worldArgs); }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc worldlayer failed - {ex.GetType().Name}: {ex.Message}"); }
             return true;
         }
 
@@ -404,6 +416,33 @@ internal static class RynthCoreChatCommands
         MasteryFeed.RequestRefresh();
     }
 
+    /// <summary>
+    /// /rc worldlayer: report (no argument / status) or force (auto, uipass, transition,
+    /// endscene) where the world overlays draw. The render thread picks the mode up next
+    /// frame; the DIP hook is switched at the next frame boundary.
+    /// </summary>
+    private static void HandleWorldLayerCommand(string arg)
+    {
+        D3D9.WorldLayerMode? mode = arg.ToLowerInvariant() switch
+        {
+            "auto" => D3D9.WorldLayerMode.Auto,
+            "uipass" or "ui" => D3D9.WorldLayerMode.UiPass,
+            "transition" or "zenable" => D3D9.WorldLayerMode.Transition,
+            "endscene" => D3D9.WorldLayerMode.EndScene,
+            _ => null,
+        };
+        if (mode is { } m)
+        {
+            D3D9.Nav3DRenderInjector.Mode = m;
+            Reply($"World overlays now: {D3D9.Nav3DRenderInjector.DescribePath()} (this session only).");
+            return;
+        }
+        if (arg.Length > 0 && !arg.Equals("status", StringComparison.OrdinalIgnoreCase))
+            Reply("Usage: /rc worldlayer [auto|uipass|transition|endscene]");
+        Reply(D3D9.Nav3DRenderInjector.Describe());
+        Reply(ImGuiBackend.UnderUiLayer.Describe());
+    }
+
     private static bool IsVerb(string sub, string verb, out string args)
     {
         args = string.Empty;
@@ -422,7 +461,8 @@ internal static class RynthCoreChatCommands
     /// </summary>
     private static void HandlePlatesCommand(string args)
     {
-        const string usage = "Usage: /rv plates [on|off] | all on|off | self [numbers|name|firstperson] [on|off] | " +
+        const string usage = "Usage: /rv plates [on|off] | all on|off | self [numbers|name|firstperson|lock] [on|off] | " +
+                             "self fixed|follow|unlock|reset | " +
                              "debuffs [on|off] | others [on|off] | numbers [dealt|taken|heals|kills] [on|off] | " +
                              "gains [xp|lum|radiance] [on|off] | npcs [on|off] | npcs dist <yd>|max <n> | players [on|off] | all|engaged |dist <yd>|max <n>|scale <x>|opacity <x>|lift <m> | " +
                              "names|hp|level|weak|distance|fade|click [on|off] | reset | status | test";
@@ -469,6 +509,12 @@ internal static class RynthCoreChatCommands
                     case "numbers": case "text": S.SelfNumbers = Flag(subValue, S.SelfNumbers); break;
                     case "name": S.SelfName = Flag(subValue, S.SelfName); break;
                     case "firstperson": case "fp": S.SelfHideFirstPerson = Flag(subValue, S.SelfHideFirstPerson); break;
+                    // Placement: fixed on screen (drag it while unlocked) or following the character.
+                    case "fixed": case "screen": S.SelfPlacement = ImGuiBackend.Hud.SelfPlacement.Fixed; break;
+                    case "follow": case "world": S.SelfPlacement = ImGuiBackend.Hud.SelfPlacement.Follow; break;
+                    case "lock": S.SelfLocked = subValue == null || Flag(subValue, S.SelfLocked); break;
+                    case "unlock": S.SelfLocked = false; break;
+                    case "reset": S.SelfFixedX = S.DefaultSelfFixedX; S.SelfFixedY = S.DefaultSelfFixedY; break;
                     case "position": case "pos":
                     {
                         string? w = subValue?.ToLowerInvariant();

@@ -233,7 +233,25 @@ internal static class LaunchCommand
         string conn = ComputeConnectionString(server);
         string rodat = server.RodatEnabled ? "on" : "off";
         string acct = account.AccountName ?? string.Empty;
-        string pwd = account.Password ?? string.Empty;
+        // Saved passwords are DPAPI-encrypted for the Windows user that saved them
+        // (LaunchAccountProfile.PasswordProtected). Decrypted here, at the moment of use;
+        // never logged. A plain "Password" means the launcher hasn't migrated the file yet.
+        string pwd;
+        if (!string.IsNullOrEmpty(account.Password))
+        {
+            pwd = account.Password;
+            Log("WARNING: this account's password is still stored in plain text; open the launcher once to encrypt it.");
+        }
+        else if (string.IsNullOrEmpty(account.PasswordProtected))
+        {
+            pwd = string.Empty;
+        }
+        else if (!RynthCore.App.AccountPasswordProtection.TryUnprotect(account.PasswordProtected, out pwd))
+        {
+            Log($"The saved password for account '{acct}' can't be read on this Windows user (settings copied from another user or PC?). " +
+                "Password needs re-entering: edit the account in the launcher and type it again.");
+            return 2;
+        }
 
         string arguments = server.Emulator == EmulatorKind.Gdle
             ? string.Join(" ",
@@ -400,7 +418,8 @@ internal static class LaunchCommand
     {
         public string Id { get; set; } = string.Empty;
         public string AccountName { get; set; } = string.Empty;
-        public string Password { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;           // legacy plain text (pre-encryption files)
+        public string PasswordProtected { get; set; } = string.Empty;  // DPAPI, base64
         public string CharacterName { get; set; } = string.Empty;
         public string ServerId { get; set; } = string.Empty;
         public int OnLoginWaitMs { get; set; }

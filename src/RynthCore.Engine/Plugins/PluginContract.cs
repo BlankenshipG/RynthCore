@@ -771,6 +771,15 @@ internal struct RynthCoreAPI
     /// to capacity - 1; worldName may be null). Never the launcher's profile name. Any thread.
     /// Requires API v75+.</summary>
     public IntPtr GetServerInfoFn;
+
+    /// <summary>v76: <c>int CloseContainer(uint containerId)</c>: close an external container (a
+    /// corpse, a chest) as the client does when its window is closed: the 0x0195
+    /// NoLongerViewingContents game action (CM_Inventory::Event_NoLongerViewingContents). Not an
+    /// inventory request: no busy count, no pending-request slot. The server answers with
+    /// CloseGroundContainer, which closes the window and raises StopViewingObjectContents. Runs on
+    /// AC's main thread (queued in the action ring from other threads, ahead of anything queued
+    /// after it). Returns 1 if sent or queued. Requires API v76+.</summary>
+    public IntPtr CloseContainerFn;
 }
 
 /// <summary>v72 <see cref="TradeStateNative.Flags"/> bits.</summary>
@@ -958,7 +967,7 @@ internal unsafe struct VendorTradeStatusNative
 /// <summary>Current API version. Bump when adding fields to RynthCoreAPI.</summary>
 internal static class PluginContractVersion
 {
-    public const uint Current = 75;
+    public const uint Current = 76;
 }
 
 internal static class ClientActionHookFlags
@@ -1473,3 +1482,6 @@ internal unsafe delegate int GetCharacterTitlesCallbackDelegate(uint* ids, int m
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetServerInfoCallbackDelegate(byte* worldName, int capacity);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int CloseContainerCallbackDelegate(uint containerId);

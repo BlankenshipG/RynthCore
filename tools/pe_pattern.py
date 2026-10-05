@@ -303,7 +303,10 @@ def _compat_dir():
 
 def parse_engine_patterns():
     srcs = {}
-    for f in glob.glob(os.path.join(_compat_dir(), "*.cs")):
+    # Compatibility/ holds nearly every hook; D3D9/AcUiPassHook.cs (RenderUI::RenderObjects)
+    # is the one function hook that lives with the render code.
+    engine_dir = os.path.dirname(_compat_dir())
+    for f in glob.glob(os.path.join(_compat_dir(), "*.cs")) + glob.glob(os.path.join(engine_dir, "D3D9", "*.cs")):
         with open(f, "r", encoding="utf-8") as fh:
             # Strip // line comments so commas / brackets inside an inline disasm
             # comment (e.g. `0x84, 0xC0  // MOV AL,[ESP+4]; TEST AL,AL`) can't corrupt

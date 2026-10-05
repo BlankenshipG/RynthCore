@@ -151,6 +151,8 @@ public struct RynthCoreApiNative
     // v75: the character's titles and which server this is
     public IntPtr GetCharacterTitlesFn;      // int GetCharacterTitles(uint* ids, int maxCount, uint* currentTitle) -> count, -1 unknown
     public IntPtr GetServerInfoFn;           // int GetServerInfo(byte* worldName, int capacity) -> flags (bit0 Aelrynth, bit1 staging, bit2 world name known)
+    // v76: close an external container (corpse, chest) like the client's window close
+    public IntPtr CloseContainerFn;          // int CloseContainer(uint containerId) -> 1 sent or queued
 }
 
 /// <summary>

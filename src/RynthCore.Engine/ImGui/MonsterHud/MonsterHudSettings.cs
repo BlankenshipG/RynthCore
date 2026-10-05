@@ -66,6 +66,17 @@ internal static class MonsterHudSettings
     public static bool SelfNumbers = false;      // "cur/max" beside each bar
     public static bool SelfName = false;
     public static bool SelfHideFirstPerson = true;
+    /// <summary>
+    /// Fixed on screen (default since 2026-10-05: a plate tied to the head jitters while you move) or
+    /// following the character (SelfPosition, SelfHideFirstPerson). Fixed draws with the normal UI.
+    /// </summary>
+    public static SelfPlacement SelfPlacement = SelfPlacement.Fixed;
+    /// <summary>Fixed mode: the plate can't be dragged (and never takes a click). Unlock to move it.</summary>
+    public static bool SelfLocked = true;
+    /// <summary>Fixed mode: where the bars' centre sits, as a fraction of the screen (kept on screen when drawn).</summary>
+    public static float SelfFixedX = DefaultSelfFixedX, SelfFixedY = DefaultSelfFixedY;
+    /// <summary>Just under a third-person character, clear of the chat in the bottom-left corner.</summary>
+    public const float DefaultSelfFixedX = 0.5f, DefaultSelfFixedY = 0.68f;
 
     // Combat text (CombatText): floating numbers and the kill burst.
     public static bool Numbers = true;
@@ -166,6 +177,10 @@ internal static class MonsterHudSettings
                         case "selfNumbers": SelfNumbers = val == "1"; break;
                         case "selfName": SelfName = val == "1"; break;
                         case "selfHideFirstPerson": SelfHideFirstPerson = val == "1"; break;
+                        case "selfPlacement": SelfPlacement = val.Equals("follow", StringComparison.OrdinalIgnoreCase) ? SelfPlacement.Follow : SelfPlacement.Fixed; break;
+                        case "selfLocked": SelfLocked = val == "1"; break;
+                        case "selfFixedX": if (TryF(val, out float fx)) SelfFixedX = Math.Clamp(fx, 0f, 1f); break;
+                        case "selfFixedY": if (TryF(val, out float fy)) SelfFixedY = Math.Clamp(fy, 0f, 1f); break;
                         case "numbers": Numbers = val == "1"; break;
                         case "numDealt": NumDealt = val == "1"; break;
                         case "numTaken": NumTaken = val == "1"; break;
@@ -230,6 +245,10 @@ internal static class MonsterHudSettings
                 sw.WriteLine($"selfNumbers={B(SelfNumbers)}");
                 sw.WriteLine($"selfName={B(SelfName)}");
                 sw.WriteLine($"selfHideFirstPerson={B(SelfHideFirstPerson)}");
+                sw.WriteLine($"selfPlacement={(SelfPlacement == SelfPlacement.Follow ? "follow" : "fixed")}");
+                sw.WriteLine($"selfLocked={B(SelfLocked)}");
+                sw.WriteLine(FormattableString.Invariant($"selfFixedX={SelfFixedX:0.####}"));
+                sw.WriteLine(FormattableString.Invariant($"selfFixedY={SelfFixedY:0.####}"));
                 sw.WriteLine($"numbers={B(Numbers)}");
                 sw.WriteLine($"numDealt={B(NumDealt)}");
                 sw.WriteLine($"numTaken={B(NumTaken)}");
@@ -262,10 +281,19 @@ internal static class MonsterHudSettings
         ShowDebuffs = true; ShowOthersDebuff = true;
         NpcNames = true; NpcMaxDistance = 30f; MaxNpcLabels = 15; PlayerNames = false;
         SelfPlate = true; SelfNumbers = false; SelfName = false; SelfHideFirstPerson = true;
+        SelfPlacement = SelfPlacement.Fixed; SelfLocked = true; SelfFixedX = DefaultSelfFixedX; SelfFixedY = DefaultSelfFixedY;
         Numbers = true; NumDealt = true; NumTaken = true; NumHeals = true; NumKills = true;
         NumSize = 1.0f; NumTime = 1.0f; NumRestores = true; KeepOnScreen = true;
         GainSize = 1.0f; GainTime = 1.0f; SelfPosition = SelfPlatePosition.Above;
         Gains = true; GainXp = true; GainLum = true; GainRadiance = true;
+        Save();
+    }
+
+    /// <summary>The fixed plate back to its default spot (and saved). Render / chat thread.</summary>
+    public static void ResetSelfPosition()
+    {
+        SelfFixedX = DefaultSelfFixedX;
+        SelfFixedY = DefaultSelfFixedY;
         Save();
     }
 
@@ -283,7 +311,8 @@ internal static class MonsterHudSettings
         $"names {OnOff(ShowNames)}, hp {OnOff(ShowHpNumbers)}, level {OnOff(ShowLevel)}, weak {OnOff(ShowWeakness)}, " +
         $"distance {OnOff(ShowDistance)}, fade {OnOff(FadeWithDistance)}, click to select {OnOff(ClickToSelect)}), debuffs {OnOff(ShowDebuffs)} (others {OnOff(ShowOthersDebuff)}); " +
         $"NPC names {OnOff(NpcNames)} ({NpcMaxDistance:0}yd, max {MaxNpcLabels}), player names {OnOff(PlayerNames)}; " +
-        $"self {OnOff(SelfPlate)} (numbers {OnOff(SelfNumbers)}, name {OnOff(SelfName)}, hide in first person {OnOff(SelfHideFirstPerson)}); " +
+        $"self {OnOff(SelfPlate)} ({(SelfPlacement == SelfPlacement.Fixed ? "fixed on screen, " + (SelfLocked ? "locked" : "unlocked") : "follows you, " + SelfPosition.ToString().ToLowerInvariant())}, " +
+        $"numbers {OnOff(SelfNumbers)}, name {OnOff(SelfName)}, hide in first person {OnOff(SelfHideFirstPerson)}); " +
         $"combat text {OnOff(Numbers)} (dealt {OnOff(NumDealt)}, taken {OnOff(NumTaken)}, heals {OnOff(NumHeals)}, kills {OnOff(NumKills)}); " +
         $"gains {OnOff(Gains)} (xp {OnOff(GainXp)}, lum {OnOff(GainLum)}, radiance {OnOff(GainRadiance)}).");
 
@@ -292,3 +321,6 @@ internal static class MonsterHudSettings
 
 /// <summary>Player plate placement: over the head, under the feet, or beside the character.</summary>
 internal enum SelfPlatePosition { Above, Below, Left, Right }
+
+/// <summary>Player plate: fixed at a saved screen spot (draggable when unlocked), or following the character.</summary>
+internal enum SelfPlacement { Fixed, Follow }

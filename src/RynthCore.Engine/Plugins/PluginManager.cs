@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.UI.ScriptWindows;
 using RynthCore.Engine.D3D9;
@@ -257,6 +258,7 @@ internal static class PluginManager
     private static GetVTankStateCallbackDelegate? _getVTankStateCallback;   // v74
     private static GetCharacterTitlesCallbackDelegate? _getCharacterTitlesCallback;   // v75
     private static GetServerInfoCallbackDelegate? _getServerInfoCallback;             // v75
+    private static CloseContainerCallbackDelegate? _closeContainerCallback;           // v76
     private static GetVendorInfoCallbackDelegate? _getVendorInfoCallback;
     private static GetVendorItemsCallbackDelegate? _getVendorItemsCallback;
     private static VendorBuyCallbackDelegate? _vendorBuyCallback;
@@ -602,7 +604,7 @@ internal static class PluginManager
                     catch (Exception ex)
                     {
                         plugin.Failed = true;
-                        RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnChatBarEnter threw {ex.GetType().Name}: {ex.Message}");
+                        RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnChatBarEnter threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                     }
                 }
 
@@ -975,7 +977,7 @@ internal static class PluginManager
                     catch (Exception ex)
                     {
                         plugin.Failed = true;
-                        RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnChatWindowText threw {ex.GetType().Name}: {ex.Message}");
+                        RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnChatWindowText threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                     }
                 }
 
@@ -1057,7 +1059,7 @@ internal static class PluginManager
             catch (Exception ex)
             {
                 plugin.Failed = true;
-                RynthLog.Error($"PluginManager: {plugin.DisplayName} Tick threw {ex.GetType().Name}: {ex.Message} - disabled.");
+                RynthLog.Error($"PluginManager: {plugin.DisplayName} Tick threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)} - disabled.");
             }
             finally
             {
@@ -1070,6 +1072,20 @@ internal static class PluginManager
 
         // Atomically publish this tick's Nav3D submissions to the render thread.
         D3D9.Nav3DRenderer.CommitFrame();
+    }
+
+    // The first PluginTraceLimit plugin exceptions also log their stack trace: "Tick threw
+    // IndexOutOfRangeException" alone left a crash undiagnosable (2026-10-04). Capped so a plugin
+    // failing in an event every tick can't flood the log.
+    private const int PluginTraceLimit = 20;
+    private static int _pluginTracesLogged;
+
+    private static string PluginTrace(Exception ex)
+    {
+        if (string.IsNullOrEmpty(ex.StackTrace) || Interlocked.Increment(ref _pluginTracesLogged) > PluginTraceLimit)
+            return string.Empty;
+        string inner = ex.InnerException is { } ie ? $"\n  inner {ie.GetType().Name}: {ie.Message}\n{ie.StackTrace}" : string.Empty;
+        return "\n" + ex.StackTrace + inner;
     }
 
     public static void RenderAll()
@@ -1098,7 +1114,7 @@ internal static class PluginManager
             catch (Exception ex)
             {
                 plugin.Failed = true;
-                RynthLog.Error($"PluginManager: {plugin.DisplayName} Render threw {ex.GetType().Name}: {ex.Message} - disabled.");
+                RynthLog.Error($"PluginManager: {plugin.DisplayName} Render threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)} - disabled.");
             }
         }
     }
@@ -1325,7 +1341,7 @@ internal static class PluginManager
             catch (Exception ex)
             {
                 plugin.Failed = true;
-                RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnLogout threw {ex.GetType().Name}: {ex.Message}");
+                RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnLogout threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
             }
             finally
             {
@@ -1410,7 +1426,7 @@ internal static class PluginManager
                         {
                             threw = true;
                             plugin.Failed = true;
-                            RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnChatWindowText threw {ex.GetType().Name}: {ex.Message}");
+                            RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnChatWindowText threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                         }
                         finally
                         {
@@ -1463,7 +1479,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnSelectedTargetChange threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnSelectedTargetChange threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -1504,7 +1520,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnBusyCountIncremented threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnBusyCountIncremented threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -1545,7 +1561,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnBusyCountDecremented threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnBusyCountDecremented threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -1586,7 +1602,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnCombatModeChange threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnCombatModeChange threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -1641,7 +1657,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnSmartBoxEvent threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnSmartBoxEvent threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -1709,7 +1725,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnUpdateObject threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnUpdateObject threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -1754,7 +1770,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnDeleteObject threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnDeleteObject threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -1801,7 +1817,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnCreateObject threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnCreateObject threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -1842,7 +1858,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnUpdateObjectInventory threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnUpdateObjectInventory threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -1883,7 +1899,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnViewObjectContents threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnViewObjectContents threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -1924,7 +1940,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnStopViewingObjectContents threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnStopViewingObjectContents threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -1965,7 +1981,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnVendorOpen threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnVendorOpen threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -2006,7 +2022,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnVendorClose threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnVendorClose threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -2057,7 +2073,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnUpdateHealth threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnUpdateHealth threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -2108,7 +2124,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnCombatDamage threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnCombatDamage threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -2162,7 +2178,7 @@ internal static class PluginManager
                     catch (Exception ex)
                     {
                         plugin.Failed = true;
-                        RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnKillNotification threw {ex.GetType().Name}: {ex.Message}");
+                        RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnKillNotification threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                     }
                     finally
                     {
@@ -2209,7 +2225,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnEnchantmentAdded threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnEnchantmentAdded threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -2250,7 +2266,7 @@ internal static class PluginManager
                 catch (Exception ex)
                 {
                     plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnEnchantmentRemoved threw {ex.GetType().Name}: {ex.Message}");
+                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnEnchantmentRemoved threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
                 }
                 finally
                 {
@@ -2342,7 +2358,7 @@ internal static class PluginManager
             catch (Exception ex)
             {
                 plugin.Failed = true;
-                RynthLog.Plugin($"PluginManager: {plugin.DisplayName} Init threw {ex.GetType().Name}: {ex.Message}");
+                RynthLog.Plugin($"PluginManager: {plugin.DisplayName} Init threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
             }
             finally
             {
@@ -2420,7 +2436,7 @@ internal static class PluginManager
             catch (Exception ex)
             {
                 plugin.Failed = true;
-                RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnUIInitialized threw {ex.GetType().Name}: {ex.Message}");
+                RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnUIInitialized threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
             }
             finally
             {
@@ -2452,7 +2468,7 @@ internal static class PluginManager
             catch (Exception ex)
             {
                 plugin.Failed = true;
-                RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnLoginComplete threw {ex.GetType().Name}: {ex.Message}");
+                RynthLog.Plugin($"PluginManager: {plugin.DisplayName} OnLoginComplete threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
             }
             finally
             {
@@ -2616,6 +2632,7 @@ internal static class PluginManager
         unsafe { _getVTankStateCallback ??= GetVTankStateAction; }
         unsafe { _getCharacterTitlesCallback ??= GetCharacterTitlesAction; }
         unsafe { _getServerInfoCallback ??= GetServerInfoAction; }
+        _closeContainerCallback ??= CloseContainerAction;
         _getVendorInfoCallback ??= GetVendorInfoAction;
         _getVendorItemsCallback ??= GetVendorItemsAction;
         _vendorBuyCallback ??= VendorBuyAction;
@@ -2752,6 +2769,7 @@ internal static class PluginManager
         _api.GetVTankStateFn = Marshal.GetFunctionPointerForDelegate(_getVTankStateCallback);
         _api.GetCharacterTitlesFn = Marshal.GetFunctionPointerForDelegate(_getCharacterTitlesCallback);
         _api.GetServerInfoFn = Marshal.GetFunctionPointerForDelegate(_getServerInfoCallback);
+        _api.CloseContainerFn = Marshal.GetFunctionPointerForDelegate(_closeContainerCallback);
         _api.GetVendorInfoFn = Marshal.GetFunctionPointerForDelegate(_getVendorInfoCallback);
         _api.GetVendorItemsFn = Marshal.GetFunctionPointerForDelegate(_getVendorItemsCallback);
         _api.VendorBuyFn = Marshal.GetFunctionPointerForDelegate(_vendorBuyCallback);
@@ -3729,7 +3747,7 @@ internal static class PluginManager
         }
         catch (Exception ex)
         {
-            RynthLog.Plugin($"PluginManager: UiSubmit threw {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Plugin($"PluginManager: UiSubmit threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
             return -1;
         }
     }
@@ -3746,7 +3764,7 @@ internal static class PluginManager
         }
         catch (Exception ex)
         {
-            RynthLog.Plugin($"PluginManager: UiPollEvents threw {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Plugin($"PluginManager: UiPollEvents threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
             return 0;
         }
     }
@@ -3809,6 +3827,13 @@ internal static class PluginManager
 
     /// <summary>v72: see PluginContract.TradeCloseFn.</summary>
     private static int TradeCloseAction() => ToAbiBool(PlayerTrade.Close());
+
+    /// <summary>v76: close an external container (see PluginContract.CloseContainerFn).</summary>
+    private static int CloseContainerAction(uint containerId)
+    {
+        Compatibility.AcActionTrace.Record("CloseContainer", containerId);
+        return ToAbiBool(ClientHelperHooks.CloseContainer(containerId));
+    }
 
     /// <summary>v70: wield into a chosen slot (see PluginContract.WieldItemFn).</summary>
     private static int WieldItemAction(uint objectId, uint equipMask)

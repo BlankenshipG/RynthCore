@@ -102,6 +102,8 @@ internal sealed partial class InventoryFace : IImGuiPanel
     private InventoryItem? _splitItem;
     private int _splitAmount = 1;
     private uint _splitTarget;
+    // "Add to loot profile..." (right-click): RynthAi builds the rule, the popup previews it.
+    private readonly LootAddDialog _lootAdd = new("##inv_lootadd");
 
     // Status line cache.
     private string _statusText = string.Empty;
@@ -120,6 +122,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         InventoryModel.Hover(0);
         InventoryModel.Unsubscribe();
         _dragItem = _pressItem = null;
+        _lootAdd.Cancel();
     }
 
     // =====================================================================
@@ -155,6 +158,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         DrawDragGhost();
         ContextMenu(view);
         SplitDialog(view);
+        _lootAdd.Draw();
         _picker.Draw();
     }
 
@@ -883,6 +887,11 @@ internal sealed partial class InventoryFace : IImGuiPanel
             if (target != null && it.Wielder == 0
                 && ImGuiNET.ImGui.MenuItem(target.MenuLabel, "", false, idle && InventoryModel.GiveAvailable))
                 Act(InventoryActionKind.Give, it, target.Id, target.Name, 0);
+            ImGuiNET.ImGui.Separator();
+            if (ImGuiNET.ImGui.MenuItem("Add to loot profile..."))
+                _lootAdd.Open(it.Id, it.Name, toOpenProfile: false);
+            if (ImGuiNET.ImGui.IsItemHovered())
+                ImGuiNET.ImGui.SetTooltip("Make a RynthAi loot rule for this item (preview first)");
             if (!idle)
                 ImGuiNET.ImGui.TextDisabled("(an item action is waiting)");
         }

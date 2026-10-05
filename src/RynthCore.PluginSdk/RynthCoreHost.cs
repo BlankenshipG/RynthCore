@@ -136,6 +136,8 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetCharacterTitles => _api.Version >= 75 && _api.GetCharacterTitlesFn != IntPtr.Zero;
     /// <summary>v75: <see cref="TryGetServerInfo"/> (which server this is).</summary>
     public bool HasGetServerInfo => _api.Version >= 75 && _api.GetServerInfoFn != IntPtr.Zero;
+    /// <summary>v76: <see cref="CloseContainer"/> (close a corpse or chest like the client's window close).</summary>
+    public bool HasCloseContainer => _api.Version >= 76 && _api.CloseContainerFn != IntPtr.Zero;
     public bool HasGetPluginExportJson     => _api.Version >= 66 && _api.GetPluginExportJsonFn     != IntPtr.Zero;
     public bool HasGetPluginInterface      => _api.Version >= 68 && _api.GetPluginInterfaceFn      != IntPtr.Zero;
     public bool HasGetLiveObjectIds        => _api.Version >= 69 && _api.GetLiveObjectIdsFn        != IntPtr.Zero;
@@ -1668,6 +1670,21 @@ public readonly unsafe struct RynthCoreHost
     {
         return _api.Version >= 70 && _api.WieldItemFn != IntPtr.Zero &&
                ((delegate* unmanaged[Cdecl]<uint, uint, int>)_api.WieldItemFn)(objectId, equipMask) != 0;
+    }
+
+    /// <summary>
+    /// v76: close an external container (a corpse, a chest) the way the client does when its
+    /// window is closed: the 0x0195 NoLongerViewingContents game action. It is not an inventory
+    /// request, so it adds nothing to the busy count and doesn't hold the client's one pending
+    /// item request. The server closes the container (if this player is viewing it) and answers
+    /// with CloseGroundContainer, so <c>OnStopViewingObjectContents</c> follows. Queued on AC's
+    /// main thread ahead of any action queued after it (a following UseObject goes out after
+    /// it, in the same frame). False when the engine predates v76. Check <see cref="HasCloseContainer"/>.
+    /// </summary>
+    public bool CloseContainer(uint containerId)
+    {
+        return HasCloseContainer &&
+               ((delegate* unmanaged[Cdecl]<uint, int>)_api.CloseContainerFn)(containerId) != 0;
     }
 
     /// <summary>

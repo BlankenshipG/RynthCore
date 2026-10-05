@@ -199,7 +199,7 @@
                   <Grid RowDefinitions="Auto,Auto,*,Auto">
                     <TextBlock Text="Account Profiles" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
                     <TextBlock Grid.Row="1"
-                               Text="Passwords stay persisted in settings."
+                               Text="Passwords are saved encrypted for this Windows user."
                                TextWrapping="Wrap"
                                Foreground="#9AA8B3"
                                Margin="0,8,0,0" />

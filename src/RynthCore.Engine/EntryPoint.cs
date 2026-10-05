@@ -658,6 +658,9 @@ public static class EntryPoint
             Step("vector-update hooks", VectorUpdateServerDispatchHooks.Initialize);
             Step("update-object-inventory hooks", UpdateObjectInventoryHooks.Initialize);
             Step("view-object-contents hooks", ViewObjectContentsHooks.Initialize);
+            // RenderUI::RenderObjects: the world overlays (nameplates, Nav3D markers) draw at
+            // the start of AC's 2D UI pass, after all 3D incl. foliage (2026-10-04).
+            Step("UI-pass overlay hook", AcUiPassHook.Initialize);
             Step("vendor hooks", VendorHooks.Initialize);
             Step("chat callback hooks", ChatCallbackHooks.Initialize);
             Step("raw packet hooks", RawPacketHooks.Initialize);

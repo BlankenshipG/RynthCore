@@ -43,6 +43,8 @@ internal sealed class LootEditStateDto
     public int Focus { get; set; } = -1;
     public List<LootEditFileDto> Files { get; set; } = new();
     public List<LootEditRowDto> Rules { get; set; } = new();
+    /// <summary>"Add to loot profile" popup's rule (added 2026-10); null from an older RynthAi.</summary>
+    public LootEditItemDraftDto? ItemDraft { get; set; }
 }
 
 internal sealed class LootEditFileDto
@@ -119,6 +121,53 @@ internal sealed class LootEditCmd
     public string? Expect { get; set; }
     public bool Force { get; set; }
     public LootEditRuleDto? Rule { get; set; }
+    /// <summary>item_preview / item_add (added 2026-10).</summary>
+    public LootEditItemRequestDto? Item { get; set; }
+}
+
+/// <summary>"Add to loot profile": the popup's ask (LootEditWire's LootEditItemRequest).</summary>
+internal sealed class LootEditItemRequestDto
+{
+    /// <summary>0 = the item selected in the game.</summary>
+    public uint ItemId { get; set; }
+    /// <summary>0 name + class, 1 name only, 2 items like this.</summary>
+    public int Match { get; set; }
+    /// <summary>VTank action code; 0 = the item's default.</summary>
+    public int Action { get; set; }
+    /// <summary>-1 = default (one full stack).</summary>
+    public int KeepCount { get; set; } = -1;
+    public string RuleName { get; set; } = string.Empty;
+    /// <summary>True: the profile open in the Loot Editor; false: the one RynthAi loots with.</summary>
+    public bool ToOpenProfile { get; set; }
+    public int Seq { get; set; }
+}
+
+/// <summary>The rule an item makes and what an add did (LootEditWire's LootEditItemDraft).</summary>
+internal sealed class LootEditItemDraftDto
+{
+    public int Seq { get; set; }
+    public bool Ok { get; set; }
+    public string Error { get; set; } = string.Empty;
+    public uint ItemId { get; set; }
+    public string ItemName { get; set; } = string.Empty;
+    public string ClassName { get; set; } = string.Empty;
+    public bool Stackable { get; set; }
+    public string TargetPath { get; set; } = string.Empty;
+    public string TargetFile { get; set; } = string.Empty;
+    public bool TargetInUse { get; set; }
+    public string Format { get; set; } = string.Empty;
+    public int Match { get; set; }
+    public int Action { get; set; }
+    public int KeepCount { get; set; }
+    public string RuleName { get; set; } = string.Empty;
+    public string DefaultRuleName { get; set; } = string.Empty;
+    public List<string> Preview { get; set; } = new();
+    public int InsertAt { get; set; } = -1;
+    public int RuleCount { get; set; }
+    public string OrderNote { get; set; } = string.Empty;
+    public List<string> Notes { get; set; } = new();
+    public bool Added { get; set; }
+    public string Message { get; set; } = string.Empty;
 }
 
 internal sealed class LootEditVocabDto

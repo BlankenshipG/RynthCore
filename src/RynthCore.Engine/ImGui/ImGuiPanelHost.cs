@@ -912,8 +912,12 @@ internal static class ImGuiPanelHost
         }
     }
 
+    /// <summary>The panel whose face is drawing right now (names a text box's owner in the input log). AC thread.</summary>
+    internal static string? DrawingTitle { get; private set; }
+
     private static void DrawBody(Entry entry)
     {
+        DrawingTitle = entry.Title;
         try
         {
             entry.Instance!.Draw();
@@ -924,6 +928,10 @@ internal static class ImGuiPanelHost
             RynthLog.UI($"ImGuiPanelHost: {entry.Title}.Draw threw {ex.GetType().Name}: {ex.Message} ({entry.Failures}/{MaxFailures})");
             if (entry.Failures >= MaxFailures)
                 entry.Error = $"{entry.Title} stopped drawing after repeated errors: {ex.Message}";
+        }
+        finally
+        {
+            DrawingTitle = null;
         }
     }
 

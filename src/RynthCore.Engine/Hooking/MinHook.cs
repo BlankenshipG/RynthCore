@@ -24,6 +24,8 @@ internal static unsafe class MinHook
     public const int MH_ERROR_NOT_INITIALIZED     = 2;
     public const int MH_ERROR_ALREADY_CREATED    = 3;
     public const int MH_ERROR_NOT_CREATED        = 4;
+    public const int MH_ERROR_ENABLED            = 5;
+    public const int MH_ERROR_DISABLED           = 6;
 
     // ─── Core API ─────────────────────────────────────────────────────
     //

@@ -133,6 +133,9 @@ internal static class EngineLifecycle
         // plugin-mutating UI command while the plugins are shutting down.
         Step("UiDataHub.Disarm", () => UI.Data.UiDataHub.Disarm());
 
+        // AC's UI-pass hook draws the world overlays mid-frame from the same render-side
+        // state EndSceneHook.Uninstall tears down: stop it first (its 80 ms drain covers both).
+        Step("AcUiPassHook.Uninstall", () => AcUiPassHook.Uninstall());
         Step("EndSceneHook.Uninstall", () => EndSceneHook.Uninstall());
 
         // Give in-flight EndScene calls a chance to drain. AC's render thread

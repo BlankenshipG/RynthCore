@@ -148,6 +148,136 @@ internal static class Program
                 Check(SidecarIds().SequenceEqual(new[] { "a", "b" }), "rewritten when the list changed");
                 CheckSharedFilesSafe();
             });
+
+            // ── saved account passwords (DPAPI) ─────────────────────────────────
+            // Test-only passwords; nothing here touches the real settings file.
+            const string Pw = "t3st pw \"quoted\" ü";
+            const string Pw2 = "Second-Test-Pw";
+
+            Scenario("password round trip", root, () =>
+            {
+                AppSettings s = Sample();
+                s.AccountProfiles[0].SetPassword(Pw);
+                AppSettingsStore.Save(s);
+                AppSettingsStore.Save(s);   // .bak too
+                CheckNoPlainText(Pw);
+                CheckNoPlainText("t3st pw");
+                Check(!RawAccount("a").ContainsKey("Password"), "no plain \"Password\" field written");
+                Check(!string.IsNullOrEmpty((string?)RawAccount("a")["PasswordProtected"]), "PasswordProtected written");
+                Check(OldLauncherCanRead(Main_), "the old launcher can still read the file");
+
+                AppSettings loaded = AppSettingsStore.Load();
+                LaunchAccountProfile a = loaded.AccountProfiles.First(x => x.Id == "a");
+                Check(a.TryGetPasswordForLaunch(out string got, out _) && got == Pw, "decrypts to the saved password");
+                Check(!a.PasswordNeedsReentry && a.HasSavedPassword, "saved, readable");
+                Check(AppSettingsStore.LastPasswordMigrationNote == null && AppSettingsStore.LastPasswordProblemNote == null, "no password notes");
+
+                var builder = new AcLaunchArgumentBuilder();
+                LaunchServerProfile ace = Server(AcEmulatorKind.Ace), gdle = Server(AcEmulatorKind.Gdle);
+                Check(builder.BuildArguments(ace, a).Contains("-v \"t3st pw \\\"quoted\\\" ü\""), "ACE args carry the password (-v)");
+                Check(builder.BuildArguments(gdle, a).Contains("-a \"A:t3st pw \\\"quoted\\\" ü\""), "GDLE args carry account:password (-a)");
+                string preview = builder.BuildMaskedArguments(ace, a);
+                Check(!preview.Contains("t3st") && preview.Contains("-v " + AcLaunchArgumentBuilder.PasswordMask), "preview masked: " + preview);
+                LaunchAccountProfile noPw = loaded.AccountProfiles.First(x => x.Id == "b");
+                Check(builder.BuildMaskedArguments(ace, noPw).Contains("-v \"\""), "preview of an account without a password");
+                Check(builder.BuildArguments(ace, noPw).Contains("-v \"\""), "no saved password still launches as before (empty)");
+
+                LaunchAccountProfile copy = a.Clone();
+                Check(copy.PasswordProtected == a.PasswordProtected, "Clone keeps the encrypted password");
+                copy.SetPassword(Pw2);
+                Check(copy.TryGetPasswordForLaunch(out string got2, out _) && got2 == Pw2, "a new password replaces it");
+                copy.ClearPassword();
+                Check(!copy.HasSavedPassword && copy.TryGetPasswordForLaunch(out string none, out _) && none.Length == 0, "clear");
+                Check(AccountPasswordProtection.Protect(Pw) != AccountPasswordProtection.Protect(Pw), "each encryption differs (salted blobs)");
+            });
+
+            Scenario("migrate plain-text passwords from an older file", root, () =>
+            {
+                string legacy = """
+                { "EnginePath": "X", "AccountProfiles": [
+                  { "Id": "a", "AccountName": "A", "Password": "PLAIN-PW-ONE", "InjectionMode": "RynthCore" },
+                  { "Id": "b", "AccountName": "B", "Password": "PLAIN-PW-TWO", "InjectionMode": "RynthCore" },
+                  { "Id": "c", "AccountName": "C", "Password": "", "InjectionMode": "Decal" },
+                  { "Id": "d", "AccountName": "D" } ] }
+                """;
+                File.WriteAllText(Main_, legacy);
+                File.WriteAllText(Bak, legacy);
+                File.WriteAllText(Sidecar, """{ "DecalBridgeAccountIds": [ "b" ] }""");
+                File.WriteAllText(Main_ + ".corrupt-20260101-000000", "{ old quarantined file");
+
+                AppSettings loaded = AppSettingsStore.Load();
+                Check(AppSettingsStore.LastPasswordMigrationNote?.StartsWith("migrated 2 account password(s) to encrypted storage") == true,
+                    "one note: " + AppSettingsStore.LastPasswordMigrationNote);
+                Check(AppSettingsStore.LastPasswordMigrationNote?.Contains("corrupt-") == true, "note points at the quarantined file");
+                Check(PwOf(loaded, "a") == "PLAIN-PW-ONE" && PwOf(loaded, "b") == "PLAIN-PW-TWO", "passwords kept");
+                Check(!loaded.AccountProfiles.First(x => x.Id == "c").HasSavedPassword, "empty plain password = none saved");
+                Check(loaded.AccountProfiles.All(x => x.LegacyPlainPassword == null), "no plain text left on the profiles");
+                CheckNoPlainText("PLAIN-PW-ONE");
+                CheckNoPlainText("PLAIN-PW-TWO");
+                Check(!File.ReadAllText(Main_).Contains("\"Password\"") && !File.ReadAllText(Bak).Contains("\"Password\""),
+                    "no \"Password\" field in appsettings.json or .bak");
+                Check(Mode(loaded, "b") == InjectionMode.DecalBridge && SidecarIds().SequenceEqual(new[] { "b" }),
+                    "decal-accounts.json survives the migration save");
+                Check(loaded.EnginePath == "X", "other settings kept");
+                CheckNotesClean("PLAIN-PW-ONE", "PLAIN-PW-TWO");
+
+                AppSettings again = AppSettingsStore.Load();
+                Check(AppSettingsStore.LastPasswordMigrationNote == null, "second load: nothing left to migrate");
+                Check(PwOf(again, "a") == "PLAIN-PW-ONE", "second load decrypts");
+            });
+
+            Scenario("undecryptable password (copied from another Windows user or PC)", root, () =>
+            {
+                AppSettings s = Sample();
+                s.AccountProfiles[0].SetPassword(Pw);
+                s.AccountProfiles[1].SetPassword(Pw2);
+                s.AccountProfiles[2].SetPassword(Pw2);
+                AppSettingsStore.Save(s);
+                // Blobs this user can't open: a valid one with a byte changed (DPAPI's integrity
+                // check fails as it does with another user's key), random bytes, and non-base64.
+                byte[] blob = Convert.FromBase64String(s.AccountProfiles[0].PasswordProtected);
+                blob[^5] ^= 0x5A;
+                SetRaw("a", Convert.ToBase64String(blob));
+                SetRaw("b", Convert.ToBase64String(Guid.NewGuid().ToByteArray()));
+                SetRaw("c", "not base64 !!");
+
+                AppSettings loaded = AppSettingsStore.Load();   // must not throw
+                Check(AppSettingsStore.LastLoadDiagnostic == null, "the file is not taken for corrupt");
+                Check(loaded.AccountProfiles.All(x => x.PasswordNeedsReentry), "all three marked \"password needs re-entering\"");
+                Check(AppSettingsStore.LastPasswordProblemNote?.Contains("3 saved account password(s)") == true &&
+                      AppSettingsStore.LastPasswordProblemNote.Contains("need re-entering"),
+                    "problem note: " + AppSettingsStore.LastPasswordProblemNote);
+
+                LaunchAccountProfile a = loaded.AccountProfiles.First(x => x.Id == "a");
+                var builder = new AcLaunchArgumentBuilder();
+                LaunchServerProfile ace = Server(AcEmulatorKind.Ace);
+                string? error = null;
+                try { builder.BuildArguments(ace, a); }
+                catch (InvalidOperationException ex) { error = ex.Message; }
+                Check(error?.Contains("needs re-entering") == true, "launch refused, not launched with an empty password: " + error);
+                Check(builder.BuildMaskedArguments(ace, a).Contains("needs re-entering"), "preview says so");
+                Check(!a.TryGetPasswordForLaunch(out string empty, out _) && empty.Length == 0, "TryGetPasswordForLaunch false");
+
+                a.SetPassword(Pw2);   // re-entered in the account editor
+                Check(!a.PasswordNeedsReentry && a.TryGetPasswordForLaunch(out string got, out _) && got == Pw2, "re-entering fixes it");
+                AppSettingsStore.Save(loaded);
+                AppSettings reloaded = AppSettingsStore.Load();
+                Check(!reloaded.AccountProfiles.First(x => x.Id == "a").PasswordNeedsReentry, "fixed after reload");
+                Check(reloaded.AccountProfiles.First(x => x.Id == "b").PasswordNeedsReentry, "the others still need re-entering");
+                CheckNoPlainText(Pw2);
+            });
+
+            Scenario("nothing leaks into notes, previews or other files", root, () =>
+            {
+                File.WriteAllText(Main_, """{ "AccountProfiles": [ { "Id": "a", "AccountName": "A", "Password": "LEAK-CHECK-PW" } ] }""");
+                AppSettings loaded = AppSettingsStore.Load();
+                CheckNotesClean("LEAK-CHECK-PW");
+                Check(!loaded.AccountProfiles[0].ToString().Contains("LEAK-CHECK-PW"), "display name has no password");
+                Check(!new AcLaunchArgumentBuilder().BuildMaskedArguments(Server(AcEmulatorKind.Gdle), loaded.AccountProfiles[0]).Contains("LEAK-CHECK-PW"),
+                    "GDLE preview masked");
+                AppSettingsStore.Save(loaded);
+                CheckNoPlainText("LEAK-CHECK-PW");
+            });
         }
         finally
         {
@@ -245,6 +375,45 @@ internal static class Program
     {
         try { JsonSerializer.Deserialize<OldSettings>(File.ReadAllText(path), OldOptions); return true; }
         catch (JsonException) { return false; }
+    }
+
+    private static LaunchServerProfile Server(AcEmulatorKind kind) => new()
+    {
+        Id = "s", Name = "Test", Host = "127.0.0.1", Port = 9000, Emulator = kind
+    };
+
+    private static string PwOf(AppSettings s, string id) =>
+        s.AccountProfiles.First(a => a.Id == id).TryGetPasswordForLaunch(out string pw, out _) ? pw : "<unreadable>";
+
+    private static JsonObject RawAccount(string id) =>
+        JsonNode.Parse(File.ReadAllText(Main_))!["AccountProfiles"]!.AsArray()
+            .First(a => (string?)a!["Id"] == id)!.AsObject();
+
+    private static void SetRaw(string id, string passwordProtected)
+    {
+        JsonNode root = JsonNode.Parse(File.ReadAllText(Main_))!;
+        foreach (JsonNode? a in root["AccountProfiles"]!.AsArray())
+            if ((string?)a!["Id"] == id) a["PasswordProtected"] = passwordProtected;
+        File.WriteAllText(Main_, root.ToJsonString());
+    }
+
+    /// <summary>No file the store wrote in the test folder (settings, .bak, .tmp, decal-accounts) holds the password.</summary>
+    private static void CheckNoPlainText(string password)
+    {
+        foreach (string file in Directory.GetFiles(_dir))
+        {
+            if (file.Contains(".corrupt-")) continue;   // planted by the test itself
+            Check(!File.ReadAllText(file).Contains(password), $"{Path.GetFileName(file)} has no plain-text password");
+        }
+    }
+
+    /// <summary>The store's notes (what the launcher logs and shows in the activity panel) hold no password.</summary>
+    private static void CheckNotesClean(params string[] passwords)
+    {
+        foreach (string? note in new[] { AppSettingsStore.LastLoadDiagnostic, AppSettingsStore.LastMigrationNote,
+                     AppSettingsStore.LastPasswordMigrationNote, AppSettingsStore.LastPasswordProblemNote })
+            foreach (string pw in passwords)
+                Check(note == null || !note.Contains(pw), "note has no password: " + note);
     }
 
     private static void Check(bool ok, string what)

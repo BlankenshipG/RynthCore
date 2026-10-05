@@ -356,6 +356,7 @@ internal static unsafe class ScriptWindowReplay
                             int v = had ? local : op.I0;
                             bool changed = ImGuiNative.igInputInt(str, &v, op.I1, op.I2, (ImGuiInputTextFlags)op.Flags) != 0;
                             bool active = ImGuiNative.igIsItemActive() != 0;
+                            if (active) ImGuiTextFocus.NoteActive("number box");
                             uint seq = 0;
                             if (changed)
                             {
@@ -371,6 +372,7 @@ internal static unsafe class ScriptWindowReplay
                             float v = had ? local : op.A;
                             bool changed = ImGuiNative.igInputFloat(str, &v, op.B, op.C, pool + op.Str2, (ImGuiInputTextFlags)op.Flags) != 0;
                             bool active = ImGuiNative.igIsItemActive() != 0;
+                            if (active) ImGuiTextFocus.NoteActive("number box");
                             uint seq = 0;
                             if (changed && float.IsFinite(v))
                             {
@@ -584,6 +586,7 @@ internal static unsafe class ScriptWindowReplay
             edited = ImGuiNative.igIsItemEdited() != 0;
         }
         t.Active = ImGuiNative.igIsItemActive() != 0;
+        if (t.Active) ImGuiTextFocus.NoteActive("text box");   // keys stay out of AC from this frame on
 
         // EnterReturnsTrue: true = Enter pressed (submitted); edits still send the text, unsubmitted.
         // Otherwise true = edited.

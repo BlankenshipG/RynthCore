@@ -39,6 +39,10 @@ internal static unsafe class Win32Backend
     private const uint WM_SYSKEYDOWN = 0x0104;
     private const uint WM_SYSKEYUP = 0x0105;
     private const uint WM_CHAR = 0x0102;
+    private const uint WM_DEADCHAR = 0x0103;
+    private const uint WM_SYSCHAR = 0x0106;
+    private const uint WM_SYSDEADCHAR = 0x0107;
+    private const uint WM_UNICHAR = 0x0109;
     private const uint WM_SETCURSOR = 0x0020;
     private const uint WM_XBUTTONDOWN = 0x020B;
     private const uint WM_XBUTTONUP = 0x020C;
@@ -713,7 +717,10 @@ internal static unsafe class Win32Backend
         SyncFocusState(io);
 
         bool insertDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
-        if (insertDown && !_insertWasDown)
+        // GetAsyncKeyState reads the physical key whatever window has focus: without
+        // the focus test, Insert (or Shift/Ctrl+Insert paste/copy) pressed in another
+        // client or app flipped this client's capture off unseen.
+        if (insertDown && !_insertWasDown && _hasFocus)
         {
             _uiCaptureEnabled = !_uiCaptureEnabled;
             RynthLog.Render($"Win32Backend: ImGui capture {(_uiCaptureEnabled ? "ENABLED" : "DISABLED")} (Insert)");
@@ -894,7 +901,7 @@ internal static unsafe class Win32Backend
             // ── Chat capture: consume all key input for the chat TextBox ────
             // Game HWND keeps Win32 focus throughout; callbacks dispatch Text
             // updates to the panel on Avalonia's UI thread — no Avalonia focus needed.
-            if (ChatCaptureActive && IsKeyMessage(msg))
+            if (ChatCaptureActive && (IsKeyMessage(msg) || IsExtraCharMessage(msg)))
             {
                 if (msg == WM_CHAR)
                 {
@@ -975,7 +982,7 @@ internal static unsafe class Win32Backend
             // !ImGuiTextInputActive: the same rule for an ImGui text box.
             ExpireStaleCaptureFlags();
             if (msg == WM_KEYDOWN && (int)wParam == VK_RETURN && !IsExtendedKey(lParam) && !ChatCaptureActive && !AvaloniaTextInputActive
-                && !ImGuiTextInputActive
+                && !ImGuiTextInputActive && !ImGuiPopOuts.HasTextFocus
                 && RynthCore.Engine.Compatibility.ChatHooks.RynthChatOwnsChat)
             {
                 if (OnChatCaptureActivated != null)
@@ -1082,8 +1089,15 @@ internal static unsafe class Win32Backend
             // the game, except key-ups. A key held before the click must still get
             // its release, or AC's edge-triggered input stays latched (the "character
             // keeps moving" bug); a stray key-up reaching AC is harmless.
-            if (_wantCaptureKeyboard && IsKeyMessage(msg) && msg != WM_KEYUP && msg != WM_SYSKEYUP)
+            // A pop-out's text box counts the same (RouteInput above took its keys; the
+            // dead-key / Alt+key char messages it doesn't route are dropped here).
+            if ((_wantCaptureKeyboard || ImGuiPopOuts.HasTextFocus) && IsTextKeyMessage(msg))
                 return IntPtr.Zero;
+
+            // Field check: a key-down or char about to reach AC while a RynthCore text box
+            // was active in the last frame is a leak. One log line per typing burst.
+            if (IsTextKeyMessage(msg))
+                NoteKeyReachingGame(msg, wParam);
 
             // ── Background FPS unlock: lie to AC so it never idle-throttles ──
             if (msg == WM_ACTIVATEAPP && EndSceneHook.FpsLimitEnabled)
@@ -1486,6 +1500,19 @@ internal static unsafe class Win32Backend
             || msg == WM_CHAR;
     }
 
+    /// <summary>Char messages besides WM_CHAR: dead keys (accents) and Alt+key chars.</summary>
+    private static bool IsExtraCharMessage(uint msg)
+    {
+        return msg == WM_DEADCHAR || msg == WM_SYSCHAR || msg == WM_SYSDEADCHAR || msg == WM_UNICHAR;
+    }
+
+    /// <summary>What a text box keeps from AC: key-downs and every char message. Never
+    /// key-ups (a key held before the edit began must still be released in AC).</summary>
+    private static bool IsTextKeyMessage(uint msg)
+    {
+        return msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_CHAR || IsExtraCharMessage(msg);
+    }
+
     private static bool IsFocusMessage(uint msg)
     {
         return msg == WM_SETFOCUS || msg == WM_KILLFOCUS || msg == WM_ACTIVATEAPP;
@@ -1506,22 +1533,33 @@ internal static unsafe class Win32Backend
 
     /// <summary>
     /// Publishes what the ImGui frame just built wants: <paramref name="wantMouse"/>
-    /// is io.WantCaptureMouse, <paramref name="wantTextInput"/> io.WantTextInput.
+    /// is io.WantCaptureMouse, <paramref name="wantTextInput"/> a text box holds the
+    /// keyboard (io.WantTextInput, or a box that went active this frame).
     /// Keyboard capture follows text input only (not IsAnyItemActive), so holding
     /// a slider never swallows game keys. The Insert toggle (_uiCaptureEnabled)
-    /// and game focus gate both.
+    /// and game focus gate the mouse only.
+    ///
+    /// The keyboard is not gated (2026-10-04, keys typed into Chat Filters also
+    /// reached AC): ImGui is fed every key whatever the gate says (EnqueueInput), so a
+    /// box left open with the gate shut typed into the box AND the game. A key that
+    /// reaches the game WndProc means AC has keyboard focus anyway; Insert-off ends
+    /// the text edit instead (EngineFrameController), so keys go back to the game.
     /// </summary>
     public static void UpdateCaptureFlags(bool wantMouse, bool wantTextInput)
     {
         bool live = _uiCaptureEnabled && _hasFocus;
         _wantCaptureMouse = live && wantMouse;
-        _wantCaptureKeyboard = live && wantTextInput;
-        ImGuiTextInputActive = live && wantTextInput;
+        _wantCaptureKeyboard = wantTextInput;
+        ImGuiTextInputActive = wantTextInput;
+        if (wantTextInput) _keyboardExpiryLogged = false;
         Volatile.Write(ref _captureFlagsTicks, Stopwatch.GetTimestamp());
     }
 
+    /// <summary>The Insert toggle: false while the player has released the UI. AC thread.</summary>
+    public static bool UiCaptureEnabled => _uiCaptureEnabled;
+
     public static string DescribeCapture() =>
-        $"wantMouse={_wantCaptureMouse} wantText={_wantCaptureKeyboard} insertToggle={_uiCaptureEnabled} focus={_hasFocus} heldButtons=0x{_heldMouseButtons:X} heldForGame={_heldButtonsBelongToGame}";
+        $"wantMouse={_wantCaptureMouse} wantText={_wantCaptureKeyboard} popOutText={ImGuiPopOuts.TextFocusTitle ?? "-"} insertToggle={_uiCaptureEnabled} focus={_hasFocus} heldButtons=0x{_heldMouseButtons:X} heldForGame={_heldButtonsBelongToGame}";
 
     /// <summary>No ImGui frame this tick: ImGui wants nothing.</summary>
     public static void ClearCaptureFlags()
@@ -1531,14 +1569,92 @@ internal static unsafe class Win32Backend
         ImGuiTextInputActive = false;
     }
 
-    /// <summary>Clears capture flags that no ImGui frame has refreshed recently.</summary>
+    /// <summary>
+    /// Keyboard capture outlives a missing frame for this long, counted from the first
+    /// message after the last frame (see ExpireStaleCaptureFlags). Longer than the mouse's:
+    /// the FPS governor can run a client at 1 fps.
+    /// </summary>
+    private const int KeyboardStaleMs = 1500;
+    private static long _firstMessageSinceFrameTicks;
+    private static bool _keyboardExpiryLogged;
+
+    /// <summary>
+    /// Clears capture flags that no ImGui frame has refreshed recently.
+    /// Mouse: 250 ms after the last frame, as before. Keyboard: only once messages have
+    /// kept arriving for KeyboardStaleMs with no frame. Counting from the frame let a
+    /// stall leak keys: AC's thread runs both the frames and this WndProc, so the keys
+    /// typed during a slow stretch (a long frame or pop-out readback, AC busy) are
+    /// dispatched together right after it, and every one of them found the flag "stale"
+    /// and went to AC while the box was still open.
+    /// </summary>
     private static void ExpireStaleCaptureFlags()
     {
         if (!_wantCaptureMouse && !_wantCaptureKeyboard && !ImGuiTextInputActive)
             return;
-        long age = Stopwatch.GetTimestamp() - Volatile.Read(ref _captureFlagsTicks);
-        if (age > Stopwatch.Frequency * CaptureStaleMs / 1000)
-            ClearCaptureFlags();
+        long now = Stopwatch.GetTimestamp();
+        long frame = Volatile.Read(ref _captureFlagsTicks);
+        if (_wantCaptureMouse && now - frame > Stopwatch.Frequency * CaptureStaleMs / 1000)
+            _wantCaptureMouse = false;
+        if (!_wantCaptureKeyboard && !ImGuiTextInputActive)
+            return;
+        if (_firstMessageSinceFrameTicks < frame)
+        {
+            _firstMessageSinceFrameTicks = now;   // the first message since that frame
+            return;
+        }
+        long waited = now - _firstMessageSinceFrameTicks;
+        if (waited <= Stopwatch.Frequency * KeyboardStaleMs / 1000)
+            return;
+        _wantCaptureKeyboard = false;
+        ImGuiTextInputActive = false;
+        if (!_keyboardExpiryLogged)
+        {
+            _keyboardExpiryLogged = true;
+            RynthLog.UI($"[Input] keyboard capture released: no ImGui frame for {(now - frame) * 1000 / Stopwatch.Frequency} ms while a text box was open (owner: {ImGuiTextFocus.ActiveOwner ?? "unknown"}).");
+        }
+    }
+
+    // ── Leak diagnostic ─────────────────────────────────────────────────
+    private const int LeakBurstGapMs = 2000;   // keys closer together than this are one burst
+    private const int MaxLeakLines = 100;      // per engine load
+    private static long _leakBurstEndTicks;
+    private static int _leakLines;
+    private static int _leakKeysInBurst;
+
+    /// <summary>
+    /// A key-down or char is about to reach AC. If a RynthCore text box was active in the
+    /// last frame (ImGuiTextFocus, which reads the box itself, not the capture flags), that
+    /// is a keyboard leak: log it, once per typing burst. AC thread (WndProc).
+    /// </summary>
+    private static void NoteKeyReachingGame(uint msg, IntPtr wParam)
+    {
+        string? owner = ImGuiTextFocus.ActiveOwner;
+        if (owner == null) return;
+        long now = Stopwatch.GetTimestamp();
+        bool newBurst = now > _leakBurstEndTicks;
+        _leakBurstEndTicks = now + Stopwatch.Frequency * LeakBurstGapMs / 1000;
+        if (!newBurst)
+        {
+            _leakKeysInBurst++;
+            return;
+        }
+        int previous = _leakKeysInBurst;
+        _leakKeysInBurst = 1;
+        if (_leakLines >= MaxLeakLines) return;
+        _leakLines++;
+        string name = msg switch
+        {
+            WM_KEYDOWN => "WM_KEYDOWN",
+            WM_SYSKEYDOWN => "WM_SYSKEYDOWN",
+            WM_CHAR => "WM_CHAR",
+            WM_SYSCHAR => "WM_SYSCHAR",
+            WM_DEADCHAR => "WM_DEADCHAR",
+            WM_SYSDEADCHAR => "WM_SYSDEADCHAR",
+            WM_UNICHAR => "WM_UNICHAR",
+            _ => $"0x{msg:X4}",
+        };
+        RynthLog.UI($"[Input] key reached AC while an ImGui text box was active (owner: {owner}; {name} 0x{(long)wParam:X}"
+            + (previous > 1 ? $"; previous burst {previous} keys" : "") + $"; {DescribeCapture()}).");
     }
 
     /// <summary>

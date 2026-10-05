@@ -247,10 +247,16 @@ internal static class EngineFrameController
             // accumulates, RenderedThisFrame stays false on every frame, and the
             // end-of-frame fallback below paints markers OVER the UI. This call was
             // dropped in the v0.19 Nav3D double-buffer refactor — restored here.
+            // Since 2026-10-04 this is the second choice: with AcUiPassHook live the
+            // overlays draw at AC's UI pass and SyncHookState (end of frame) switches
+            // this hook off; it comes back for /rc worldlayer transition or without it.
             D3D9.Nav3DRenderInjector.Install(pDevice);
 
             // Capture the game's View/Projection matrices before ImGui touches them
             GameMatrixCapture.CaptureFrame(pDevice);
+            // ...and AC's 3D view viewport: at AC's UI pass (AcUiPassHook) the viewport is
+            // full-screen, and the Nav3D markers draw in this one there.
+            DX9Backend.CaptureSceneViewport(pDevice);
 
             // Refresh the player-skill snapshot on AC's main thread (this
             // EndScene runs on it). The plugin tick is pumped off-thread and
@@ -310,24 +316,13 @@ internal static class EngineFrameController
             try { Compatibility.AcMainThreadQueue.Drain(); }
             catch (Exception ex) { RynthLog.Plugin($"AcMainThreadQueue.Drain threw {ex.GetType().Name}: {ex.Message}"); }
 
-            // Nav3DRenderInjector fires mid-frame at the 3D→UI ZENABLE
-            // transition — that's the only pipeline position where markers
-            // can render BEHIND AC's UI (the UI pass draws after ZENABLE
-            // turns off, and the end-of-frame fallback is past it entirely).
-            //
-            // The injector accumulates state per-frame via DrawIndexedPrimitive
-            // callbacks during AC's draws (which fire before this EndScene),
-            // so by the time we check RenderedThisFrame here, its decision
-            // for the current frame is final. ResetFrame at the END of
-            // OnEndScene primes it for the next frame's accumulation.
-            //
-            // Historically the engine forced the end-of-frame fallback ONLY
-            // because the injector's hit-rate varied across motion, producing
-            // flicker when some frames painted at the 3D→UI boundary and
-            // others at end-of-frame. We accept that risk here: the user
-            // wants markers behind the UI, and a frame the injector misses
-            // simply doesn't render markers (less jarring than a Z-order flip).
-            bool nav3DAlreadyRendered = D3D9.Nav3DRenderInjector.RenderedThisFrame;
+            // The world overlays (Nav3D markers, nameplates, combat text) normally drew
+            // mid-frame, before this EndScene: at the start of AC's 2D UI pass
+            // (AcUiPassHook), or without that hook at the 3D->UI ZENABLE transition
+            // (Nav3DRenderInjector's DIP hook). A frame where neither fired (portal space,
+            // a loading screen, no AC UI) draws them at EndScene instead - see
+            // Nav3DRenderInjector.PresentAtEndScene below. ResetFrame at the END of
+            // OnEndScene primes the next frame.
 
             // Publish the live device pointer for the off-render-thread plugin
             // pump (see PumpPluginFrame). The D3D9 device is a stable COM
@@ -365,17 +360,12 @@ internal static class EngineFrameController
                 uiTicks = Stopwatch.GetTimestamp() - t0;
             }
 
-            // Fallback render — only fires when the injector missed this
-            // frame's 3D→UI transition. _coreInitialized is enough — this
-            // does not touch font / vertex buffer state.
-            if (!nav3DAlreadyRendered)
-                DX9Backend.RenderNav3D(pDevice);
-
-            // The world overlays built last frame (nameplates, combat text) normally
-            // drew at this frame's 3D->UI transition, under AC's UI. If that wasn't
-            // seen, they draw here - still under the ImGui panels. No-op when they
-            // already drew (UnderUiLayer presents a list once).
-            UnderUiLayer.PresentFallback(pDevice);
+            // Fallback: the Nav3D markers and the world overlays built last frame
+            // (nameplates, combat text), when neither the UI pass nor the transition
+            // drew them this frame - still under the ImGui panels. No-op when they
+            // already drew (one per-frame flag for every path; UnderUiLayer presents
+            // a list once). _coreInitialized is enough for the markers.
+            D3D9.Nav3DRenderInjector.PresentAtEndScene(pDevice);
 
             if (imguiEnabled)
             {
@@ -400,6 +390,10 @@ internal static class EngineFrameController
             // never fires again — every subsequent frame falls back to the
             // end-of-frame draw (which paints over the UI).
             D3D9.Nav3DRenderInjector.ResetFrame();
+            // The DIP hook only runs while the transition path is in use (no UI-pass
+            // hook, or /rc worldlayer transition); switched here, between frames.
+            try { D3D9.Nav3DRenderInjector.SyncHookState(); }
+            catch (Exception ex) { RynthLog.D3D9($"Nav3DRenderInjector.SyncHookState threw {ex.GetType().Name}: {ex.Message}"); }
             // What this frame built for the world overlays is presented next frame.
             UnderUiLayer.EndFrame();
         }
@@ -518,6 +512,7 @@ internal static class EngineFrameController
             $"inWorld={PanelsLive} content={HasImGuiContentNoRestore()} idle={_imguiIdle} framesBuilt={_framesBuilt} uiScale={_uiScale:0.##} avaloniaScale={UI.AvaloniaOverlay.InputScale:0.##} display={_lastDisplaySize.X:0}x{_lastDisplaySize.Y:0}",
             DX9Backend.DescribeLastFrame(),
             UnderUiLayer.Describe(),
+            D3D9.Nav3DRenderInjector.Describe(),
             $"capture: {Win32Backend.DescribeCapture()}",
         };
         lines.AddRange(ImGuiPopOuts.Describe());
@@ -569,6 +564,7 @@ internal static class EngineFrameController
             _imguiIdle = true;
             Win32Backend.DiscardQueuedInput();
             Win32Backend.ClearCaptureFlags();
+            ImGuiTextFocus.ClearMain();
             return false;
         }
 
@@ -624,6 +620,7 @@ internal static class EngineFrameController
 
             ImGuiNET.ImGui.NewFrame();
             frameStarted = true;
+            ImGuiTextFocus.BeginFrame();
             if (_dropImGuiTextFocus)
             {
                 // An Avalonia TextBox took the keyboard: end ImGui's text edit.
@@ -661,7 +658,17 @@ internal static class EngineFrameController
             // rule; io.WantTextInput is true only while a text field is edited.
             // MonsterHud.WantsMouse: the cursor is on a clickable nameplate (or a
             // press that began on one is held), so that click is the plate's.
-            Win32Backend.UpdateCaptureFlags(io.WantCaptureMouse || Hud.MonsterHud.WantsMouse, io.WantTextInput);
+            // Keyboard: io.WantTextInput lags the box by a frame (ImGui publishes it from
+            // the previous frame's widgets), so a box that went active this frame counts
+            // too (ImGuiTextFocus): the keys typed right after the click stay out of AC.
+            ImGuiTextFocus.EndMainFrame(io.WantTextInput);
+            bool typing = io.WantTextInput || ImGuiTextFocus.MainBoxActive;
+            Win32Backend.UpdateCaptureFlags(io.WantCaptureMouse || Hud.MonsterHud.WantsMouse, typing);
+            // The UI is released (Insert): no text box keeps the keyboard. Keys are not
+            // gated by the toggle any more (Win32Backend.UpdateCaptureFlags), so the edit
+            // ends instead and the next keys go to the game.
+            if (typing && !Win32Backend.UiCaptureEnabled)
+                _dropImGuiTextFocus = true;
             ArbitrateTextFocus(io.WantTextInput);
             return true;
         }
@@ -678,6 +685,7 @@ internal static class EngineFrameController
             }
 
             Win32Backend.ClearCaptureFlags();
+            ImGuiTextFocus.ClearMain();
             RynthLog.Info($"EngineFrameController: frame {_frameCount} ImGui error: {ex.GetType().Name}: {ex.Message}");
             return false;
         }

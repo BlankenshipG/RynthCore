@@ -120,6 +120,8 @@ internal sealed class LootEditorFace : IImGuiPanel
     private const string OtherNumber = "Other number...";
 
     private readonly Picker _picker = new("##loot_pick");
+    // "Add selected item": a rule for the item selected in the game, into the open profile.
+    private readonly LootAddDialog _lootAdd = new("##loot_additem");
 
     // ── List ─────────────────────────────────────────────────────────────
 
@@ -171,6 +173,7 @@ internal sealed class LootEditorFace : IImGuiPanel
     {
         UiSources.LootEdit.WantRule(-1);
         UiSources.LootEdit.Unsubscribe();
+        _lootAdd.Cancel();
     }
 
     // =====================================================================
@@ -202,6 +205,10 @@ internal sealed class LootEditorFace : IImGuiPanel
             else RuleView(origin, size, w);
         }
         End(origin, size);
+        _lootAdd.Draw();
+        // An item rule added to the open profile: show it (the state already carries it and its Focus).
+        if (_lootAdd.TakeAdded() && _mode == Mode.List && _state != null && _state.Focus >= 0 && _state.Focus < _state.Rules.Count)
+            _scrollTo = _state.Focus;
         _picker.Draw();
     }
 
@@ -708,6 +715,15 @@ internal sealed class LootEditorFace : IImGuiPanel
             Expect(Await.OpenFocus);
         }
         ImGuiNET.ImGui.SetItemTooltip("Add a rule at the end and edit it");
+        string itemLabel = PhosphorIcons.Plus + " Add selected item";
+        float itemW = ButtonWidth(itemLabel) + 6;
+        bool canItem = s.Path.Length > 0 && !s.Dirty && (!s.ReadOnly || s.Format == "json");
+        if (Button("##add_item", itemLabel, new Vector2(p.X + addW + 6, p.Y), new Vector2(itemW, h), canItem ? Teal : Mute, BtnFill, canItem))
+            _lootAdd.Open(0, string.Empty, toOpenProfile: true);
+        ImGuiNET.ImGui.SetItemTooltip(canItem
+            ? "A rule for the item selected in the game (click it first): preview, then add it here"
+            : s.Dirty ? "Save or discard your edits first" : "This profile is read-only here");
+        addW += itemW + 6;
         MessageText(new Vector2(p.X + addW + 8, p.Y), p.X + w - grip - 4, h);
         NextLine(p, h);
     }

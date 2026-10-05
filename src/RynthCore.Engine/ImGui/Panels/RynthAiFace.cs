@@ -5,9 +5,10 @@
 //  made compact with Phosphor icons, after DrakBot's dashboard. Top to bottom:
 //    title row    RYNTHAI DASHBOARD | target, vitals, lock, opacity -/+,
 //                 minimize, pop out
-//    header grid  macro RUNNING/STOPPED, meta state, bot activity | pickers
-//    control row  (ON/OFF when minimized) combat, buffing, nav, looting and
-//                 meta toggles ... force rebuff
+//    header grid  popped out only: meta state, bot activity | pickers (docked,
+//                 they are the Loaded files drawer)
+//    control row  macro start/stop, combat, buffing, nav, looting and meta
+//                 toggles, bot activity ... force rebuff
 //    launchers    one row of icon buttons (names in tooltips; labels too
 //                 when the panel is wide enough)
 //    footer       FPS | version | uptime
@@ -15,6 +16,11 @@
 //                 toggled from the title row. Last on purpose, like DrakBot's
 //                 target row: what comes and goes with a fight never moves
 //                 the buttons above it.
+//    drawers      tabs on the left edge (DashboardDrawers.cs), one open at a
+//                 time, a window of their own beside the dashboard: Ranges
+//                 (RangesSlideOut.cs), Loaded files and Patrol
+//                 (RynthAiFace.Drawers.cs). Everything that slides out goes
+//                 left; only the bars stay at the bottom (Tom 2026-10-05).
 //  Minimized keeps the title row, the control row and the bars. The window's
 //  minimum height is the content's, and toggling the bars or minimize fits the
 //  window to the content. Data: UiSources.RynthAi (a RynthAiView with every
@@ -33,7 +39,7 @@ using RynthCore.Engine.UI.Data;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
 
-internal sealed class RynthAiFace : IImGuiPanel
+internal sealed partial class RynthAiFace : IImGuiPanel
 {
     public const string Title = "RynthAi";
 
@@ -67,6 +73,12 @@ internal sealed class RynthAiFace : IImGuiPanel
     private int _fpsShown = -1;
     private long _upShown = -1;
     private bool _patrolOpen;
+    // The drawers on the dashboard's left edge (their own window, placed against this one).
+    private readonly DashboardDrawers _drawers;
+    private readonly PatrolDrawer _patrol = new();
+    // This frame's data, for the drawers.
+    private RynthAiView? _view;
+    private RynthAiSnapshot _raw = Empty;
     // Picker toggle: ImGui closes a popup on the press outside it, so remember
     // whether it was showing when the selector press began (a second click closes).
     private readonly int[] _pickerShownFrame = { -10, -10, -10, -10 };
@@ -75,10 +87,13 @@ internal sealed class RynthAiFace : IImGuiPanel
     // frame: the window's minimum height. _fit: resize the window to it once.
     private float _contentHeight;
     private bool _fit;
-    // Files folded/open flipped: size the window to that mode's own remembered size.
-    private bool _modeFlip, _modeFlipApply;
-    private Vector2 _winLogical;   // the window's size in logical units, last frame (docked only)
     private const float GripRoom = 12;
+
+    public RynthAiFace()
+    {
+        // Tab order top to bottom; the first one saved open wins at load.
+        _drawers = new DashboardDrawers(new RangesSlideOut(), new FilesDrawer(this), _patrol);
+    }
 
     public Vector2? MinSize => new Vector2(MinWidth, _contentHeight > 0 ? _contentHeight
         : RynthAiDashboardState.Minimized ? 54 : 180);
@@ -94,6 +109,7 @@ internal sealed class RynthAiFace : IImGuiPanel
     {
         UiSources.RynthAi.Unsubscribe();
         if (_patrolOpen) { UiSources.Patrol.Unsubscribe(); _patrolOpen = false; }
+        _drawers.Detach();
     }
 
     public void Draw()
@@ -101,6 +117,9 @@ internal sealed class RynthAiFace : IImGuiPanel
         RynthAiView? view = UiSources.RynthAi.Current?.Value;
         RynthAiSnapshot raw = view?.Raw ?? Empty;
         bool minimized = RynthAiDashboardState.Minimized;
+        bool popped = ImGuiPopOuts.InPopOutFrame;
+        _view = view;
+        _raw = raw;
         uint boxBg = (C(0xFF0A121A) & 0x00FFFFFF) | ((uint)(view?.PanelAlpha ?? 242) << 24);
 
         Vector2 start = ImGuiNET.ImGui.GetCursorScreenPos();
@@ -109,13 +128,14 @@ internal sealed class RynthAiFace : IImGuiPanel
 
         TitleRow(raw, x0, width, minimized);
         Gap(4);
-        // The Profile/Nav/Loot/Meta pickers only while expanded (the caret on the control row).
-        if (!minimized && RynthAiDashboardState.ShowFiles)
+        // Popped out (no drawers there): the Profile/Nav/Loot/Meta pickers inline while expanded
+        // (the caret on the control row). Docked they are the Loaded files drawer.
+        if (popped && !minimized && RynthAiDashboardState.FilesOpen)
         {
             HeaderGrid(view, raw, x0, width);
             Gap(4);
         }
-        ControlRow(view, raw, x0, width, minimized, boxBg);
+        ControlRow(view, raw, x0, width, minimized, popped, boxBg);
         if (!minimized)
         {
             Gap(4);
@@ -126,6 +146,8 @@ internal sealed class RynthAiFace : IImGuiPanel
         Bars(view, raw, x0, width, boxBg);
         PatrolPopup();
         MeasureAndFit(start.Y);
+        // Last: a window of its own, placed against this one's rect (hidden popped out).
+        _drawers.Draw();
     }
 
     /// <summary>
@@ -139,28 +161,6 @@ internal sealed class RynthAiFace : IImGuiPanel
         float place = ImGuiPanelHost.PlacementScale();
         // + room for the host's resize grip, which is painted over the body's bottom-right corner.
         _contentHeight = MathF.Ceiling(px / place) + GripRoom;
-        if (!ImGuiPopOuts.InPopOutFrame)
-        {
-            if (_modeFlip)
-            {
-                // The flip happened mid-frame, so this frame measured the old layout: size next frame.
-                _modeFlip = false;
-                _modeFlipApply = true;
-            }
-            else if (_modeFlipApply)
-            {
-                _modeFlipApply = false;
-                _fit = false;
-                bool open = RynthAiDashboardState.ShowFiles;
-                bool known = RynthAiDashboardState.TryGetFilesModeSize(open, out float mw, out float mh);
-                float w = known ? mw : ImGuiNET.ImGui.GetWindowWidth() / place;
-                // Folded always shrinks to its one line; open comes back at the size it last had.
-                float h = open && known ? MathF.Max(mh, _contentHeight) : _contentHeight;
-                ImGuiPanelHost.RequestSize(Title, new Vector2(w, h));
-                return;
-            }
-            _winLogical = new Vector2(ImGuiNET.ImGui.GetWindowWidth() / place, ImGuiNET.ImGui.GetWindowHeight() / place);
-        }
         if (_fit && !ImGuiPopOuts.InPopOutFrame)
         {
             _fit = false;
@@ -272,11 +272,7 @@ internal sealed class RynthAiFace : IImGuiPanel
         const float foldW = 18f;
         Selector(0, "Profile:", view?.ProfileText ?? "Default", raw.Profiles, raw.SelectedProfileIdx, 3, rx, ry, rw - foldW - 2, null);
         if (IconButton("##files_fold", new Vector2(rx + rw - foldW, ry), new Vector2(foldW, 16), PhosphorIcons.CaretUp, UiFont.Dash11, BtnFill, Mute, BtnBord, 2))
-        {
-            RynthAiDashboardState.SetFilesModeSize(true, _winLogical.X, _winLogical.Y);
-            RynthAiDashboardState.SetShowFiles(false);
-            _modeFlip = true;
-        }
+            RynthAiDashboardState.SetFilesOpen(false);
         ImGuiNET.ImGui.SetItemTooltip("Fold the loaded files into one line");
         ry += 16 + 3;
         Selector(1, "Nav:", view?.NavText ?? "None", raw.NavProfiles, raw.SelectedNavIdx, 0, rx, ry, rw, null);
@@ -394,7 +390,7 @@ internal sealed class RynthAiFace : IImGuiPanel
 
     private const float Square = 24, SquareStep = 27, RowPad = 3;
 
-    private void ControlRow(RynthAiView? view, RynthAiSnapshot raw, float x0, float width, bool minimized, uint boxBg)
+    private void ControlRow(RynthAiView? view, RynthAiSnapshot raw, float x0, float width, bool minimized, bool popped, uint boxBg)
     {
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         float top = ImGuiNET.ImGui.GetCursorScreenPos().Y;
@@ -423,19 +419,16 @@ internal sealed class RynthAiFace : IImGuiPanel
         Toggle("##t_meta", PhosphorIcons.Code, raw.MetaEnabled, 4, new Vector2(x, y), "Meta (the macro rules)");
         x += SquareStep;
 
-        // The pickers fold out from a caret left of FR (expanded mode, while folded away).
+        // Popped out: the pickers fold out from a caret left of FR (expanded mode, while folded away).
+        // Docked they are the Loaded files drawer on the left edge.
         const float caretW = 16f;
-        bool caret = !minimized && !RynthAiDashboardState.ShowFiles;
+        bool caret = popped && !minimized && !RynthAiDashboardState.FilesOpen;
         float frX = x0 + width - 5 - Square;
         if (caret)
         {
             if (IconButton("##files_open", new Vector2(frX - 4 - caretW, y), new Vector2(caretW, Square), PhosphorIcons.CaretDown,
                     UiFont.Dash11, BtnFill, Teal, BtnBord, 2))
-            {
-                RynthAiDashboardState.SetFilesModeSize(false, _winLogical.X, _winLogical.Y);
-                RynthAiDashboardState.SetShowFiles(true);
-                _modeFlip = true;
-            }
+                RynthAiDashboardState.SetFilesOpen(true);
             ImGuiNET.ImGui.SetItemTooltip("Profile: " + (view?.ProfileText ?? "Default") + "\nNav: " + (view?.NavText ?? "None") +
                 "\nLoot: " + (view?.LootText ?? "None") + "\nMeta: " + (view?.MetaText ?? "None") +
                 "\n\nClick to show the Profile, Nav, Loot and Meta pickers.");
@@ -508,13 +501,20 @@ internal sealed class RynthAiFace : IImGuiPanel
         x += bw + LauncherGap;
         Launcher("##l_items", PhosphorIcons.Backpack, "Items", "Items", x, y, bw, labels, () => PanelRouter.Toggle("Items"));
         x += bw + LauncherGap;
+        bool popped = ImGuiPopOuts.InPopOutFrame;
         Launcher("##l_patrol", PhosphorIcons.Footprints, "Patrol",
-            "Patrol. Left-click: start dungeon patrol.  Right-click: routes & recorded hazards.", x, y, bw, labels,
-            () => RynthAiCommands.SendNavCommand("{\"Cmd\":\"dunPatrol\"}"));
+            popped ? "Patrol. Left-click: start dungeon patrol.  Right-click: routes & recorded hazards."
+                   : "Patrol. Left-click: start dungeon patrol.  Right-click: routes & recorded hazards (the Patrol drawer, left).",
+            x, y, bw, labels, () => RynthAiCommands.SendNavCommand("{\"Cmd\":\"dunPatrol\"}"));
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
         {
-            ImGuiNET.ImGui.SetNextWindowPos(ImGuiNET.ImGui.GetItemRectMin(), ImGuiCond.Always, new Vector2(0, 1));
-            ImGuiNET.ImGui.OpenPopup("##patrol");
+            if (popped)
+            {
+                // Popped out there are no drawers: the popup, as before.
+                ImGuiNET.ImGui.SetNextWindowPos(ImGuiNET.ImGui.GetItemRectMin(), ImGuiCond.Always, new Vector2(0, 1));
+                ImGuiNET.ImGui.OpenPopup("##patrol");
+            }
+            else _drawers.Toggle(_patrol);
         }
 
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y + LauncherH));
@@ -682,7 +682,7 @@ internal sealed class RynthAiFace : IImGuiPanel
         dl.AddText(font, font.FontSize, new Vector2(x + 4 + CalcWidth(font, icon) + 3, ty), White, bar.Text ?? "");
     }
 
-    // ── Patrol flyout (right-click Patrol) ────────────────────────────────
+    // ── Patrol popup (right-click Patrol, popped out; docked it's the Patrol drawer) ──
 
     private void PatrolPopup()
     {
@@ -704,11 +704,20 @@ internal sealed class RynthAiFace : IImGuiPanel
 
         var snap = UiSources.Patrol.Current;
         PatrolInfo info = snap?.Value ?? new PatrolInfo();
+        PatrolBody(info, withTitle: true);
+        ImGuiNET.ImGui.EndPopup();
+    }
 
+    /// <summary>The patrol lists at the cursor (the popup's body and the Patrol drawer's).</summary>
+    private static void PatrolBody(PatrolInfo info, bool withTitle)
+    {
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Dash10));
-        ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Dash11));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), PhosphorIcons.Footprints + " PATROL & ROUTES");
-        ImGuiNET.ImGui.PopFont();
+        if (withTitle)
+        {
+            ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Dash11));
+            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), PatrolTitle);
+            ImGuiNET.ImGui.PopFont();
+        }
 
         Section("THIS DUNGEON");
         if (info.InDungeon)
@@ -759,9 +768,9 @@ internal sealed class RynthAiFace : IImGuiPanel
             ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), "• " + name);
 
         ImGuiNET.ImGui.PopFont();
-        ImGuiNET.ImGui.EndPopup();
     }
 
+    private const string PatrolTitle = PhosphorIcons.Footprints + " PATROL & ROUTES";
     private const string MarkHazardLabel = PhosphorIcons.Warning + " Mark cell as hazard";
 
     private static void Section(string text)

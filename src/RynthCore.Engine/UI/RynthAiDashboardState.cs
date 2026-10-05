@@ -4,9 +4,15 @@
 //  faces, and the ImGui face's target bar and player vitals toggles,
 //  persisted to %AppData%\RynthCore\rynthai_avalonia.cache (line 1
 //  minimized|expanded, line 2 unused, line 3 target|notarget, line 4
-//  vitals|novitals). Line 2 was the Monsters button's Simple/Advanced mode,
-//  retired 2026-10-01 with the basic Monsters panel: it is still written
-//  ("advanced") so the lines after it keep their places, and ignored on read.
+//  vitals|novitals; line 5 filesopen|nofiles, the Loaded files drawer; line 9
+//  ranges|noranges, the Ranges drawer; line 10 patrol|nopatrol, the Patrol
+//  drawer: the left-edge drawers, ImGui/Panels/DashboardDrawers.cs). Line 2
+//  was the Monsters button's Simple/Advanced mode, retired 2026-10-01 with the
+//  basic Monsters panel: it is still written ("advanced") so the lines after
+//  it keep their places, and ignored on read. Lines 7 and 8 (the dashboard's
+//  size with the files block folded / open) are unused since the files moved
+//  to a drawer (2026-10-05); kept as read so the lines after them keep their
+//  places.
 //
 //  Deliberately NOT on RynthAiPanel: the engine loads this before
 //  AvaloniaOverlay.Start(), and touching RynthAiPanel there runs its static
@@ -26,11 +32,13 @@ internal static class RynthAiDashboardState
     private static volatile bool _minimized;
     private static volatile bool _showTargetBar = true;
     private static volatile bool _showVitals = true;
-    private static volatile bool _showFiles;            // the Profile/Nav/Loot/Meta block (folded by default)
+    private static volatile bool _filesOpen;            // the Loaded files drawer (Profile/Nav/Loot/Meta pickers); a popped-out
+                                                        // dashboard shows the same block inline instead
     private static volatile bool _barCollapsed;         // the RynthCore bar shows only its grip + expand
-    // The dashboard's size (logical units) with the files folded and open, so flipping
-    // between them brings back each one's own size. Zero = not set yet (fit to content).
-    private static float _foldedW, _foldedH, _openW, _openH;
+    private static volatile bool _rangesOpen;           // the Ranges drawer beside the dashboard is open
+    private static volatile bool _patrolOpen;           // the Patrol drawer beside the dashboard is open
+    // Lines 7 and 8, unused since 2026-10-05: written back as read.
+    private static string _line7 = "-", _line8 = "-";
     private static bool _loaded;
     private static readonly object LoadSync = new();
 
@@ -77,16 +85,19 @@ internal static class RynthAiDashboardState
         UiBackgroundWriter.Enqueue("rynthai dashboard state", Save);
     }
 
-    /// <summary>The dashboard shows the loaded-files block (Profile/Nav/Loot/Meta pickers, meta state). Any thread.</summary>
-    public static bool ShowFiles
+    /// <summary>
+    /// The loaded-files block (Profile/Nav/Loot/Meta pickers, meta state) is open: the Loaded files drawer
+    /// beside the dashboard, or the block inline on a popped-out dashboard. Any thread.
+    /// </summary>
+    public static bool FilesOpen
     {
-        get { EnsureLoaded(); return _showFiles; }
+        get { EnsureLoaded(); return _filesOpen; }
     }
 
-    public static void SetShowFiles(bool show)
+    public static void SetFilesOpen(bool open)
     {
         EnsureLoaded();
-        _showFiles = show;
+        _filesOpen = open;
         UiBackgroundWriter.Enqueue("rynthai dashboard state", Save);
     }
 
@@ -103,37 +114,31 @@ internal static class RynthAiDashboardState
         UiBackgroundWriter.Enqueue("rynthai dashboard state", Save);
     }
 
-    /// <summary>The size the dashboard had last time with the files folded (open). False if never set.</summary>
-    public static bool TryGetFilesModeSize(bool open, out float width, out float height)
+    /// <summary>The Ranges drawer (ImGui/Panels/RangesSlideOut.cs) is open beside the dashboard. Any thread.</summary>
+    public static bool RangesOpen
     {
-        EnsureLoaded();
-        width = open ? _openW : _foldedW;
-        height = open ? _openH : _foldedH;
-        return width > 0 && height > 0;
+        get { EnsureLoaded(); return _rangesOpen; }
     }
 
-    public static void SetFilesModeSize(bool open, float width, float height)
+    public static void SetRangesOpen(bool open)
     {
         EnsureLoaded();
-        if (width <= 0 || height <= 0) return;
-        if (open) { _openW = width; _openH = height; } else { _foldedW = width; _foldedH = height; }
+        _rangesOpen = open;
         UiBackgroundWriter.Enqueue("rynthai dashboard state", Save);
     }
 
-    private static void ParseSize(string line, out float w, out float h)
+    /// <summary>The Patrol drawer (routes and recorded hazards) is open beside the dashboard. Any thread.</summary>
+    public static bool PatrolOpen
     {
-        w = h = 0;
-        string[] parts = line.Split(',');
-        if (parts.Length == 2
-            && float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float pw)
-            && float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float ph))
-        {
-            w = pw; h = ph;
-        }
+        get { EnsureLoaded(); return _patrolOpen; }
     }
 
-    private static string SizeText(float w, float h) =>
-        w > 0 && h > 0 ? FormattableString.Invariant($"{w:0.#},{h:0.#}") : "-";
+    public static void SetPatrolOpen(bool open)
+    {
+        EnsureLoaded();
+        _patrolOpen = open;
+        UiBackgroundWriter.Enqueue("rynthai dashboard state", Save);
+    }
 
     /// <summary>Reads the file if it hasn't been read yet. Engine init calls this so AC's thread never does.</summary>
     public static void EnsureLoaded()
@@ -152,10 +157,12 @@ internal static class RynthAiDashboardState
                     _showTargetBar = lines.Length < 3 || !lines[2].Trim().Equals("notarget", StringComparison.OrdinalIgnoreCase);
                     _showVitals = lines.Length < 4 || !lines[3].Trim().Equals("novitals", StringComparison.OrdinalIgnoreCase);
                     // "filesopen" only once the player opened them; the old "files" default reads as folded.
-                    _showFiles = lines.Length >= 5 && lines[4].Trim().Equals("filesopen", StringComparison.OrdinalIgnoreCase);
+                    _filesOpen = lines.Length >= 5 && lines[4].Trim().Equals("filesopen", StringComparison.OrdinalIgnoreCase);
                     _barCollapsed = lines.Length >= 6 && lines[5].Trim().Equals("barcollapsed", StringComparison.OrdinalIgnoreCase);
-                    if (lines.Length >= 7) ParseSize(lines[6].Trim(), out _foldedW, out _foldedH);
-                    if (lines.Length >= 8) ParseSize(lines[7].Trim(), out _openW, out _openH);
+                    if (lines.Length >= 7 && lines[6].Trim().Length > 0) _line7 = lines[6].Trim();
+                    if (lines.Length >= 8 && lines[7].Trim().Length > 0) _line8 = lines[7].Trim();
+                    _rangesOpen = lines.Length >= 9 && lines[8].Trim().Equals("ranges", StringComparison.OrdinalIgnoreCase);
+                    _patrolOpen = lines.Length >= 10 && lines[9].Trim().Equals("patrol", StringComparison.OrdinalIgnoreCase);
                 }
             }
             catch { /* corrupt cache: start expanded */ }
@@ -171,8 +178,9 @@ internal static class RynthAiDashboardState
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, (_minimized ? "minimized" : "expanded") + "\nadvanced\n"
                 + (_showTargetBar ? "target" : "notarget") + "\n" + (_showVitals ? "vitals" : "novitals") + "\n"
-                + (_showFiles ? "filesopen" : "nofiles") + "\n" + (_barCollapsed ? "barcollapsed" : "bar") + "\n"
-                + SizeText(_foldedW, _foldedH) + "\n" + SizeText(_openW, _openH) + "\n");
+                + (_filesOpen ? "filesopen" : "nofiles") + "\n" + (_barCollapsed ? "barcollapsed" : "bar") + "\n"
+                + _line7 + "\n" + _line8 + "\n"
+                + (_rangesOpen ? "ranges" : "noranges") + "\n" + (_patrolOpen ? "patrol" : "nopatrol") + "\n");
         }
         catch { /* best-effort */ }
     }

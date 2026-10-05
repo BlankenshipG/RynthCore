@@ -62,6 +62,8 @@ MUTATOR_DELEGATES = {
     "_eventStackableMerge", "_addTextToScroll",
     # CM_Inventory sends (inventory game actions): give, wield, drop (Inventory panel)
     "_eventGiveObjectRequest", "_eventGetAndWieldItem", "_eventDropItem",
+    # CM_Inventory::Event_NoLongerViewingContents (0x0195, close a corpse/chest; v76 CloseContainer)
+    "_eventNoLongerViewingContents",
     "_setAutoRun", "_turnToHeading", "_stopCompletely", "_setMotion",
     "_changeCombatMode",
     "_sendShopEvent",   # VendorTrade: gmVendorUI::SendShopEvent (vendor buy/sell + busy count)

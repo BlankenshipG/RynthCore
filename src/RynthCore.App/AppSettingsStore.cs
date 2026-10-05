@@ -46,11 +46,112 @@ internal static class AppSettingsStore
     /// </summary>
     public static string? LastMigrationNote { get; private set; }
 
+    /// <summary>
+    /// Set when the last Load() encrypted plain-text account passwords from an older settings
+    /// file ("migrated N account password(s) to encrypted storage"), or could not. Never holds a
+    /// password. Null otherwise.
+    /// </summary>
+    public static string? LastPasswordMigrationNote { get; private set; }
+
+    /// <summary>
+    /// Set when the last Load() found saved passwords this Windows user can't decrypt (settings
+    /// copied from another user or PC); those accounts have PasswordNeedsReentry set. Null otherwise.
+    /// </summary>
+    public static string? LastPasswordProblemNote { get; private set; }
+
     public static AppSettings Load()
     {
         LastLoadDiagnostic = null;
         LastMigrationNote = null;
-        return ApplyDecalAccounts(LoadShared());
+        LastPasswordMigrationNote = null;
+        LastPasswordProblemNote = null;
+        // Passwords after the Decal accounts: a save before ApplyDecalAccounts would drop
+        // decal-accounts.json (every account still reads as RynthCore at that point).
+        AppSettings settings = ApplyDecalAccounts(LoadShared());
+        MigratePasswords(settings);
+        return settings;
+    }
+
+    /// <summary>
+    /// Encrypts plain-text passwords from an older appsettings.json (LaunchAccountProfile
+    /// "Password") into PasswordProtected and saves once, .bak included, so the plain text is
+    /// gone from both files. Also marks accounts whose encrypted password this Windows user can't
+    /// decrypt. Never logs or reports a password.
+    /// </summary>
+    private static void MigratePasswords(AppSettings settings)
+    {
+        int migrated = 0, cleared = 0, failed = 0;
+        var unreadable = new List<string>();
+        foreach (LaunchAccountProfile account in settings.AccountProfiles ?? new List<LaunchAccountProfile>())
+        {
+            if (account.LegacyPlainPassword != null)
+            {
+                if (account.LegacyPlainPassword.Length == 0)
+                {
+                    account.LegacyPlainPassword = null;
+                    cleared++;
+                    continue;
+                }
+                try
+                {
+                    account.PasswordProtected = AccountPasswordProtection.Protect(account.LegacyPlainPassword);
+                    account.LegacyPlainPassword = null;
+                    account.PasswordNeedsReentry = false;
+                    migrated++;
+                }
+                catch
+                {
+                    failed++;   // kept as it was (still usable); the next load tries again
+                }
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(account.PasswordProtected) &&
+                !AccountPasswordProtection.CanUnprotect(account.PasswordProtected))
+            {
+                account.PasswordNeedsReentry = true;
+                unreadable.Add(string.IsNullOrWhiteSpace(account.AccountName) ? account.Id : account.AccountName);
+            }
+        }
+
+        if (unreadable.Count > 0)
+        {
+            LastPasswordProblemNote = $"{unreadable.Count} saved account password(s) can't be decrypted on this Windows user " +
+                                      $"(settings copied from another user or PC?) and need re-entering: {string.Join(", ", unreadable)}.";
+        }
+
+        if (migrated + cleared == 0)
+        {
+            if (failed > 0)
+                LastPasswordMigrationNote = $"Could not encrypt {failed} account password(s); they stay as they were and the next start tries again.";
+            return;
+        }
+
+        try
+        {
+            Save(settings);
+            // Save() moved the old file (plain text) to .bak: replace it with the encrypted one.
+            File.Copy(SettingsPath, BackupPath, overwrite: true);
+            if (migrated == 0 && failed == 0)
+                return;   // only empty plain-text fields removed
+            LastPasswordMigrationNote = $"migrated {migrated} account password(s) to encrypted storage";
+            if (failed > 0)
+                LastPasswordMigrationNote += $"; {failed} could not be encrypted and stay as they were";
+            int quarantined = CountQuarantinedFiles();
+            if (quarantined > 0)
+                LastPasswordMigrationNote += $". {quarantined} older appsettings.json.corrupt-* file(s) in {SettingsDirectory} " +
+                                             "may still hold plain-text passwords; delete them when no longer needed";
+        }
+        catch (Exception ex)
+        {
+            LastPasswordMigrationNote = $"Could not save the encrypted account passwords ({ex.GetType().Name}); the next save retries.";
+        }
+    }
+
+    private static int CountQuarantinedFiles()
+    {
+        try { return Directory.GetFiles(SettingsDirectory, "appsettings.json.corrupt-*").Length; }
+        catch { return 0; }
     }
 
     private static AppSettings LoadShared()

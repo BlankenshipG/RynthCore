@@ -94,6 +94,20 @@ internal static class ClientHelperHooks
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate byte EventDropItemDelegate(uint objectId);
 
+    // CM_Inventory::Event_NoLongerViewingContents(ulong containerId) - the 0x0195
+    // NoLongerViewingContents game action, the packet the client sends to close an external
+    // container (corpse, chest). Same generated shape as Event_DropItem (cdecl, returns bool,
+    // one argument) with opcode 0x0195. Entry 0x006ACBB0. Its one caller is
+    // ClientUISystem::SetGroundContainer(newId, notifyServer) @0x005652B0, which sends it for
+    // the old ground container when notifyServer is set: the container window's close and
+    // opening a second container both go through there. ACE (Player.HandleActionNoLongerViewingContents)
+    // closes the container if this player is its viewer and answers with CloseGroundContainer
+    // (0x0052); the client's own handler for that tears the window down
+    // (SetGroundContainer(0, false)), clears the pending-request slot for that container
+    // (ACCWeenieObject::RecordResponse) and runs ACCObjectMaint::StopViewingObjectContents.
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate byte EventNoLongerViewingContentsDelegate(uint containerId);
+
     [UnmanagedFunctionPointer(CallingConvention.ThisCall)]
     private delegate void UseObjectDelegate(IntPtr clientUiSystem, uint objectId);
 
@@ -132,6 +146,8 @@ internal static class ClientHelperHooks
     private const int EventGetAndWieldItemVa = 0x006AC950;
     // CM_Inventory::Event_DropItem — drop an item on the ground (FALLBACK only; pattern-scanned).
     private const int EventDropItemVa = 0x006AC880;
+    // CM_Inventory::Event_NoLongerViewingContents - close an external container (FALLBACK only; pattern-scanned).
+    private const int EventNoLongerViewingContentsVa = 0x006ACBB0;
     private const int UseObjectVa = 0x00565750;
     private const int PlayerSystemVa = 0x0087119C;
     private const int InqPlayerCoordsVa = 0x00560E00;
@@ -155,6 +171,7 @@ internal static class ClientHelperHooks
     private static EventGiveObjectRequestDelegate? _eventGiveObjectRequest;
     private static EventGetAndWieldItemDelegate? _eventGetAndWieldItem;
     private static EventDropItemDelegate? _eventDropItem;
+    private static EventNoLongerViewingContentsDelegate? _eventNoLongerViewingContents;
     private static InqPlayerCoordsDelegate? _inqPlayerCoords;
     private static GetPlayerIdDelegate? _getPlayerId;
     private static AddTextToScrollDelegate? _addTextToScroll;
@@ -182,6 +199,7 @@ internal static class ClientHelperHooks
     public static bool HasGiveObjectTo => _eventGiveObjectRequest != null;
     public static bool HasWieldItem => _eventGetAndWieldItem != null;
     public static bool HasDropItem => _eventDropItem != null;
+    public static bool HasCloseContainer => _eventNoLongerViewingContents != null;
     public static bool HasGetCurCoords => _inqPlayerCoords != null;
     public static bool HasGetPlayerId => _getPlayerId != null;
     public static bool HasGetGroundContainerId => true;
@@ -219,6 +237,11 @@ internal static class ClientHelperHooks
     // unique (1 match @0x006AC880) over the engine's scan window against both acclient
     // copies (C:\Turbine and C:\Games\RynthCore\AcClient), 2026-09-30.
     private static readonly byte?[] PatEventDropItem = [ 0x83, 0xEC, 0x0C, 0x53, 0x56, 0x57, 0xE8, null, null, null, null, 0x89, 0x44, 0x24, 0x14, 0x6A, 0x00, 0x8D, 0x44, 0x24, 0x10, 0x50, 0x8D, 0x4C, 0x24, 0x18, 0xC7, 0x44, 0x24, 0x18, 0x2C, 0x2C, 0x80, 0x00, 0xC7, 0x44, 0x24, 0x14, 0x00, 0x00, 0x00, 0x00, 0xE8, null, null, null, null, 0x8B, 0xF0, 0x83, 0xC6, 0x08, 0x56, 0xE8, null, null, null, null, 0x83, 0xC4, 0x04, 0x56, 0x8D, 0x4C, 0x24, 0x10, 0x51, 0x8D, 0x4C, 0x24, 0x18, 0x89, 0x44, 0x24, 0x14, 0x8B, 0xF8, 0xE8, null, null, null, null, 0x8B, 0x54, 0x24, 0x0C, 0x8B, 0x4C, 0x24, 0x1C, 0xC7, 0x02, 0x1B ];
+    // CM_Inventory::Event_NoLongerViewingContents @0x006ACBB0. Byte-identical to Event_DropItem
+    // except the opcode immediate (0x0195, so the last two bytes are 0x95 0x01 where DropItem has
+    // 0x1B). Verified unique (1 match @0x006ACBB0) over the engine's scan window against
+    // C:\Games\RynthCore\AcClient\acclient.exe, 2026-10-04.
+    private static readonly byte?[] PatEventNoLongerViewingContents = [ 0x83, 0xEC, 0x0C, 0x53, 0x56, 0x57, 0xE8, null, null, null, null, 0x89, 0x44, 0x24, 0x14, 0x6A, 0x00, 0x8D, 0x44, 0x24, 0x10, 0x50, 0x8D, 0x4C, 0x24, 0x18, 0xC7, 0x44, 0x24, 0x18, 0x2C, 0x2C, 0x80, 0x00, 0xC7, 0x44, 0x24, 0x14, 0x00, 0x00, 0x00, 0x00, 0xE8, null, null, null, null, 0x8B, 0xF0, 0x83, 0xC6, 0x08, 0x56, 0xE8, null, null, null, null, 0x83, 0xC4, 0x04, 0x56, 0x8D, 0x4C, 0x24, 0x10, 0x51, 0x8D, 0x4C, 0x24, 0x18, 0x89, 0x44, 0x24, 0x14, 0x8B, 0xF8, 0xE8, null, null, null, null, 0x8B, 0x54, 0x24, 0x0C, 0x8B, 0x4C, 0x24, 0x1C, 0xC7, 0x02, 0x95, 0x01 ];
     private static readonly byte?[] PatInqPlayerCoords =[ 0x83, 0xEC, 0x10, 0x53, 0x8B, 0x5C, 0x24, 0x1C, 0x55, 0x56 ];
     private static readonly byte?[] PatGetPlayerId = [ 0xA1, 0x58, 0xDA, 0x83, 0x00, 0x85, 0xC0, 0x74, 0x07 ];
     private static readonly byte?[] PatAddTextToScroll = [ 0x81, 0xEC, 0x48, 0x09, 0x00, 0x00, 0x8A, 0x84 ];
@@ -281,6 +304,7 @@ internal static class ClientHelperHooks
             _eventGiveObjectRequest = Bind<EventGiveObjectRequestDelegate>(text, "ClientHelper.Event_GiveObjectRequest", PatEventGiveObjectRequest, EventGiveObjectRequestVa);
             _eventGetAndWieldItem = Bind<EventGetAndWieldItemDelegate>(text, "ClientHelper.Event_GetAndWieldItem", PatEventGetAndWieldItem, EventGetAndWieldItemVa);
             _eventDropItem = Bind<EventDropItemDelegate>(text, "ClientHelper.Event_DropItem", PatEventDropItem, EventDropItemVa);
+            _eventNoLongerViewingContents = Bind<EventNoLongerViewingContentsDelegate>(text, "ClientHelper.Event_NoLongerViewingContents", PatEventNoLongerViewingContents, EventNoLongerViewingContentsVa);
             _inqPlayerCoords = Bind<InqPlayerCoordsDelegate>(text, "ClientHelper.InqPlayerCoords", PatInqPlayerCoords, InqPlayerCoordsVa);
             _getPlayerId = Bind<GetPlayerIdDelegate>(text, "ClientHelper.GetPlayerId", PatGetPlayerId, GetPlayerIdVa);
             _addTextToScroll = Bind<AddTextToScrollDelegate>(text, "ClientHelper.AddTextToScroll", PatAddTextToScroll, AddTextToScrollVa);
@@ -776,6 +800,40 @@ internal static class ClientHelperHooks
         }
     }
 
+    /// <summary>
+    /// Close an external container (a corpse, a chest) the way the client does when its window
+    /// is closed: CM_Inventory::Event_NoLongerViewingContents (cdecl) at 0x006ACBB0, the 0x0195
+    /// NoLongerViewingContents game action. Packet only, like DropItem: no busy count (m_cBusy),
+    /// no pending-request slot (it is not an inventory request; RecordRequest is not called).
+    /// The server closes the container if this player is viewing it and answers with
+    /// CloseGroundContainer (0x0052), whose client handler closes the window and raises
+    /// StopViewingObjectContents to the plugins. A container this player isn't viewing is
+    /// ignored by the server (no answer). Runs on AC's main thread, in the action ring, so a
+    /// close queued just before the next UseObject goes out first, in the same frame.
+    /// </summary>
+    public static bool CloseContainer(uint containerId)
+    {
+        // An inventory game-action send, like DropItem / WieldItem: main thread only.
+        if (!MainThreadGuard.IsOnMainThread())
+            return _eventNoLongerViewingContents != null && IsValidObjectId(containerId)
+                && AcMainThreadQueue.EnqueueCloseContainer(containerId);
+
+        if (_eventNoLongerViewingContents == null) return false;
+        if (!IsValidObjectId(containerId)) return false;
+
+        try
+        {
+            byte rv = _eventNoLongerViewingContents(containerId);
+            RynthLog.Verbose($"Compat: Event_NoLongerViewingContents container=0x{containerId:X8} rv={rv}");
+            return rv != 0;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"Compat: Event_NoLongerViewingContents threw - {ex.Message}");
+            return false;
+        }
+    }
+
     public static bool TryGetCurCoords(out double northSouth, out double eastWest)
     {
         northSouth = 0;
@@ -1172,6 +1230,7 @@ internal static class ClientHelperHooks
         _eventGiveObjectRequest = null;
         _eventGetAndWieldItem = null;
         _eventDropItem = null;
+        _eventNoLongerViewingContents = null;
         _inqPlayerCoords = null;
         _getPlayerId = null;
         Volatile.Write(ref _cachedPlayerId, 0);

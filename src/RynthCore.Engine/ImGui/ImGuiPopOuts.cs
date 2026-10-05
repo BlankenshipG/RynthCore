@@ -114,6 +114,15 @@ internal static unsafe class ImGuiPopOuts
 
     public static bool IsPopped(string title) => Pops.ContainsKey(title);
 
+    /// <summary>
+    /// A pop-out's text box holds the keyboard: the game WndProc routes keys to it
+    /// (RouteInput) and lets none of them reach AC. AC thread.
+    /// </summary>
+    public static bool HasTextFocus => _keyboard is { WantTextInput: true };
+
+    /// <summary>The pop-out typing into a text box, or null (for the input log). AC thread.</summary>
+    public static string? TextFocusTitle => _keyboard is { WantTextInput: true } k ? k.Title : null;
+
     /// <summary>The screen position of the game window's client origin (to place a pop-out where the docked panel was).</summary>
     public static Vector2 ClientOriginOnScreen()
     {
@@ -204,6 +213,7 @@ internal static unsafe class ImGuiPopOuts
         if (!Pops.Remove(title, out PopOut? pop)) return;
         Order.Remove(pop);
         if (_keyboard == pop) _keyboard = null;
+        ImGuiTextFocus.ForgetPopOut(title);
         try { pop.Window?.Dispose(); } catch (Exception ex) { RynthLog.UI($"ImGuiPopOuts: {title} window dispose threw {ex.Message}"); }
         pop.Window = null;
         pop.Surface.Dispose();
@@ -462,6 +472,7 @@ internal static unsafe class ImGuiPopOuts
             io.AddKeyEvent(ImGuiKey.ModAlt, (GetKeyState(VK_MENU) & 0x8000) != 0);
 
             _current = pop;
+            ImGuiTextFocus.BeginFrame();
             ImGuiNET.ImGui.NewFrame();
             started = true;
             if (pop.DropTextFocus)
@@ -520,7 +531,10 @@ internal static unsafe class ImGuiPopOuts
                 pop.PushTicks += Stopwatch.GetTimestamp() - built;
             }
 
-            pop.WantTextInput = io.WantTextInput;
+            // io.WantTextInput lags a frame behind the box (ImGui publishes it from the
+            // previous frame's widgets); a box that went active this frame counts too, so
+            // the keys typed right after the click already come here, not to AC.
+            pop.WantTextInput = ImGuiTextFocus.EndPopOutFrame(pop.Title, io.WantTextInput);
             pop.IdleInterval = Stopwatch.Frequency / ImGuiPanelHost.PopOutIdleHz(pop.Title);
             if (pop.WantTextInput) _keyboard = pop;
             else if (_keyboard == pop) _keyboard = null;

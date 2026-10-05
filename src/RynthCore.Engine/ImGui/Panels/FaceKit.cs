@@ -201,6 +201,7 @@ internal static class FaceKit
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 3f);
         bool result = ImGuiNET.ImGui.InputText(id, buffer, (uint)buffer.Length, flags);
         active = ImGuiNET.ImGui.IsItemActive();
+        if (active) ImGuiTextFocus.NoteActive(id);   // keys stay out of AC from this frame on
         ImGuiNET.ImGui.PopStyleVar(3);
         ImGuiNET.ImGui.PopStyleColor(3);
         if (buffer[0] == 0 && !active && hint.Length > 0)

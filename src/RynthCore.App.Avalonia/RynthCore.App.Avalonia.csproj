@@ -30,6 +30,7 @@
   <ItemGroup>
     <Compile Include="..\RynthCore.App\LaunchServerProfile.cs" Link="Shared\LaunchServerProfile.cs" />
     <Compile Include="..\RynthCore.App\LaunchAccountProfile.cs" Link="Shared\LaunchAccountProfile.cs" />
+    <Compile Include="..\RynthCore.App\AccountPasswordProtection.cs" Link="Shared\AccountPasswordProtection.cs" />
     <Compile Include="..\RynthCore.App\InjectionMode.cs" Link="Shared\InjectionMode.cs" />
     <Compile Include="..\RynthCore.App\DecalLocator.cs" Link="Shared\DecalLocator.cs" />
     <Compile Include="..\RynthCore.App\DecalBridgeRegistration.cs" Link="Shared\DecalBridgeRegistration.cs" />

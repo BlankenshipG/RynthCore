@@ -146,6 +146,11 @@ internal static class AcMainThreadQueue
         // send like Trade, so it rides the ring too. A = PlayerTraining.TrainKind, B = stype, C = XP
         // (skill credits for TrainKind.TrainWithCredits: Event_TrainSkillAdvancementClass, 0x0047).
         Train,
+        // v76 CloseContainer (2026-10-04): CM_Inventory::Event_NoLongerViewingContents (the
+        // 0x0195 game action the client sends when a corpse/chest window closes). An inventory
+        // send like DropItem; in the ring so a close queued before the next corpse's UseObject
+        // goes out first, in the same drain. A = container id.
+        CloseContainer,
     }
 
     // Four payload slots cover every routed action (the 4th was added for
@@ -331,6 +336,9 @@ internal static class AcMainThreadQueue
 
     public static bool EnqueueDropItem(uint objectId) =>
         Enqueue(ActionKind.DropItem, objectId, 0, 0);
+
+    public static bool EnqueueCloseContainer(uint containerId) =>
+        Enqueue(ActionKind.CloseContainer, containerId, 0, 0);
 
     public static bool EnqueueTrade(uint op, uint a, uint b) =>
         Enqueue(ActionKind.Trade, op, a, b);
@@ -530,6 +538,9 @@ internal static class AcMainThreadQueue
                         break;
                     case ActionKind.DropItem:
                         ClientHelperHooks.DropItem(e.A);
+                        break;
+                    case ActionKind.CloseContainer:
+                        ClientHelperHooks.CloseContainer(e.A);
                         break;
                     case ActionKind.Trade:
                         PlayerTrade.RunQueued(e.A, e.B, e.C);

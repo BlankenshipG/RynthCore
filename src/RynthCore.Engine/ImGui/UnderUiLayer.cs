@@ -14,23 +14,26 @@
 //            (no per-frame allocation once they have grown).
 //    Commit  at the end of EndScene the list just built becomes the one to
 //            show during the NEXT frame; the other list is built into next.
-//    Present the next frame, Nav3DRenderInjector's DrawIndexedPrimitive hook
-//            spots AC's 3D->UI transition (ZENABLE 1->0) and calls
-//            PresentAtTransition, right after the Nav3D markers: the list goes
-//            through DX9Backend with a full state save/restore.
-//    Fallback a frame whose transition wasn't seen (portal space, a loading
-//            screen, the injector missing it) presents the list at EndScene
-//            instead, before the ImGui panels - the same place RenderNav3D's
-//            fallback draws. A list is presented at most once: no double draw.
+//    Present the next frame, right after the Nav3D markers, when AC's 2D UI
+//            pass begins (D3D9.AcUiPassHook -> Nav3DRenderInjector ->
+//            PresentAtUiPass; after all of AC's 3D, alpha-sorted foliage
+//            included). Without that hook, Nav3DRenderInjector's
+//            DrawIndexedPrimitive hook spots ZENABLE going 1->0 instead
+//            (PresentAtTransition; fires before the foliage outdoors). Either
+//            way the list goes through DX9Backend with a full state save/restore.
+//    Fallback a frame where neither fired (portal space, a loading screen, no
+//            AC UI this frame) presents the list at EndScene instead, before
+//            the ImGui panels - the same place RenderNav3D's fallback draws.
+//            A list is presented at most once: no double draw.
 //
 //  The plates are therefore one frame behind the frame they were built in -
 //  the same lag the Nav3D markers have, since both project with the camera
 //  GameMatrixCapture took at the previous EndScene - on both paths, so a frame
 //  that falls back doesn't jump.
 //
-//  Threads: AC's render thread only (EndScene and the DIP detour both run on
-//  it). Shutdown may run on the lifecycle thread while AC's thread is still in
-//  the DIP detour: it unpublishes the lists, waits for a present in flight to
+//  Threads: AC's render thread only (EndScene, the UI-pass detour and the DIP
+//  detour all run on it). Shutdown may run on the lifecycle thread while AC's
+//  thread is still in a detour: it unpublishes the lists, waits for a present in flight to
 //  finish, then frees them.
 // ============================================================================
 
@@ -55,8 +58,8 @@ internal static unsafe class UnderUiLayer
     /// <summary>True after <see cref="BeginBuild"/> returned a list this frame. AC's render thread.</summary>
     public static bool IsBuilding => _building != null;
 
-    /// <summary>Frames presented at the transition / at the EndScene fallback (diagnostics).</summary>
-    private static long _atTransition, _atFallback;
+    /// <summary>Frames presented at AC's UI pass / at the transition / at the EndScene fallback (diagnostics).</summary>
+    private static long _atUiPass, _atTransition, _atFallback;
 
     /// <summary>
     /// Inside the main ImGui frame, main context current: a cleared draw list to
@@ -96,8 +99,19 @@ internal static unsafe class UnderUiLayer
     }
 
     /// <summary>
-    /// EndScene, before the ImGui panels are submitted: when the transition wasn't
-    /// seen this frame, the overlays are drawn here instead. AC's render thread.
+    /// Called by AcUiPassHook (through Nav3DRenderInjector) when AC's 2D UI pass begins:
+    /// draws last frame's world overlays after all of AC's 3D (foliage included) and
+    /// under AC's UI. RenderDrawList sets its own full-screen viewport. AC's render thread.
+    /// </summary>
+    public static void PresentAtUiPass(IntPtr device)
+    {
+        if (Present(device)) _atUiPass++;
+    }
+
+    /// <summary>
+    /// EndScene, before the ImGui panels are submitted: when neither the UI pass nor
+    /// the transition drew them this frame, the overlays are drawn here instead.
+    /// AC's render thread.
     /// </summary>
     public static void PresentFallback(IntPtr device)
     {
@@ -137,7 +151,7 @@ internal static unsafe class UnderUiLayer
 
     /// <summary>One line for /rc imgui diag.</summary>
     public static string Describe() =>
-        $"under-UI layer: presented at 3D->UI {_atTransition}, at EndScene (fallback) {_atFallback}";
+        $"under-UI layer: presented at AC UI pass {_atUiPass}, at 3D->UI transition {_atTransition}, at EndScene (fallback) {_atFallback}";
 
     /// <summary>
     /// Engine shutdown, before DX9Backend and the ImGui context go. Any thread:

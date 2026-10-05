@@ -299,6 +299,29 @@ internal static class SettingsSchema
         "Follow/Nav Min Distance (metas: FollowNavMin, or VTank's NavCloseStopRange). Follow stops this " +
         "close to its leader, and the nav marker ring shows it. Dungeon doorways use at most 1 yd.";
 
+    // Also shown by the dashboard's Ranges slide-out (ImGui/Panels/RangesSlideOut.cs), which
+    // edits these same rows (found by label with Find).
+    public const string MonsterRangeTip =
+        "How far away a monster can be for the bot to attack it, in yards. Monsters inside it also\n" +
+        "count as \"in combat\" for buffing and the In Combat heal/stamina/mana thresholds.";
+    public const string RingRangeTip =
+        "Ring spells replace a monster's other shape when at least Min Ring Targets monsters are\n" +
+        "within this many yards (the monster's rule needs Ring on).";
+    public const string ApproachRangeTip =
+        "VTank's Approach Distance, in yards (metas: ApproachRange or ApproachDistance). Saved with\n" +
+        "the profile for metas; RynthAi's own combat doesn't use it at the moment.";
+    public const string CorpseMaxTip =
+        "Corpses within this many yards are walked to and looted (Looting on). Further ones are left.";
+
+    /// <summary>The first row with <paramref name="label"/> on any tab (null if none). Not for per-frame use.</summary>
+    public static SettingRow? Find(string label)
+    {
+        foreach (SettingsTab tab in Tabs)
+            foreach (SettingRow row in tab.Rows)
+                if (row.Label == label) return row;
+        return null;
+    }
+
     public static readonly string[] AttackHeights = { "Low", "Medium", "High" };
     public static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
 
@@ -559,13 +582,14 @@ internal static class SettingsSchema
         new("Ranges", new[]
         {
             Section("Standard Ranges (Yards)"),
-            Int("Monster Range", s => s.MonsterRange, (s, v) => s.MonsterRange = v, 1, 200, 1),
-            Int("Ring Range", s => s.RingRange, (s, v) => s.RingRange = v, 1, 50, 1),
-            Int("Approach Range", s => s.ApproachRange, (s, v) => s.ApproachRange = v, 1, 50, 1),
+            Int("Monster Range", s => s.MonsterRange, (s, v) => s.MonsterRange = v, 1, 200, 1, MonsterRangeTip),
+            Int("Ring Range", s => s.RingRange, (s, v) => s.RingRange = v, 1, 50, 1, RingRangeTip),
+            Int("Approach Range", s => s.ApproachRange, (s, v) => s.ApproachRange = v, 1, 50, 1, ApproachRangeTip),
             Spacer(),
             Section("Corpse Acquisition (Yards)"),
-            Double("Corpse Max (yd)", s => s.CorpseApproachRangeMax, (s, v) => s.CorpseApproachRangeMax = v, 0.5, 50.0, 0.5),
-            Double("Corpse Min (yd)", s => s.CorpseApproachRangeMin, (s, v) => s.CorpseApproachRangeMin = v, 0.5, 20.0, 0.5),
+            Double("Corpse Max (yd)", s => s.CorpseApproachRangeMax, (s, v) => s.CorpseApproachRangeMax = v, 0.5, 50.0, 0.5, CorpseMaxTip),
+            Double("Corpse Min (yd)", s => s.CorpseApproachRangeMin, (s, v) => s.CorpseApproachRangeMin = v, 0.5, 20.0, 0.5,
+                "How close to walk to a corpse before opening it, in yards (never more than Corpse Max)."),
         }),
 
         new("Navigation", new[]

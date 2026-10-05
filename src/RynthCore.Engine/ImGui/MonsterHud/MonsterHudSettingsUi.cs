@@ -91,15 +91,56 @@ internal static class MonsterHudSettingsUi
 
         Section("Your plate", w);
         changed |= Toggle("Show your plate", ref MonsterHudSettings.SelfPlate,
-            "Health, stamina and mana bars over your own head. Chat: /rv plates self.");
+            "Your own health, stamina and mana bars: fixed on screen, or following your character. Chat: /rv plates self.");
         changed |= Toggle("Numbers on your bars", ref MonsterHudSettings.SelfNumbers, "\"cur / max\" inside each bar (taller bars).", sub: true);
         changed |= Toggle("Your name", ref MonsterHudSettings.SelfName, null, sub: true);
-        changed |= Toggle("Hide in first person", ref MonsterHudSettings.SelfHideFirstPerson,
-            "When the camera is at your head the plate would sit mid-screen; hide it then.", sub: true);
-        changed |= SelfPositionPick("Over your head", SelfPlatePosition.Above);
-        changed |= SelfPositionPick("Under your feet", SelfPlatePosition.Below);
-        changed |= SelfPositionPick("Beside you, left", SelfPlatePosition.Left);
-        changed |= SelfPositionPick("Beside you, right", SelfPlatePosition.Right);
+
+        bool fixedOn = MonsterHudSettings.SelfPlacement == SelfPlacement.Fixed;
+        if (Toggle("Fixed on screen", ref fixedOn,
+                "The bars stay where you put them on the screen, so they don't move with your character. " +
+                "Unlock to drag them. Chat: /rv plates self fixed.", radio: true, sub: true))
+        {
+            MonsterHudSettings.SelfPlacement = SelfPlacement.Fixed;
+            changed = true;
+        }
+        if (fixedOn)
+        {
+            bool unlocked = !MonsterHudSettings.SelfLocked;
+            bool locked = MonsterHudSettings.SelfLocked;
+            if (Toggle("Lock position", ref locked,
+                    "Locked, the plate can't be grabbed or clicked, so play never moves it. " +
+                    "Untick it, then drag the plate (it shows a frame) and tick it again. Chat: /rv plates self lock on|off.", indent: 32))
+            {
+                MonsterHudSettings.SelfLocked = locked;
+                changed = true;
+            }
+            if (unlocked)
+                Note("Unlocked: drag your plate anywhere on the screen, then lock it again.", w, indent: 32);
+            ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+            ImGuiNET.ImGui.SetCursorScreenPos(ImGuiNET.ImGui.GetCursorScreenPos() + new Vector2(32, 0));
+            if (SmallButton("Reset position"))
+                MonsterHudSettings.ResetSelfPosition();   // saves
+            if (ImGuiNET.ImGui.IsItemHovered())
+                ImGuiNET.ImGui.SetTooltip("Back to the default spot, just under your character. Chat: /rv plates self reset.");
+        }
+
+        bool follow = MonsterHudSettings.SelfPlacement == SelfPlacement.Follow;
+        if (Toggle("Follow your character", ref follow,
+                "The bars ride along with your character in the world (they move as it moves). Chat: /rv plates self follow.",
+                radio: true, sub: true))
+        {
+            MonsterHudSettings.SelfPlacement = SelfPlacement.Follow;
+            changed = true;
+        }
+        if (follow)
+        {
+            changed |= SelfPositionPick("Over your head", SelfPlatePosition.Above);
+            changed |= SelfPositionPick("Under your feet", SelfPlatePosition.Below);
+            changed |= SelfPositionPick("Beside you, left", SelfPlatePosition.Left);
+            changed |= SelfPositionPick("Beside you, right", SelfPlatePosition.Right);
+            changed |= Toggle("Hide in first person", ref MonsterHudSettings.SelfHideFirstPerson,
+                "When the camera is at your head the plate would sit mid-screen; hide it then.", indent: 32);
+        }
 
         Section("Look", w);
         changed |= SliderF("Scale", ref MonsterHudSettings.Scale, MonsterHudSettings.MinScale, MonsterHudSettings.MaxScale, "%.2f", w);
@@ -161,17 +202,18 @@ internal static class MonsterHudSettingsUi
     private static bool SelfPositionPick(string label, SelfPlatePosition pos)
     {
         bool on = MonsterHudSettings.SelfPosition == pos;
-        if (!Toggle(label, ref on, "Where your plate sits. Chat: /rv plates self position above|below|left|right.", radio: true, sub: true))
+        if (!Toggle(label, ref on, "Where your plate sits. Chat: /rv plates self position above|below|left|right.", radio: true, indent: 32))
             return false;
         MonsterHudSettings.SelfPosition = pos;
         return true;
     }
 
-    private static bool Toggle(string label, ref bool value, string? tip, bool radio = false, bool sub = false)
+    private static bool Toggle(string label, ref bool value, string? tip, bool radio = false, bool sub = false, float indent = 0)
     {
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
-        if (sub) ImGuiNET.ImGui.SetCursorScreenPos(ImGuiNET.ImGui.GetCursorScreenPos() + new Vector2(16, 0));
+        if (sub && indent <= 0) indent = 16;
+        if (indent > 0) ImGuiNET.ImGui.SetCursorScreenPos(ImGuiNET.ImGui.GetCursorScreenPos() + new Vector2(indent, 0));
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
         float labelW = ImGuiNET.ImGui.CalcTextSize(label).X;
         ImGuiNET.ImGui.PushID(label);
@@ -238,9 +280,14 @@ internal static class MonsterHudSettingsUi
         ImGuiNET.ImGui.PopFont();
     }
 
-    private static void Note(string text, float w)
+    private static void Note(string text, float w, float indent = 0)
     {
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Mute);
+        if (indent > 0)
+        {
+            ImGuiNET.ImGui.SetCursorPosX(ImGuiNET.ImGui.GetCursorPosX() + indent);
+            w -= indent;
+        }
         ImGuiNET.ImGui.PushTextWrapPos(ImGuiNET.ImGui.GetCursorPosX() + w);
         ImGuiNET.ImGui.TextUnformatted(text);
         ImGuiNET.ImGui.PopTextWrapPos();

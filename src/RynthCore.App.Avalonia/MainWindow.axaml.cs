@@ -215,6 +215,17 @@ internal partial class MainWindow : Window
             LauncherDiag.Info("SETTINGS: " + migration);
             try { AppendActivity("Settings: " + migration); } catch { }
         }
+        // Password notes carry counts and account names only, never a password.
+        if (AppSettingsStore.LastPasswordMigrationNote is string passwordMigration)
+        {
+            LauncherDiag.Info("SETTINGS: " + passwordMigration);
+            try { AppendActivity("Settings: " + passwordMigration); } catch { }
+        }
+        if (AppSettingsStore.LastPasswordProblemNote is string passwordProblem)
+        {
+            LauncherDiag.Info("SETTINGS: " + passwordProblem);
+            try { AppendActivity("Settings: " + passwordProblem); } catch { }
+        }
         _settings.ServerProfiles ??= [];
         _settings.AccountProfiles ??= [];
         _settings.CheckedLaunchAccountProfileIds ??= [];
@@ -3247,12 +3258,8 @@ internal partial class MainWindow : Window
     {
         try
         {
-            string args = _launchArgumentBuilder.BuildArguments(server, account);
-            string password = account.Password ?? string.Empty;
-            if (!string.IsNullOrEmpty(password))
-                args = args.Replace(password, "********", StringComparison.Ordinal);
-
-            return args;
+            // Never decrypts: a saved password shows as the mask.
+            return _launchArgumentBuilder.BuildMaskedArguments(server, account);
         }
         catch (Exception ex)
         {
@@ -4338,7 +4345,8 @@ internal partial class MainWindow : Window
     {
         int digits = Math.Max(2, _settings.AccountProfiles.Count.ToString().Length);
         return _settings.AccountProfiles
-            .Select((account, index) => $"{FormatOrdinal(index, digits)} {account.DisplayName}")
+            .Select((account, index) => $"{FormatOrdinal(index, digits)} {account.DisplayName}" +
+                                        (account.PasswordNeedsReentry ? "  [password needs re-entering]" : string.Empty))
             .ToArray();
     }
 
