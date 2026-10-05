@@ -601,6 +601,10 @@ internal static class EngineFrameController
                 RynthLog.Info($"EngineFrameController: ImGui branch = {(branch == 1 ? "shell (RenderAll)" : branch == 2 ? "overlay windows (RenderOverlayAll)" : "none (shell and overlay windows both off)")}.");
             }
 
+            // A plugin that threw mid-window leaves scopes open; EndFrame would assert
+            // with a modal dialog on AC's main thread.
+            if (branch != 0) ImGuiStackRecovery.RecoverBeforeEndFrame();
+
             bool captureMouse =
                 ImGuiNET.ImGui.IsWindowHovered(ImGuiHoveredFlags.AnyWindow) ||
                 ImGuiNET.ImGui.IsAnyItemActive();

@@ -40,6 +40,10 @@ public static class EntryPoint
     private static int _initCount;
     private static bool _imGuiResolverConfigured;
     private static IntPtr _imGuiNativeHandle;
+
+    /// <summary>Module handle of the loaded cimgui DLL (zero until the ImGui resolver is configured).</summary>
+    internal static IntPtr ImGuiNativeHandle => _imGuiNativeHandle;
+
     private static readonly object LogLock = new();
     private static readonly Queue<string> RecentLogLines = new();
 

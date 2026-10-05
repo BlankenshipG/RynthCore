@@ -273,6 +273,10 @@ internal static class ImGuiController
             // Plugin render (ImGui draw calls)
             PluginManager.RenderAll();
 
+            // A plugin that threw mid-window leaves scopes open; EndFrame would assert
+            // with a modal dialog on AC's main thread.
+            ImGuiStackRecovery.RecoverBeforeEndFrame();
+
             bool captureMouse =
                 ImGuiNET.ImGui.IsWindowHovered(ImGuiHoveredFlags.AnyWindow) ||
                 ImGuiNET.ImGui.IsAnyItemActive();
