@@ -367,6 +367,25 @@ internal sealed unsafe class LayeredWindow : IDisposable
         }
     }
 
+    /// <summary>
+    /// The content rects (screen px: left, top, width, height) of every visible panel window.
+    /// They sit above the game window, so nothing drawn in the game frame can show over them.
+    /// </summary>
+    internal static List<(int Left, int Top, int Width, int Height)> VisibleContentRects()
+    {
+        LayeredWindow[] windows;
+        lock (_instancesLock)
+        {
+            windows = new LayeredWindow[_instances.Count];
+            _instances.Values.CopyTo(windows, 0);
+        }
+        var rects = new List<(int, int, int, int)>(windows.Length);
+        foreach (LayeredWindow w in windows)
+            if (w.IsVisible && w.Width > 0 && w.Height > 0)
+                rects.Add((w.ScreenLeft, w.ScreenTop, w.Width, w.Height));
+        return rects;
+    }
+
     private static readonly HashSet<IntPtr> _sweptLogged = new();
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]

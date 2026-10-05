@@ -1138,6 +1138,109 @@ internal static partial class PluginManager
         }
     }
 
+    /// <summary>
+    /// ImGui-shell-off counterpart of <see cref="RenderAll"/>: calls the optional
+    /// RynthPluginRenderOverlay export, where a plugin draws only the extra windows that have
+    /// no Avalonia panel (e.g. RynthAi's ILT Hub). They float beside the Avalonia UI and add to it.
+    /// A throw switches off just that plugin's overlay windows; the plugin is NOT marked Failed,
+    /// so its tick/automation and Avalonia panels keep running.
+    /// </summary>
+    public static void RenderOverlayAll()
+    {
+        _overlayCalls++;
+        if (!_loginCompleteObserved)
+        {
+            if (!_loggedOverlayWaitingForLogin)
+            {
+                _loggedOverlayWaitingForLogin = true;
+                RynthLog.Info("PluginManager: RenderOverlayAll called - waiting for login before drawing overlay windows.");
+            }
+            return; // same not-in-world crash zone guard as RenderAll
+        }
+
+        LoadedPlugin[] plugins = System.Threading.Volatile.Read(ref _pluginsRenderSnapshot);
+
+        // Count plugins that will actually be called; log whenever that set changes.
+        int bound = 0;
+        for (int i = 0; i < plugins.Length; i++)
+        {
+            var p = plugins[i];
+            if (p.Initialized && !p.Failed && p.RenderOverlay != null) bound++;
+        }
+        _overlayBound = bound;
+        if (bound != _loggedOverlayBound || plugins.Length != _loggedOverlayTotal)
+        {
+            _loggedOverlayBound = bound;
+            _loggedOverlayTotal = plugins.Length;
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < plugins.Length; i++)
+            {
+                var p = plugins[i];
+                if (sb.Length > 0) sb.Append(", ");
+                sb.Append(p.DisplayName).Append('(')
+                  .Append(p.RenderOverlay != null ? "overlay" : "no-overlay")
+                  .Append(p.Initialized ? "" : ",not-init")
+                  .Append(p.Failed ? ",failed" : "")
+                  .Append(')');
+            }
+            RynthLog.Info($"PluginManager: RenderOverlayAll login seen, {bound} of {plugins.Length} plugin(s) will draw overlay windows: {sb}.");
+        }
+
+        for (int i = 0; i < plugins.Length; i++)
+        {
+            var plugin = plugins[i];
+            var overlay = plugin.RenderOverlay;
+            if (!plugin.Initialized || plugin.Failed || overlay == null)
+                continue;
+
+            if (!plugin.RenderOverlayLogged)
+            {
+                // One line per plugin per session: proves the engine is actually driving the overlay export.
+                plugin.RenderOverlayLogged = true;
+                RynthLog.Plugin($"PluginManager: first RenderOverlay call for {plugin.DisplayName}.");
+            }
+
+            try
+            {
+                overlay();
+            }
+            catch (Exception ex)
+            {
+                plugin.RenderOverlay = null;
+                RynthLog.Error($"PluginManager: {plugin.DisplayName} RenderOverlay threw {ex.GetType().Name}: {ex.Message} - overlay windows off for this session (plugin keeps running).");
+            }
+        }
+    }
+
+    // RenderOverlayAll diagnostics (render thread only).
+    private static long _overlayCalls;
+    private static int _overlayBound;
+    private static bool _loggedOverlayWaitingForLogin;
+    private static int _loggedOverlayBound = -1;
+    private static int _loggedOverlayTotal = -1;
+
+    /// <summary>
+    /// True when an initialized, healthy plugin exports RynthPluginRenderOverlay. Reads the
+    /// render snapshot only (no lock, no allocation): safe every frame on the render thread.
+    /// </summary>
+    internal static bool HasOverlayPlugins
+    {
+        get
+        {
+            LoadedPlugin[] plugins = System.Threading.Volatile.Read(ref _pluginsRenderSnapshot);
+            for (int i = 0; i < plugins.Length; i++)
+            {
+                var p = plugins[i];
+                if (p.Initialized && !p.Failed && p.RenderOverlay != null) return true;
+            }
+            return false;
+        }
+    }
+
+    /// <summary>Overlay stats for the ImGui heartbeat line.</summary>
+    internal static string DescribeOverlayState()
+        => $"overlayCalls={_overlayCalls} loginSeen={_loginCompleteObserved} overlayPlugins={_overlayBound}";
+
     public static void ShutdownAll()
     {
         RynthLog.Plugin($"PluginManager: Shutting down {_plugins.Count} plugin(s)...");

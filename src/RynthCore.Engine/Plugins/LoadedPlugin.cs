@@ -54,6 +54,11 @@ internal sealed class LoadedPlugin
     public PluginOnEnchantmentRemovedDelegate? OnEnchantmentRemoved { get; set; }
     public PluginTickDelegate? Tick { get; set; }
     public PluginRenderDelegate? Render { get; set; }
+    /// <summary>Optional RynthPluginRenderOverlay: ImGui windows drawn while the ImGui shell is off.</summary>
+    public PluginRenderDelegate? RenderOverlay { get; set; }
+
+    /// <summary>Set after the first RenderOverlay call has been logged (render thread only).</summary>
+    public bool RenderOverlayLogged { get; set; }
 
     // ─── v77 UI exports (resolved lazily by PluginManager.ResolveUiExports) ───
     public bool UiExportsResolved { get; set; }
@@ -85,4 +90,44 @@ internal sealed class LoadedPlugin
     public RynthCore.PluginSdk.Manifest.RynthPluginManifest? Manifest { get; set; }
     /// <summary>Why the plugin was not started (a required plugin missing or failed); empty otherwise.</summary>
     public string NotStartedReason { get; set; } = "";
+
+    /// <summary>
+    /// Drops managed delegates wrapping exports so the native module can fully unload after
+    /// the host calls FreeLibrary (hot-reload / rescan).
+    /// </summary>
+    internal void ClearResolvedDelegates()
+    {
+        Init = null;
+        Shutdown = null;
+        GetName = null;
+        GetVersion = null;
+        OnLoginComplete = null;
+        OnUIInitialized = null;
+        OnBusyCountIncremented = null;
+        OnBusyCountDecremented = null;
+        OnSelectedTargetChange = null;
+        OnCombatModeChange = null;
+        OnSmartBoxEventPtr = IntPtr.Zero;
+        OnSmartBoxEvent = null;
+        OnDeleteObject = null;
+        OnCreateObject = null;
+        OnUpdateObjectPtr = IntPtr.Zero;
+        OnUpdateObject = null;
+        OnUpdateObjectInventory = null;
+        OnViewObjectContents = null;
+        OnStopViewingObjectContents = null;
+        OnVendorOpen = null;
+        OnVendorClose = null;
+        OnUpdateHealthPtr = IntPtr.Zero;
+        OnUpdateHealth = null;
+        OnChatWindowTextPtr = IntPtr.Zero;
+        OnChatWindowText = null;
+        OnChatBarEnter = null;
+        OnBarAction = null;
+        OnEnchantmentAdded = null;
+        OnEnchantmentRemoved = null;
+        Tick = null;
+        Render = null;
+        RenderOverlay = null;
+    }
 }
