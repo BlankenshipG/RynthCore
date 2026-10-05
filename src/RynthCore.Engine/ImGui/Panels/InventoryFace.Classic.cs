@@ -620,7 +620,7 @@ internal sealed partial class InventoryFace
         _hover = it;
         if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Left))
         {
-            _selected = it.Id;
+            SelectItem(it);
             _pressItem = it;
             _pressAt = ImGuiNET.ImGui.GetMousePos();
         }

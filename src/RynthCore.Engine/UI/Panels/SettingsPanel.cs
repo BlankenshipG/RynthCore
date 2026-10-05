@@ -333,6 +333,10 @@ internal static class SettingsPanel
                 return SectionHeader(row.Label);
             case SettingKind.Spacer:
                 return Spacer();
+            case SettingKind.Button:
+                return ButtonRow(row.Label, row.ButtonText ?? row.Label, () => row.Click?.Invoke(), row.Tooltip);
+            case SettingKind.TraceCategories:
+                return TraceCategoriesRow(state, row);
             case SettingKind.Note:
                 return new TextBlock
                 {
@@ -697,6 +701,96 @@ internal static class SettingsPanel
             ToolTip.SetShowDelay(row, 400);
         }
         return row;
+    }
+
+    /// <summary>Label on the left, a single action button on the right.</summary>
+    private static Control ButtonRow(string label, string buttonText, Action onClick, string? tooltip = null)
+    {
+        var btn = new Button
+        {
+            Content = buttonText,
+            FontSize = 10,
+            Height = 20,
+            MinWidth = 160,
+            Padding = new Thickness(4, 1),
+            Background = ColBtnFill,
+            Foreground = ColTextDim,
+            BorderBrush = ColBtnBord,
+            BorderThickness = new Thickness(1),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+        };
+        btn.Click += (_, _) => onClick();
+
+        var row = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            Margin = new Thickness(0, 2, 0, 2),
+            Height = 22,
+        };
+        var lblBlock = new TextBlock { Text = label, Foreground = ColTextDim, FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(lblBlock, 0);
+        Grid.SetColumn(btn,      1);
+        row.Children.Add(lblBlock);
+        row.Children.Add(btn);
+
+        if (tooltip != null)
+        {
+            ToolTip.SetTip(row, tooltip);
+            ToolTip.SetShowDelay(row, 400);
+        }
+        return row;
+    }
+
+    /// <summary>
+    /// [All on] [All off] [ILT Hub on] over a 3-column grid of toggles, one per RynthAi trace
+    /// category. Each change edits DiagCategories, saves, and rebuilds the tab so the grid redraws.
+    /// </summary>
+    private static Control TraceCategoriesRow(PanelState state, SettingRow row)
+    {
+        var cats = TraceCategoryLevels.Parse(state.Data.DiagCategories);
+        if (cats.Count == 0)
+            return new TextBlock { Text = "Waiting for RynthAi...", Foreground = ColMute, FontSize = 10, Margin = new Thickness(0, 2, 0, 0) };
+
+        void Save(string levels)
+        {
+            state.Data.DiagCategories = levels;
+            Push(state);
+            state.Rebuild?.Invoke();
+        }
+
+        Button Bulk(string text, Func<string> next)
+        {
+            var b = new Button
+            {
+                Content = text, FontSize = 10, Height = 20, Padding = new Thickness(6, 1),
+                Background = ColBtnFill, Foreground = ColTextDim, BorderBrush = ColBtnBord, BorderThickness = new Thickness(1),
+            };
+            b.Click += (_, _) => Save(next());
+            return b;
+        }
+
+        var box = new StackPanel { Margin = new Thickness(0, 2, 0, 2) };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 0, 0, 4) };
+        buttons.Children.Add(Bulk("All on", () => TraceCategoryLevels.Set(state.Data.DiagCategories, "", true)));
+        buttons.Children.Add(Bulk("All off", () => TraceCategoryLevels.Set(state.Data.DiagCategories, "", false)));
+        buttons.Children.Add(Bulk("ILT Hub on", () => TraceCategoryLevels.Set(state.Data.DiagCategories, "", true, "Ilt")));
+        if (row.Tooltip != null)
+        {
+            ToolTip.SetTip(buttons, row.Tooltip);
+            ToolTip.SetShowDelay(buttons, 400);
+        }
+        box.Children.Add(buttons);
+
+        var grid = new Avalonia.Controls.Primitives.UniformGrid { Columns = 3 };
+        foreach (var (name, level) in cats)
+        {
+            string catName = name;
+            bool on = level != TraceCategoryLevels.Off;
+            grid.Children.Add(BoolRow(TraceCategoryLevels.Label(name, level), on,
+                v => Save(TraceCategoryLevels.Set(state.Data.DiagCategories, catName, v))));
+        }
+        box.Children.Add(grid);
+        return box;
     }
 
     // SimpleTheme wraps TextBox content in a ScrollViewer, and its vertical

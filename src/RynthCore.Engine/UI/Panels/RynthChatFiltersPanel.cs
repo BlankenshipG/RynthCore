@@ -6,7 +6,10 @@
 //
 //  Rule semantics (the rules live in ChatModel, UI/Data/ChatData.cs; the ImGui
 //  face is ImGui/Panels/ChatFiltersFace.cs):
-//    • Regex, case-insensitive, matched against the formatted line.
+//    • Regex, or plain text Contains / Starts with / Ends with (the mode
+//      button), case-insensitive.
+//    • Standard filters (RynthChatPresets) below the rules apply only to
+//      lines no rule moved or hid.
 //    • FIRST matching rule wins — order matters, hence the ▲▼ buttons.
 //    • Tab name set  → matching lines MOVE to that tab (and leave All).
 //    • Tab name empty → matching lines are hidden everywhere.
@@ -95,10 +98,24 @@ internal static class RynthChatFiltersPanel
                     ChatModel.FiltersChanged();
                 };
 
+                // Click-to-cycle (no ComboBox: the overlay's popup hosting is unreliable).
+                var modeBtn = new Button
+                {
+                    Content = ModeLabels[(int)r.Mode],
+                    FontSize = 10,
+                    Width = 62,
+                    Padding = new Thickness(4, 2),
+                    Background = ButtonBg,
+                    Foreground = Brushes.White,
+                    BorderThickness = new Thickness(0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                ToolTip.SetTip(modeBtn, "How the text is matched: Regex, or plain text Contains / Starts with / Ends with.");
+
                 var patternBox = new TextBox
                 {
                     Text = r.Pattern,
-                    Watermark = "regex (e.g. AutoRun)",
+                    Watermark = PatternWatermark(r.Mode),
                     FontSize = 10,
                     MinWidth = 220,
                     Height = 24,
@@ -115,6 +132,15 @@ internal static class RynthChatFiltersPanel
                 {
                     r.Pattern = patternBox.Text ?? "";
                     r.Recompile();
+                    patternBox.BorderBrush = r.Invalid ? Brushes.IndianRed : FieldBorder;
+                    ChatModel.FiltersChanged();
+                };
+                modeBtn.Click += (_, _) =>
+                {
+                    r.Mode = (ChatMatchMode)(((int)r.Mode + 1) % ModeLabels.Length);
+                    r.Recompile();
+                    modeBtn.Content = ModeLabels[(int)r.Mode];
+                    patternBox.Watermark = PatternWatermark(r.Mode);
                     patternBox.BorderBrush = r.Invalid ? Brushes.IndianRed : FieldBorder;
                     ChatModel.FiltersChanged();
                 };
@@ -180,7 +206,7 @@ internal static class RynthChatFiltersPanel
                 {
                     Orientation = Orientation.Horizontal,
                     Spacing = 4,
-                    Children = { enabledCheck, patternBox, tabBox, upBtn, downBtn, delBtn },
+                    Children = { enabledCheck, modeBtn, patternBox, tabBox, upBtn, downBtn, delBtn },
                 });
             }
 
@@ -194,6 +220,80 @@ internal static class RynthChatFiltersPanel
                     Margin = new Thickness(2, 6),
                 });
             }
+
+            AddStandardFilters();
+        }
+
+        // Canned UB-IT-style filters (RynthChatPresets), checked after the rules above.
+        void AddStandardFilters()
+        {
+            rows.Children.Add(new TextBlock
+            {
+                Text = "Standard filters — tick to hide; type a tab to move the lines there instead.",
+                FontSize = 10,
+                FontWeight = FontWeight.Bold,
+                Foreground = Brushes.White,
+                Margin = new Thickness(2, 10, 2, 2),
+            });
+            foreach (string group in RynthChatPresets.Groups)
+            {
+                rows.Children.Add(new TextBlock
+                {
+                    Text = group,
+                    FontSize = 10,
+                    Foreground = Brushes.LightSteelBlue,
+                    Margin = new Thickness(2, 6, 2, 0),
+                });
+                foreach (var p in RynthChatPresets.All.Where(p => p.Group == group))
+                    rows.Children.Add(PresetRow(p));
+            }
+        }
+
+        Control PresetRow(RynthChatPresets.Preset p)
+        {
+            var check = new CheckBox
+            {
+                IsChecked = p.Enabled,
+                Content = new TextBlock { Text = p.Label, FontSize = 10, Foreground = Brushes.White },
+                VerticalAlignment = VerticalAlignment.Center,
+                MinWidth = 220,
+            };
+            ToolTip.SetTip(check, $"{p.Description}\nExample: {p.Example}");
+            check.IsCheckedChanged += (_, _) =>
+            {
+                p.Enabled = check.IsChecked == true;
+                ChatModel.FiltersChanged();
+            };
+
+            var tabBox = new TextBox
+            {
+                Text = p.Tab,
+                Watermark = "tab (empty = hide)",
+                FontSize = 10,
+                Width = 120,
+                Height = 24,
+                Background = FieldBg,
+                Foreground = Brushes.White,
+                BorderBrush = FieldBorder,
+                BorderThickness = new Thickness(1),
+            };
+            ScrollViewer.SetHorizontalScrollBarVisibility(tabBox, ScrollBarVisibility.Disabled);
+            ScrollViewer.SetVerticalScrollBarVisibility(tabBox, ScrollBarVisibility.Disabled);
+            tabBox.GotFocus  += (_, _) => Win32Backend.AvaloniaTextInputActive = true;
+            tabBox.LostFocus += (_, _) => Win32Backend.AvaloniaTextInputActive = false;
+            tabBox.TextChanged += (_, _) =>
+            {
+                p.Tab = (tabBox.Text ?? "").Trim();
+                ChatModel.FiltersChanged();
+            };
+
+            return new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 4,
+                Margin = new Thickness(8, 0, 0, 0),
+                Children = { check, tabBox },
+            };
         }
 
         addBtn.Click += (_, _) =>
@@ -224,4 +324,15 @@ internal static class RynthChatFiltersPanel
         RebuildRows();
         return layout;
     }
+
+    /// <summary>Button captions, indexed by <see cref="ChatMatchMode"/>.</summary>
+    private static readonly string[] ModeLabels = { "Regex", "Contains", "Starts", "Ends" };
+
+    private static string PatternWatermark(ChatMatchMode mode) => mode switch
+    {
+        ChatMatchMode.Contains   => "text anywhere in the line",
+        ChatMatchMode.StartsWith => "line starts with...",
+        ChatMatchMode.EndsWith   => "line ends with...",
+        _                        => "regex (e.g. AutoRun)",
+    };
 }

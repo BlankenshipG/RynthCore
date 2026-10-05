@@ -158,6 +158,19 @@ internal enum ChatRuleAction
 
 internal enum ChatColorMode { None, Line, Match }
 
+/// <summary>How a rule's Pattern is matched against the raw message text.</summary>
+internal enum ChatMatchMode
+{
+    /// <summary>The pattern is a regex (case-insensitive).</summary>
+    Regex,
+    /// <summary>Plain text anywhere in the message.</summary>
+    Contains,
+    /// <summary>Plain text at the start of the message.</summary>
+    StartsWith,
+    /// <summary>Plain text at the end of the message (trailing spaces ignored).</summary>
+    EndsWith,
+}
+
 /// <summary>
 /// One rule. Its fields are edited in place by a rule editor (then
 /// ChatModel.FiltersChanged); the pump reads each field once per line, and a
@@ -173,6 +186,8 @@ internal sealed class ChatFilterRule
     public volatile string Tab = "";
     public volatile ChatRuleAction Action = ChatRuleAction.Move;
     public volatile ChatColorMode ColorMode = ChatColorMode.None;
+    /// <summary>Regex, or a plain-text mode (escaped into a regex by <see cref="Recompile"/>).</summary>
+    public volatile ChatMatchMode Mode = ChatMatchMode.Regex;
     /// <summary>A new rule's colour (amber).</summary>
     public const uint DefaultColor = 0xFFFFD27A;
     /// <summary>0xAARRGGBB.</summary>
@@ -204,9 +219,16 @@ internal sealed class ChatFilterRule
         Slow = false;
         string pattern = Pattern;
         if (pattern.Length == 0) { Compiled = null; Error = null; Invalid = true; return; }
+        string expr = Mode switch
+        {
+            ChatMatchMode.Contains   => Regex.Escape(pattern),
+            ChatMatchMode.StartsWith => "^" + Regex.Escape(pattern),
+            ChatMatchMode.EndsWith   => Regex.Escape(pattern.TrimEnd()) + @"\s*$",
+            _                        => pattern,
+        };
         try
         {
-            Compiled = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+            Compiled = new Regex(expr, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
                 TimeSpan.FromMilliseconds(TimeoutMs));
             Error = null;
             Invalid = false;
@@ -493,8 +515,11 @@ internal sealed class ChatRouter
         foreach (ChatFilterRule rule in _rules) Volatile.Write(ref rule.Hits, 0);
     }
 
-    /// <summary>One step of the editor's test: rule index (-1 = mention) and what it did.</summary>
+    /// <summary>One step of the editor's test: rule index (-1 = mention, -2 = a standard filter) and what it did.</summary>
     public readonly record struct Step(int Rule, string What);
+
+    /// <summary><see cref="Step.Rule"/> of a standard-filter (RynthChatPresets) step.</summary>
+    public const int StandardFilterStep = -2;
 
     public ChatRoute Evaluate(ChatLine line, List<Step>? trace) =>
         Evaluate(line.Text, line.Channel, line.ChatType, trace);
@@ -582,6 +607,28 @@ internal sealed class ChatRouter
             }
             if (what is { Length: 0 }) what.Append("matches, but has nothing to do yet (no tab, no colour)");
             trace?.Add(new Step(i, what!.ToString()));
+        }
+
+        // Standard filters (RynthChatPresets) decide only what the custom rules left undecided.
+        if (!routed)
+        {
+            var preset = RynthCore.Engine.UI.Panels.RynthChatPresets.FirstMatch(text, channel);
+            if (preset != null)
+            {
+                string presetTab = preset.Tab;
+                routed = true;
+                if (presetTab.Length == 0)
+                {
+                    hidden = true;
+                    trace?.Add(new Step(StandardFilterStep, $"standard filter \"{preset.Label}\" hides it"));
+                }
+                else
+                {
+                    inHome = false;
+                    AddTab(ref tabs, presetTab);
+                    trace?.Add(new Step(StandardFilterStep, $"standard filter \"{preset.Label}\" moves it to {presetTab}"));
+                }
+            }
         }
 
         bool mention = false;
@@ -874,6 +921,8 @@ internal static class ChatModel
         foreach (string t in Volatile.Read(ref _customTabs)) if (seen.Add(t)) tabs.Add(t);
         foreach (ChatFilterRule rule in Filters)
             if (rule.Enabled && rule.Routes && rule.Tab.Length > 0 && seen.Add(rule.Tab)) tabs.Add(rule.Tab);
+        foreach (string t in RynthCore.Engine.UI.Panels.RynthChatPresets.TargetTabs())
+            if (seen.Add(t)) tabs.Add(t);
         string[] result = tabs.ToArray();
         _allTabs = (version, result);
         return result;
@@ -944,6 +993,9 @@ internal static class ChatModel
         foreach (ChatFilterRule rule in Filters)
             if (string.Equals(rule.Tab, tab, StringComparison.OrdinalIgnoreCase))
                 rule.Tab = newName;
+        foreach (var preset in RynthCore.Engine.UI.Panels.RynthChatPresets.All)
+            if (string.Equals(preset.Tab, tab, StringComparison.OrdinalIgnoreCase))
+                preset.Tab = newName;
         if (string.Equals(ActiveChannel, tab, StringComparison.OrdinalIgnoreCase)) ActiveChannel = newName;
         FiltersChanged();
         return true;
@@ -960,6 +1012,9 @@ internal static class ChatModel
             if (rule.Action is ChatRuleAction.Move or ChatRuleAction.Copy
                 && string.Equals(rule.Tab, tab, StringComparison.OrdinalIgnoreCase))
                 rule.Enabled = false;
+        foreach (var preset in RynthCore.Engine.UI.Panels.RynthChatPresets.All)
+            if (string.Equals(preset.Tab, tab, StringComparison.OrdinalIgnoreCase))
+                preset.Enabled = false;
         FiltersChanged();
     }
 
@@ -1102,6 +1157,7 @@ internal static class ChatModel
         // Kept while the rule is set to "No colour" too, so switching colour back on
         // after a relaunch finds the colour that was picked.
         Color = f.ColorMode != ChatColorMode.None || f.ColorArgb != ChatFilterRule.DefaultColor ? FormatColor(f.ColorArgb) : null,
+        Mode = f.Mode == ChatMatchMode.Regex ? null : f.Mode.ToString(),
     };
 
     /// <summary>
@@ -1134,6 +1190,8 @@ internal static class ChatModel
                 _ => ChatColorMode.None,
             },
             ColorArgb = ParseColor(f.Color) ?? ChatFilterRule.DefaultColor,
+            // Absent (settings saved before match modes existed): Regex.
+            Mode = Enum.TryParse(f.Mode, ignoreCase: true, out ChatMatchMode mode) ? mode : ChatMatchMode.Regex,
         };
         rule.Recompile();
         return rule;
@@ -1573,6 +1631,16 @@ internal static class ChatModel
                     && !IsBaseTab(rule.Tab) && !tabs.Contains(rule.Tab, StringComparer.OrdinalIgnoreCase))
                     tabs.Add(rule.Tab);
             }
+            foreach (RynthChatPresetDto p in dto.Presets ?? Array.Empty<RynthChatPresetDto>())
+            {
+                var preset = p.Id == null ? null : RynthCore.Engine.UI.Panels.RynthChatPresets.Get(p.Id);
+                if (preset == null) continue;   // a preset a later build removed
+                preset.Enabled = p.Enabled;
+                preset.Tab = (p.Tab ?? "").Trim();
+                if (preset.Tab.Length > 0 && !IsBaseTab(preset.Tab)
+                    && !tabs.Contains(preset.Tab, StringComparer.OrdinalIgnoreCase))
+                    tabs.Add(preset.Tab);
+            }
             _customTabs = tabs.ToArray();
             _filters = rules.ToArray();
             Interlocked.Increment(ref _filtersVersion);
@@ -1624,6 +1692,11 @@ internal static class ChatModel
             MentionWords = MentionWords,
             CustomTabs = Volatile.Read(ref _customTabs),
             Filters = Filters.Select(ToDto).ToArray(),
+            // Only presets the user touched: new presets in later builds start off.
+            Presets = RynthCore.Engine.UI.Panels.RynthChatPresets.All
+                .Where(p => p.Enabled || p.Tab.Length > 0)
+                .Select(p => new RynthChatPresetDto { Id = p.Id, Enabled = p.Enabled, Tab = p.Tab.Length > 0 ? p.Tab : null })
+                .ToArray(),
         };
         UiBackgroundWriter.Enqueue("persist chat settings", () =>
         {
@@ -1677,6 +1750,16 @@ internal sealed class RynthChatFilterDto
     [JsonPropertyName("colorMode")] public string? ColorMode { get; set; }
     /// <summary>"#RRGGBB".</summary>
     [JsonPropertyName("color")]     public string? Color     { get; set; }
+    /// <summary>ChatMatchMode name; absent = Regex.</summary>
+    [JsonPropertyName("mode")]      public string? Mode      { get; set; }
+}
+
+/// <summary>A standard filter's user state (RynthChatPresets), by preset id.</summary>
+internal sealed class RynthChatPresetDto
+{
+    [JsonPropertyName("id")]      public string? Id      { get; set; }
+    [JsonPropertyName("enabled")] public bool    Enabled { get; set; }
+    [JsonPropertyName("tab")]     public string? Tab     { get; set; }
 }
 
 internal sealed class RynthChatSettingsDto
@@ -1697,6 +1780,7 @@ internal sealed class RynthChatSettingsDto
     [JsonPropertyName("mentionWords")]    public string? MentionWords   { get; set; }
     [JsonPropertyName("customTabs")]      public string[]? CustomTabs   { get; set; }
     [JsonPropertyName("filters")]         public RynthChatFilterDto[]? Filters { get; set; }
+    [JsonPropertyName("presets")]         public RynthChatPresetDto[]? Presets { get; set; }
 }
 
 /// <summary>Export / import on the clipboard (the rule editor's Export and Import).</summary>

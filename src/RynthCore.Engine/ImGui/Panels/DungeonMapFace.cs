@@ -44,7 +44,7 @@ internal sealed class DungeonMapFace : IImGuiPanel
     {
         DungeonMapSettingsStore.Load(); // engine init thread: the file read stays off AC's thread
         ImGuiPanelHost.Register(Title,
-            new PanelSpec(new Vector2(480, 520), new Vector2(240, 200), Background: 0, EdgeToEdge: true),
+            new PanelSpec(new Vector2(480, 520), new Vector2(240, 200), Background: 0, EdgeToEdge: true, OpenCentered: true),
             () => new DungeonMapFace());
     }
 

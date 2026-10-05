@@ -122,6 +122,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         InventoryModel.Hover(0);
         InventoryModel.Unsubscribe();
         _dragItem = _pressItem = null;
+        ItemDragBridge.EndPopOutDrag();
         _lootAdd.Cancel();
     }
 
@@ -475,7 +476,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
 
             if (hot != null && ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Left))
             {
-                _selected = hot.Id;
+                SelectItem(hot);
                 _pressItem = hot;
                 _pressAt = mouse;
             }
@@ -749,6 +750,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
             _dragItem = null;
             _pressItem = null;
             if (item == null) return;
+            ItemDragBridge.EndPopOutDrag();
             Vector2 m = ImGuiNET.ImGui.GetMousePos();
             foreach (Target t in _targets)
             {
@@ -759,13 +761,50 @@ internal sealed partial class InventoryFace : IImGuiPanel
         }
     }
 
-    private void DrawDragGhost()
+    /// <summary>
+    /// ImGui drag-and-drop payload type for one item (uint object id), published while an item is
+    /// dragged so other ImGui windows (RynthAi's Mini Remote slots) can accept the drop. Must
+    /// match MiniRemoteHud.ItemPayloadType in RynthAi.
+    /// </summary>
+    public const string ItemPayloadType = "RYNTH_INV_ITEM";
+
+    /// <summary>
+    /// Selects <paramref name="it"/> here and in the game, like a click in the retail inventory, so
+    /// "selected item" features (Mini Remote slots, item info, loot rules) see it too.
+    /// </summary>
+    private void SelectItem(InventoryItem it)
+    {
+        _selected = it.Id;
+        // Queued, not called inline: Draw runs inside EndScene, and AC's SetSelectedObject rebuilds
+        // UI elements, so it runs at the main-thread queue's drain point instead.
+        if (ClientHelperHooks.GetSelectedItemId() != it.Id)
+            AcMainThreadQueue.EnqueueSetSelectedObject(it.Id);
+    }
+
+    private unsafe void DrawDragGhost()
     {
         if (_dragItem == null) return;
         var fg = ImGuiNET.ImGui.GetForegroundDrawList();
         Vector2 m = ImGuiNET.ImGui.GetMousePos() - new Vector2(Icon * 0.5f, Icon * 0.5f);
         DrawItemIcon(fg, _dragItem.Id, m, Icon, 0xD0FFFFFF);
         ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
+        // A popped-out Inventory draws in its own ImGui context: the client's drop targets
+        // only see the drag through the bridge, which republishes it in the main context.
+        if (ImGuiPopOuts.InPopOutFrame)
+        {
+            ItemDragBridge.NotePopOutDrag(_dragItem.Id);
+            return;
+        }
+
+        // Re-submitted every frame of the drag (an extern source expires when it isn't); the
+        // ghost above is the preview, so no ImGui tooltip.
+        if (ImGuiNET.ImGui.BeginDragDropSource(ImGuiDragDropFlags.SourceExtern | ImGuiDragDropFlags.SourceNoPreviewTooltip))
+        {
+            uint id = _dragItem.Id;
+            ImGuiNET.ImGui.SetDragDropPayload(ItemPayloadType, (IntPtr)(&id), sizeof(uint));
+            ImGuiNET.ImGui.EndDragDropSource();
+        }
     }
 
     // ── Tooltip ─────────────────────────────────────────────────────────
@@ -892,6 +931,11 @@ internal sealed partial class InventoryFace : IImGuiPanel
                 _lootAdd.Open(it.Id, it.Name, toOpenProfile: false);
             if (ImGuiNET.ImGui.IsItemHovered())
                 ImGuiNET.ImGui.SetTooltip("Make a RynthAi loot rule for this item (preview first)");
+            if (!it.IsPack && ImGuiNET.ImGui.MenuItem("Add to item count HUD"))
+                UI.Data.RynthAiCommands.ApplyRemoteCommand("itemhudadd", it.Name);
+            if (ImGuiNET.ImGui.IsItemHovered())
+                ImGuiNET.ImGui.SetTooltip("Track how many of these you carry on RynthAi's floating item count HUD (/ra itemhud add)");
+            if (!it.IsPack) MiniRemoteMenu(it);
             if (!idle)
                 ImGuiNET.ImGui.TextDisabled("(an item action is waiting)");
         }
@@ -900,6 +944,36 @@ internal sealed partial class InventoryFace : IImGuiPanel
             ImGuiNET.ImGui.EndPopup();
             PopMenuStyle();
         }
+    }
+
+    /// <summary>RynthAi Mini Remote quick-use grid size (HudState.MiniRemoteSlotCount, 6 rows of 5).</summary>
+    private const int MiniRemoteSlots = 30, MiniRemoteColumns = 5;
+
+    /// <summary>
+    /// "Add to Mini Remote" submenu: first empty slot, or a numbered grid laid out like the
+    /// remote's own slots. RynthAi validates the item and reports the result in chat.
+    /// </summary>
+    private static void MiniRemoteMenu(InventoryItem it)
+    {
+        if (!ImGuiNET.ImGui.BeginMenu("Add to Mini Remote")) return;
+        if (ImGuiNET.ImGui.MenuItem("First empty slot"))
+            UI.Data.RynthAiCommands.ApplyRemoteCommand("remoteslot", "first " + it.Id.ToString(CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.Separator();
+        ImGuiNET.ImGui.TextDisabled("Or pick a slot (replaces what's there):");
+        for (int i = 0; i < MiniRemoteSlots; i++)
+        {
+            if (i % MiniRemoteColumns != 0) ImGuiNET.ImGui.SameLine();
+            string label = (i + 1).ToString("00", CultureInfo.InvariantCulture);
+            if (ImGuiNET.ImGui.Button(label, new Vector2(28, 0)))
+            {
+                UI.Data.RynthAiCommands.ApplyRemoteCommand("remoteslot",
+                    (i + 1).ToString(CultureInfo.InvariantCulture) + " " + it.Id.ToString(CultureInfo.InvariantCulture));
+                ImGuiNET.ImGui.CloseCurrentPopup();
+            }
+        }
+        ImGuiNET.ImGui.Separator();
+        ImGuiNET.ImGui.TextDisabled("Tip: you can also drag the item onto a slot.");
+        ImGuiNET.ImGui.EndMenu();
     }
 
     // ── Split dialog ────────────────────────────────────────────────────
