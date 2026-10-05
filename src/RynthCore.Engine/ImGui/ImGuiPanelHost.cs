@@ -66,7 +66,11 @@ internal sealed record PanelSpec(
     ImGuiWindowFlags BodyFlags = ImGuiWindowFlags.None,
     // Where the panel first opens (logical units) when nothing is saved for its
     // key; null = the cascade. (Script windows: a FirstUseEver position.)
-    Vector2? DefaultPos = null);
+    Vector2? DefaultPos = null,
+    // With nothing saved and no DefaultPos: open centred in the game view rather
+    // than in the top-left cascade, where popped-out panels (separate windows
+    // above the game frame) usually sit and would hide it.
+    bool OpenCentered = false);
 
 /// <summary>An ImGui panel face. One instance per open; dropped on close.</summary>
 internal interface IImGuiPanel
@@ -648,6 +652,10 @@ internal static class ImGuiPanelHost
         {
             pos = defaultPos; // the face's own first spot (a script window's FirstUseEver position)
         }
+        else if (entry.Spec.OpenCentered && CenteredLogicalPos(size, placeScale) is Vector2 centered)
+        {
+            pos = centered;
+        }
         else
         {
             int shown = 0;
@@ -667,6 +675,104 @@ internal static class ImGuiPanelHost
         entry.NeedsPlacement = true;
         entry.DesiredPos = entry.Pos != pos * placeScale ? pos * placeScale : null;
         entry.DesiredForDisplay = ImGuiNET.ImGui.GetIO().DisplaySize;
+
+        // Popped-out windows sit above the game frame, so a docked panel opening under
+        // one would be invisible. The new spot is saved by the open's Persist, so the
+        // panel comes back where it could be seen.
+        if (ClearOfPopOuts(entry.Pos, entry.Size) is Vector2 clear)
+        {
+            RynthLog.UI($"ImGuiPanelHost: {entry.Title} would open under a popped-out window; " +
+                        $"moved from ({entry.Pos.X:0},{entry.Pos.Y:0}) to ({clear.X:0},{clear.Y:0}).");
+            entry.Pos = clear;
+            entry.PersistedPos = clear;
+            entry.DesiredPos = null;   // don't pull it back under the pop-out as the display grows
+        }
+    }
+
+    /// <summary>Above this share of a docked panel hidden by popped-out windows, it opens elsewhere.</summary>
+    private const float MaxCoveredFraction = 0.5f;
+    /// <summary>Candidate spots per axis when looking for a clear place (a grid over the game view).</summary>
+    private const int ClearSpotSteps = 8;
+
+    /// <summary>
+    /// A spot (client px) for a docked window of <paramref name="size"/> at <paramref name="pos"/>
+    /// that popped-out windows hide less, nearest the original among the least-covered; null when
+    /// at most half of it is covered or no spot is better.
+    /// </summary>
+    private static Vector2? ClearOfPopOuts(Vector2 pos, Vector2 size)
+    {
+        float area = size.X * size.Y;
+        if (area <= 0) return null;
+        List<(Vector2 Min, Vector2 Max)> covers = PopOutRectsInClient();
+        if (covers.Count == 0) return null;
+        float covered = CoveredArea(pos, size, covers);
+        if (covered <= area * MaxCoveredFraction) return null;
+
+        Vector2 display = ImGuiNET.ImGui.GetIO().DisplaySize;
+        if (display.X <= 1 || display.Y <= 1) return null;
+        Vector2 room = Vector2.Max(Vector2.Zero, display - size);
+
+        // Pass 1: the least coverage any grid spot reaches. Pass 2: the nearest spot within
+        // 2% of the panel's area of that, so a nearly-as-clear nearby spot beats a far one.
+        float least = float.MaxValue;
+        for (int i = 0; i <= ClearSpotSteps; i++)
+            for (int j = 0; j <= ClearSpotSteps; j++)
+                least = Math.Min(least, CoveredArea(GridSpot(room, i, j), size, covers));
+        if (least >= covered) return null;
+
+        float tolerance = least + area * 0.02f;
+        Vector2? best = null;
+        float bestDist = float.MaxValue;
+        for (int i = 0; i <= ClearSpotSteps; i++)
+            for (int j = 0; j <= ClearSpotSteps; j++)
+            {
+                Vector2 spot = GridSpot(room, i, j);
+                if (CoveredArea(spot, size, covers) > tolerance) continue;
+                float dist = Vector2.DistanceSquared(spot, pos);
+                if (dist < bestDist) { bestDist = dist; best = spot; }
+            }
+        return best;
+    }
+
+    private static Vector2 GridSpot(Vector2 room, int i, int j) =>
+        new(MathF.Round(room.X * i / ClearSpotSteps), MathF.Round(room.Y * j / ClearSpotSteps));
+
+    /// <summary>Visible popped-out windows' rects in the game window's client px (ImGui coordinates).</summary>
+    private static List<(Vector2 Min, Vector2 Max)> PopOutRectsInClient()
+    {
+        Vector2 origin = ImGuiPopOuts.ClientOriginOnScreen();
+        var rects = new List<(Vector2, Vector2)>();
+        foreach (var (left, top, width, height) in UI.LayeredWindow.VisibleContentRects())
+        {
+            var min = new Vector2(left, top) - origin;
+            rects.Add((min, min + new Vector2(width, height)));
+        }
+        return rects;
+    }
+
+    /// <summary>Area of the window hidden by <paramref name="covers"/> (overlaps between covers count twice).</summary>
+    private static float CoveredArea(Vector2 pos, Vector2 size, List<(Vector2 Min, Vector2 Max)> covers)
+    {
+        Vector2 max = pos + size;
+        float total = 0;
+        foreach (var (cMin, cMax) in covers)
+        {
+            float w = MathF.Min(max.X, cMax.X) - MathF.Max(pos.X, cMin.X);
+            float h = MathF.Min(max.Y, cMax.Y) - MathF.Max(pos.Y, cMin.Y);
+            if (w > 0 && h > 0) total += w * h;
+        }
+        return total;
+    }
+
+    /// <summary>
+    /// Top-left (logical units) that centres a window of logical <paramref name="size"/> in the
+    /// game view; null while the display size isn't known yet.
+    /// </summary>
+    private static Vector2? CenteredLogicalPos(Vector2 size, float placeScale)
+    {
+        Vector2 display = ImGuiNET.ImGui.GetIO().DisplaySize;
+        if (display.X <= 1 || display.Y <= 1 || placeScale <= 0) return null;
+        return Vector2.Max(Vector2.Zero, (display / placeScale - size) * 0.5f);
     }
 
     private static Vector2 ClampToDisplay(Vector2 pos, Vector2 size)
