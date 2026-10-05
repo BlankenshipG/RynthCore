@@ -892,6 +892,10 @@ internal sealed partial class InventoryFace : IImGuiPanel
                 _lootAdd.Open(it.Id, it.Name, toOpenProfile: false);
             if (ImGuiNET.ImGui.IsItemHovered())
                 ImGuiNET.ImGui.SetTooltip("Make a RynthAi loot rule for this item (preview first)");
+            if (!it.IsPack && ImGuiNET.ImGui.MenuItem("Add to item count HUD"))
+                UI.Data.RynthAiCommands.ApplyRemoteCommand("itemhudadd", it.Name);
+            if (ImGuiNET.ImGui.IsItemHovered())
+                ImGuiNET.ImGui.SetTooltip("Track how many of these you carry on RynthAi's floating item count HUD (/ra itemhud add)");
             if (!idle)
                 ImGuiNET.ImGui.TextDisabled("(an item action is waiting)");
         }
