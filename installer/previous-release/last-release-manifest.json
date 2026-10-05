@@ -1,24 +1,24 @@
 {
     "schema":  1,
     "product":  "RynthCore + RynthSuite",
-    "version":  "2026.10.5.7",
-    "release":  2026100507,
-    "builtUtc":  "2026-10-05T15:05:50Z",
-    "previous":  "2026.10.5.6",
+    "version":  "2026.10.5.8",
+    "release":  2026100508,
+    "builtUtc":  "2026-10-05T15:20:03Z",
+    "previous":  "2026.10.5.7",
     "installer":  {
-                      "file":  "RynthCore-Setup-2026.10.5.7.exe",
-                      "size":  130700880,
-                      "sha256":  "14cd10dac7f7245528c7be94a35395a21fa6edd5679b5ea3a51fa23eb28d4bed"
+                      "file":  "RynthCore-Setup-2026.10.5.8.exe",
+                      "size":  130697312,
+                      "sha256":  "dbb04b9a5ff1b8dc986b4c50421e42814f64df072bfb805634ece0f2bbd5a784"
                   },
     "source":  {
                    "rynthCore":  {
                                      "branch":  "merge/aelrynth-2026.10.5.1",
-                                     "commit":  "b63b9feef67d55c399a197fb9b4e78c5b4cf1b83",
+                                     "commit":  "9408852735764f8701d40d343c292db6c7da396f",
                                      "dirty":  false
                                  },
                    "rynthSuite":  {
                                       "branch":  "fix/rynthai-launcher-remote-commands",
-                                      "commit":  "3ddd7ea3822ac4cba2f978e23549bc7e00d1d819",
+                                      "commit":  "4d700e3954da14ae718b3fe4afbb6031693f1c11",
                                       "dirty":  false
                                   }
                },
@@ -26,12 +26,12 @@
                        {
                            "name":  "Launcher (RynthCore.exe)",
                            "file":  "core\\RynthCore.exe",
-                           "version":  "2026.10.5.7+b63b9feef67d55c399a197fb9b4e78c5b4cf1b83"
+                           "version":  "2026.10.5.8+9408852735764f8701d40d343c292db6c7da396f"
                        },
                        {
                            "name":  "Engine",
                            "file":  "core\\Runtime\\RynthCore.Engine.dll",
-                           "version":  "2026.10.5.7+b63b9feef67d55c399a197fb9b4e78c5b4cf1b83"
+                           "version":  "2026.10.5.8+9408852735764f8701d40d343c292db6c7da396f"
                        },
                        {
                            "name":  "Loader",
@@ -41,56 +41,56 @@
                        {
                            "name":  "Loot Editor",
                            "file":  "core\\Tools\\LootEditor\\RynthCore.LootEditor.exe",
-                           "version":  "2026.10.5.7+3ddd7ea3822ac4cba2f978e23549bc7e00d1d819"
+                           "version":  "2026.10.5.8+4d700e3954da14ae718b3fe4afbb6031693f1c11"
                        },
                        {
                            "name":  "RynthAi plugin",
                            "file":  "suite\\RynthAi\\RynthCore.Plugin.RynthAi.dll",
-                           "version":  "1.0.0+3ddd7ea3822ac4cba2f978e23549bc7e00d1d819"
+                           "version":  "1.0.0+4d700e3954da14ae718b3fe4afbb6031693f1c11"
                        },
                        {
                            "name":  "Monster Editor",
                            "file":  "suite\\RynthAi\\MonsterEditor\\RynthCore.MonsterEditor.exe",
-                           "version":  "2026.10.5.7+3ddd7ea3822ac4cba2f978e23549bc7e00d1d819"
+                           "version":  "2026.10.5.8+4d700e3954da14ae718b3fe4afbb6031693f1c11"
                        },
                        {
                            "name":  "RynthChat (experimental)",
                            "file":  "suite\\RynthChat\\RynthCore.Plugin.RynthChat.dll",
-                           "version":  "1.0.0+3ddd7ea3822ac4cba2f978e23549bc7e00d1d819"
+                           "version":  "1.0.0+4d700e3954da14ae718b3fe4afbb6031693f1c11"
                        },
                        {
                            "name":  "RynthJuice (experimental)",
                            "file":  "suite\\RynthJuice\\RynthCore.Plugin.RynthJuice.dll",
-                           "version":  "0.1.2-experimental+3ddd7ea3822ac4cba2f978e23549bc7e00d1d819"
+                           "version":  "0.1.2-experimental+4d700e3954da14ae718b3fe4afbb6031693f1c11"
                        },
                        {
                            "name":  "RynthNav (experimental)",
                            "file":  "suite\\RynthNav\\RynthCore.Plugin.RynthNav.dll",
-                           "version":  "1.0.0+3ddd7ea3822ac4cba2f978e23549bc7e00d1d819"
+                           "version":  "1.0.0+4d700e3954da14ae718b3fe4afbb6031693f1c11"
                        },
                        {
                            "name":  "RynthTracker (experimental)",
                            "file":  "suite\\RynthTracker\\RynthCore.Plugin.RynthTracker.dll",
-                           "version":  "1.0.0+3ddd7ea3822ac4cba2f978e23549bc7e00d1d819"
+                           "version":  "1.0.0+4d700e3954da14ae718b3fe4afbb6031693f1c11"
                        },
                        {
                            "name":  "RynthVision (experimental)",
                            "file":  "suite\\RynthVision\\RynthCore.Plugin.RynthVision.dll",
-                           "version":  "1.0.0+3ddd7ea3822ac4cba2f978e23549bc7e00d1d819"
+                           "version":  "1.0.0+4d700e3954da14ae718b3fe4afbb6031693f1c11"
                        },
                        {
                            "name":  "UbRythai (experimental)",
                            "file":  "suite\\UbRythai\\RynthCore.Plugin.UbRythai.dll",
-                           "version":  "3.1.10+3ddd7ea3822ac4cba2f978e23549bc7e00d1d819"
+                           "version":  "3.1.10+4d700e3954da14ae718b3fe4afbb6031693f1c11"
                        }
                    ],
     "changelog":  [
-                      "RynthCore/Changelog/2026-10-05-release-2026.10.5.6.md",
-                      "RynthCore/Changelog/2026-10-05-rynthai-cimgui-binding.md"
+                      "RynthCore/Changelog/2026-10-05-mini-remote-is-ilt-hub.md",
+                      "RynthCore/Changelog/2026-10-05-release-2026.10.5.7.md"
                   ],
     "changelogSince":  {
-                           "rynthCore":  "3f06ed3e09cd8fea3430cebb4dd256b2673b0e95",
-                           "rynthSuite":  "871c5d93707f4f6ec1e1af3cc0cba365521df0b3",
+                           "rynthCore":  "b63b9feef67d55c399a197fb9b4e78c5b4cf1b83",
+                           "rynthSuite":  "3ddd7ea3822ac4cba2f978e23549bc7e00d1d819",
                            "date":  ""
                        }
 }
