@@ -1991,9 +1991,10 @@ internal static class ClientObjectHooks
 
         // Deep-audit finding #24 (2026-06-18): never touch AC memory off-thread here. PWD-backed
         // stypes were handled above (live on the main thread, snapshot off-thread); InqInt
-        // walks qualities and stays main-thread-only.
+        // walks qualities and stays main-thread-only. Off-thread, the network update cache
+        // (a managed ConcurrentDictionary) still answers for never-appraised objects.
         if (!MainThreadGuard.IsOnMainThread())
-            return false;
+            return PropertyUpdateHooks.TryGetCachedIntProperty(objectId, stype, out value);
 
         // CBaseQualities::InqInt for stypes not in PWD.
         if (_inqInt == null)
@@ -2044,10 +2045,9 @@ internal static class ClientObjectHooks
     /// network-populated, so this works on UNequipped items with no qualities pointer
     /// and no appraisal — no main-thread native call (the weenie ptr is served from
     /// the off-thread double-buffered snapshot when not on AC's main thread).
-    /// Supported stype: Icon=8 (PWD._iconID at +16). Layout per the _type reader
-    /// above: WeenieDesc(4) + _name(4) + _plural_name(4) + _wcid(4) = 16 → _iconID.
-    /// (Generic switch so _iconOverlayID(+20) / _iconUnderlayID(+24) can extend it
-    /// later without a new bridge.)
+    /// Supported stypes: Icon=8, IconOverlay=50, IconUnderlay=52. Layout per the _type
+    /// reader above: WeenieDesc(4) + _name(4) + _plural_name(4) + _wcid(4) = 16 → _iconID,
+    /// then _iconOverlayID(+20) and _iconUnderlayID(+24).
     /// </summary>
     public static bool TryGetObjectDataIdProperty(uint objectId, uint stype, out uint dataId)
     {
@@ -2055,8 +2055,10 @@ internal static class ClientObjectHooks
 
         int pwdFieldOffset = stype switch
         {
-            8 => 16,    // PropertyDataId.Icon → _iconID
-            _ => -1,
+            8  => 16,   // PropertyDataId.Icon → _iconID
+            50 => 20,   // PropertyDataId.IconOverlay → _iconOverlayID
+            52 => 24,   // PropertyDataId.IconUnderlay → _iconUnderlayID
+            _  => -1,
         };
         if (pwdFieldOffset < 0)
             return false;

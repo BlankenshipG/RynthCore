@@ -700,14 +700,32 @@ internal static partial class RynthAiPanel
             RowDefinitions = new RowDefinitions("Auto,Auto,Auto"),
             Margin = new Thickness(0, 4, 0, 0)
         };
-        AddSplitLauncher(launcherGrid, 0, 0, "Meta", "⚙", "Lua", "<>",
-            onLeftClick: () => AvaloniaOverlay.ActivateBarButton("Meta"));
+        // Lua: the Lua Scripts editor is an ImGui window inside RynthAi (drawn from its
+        // RynthPluginRenderOverlay), so the button toggles it like "/ra lua".
+        var (_, luaBtn) = AddSplitLauncher(launcherGrid, 0, 0, "Meta", "⚙", "Lua", "<>",
+            onLeftClick: () => AvaloniaOverlay.ActivateBarButton("Meta"),
+            onRightClick: () =>
+            {
+                ClosePicker();
+                if (_applyRemoteCommand == null) TryBind();
+                SendRemoteCmd("lua", "toggle");
+            });
+        ToolTip.SetTip(luaBtn, "Show/hide the Lua Scripts editor (/ra lua).");
         AddLauncher(launcherGrid, 0, 1, "Monsters",    "◎",
             onClick: () => AvaloniaOverlay.ActivateBarButton("Monsters"));
         AddLauncher(launcherGrid, 0, 2, "Settings",    "⚒",
             onClick: () => AvaloniaOverlay.ActivateBarButton("Settings"));
-        AddSplitLauncher(launcherGrid, 1, 0, "Nav", "➤", "Map", "🗺",
-            onLeftClick: () => AvaloniaOverlay.ActivateBarButton("Nav"));
+        // Map: the dungeon map is an ImGui window inside RynthAi (DashWindows.ShowDungeonMap),
+        // drawn from its RynthPluginRenderOverlay; the button toggles it like "/ra map".
+        var (_, mapBtn) = AddSplitLauncher(launcherGrid, 1, 0, "Nav", "➤", "Map", "🗺",
+            onLeftClick: () => AvaloniaOverlay.ActivateBarButton("Nav"),
+            onRightClick: () =>
+            {
+                ClosePicker();
+                if (_applyRemoteCommand == null) TryBind();
+                SendRemoteCmd("map", "toggle");
+            });
+        ToolTip.SetTip(mapBtn, "Show/hide the dungeon map (/ra map). It appears when you are indoors.");
         AddLauncher(launcherGrid, 1, 1, "Items",       "🛡",
             onClick: () => AvaloniaOverlay.ActivateBarButton("Items"));
         var patrolBtn = AddLauncher(launcherGrid, 1, 2, "Patrol", "⬡",
@@ -726,16 +744,36 @@ internal static partial class RynthAiPanel
                 ShowPatrolFlyout(patrolBtn);
             }
         };
-        // ILT Hub: same as typing "/ra hub show". The Hub is an ImGui overlay window with no
+        // Char: same as typing "/ra hub show". The ILT Hub is an ImGui overlay window with no
         // Avalonia panel, so this is the panel's way to open it.
-        var iltHubBtn = AddLauncher(launcherGrid, 2, 0, "ILT Hub", "♥",
+        var charBtn = AddLauncher(launcherGrid, 2, 0, "Char", "♥",
             onClick: () =>
             {
                 ClosePicker();
                 if (_applyRemoteCommand == null) TryBind();
                 SendRemoteCmd("hub", "show");
             });
-        ToolTip.SetTip(iltHubBtn, "Open the ILT Hub window (/ra hub show).");
+        ToolTip.SetTip(charBtn, "Open the character hub (ILT Hub) window (/ra hub show).");
+
+        // Hub: the Mini Remote and the Inventory HUDs setup are ImGui windows inside RynthAi.
+        var hudBtn = AddLauncher(launcherGrid, 2, 1, "Hub", "▣",
+            onClick: () =>
+            {
+                ClosePicker();
+                if (_applyRemoteCommand == null) TryBind();
+                SendRemoteCmd("remote", "toggle");
+            });
+        ToolTip.SetTip(hudBtn, "Left-click: show/hide the Mini Remote (/ra remote).  Right-click: Inventory HUDs setup (/ra huds).");
+        hudBtn.PointerPressed += (_, e) =>
+        {
+            if (e.GetCurrentPoint(hudBtn).Properties.IsRightButtonPressed)
+            {
+                e.Handled = true;
+                ClosePicker();
+                if (_applyRemoteCommand == null) TryBind();
+                SendRemoteCmd("huds", "show");
+            }
+        };
 
         dash.Children.Add(launcherGrid);
 
@@ -1384,16 +1422,18 @@ internal static partial class RynthAiPanel
     /// by side. Used for Nav | Map so the user can pop the navigation panel
     /// or the dungeon map independently from the same row slot.
     /// </summary>
-    private static void AddSplitLauncher(Grid grid, int row, int col,
+    /// <returns>The left and right half buttons (e.g. for tooltips).</returns>
+    private static (Button Left, Button Right) AddSplitLauncher(Grid grid, int row, int col,
         string leftLabel, string leftIcon, string rightLabel, string rightIcon,
         Action? onLeftClick = null, Action? onRightClick = null)
     {
         var splitGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*") };
-        AddLauncher(splitGrid, 0, 0, leftLabel,  leftIcon,  onLeftClick);
-        AddLauncher(splitGrid, 0, 1, rightLabel, rightIcon, onRightClick);
+        var left  = AddLauncher(splitGrid, 0, 0, leftLabel,  leftIcon,  onLeftClick);
+        var right = AddLauncher(splitGrid, 0, 1, rightLabel, rightIcon, onRightClick);
         grid.Children.Add(splitGrid);
         Grid.SetRow(splitGrid, row);
         Grid.SetColumn(splitGrid, col);
+        return (left, right);
     }
 
     private static Button AddLauncher(Grid grid, int row, int col, string label, string icon, Action? onClick = null)
@@ -1580,6 +1620,16 @@ internal static partial class RynthAiPanel
     /// typing "/ra &lt;action&gt; &lt;value&gt;". The plugin copies both strings and applies
     /// the command on its pump thread, so the buffers can be freed as soon as this returns.
     /// </summary>
+    /// <summary>
+    /// Lets other engine panels send a "/ra &lt;action&gt; &lt;value&gt;" command to the RynthAi
+    /// plugin, binding the plugin export first if this panel has not done so yet.
+    /// </summary>
+    internal static void SendRynthAiCommand(string action, string value)
+    {
+        if (_applyRemoteCommand == null) TryBind();
+        SendRemoteCmd(action, value);
+    }
+
     private static void SendRemoteCmd(string action, string value)
     {
         if (_applyRemoteCommand == null)

@@ -847,8 +847,9 @@ public readonly unsafe struct RynthCoreHost
     }
 
     /// <summary>
-    /// Reads a STypeDID property that lives in the object's PublicWeenieDesc — currently
-    /// Icon=8 (→ _iconID, e.g. 0x06xxxxxx). Works on UNequipped/never-appraised pack items
+    /// Reads a STypeDID property that lives in the object's PublicWeenieDesc — Icon=8, and on
+    /// engines 2026.10.4.19+ also IconOverlay=50 / IconUnderlay=52 (0x06xxxxxx; older engines
+    /// return false for those). Works on UNequipped/never-appraised pack items
     /// (PWD is network-populated; no qualities pointer or appraisal required). Returns false
     /// when the engine predates API v65 or the read fails.
     /// </summary>

@@ -130,6 +130,30 @@ internal static class AppraisalHooks
     }
 
     /// <summary>
+    /// Applies a later server property update to an already-appraised object so the cache
+    /// doesn't keep serving the value from the last ID. Objects never appraised are left
+    /// alone (the update cache covers them).
+    /// </summary>
+    public static void PatchCachedInt(uint guid, uint stype, int value)
+    {
+        lock (_cacheLock)
+        {
+            if (_intCache.TryGetValue(guid, out Dictionary<uint, int>? props))
+                props[stype] = value;
+        }
+    }
+
+    /// <summary>Bool counterpart of <see cref="PatchCachedInt"/>.</summary>
+    public static void PatchCachedBool(uint guid, uint stype, bool value)
+    {
+        lock (_cacheLock)
+        {
+            if (_boolCache.TryGetValue(guid, out Dictionary<uint, bool>? props))
+                props[stype] = value;
+        }
+    }
+
+    /// <summary>
     /// Returns a bool property from the last server appraisal for this object.
     /// Only populated after the player has identified the item (RequestId).
     /// </summary>

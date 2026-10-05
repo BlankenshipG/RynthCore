@@ -961,6 +961,10 @@ internal static class SettingsPanel
         p.Children.Add(BoolRow("Combine Bags During Salvage", state.Data.CombineBagsDuringSalvage,
             v => { state.Data.CombineBagsDuringSalvage = v; Push(state); },
             "When salvaging an item, also add any under-full salvage bag of the same material to the salvage panel."));
+        // The HUD windows are ImGui windows owned by the RynthAi plugin, so the engine only asks it to open them.
+        p.Children.Add(ButtonRow("Floating HUDs", "Inventory HUDs...",
+            () => RynthAiPanel.SendRynthAiCommand("huds", "show"),
+            "Opens the item count HUD / Mini Remote setup window (/ra huds)."));
 
         p.Children.Add(Spacer());
         p.Children.Add(SectionHeader("Loot Timers (ms)"));
@@ -1305,6 +1309,44 @@ internal static class SettingsPanel
         };
         var lblBlock = new TextBlock { Text = label, Foreground = ColTextDim, FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
         btn.MinWidth = 160;
+        Grid.SetColumn(lblBlock, 0);
+        Grid.SetColumn(btn,      1);
+        row.Children.Add(lblBlock);
+        row.Children.Add(btn);
+
+        if (tooltip != null)
+        {
+            ToolTip.SetTip(row, tooltip);
+            ToolTip.SetShowDelay(row, 400);
+        }
+        return row;
+    }
+
+    /// <summary>Label on the left, a single action button on the right.</summary>
+    private static Control ButtonRow(string label, string buttonText, Action onClick, string? tooltip = null)
+    {
+        var btn = new Button
+        {
+            Content = buttonText,
+            FontSize = 10,
+            Height = 20,
+            MinWidth = 160,
+            Padding = new Thickness(4, 1),
+            Background = ColBtnFill,
+            Foreground = ColTextDim,
+            BorderBrush = ColBtnBord,
+            BorderThickness = new Thickness(1),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+        };
+        btn.Click += (_, _) => onClick();
+
+        var row = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            Margin = new Thickness(0, 2, 0, 2),
+            Height = 22,
+        };
+        var lblBlock = new TextBlock { Text = label, Foreground = ColTextDim, FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(lblBlock, 0);
         Grid.SetColumn(btn,      1);
         row.Children.Add(lblBlock);
