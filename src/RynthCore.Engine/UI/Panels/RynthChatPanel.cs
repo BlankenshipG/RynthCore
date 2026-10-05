@@ -5,7 +5,9 @@
 //  Phase 1: read-only display alongside retail chat (retail not yet suppressed).
 //    • Per-channel tabs: All / Chat / Channels / System / Combat / Rynth / Other
 //      plus user-defined tabs fed by regex filter rules
-//    • Regex filter rules: move matching lines to a custom tab, or hide them
+//    • Filter rules (custom Contains / Starts with / Ends with / Regex, plus
+//      canned standard filters in RynthChatPresets): move matching lines to a
+//      custom tab, or hide them
 //    • Per-channel accent colors + timestamps
 //    • Auto-scroll to tail
 //    • Search/filter TextBox (wired; typing requires mouse hover — Phase 4 fix)
@@ -126,11 +128,25 @@ internal static class RynthChatPanel
         _onFiltersChanged?.Invoke();
     }
 
+    /// <summary>How a custom rule's pattern is interpreted.</summary>
+    internal enum FilterMatchMode
+    {
+        /// <summary>Regex against the formatted line ("ts sender: text") — the original behaviour.</summary>
+        Regex,
+        /// <summary>Plain text anywhere in the message.</summary>
+        Contains,
+        /// <summary>Plain text at the start of the message.</summary>
+        StartsWith,
+        /// <summary>Plain text at the end of the message.</summary>
+        EndsWith,
+    }
+
     internal sealed class ChatFilterRule
     {
         internal bool   Enabled = true;
         internal string Pattern = "";
         internal string Tab     = "";      // "" = hide matching lines
+        internal FilterMatchMode Mode = FilterMatchMode.Regex;
         internal Regex? Compiled;
         internal bool   Invalid;
 
@@ -139,31 +155,70 @@ internal static class RynthChatPanel
             Compiled = null;
             Invalid  = false;
             if (Pattern.Length == 0) { Invalid = true; return; }
+            // Plain-text modes match the raw message, so the timestamp prefix can't break StartsWith.
+            string expr = Mode switch
+            {
+                FilterMatchMode.Contains   => Regex.Escape(Pattern),
+                FilterMatchMode.StartsWith => "^" + Regex.Escape(Pattern),
+                FilterMatchMode.EndsWith   => Regex.Escape(Pattern.TrimEnd()) + @"\s*$",
+                _                          => Pattern,
+            };
             try
             {
-                Compiled = new Regex(Pattern,
+                Compiled = new Regex(expr,
                     RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
                     TimeSpan.FromMilliseconds(50));
             }
             catch { Invalid = true; }
         }
+
+        /// <summary>Tests the rule against a line; <paramref name="formatted"/> is used only by Regex mode.</summary>
+        internal bool Matches(string formatted, string rawText)
+        {
+            if (!Enabled || Compiled == null) return false;
+            try { return Compiled.IsMatch(Mode == FilterMatchMode.Regex ? formatted : rawText); }
+            catch (RegexMatchTimeoutException) { return false; }
+        }
     }
 
     /// <summary>Resolve where a line should display after filter rules.
-    /// Returns null when a hide-rule matched; otherwise the effective tab
-    /// (a custom tab name, or the line's classified channel).</summary>
+    /// Custom rules are checked first (in order, first match wins), then the
+    /// standard presets. Returns null when a hide-rule matched; otherwise the
+    /// effective tab (a custom tab name, or the line's classified channel).</summary>
     private static string? EffectiveTab(ChatDisplayLine line)
     {
         foreach (var rule in _filters)
         {
-            if (!rule.Enabled || rule.Compiled == null) continue;
-            bool hit;
-            try { hit = rule.Compiled.IsMatch(line.FormattedText); }
-            catch (RegexMatchTimeoutException) { continue; }
-            if (!hit) continue;
+            if (!rule.Matches(line.FormattedText, line.Text)) continue;
             return rule.Tab.Length == 0 ? null : rule.Tab;
         }
+        var preset = RynthChatPresets.FirstMatch(line.Text, line.Channel);
+        if (preset != null) return preset.Tab.Length == 0 ? null : preset.Tab;
         return line.Channel;
+    }
+
+    /// <summary>
+    /// Filters-panel tester: which custom rule (index) or preset would claim a message typed by the
+    /// user, treating it as arriving on <paramref name="channel"/>. Returns a human-readable result.
+    /// </summary>
+    internal static string DescribeTestLine(string text, string channel)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "Type or paste a chat line to see which filter catches it.";
+        string formatted = $"00:00:00 {text}";
+        for (int i = 0; i < _filters.Count; i++)
+        {
+            var rule = _filters[i];
+            if (!rule.Matches(formatted, text)) continue;
+            return $"Custom rule #{i + 1} → {(rule.Tab.Length == 0 ? "hidden" : $"moved to '{rule.Tab}'")}";
+        }
+        var preset = RynthChatPresets.FirstMatch(text, channel);
+        if (preset != null)
+            return $"Standard filter '{preset.Label}' → {(preset.Tab.Length == 0 ? "hidden" : $"moved to '{preset.Tab}'")}";
+        // Not caught by an enabled filter — say which disabled preset would, to help users find the right box.
+        foreach (var p in RynthChatPresets.All)
+            if (!p.Enabled && p.Matches(text, channel))
+                return $"Not filtered. Tick '{p.Group} › {p.Label}' to catch it.";
+        return "Not filtered — no rule or standard filter matches.";
     }
 
     /// <summary>Custom tabs = explicitly created tabs plus any tab named by an
@@ -179,6 +234,9 @@ internal static class RynthChatPanel
         foreach (var rule in _filters)
             if (rule.Enabled && rule.Tab.Length > 0 && seen.Add(rule.Tab))
                 yield return rule.Tab;
+        foreach (var t in RynthChatPresets.TargetTabs())
+            if (seen.Add(t))
+                yield return t;
     }
 
     internal static bool IsBaseTab(string tab) =>
@@ -190,6 +248,9 @@ internal static class RynthChatPanel
         foreach (var rule in _filters)
             if (string.Equals(rule.Tab, tab, StringComparison.OrdinalIgnoreCase))
                 rule.Enabled = false;
+        foreach (var p in RynthChatPresets.All)
+            if (string.Equals(p.Tab, tab, StringComparison.OrdinalIgnoreCase))
+                p.Enabled = false;
         NotifyFiltersChanged();
     }
 
@@ -1403,9 +1464,21 @@ internal static class RynthChatPanel
                         Enabled = f.Enabled,
                         Pattern = f.Pattern ?? "",
                         Tab     = (f.Tab ?? "").Trim(),
+                        Mode    = Enum.TryParse(f.Mode, true, out FilterMatchMode m) ? m : FilterMatchMode.Regex,
                     };
                     rule.Recompile();
                     _filters.Add(rule);
+                }
+            }
+
+            if (dto.Presets != null)
+            {
+                foreach (var ps in dto.Presets)
+                {
+                    var p = ps.Id != null ? RynthChatPresets.Get(ps.Id) : null;
+                    if (p == null) continue;
+                    p.Enabled = ps.Enabled;
+                    p.Tab     = (ps.Tab ?? "").Trim();
                 }
             }
 
@@ -1438,7 +1511,13 @@ internal static class RynthChatPanel
                     Enabled = f.Enabled,
                     Pattern = f.Pattern,
                     Tab     = f.Tab,
+                    Mode    = f.Mode.ToString(),
                 }).ToArray(),
+                // Only presets the user touched are written; the rest stay at their defaults (off, hide).
+                Presets         = RynthChatPresets.All
+                    .Where(p => p.Enabled || p.Tab.Length > 0)
+                    .Select(p => new RynthChatPresetDto { Id = p.Id, Enabled = p.Enabled, Tab = p.Tab })
+                    .ToArray(),
             };
             File.WriteAllText(path, JsonSerializer.Serialize(dto,
                 RynthChatJsonContext.Default.RynthChatSettingsDto));
@@ -1505,6 +1584,16 @@ internal sealed class RynthChatFilterDto
     [JsonPropertyName("pattern")] public string? Pattern { get; set; }
     [JsonPropertyName("tab")]     public string? Tab     { get; set; }
     [JsonPropertyName("enabled")] public bool    Enabled { get; set; } = true;
+    /// <summary>FilterMatchMode name; missing (older settings) = Regex.</summary>
+    [JsonPropertyName("mode")]    public string? Mode    { get; set; }
+}
+
+/// <summary>Persisted state of one standard (canned) filter.</summary>
+internal sealed class RynthChatPresetDto
+{
+    [JsonPropertyName("id")]      public string? Id      { get; set; }
+    [JsonPropertyName("enabled")] public bool    Enabled { get; set; }
+    [JsonPropertyName("tab")]     public string? Tab     { get; set; }
 }
 
 internal sealed class RynthChatSettingsDto
@@ -1522,6 +1611,7 @@ internal sealed class RynthChatSettingsDto
     [JsonPropertyName("activeChannel")]   public string? ActiveChannel  { get; set; }
     [JsonPropertyName("customTabs")]      public string[]? CustomTabs   { get; set; }
     [JsonPropertyName("filters")]         public RynthChatFilterDto[]? Filters { get; set; }
+    [JsonPropertyName("presets")]         public RynthChatPresetDto[]? Presets { get; set; }
 }
 
 [JsonSerializable(typeof(RynthChatLineDto[]))]
