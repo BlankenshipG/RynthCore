@@ -477,7 +477,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     private void Launchers(float x0, float width)
     {
         float y = ImGuiNET.ImGui.GetCursorScreenPos().Y;
-        const int buttons = 8;
+        const int buttons = 10;
         float bw = MathF.Floor((width - buttons * LauncherGap) / buttons);
         // Short labels only when every button has room for its icon and label.
         bool labels = bw >= 68;
@@ -516,6 +516,18 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             }
             else _drawers.Toggle(_patrol);
         }
+        x += bw + LauncherGap;
+
+        // Char and Hub open RynthAi's own ImGui overlay windows (ILT Hub, Mini Remote, Inventory
+        // HUDs). They draw only when the engine hands plugins its ImGui context.
+        Launcher("##l_char", PhosphorIcons.User, "Char", "Character hub (ILT Hub) - same as /ra hub show",
+            x, y, bw, labels, () => RynthAiCommands.ApplyRemoteCommand("hub", "show"));
+        x += bw + LauncherGap;
+        Launcher("##l_hub", PhosphorIcons.SquaresFour, "Hub",
+            "Hub. Left-click: Mini Remote (/ra remote).  Right-click: Inventory HUDs setup (/ra huds).",
+            x, y, bw, labels, () => RynthAiCommands.ApplyRemoteCommand("remote", "toggle"));
+        if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
+            RynthAiCommands.ApplyRemoteCommand("huds", "show");
 
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y + LauncherH));
     }

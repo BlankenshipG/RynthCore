@@ -49,6 +49,9 @@ internal static class EngineFrameController
     private static bool _imguiInitFailed;
     private static bool _coreResolved;
     private static bool _pluginsInitialized;
+    // Pump frames plugin init has waited for the ImGui context (PumpPluginFrame; ~16 ms each).
+    private static int _pluginInitContextWaits;
+    private const int PluginInitContextMaxWaits = 300;
     private static IntPtr _context;
     private static IntPtr _gameHwnd;
 
@@ -473,14 +476,26 @@ internal static class EngineFrameController
             return; // never re-enter PluginManager from two stacks
         try
         {
-            // Plugins only get the ImGui context when they may draw with it
-            // (EnableImGuiShell, FORCE-gated). The engine's own ImGui panels
-            // don't need plugins to see it, and handing it over switched
-            // RynthAi into its legacy-ImGui setup (first ImGui-on test,
-            // 2026-09-28) - plugins must behave exactly as in Avalonia-only mode.
-            IntPtr pluginContext = Plugins.EngineSettings.EnableImGuiShell ? _context : IntPtr.Zero;
+            // Plugins only get the ImGui context when they may draw with it: the
+            // ImGui shell (EnableImGuiShell, FORCE-gated) or their own overlay
+            // windows (EnablePluginOverlayWindows: RynthAi's ILT Hub, HUDs, Item
+            // Info; RynthPluginRenderOverlay). RynthAi only reads the context for
+            // those windows, so this does not switch it into a legacy-ImGui setup.
+            bool pluginsDraw = Plugins.EngineSettings.EnableImGuiShell
+                || (Plugins.EngineSettings.EnablePluginOverlayWindows && Plugins.EngineSettings.EnableImGuiBackend);
+            // _context is written by the render thread (Init); this is the pump thread.
+            IntPtr pluginContext = pluginsDraw ? System.Threading.Volatile.Read(ref _context) : IntPtr.Zero;
             if (!_pluginsInitialized)
             {
+                // The plugin host copies the context once at init, so wait for the
+                // render path's ImGui init (first ImGui frame) rather than hand over
+                // zero for the whole session. Bounded: a failed or stalled ImGui init
+                // must not hold plugins (and the bot) back.
+                if (pluginsDraw && pluginContext == IntPtr.Zero && !_imguiInitFailed
+                    && ++_pluginInitContextWaits <= PluginInitContextMaxWaits)
+                    return;
+                if (pluginsDraw && pluginContext == IntPtr.Zero)
+                    RynthLog.Warn($"EngineFrameController: plugins initialised without an ImGui context (imguiInitFailed={_imguiInitFailed}, waits={_pluginInitContextWaits}) - plugin overlay windows will not draw this session.");
                 _pluginsInitialized = true;
                 PluginManager.InitPlugins(pluginContext, device, _gameHwnd);
             }

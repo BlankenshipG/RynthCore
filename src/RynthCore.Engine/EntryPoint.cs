@@ -154,11 +154,14 @@ public static class EntryPoint
 
             InstallManagedExceptionHandlers();
 
-            RynthLog.Info("================================================================");
-            RynthLog.Info($"RynthCore.Engine init  build={BuildStamp}  initCount={_initCount}  pid={Environment.ProcessId}");
-            RynthLog.Info($"  os={Environment.OSVersion}  clr={Environment.Version}  cwd={Environment.CurrentDirectory}");
-            RynthLog.Info($"  logging {logSummary}");
-            RynthLog.Info("================================================================");
+            // The banner bypasses the category levels: it must be in every log, whatever engine.json says.
+            LogTagged("engine", "================================================================", "INF");
+            LogTagged("engine", $"RynthCore.Engine init  build={BuildStamp}  initCount={_initCount}  pid={Environment.ProcessId}", "INF");
+            LogTagged("engine", $"  os={Environment.OSVersion}  clr={Environment.Version}  cwd={Environment.CurrentDirectory}", "INF");
+            LogTagged("engine", $"  logging {logSummary}", "INF");
+            LogTagged("engine", "================================================================", "INF");
+            string hiddenCategories = LogSettings.HiddenCategoriesWarning();
+            if (hiddenCategories.Length > 0) RynthLog.Warn(hiddenCategories);
 
             // Live logging config: launcher edits to engine.json apply without a client restart.
             // Stopped in EngineLifecycle.Shutdown before the module can be unloaded.
