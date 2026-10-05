@@ -26,8 +26,10 @@ internal static class EngineSettings
     private static bool _enableEngine = true;
     private static int _engineHookCount = int.MaxValue;
     private static bool _enableImGuiBackend = true;
+    private static bool _enablePluginOverlayWindows = true;
     private static bool _enableHangMinidump = true;
     private static bool _preventIdleLogoff = true;
+    private static string _loggingLevel = "Info";
     private static DecalBridgeMode _decalBridgeMode = DecalBridgeMode.Auto;
     private static bool _decalInGameImGui = true;
     private static bool _decalStandDown = true;
@@ -178,6 +180,19 @@ internal static class EngineSettings
         }
     }
 
+    /// <summary>When true (default) and the ImGui shell is off, plugins that export
+    /// RynthPluginRenderOverlay draw their extra ImGui windows (RynthAi: ILT Hub, Item Info)
+    /// beside the Avalonia UI. engine.json "EnablePluginOverlayWindows": false hides them.
+    /// Needs <see cref="EnableImGuiBackend"/>.</summary>
+    public static bool EnablePluginOverlayWindows
+    {
+        get
+        {
+            EnsureLoaded();
+            return _enablePluginOverlayWindows;
+        }
+    }
+
     /// <summary>When true, MainThreadHangWatchdog writes a minidump to
     /// Logs\dumps\ the first time AC's main thread is confirmed permanently
     /// wedged — a targeted post-mortem to replace always-on procdump (which
@@ -202,6 +217,18 @@ internal static class EngineSettings
         {
             EnsureLoaded();
             return _preventIdleLogoff;
+        }
+    }
+
+    /// <summary>Engine log threshold from engine.json "LoggingLevel", written by the launcher's
+    /// Logging level box: Error, Warning, Info (default), Debug/Verbose or Trace. Parsed by
+    /// EntryPoint.ParseLoggingLevel at init; unknown values fall back to Info.</summary>
+    public static string LoggingLevel
+    {
+        get
+        {
+            EnsureLoaded();
+            return _loggingLevel;
         }
     }
 
@@ -386,6 +413,12 @@ internal static class EngineSettings
                 _enableImGuiBackend = ibEl.GetBoolean();
             }
 
+            if (doc.RootElement.TryGetProperty("EnablePluginOverlayWindows", out var powEl) &&
+                (powEl.ValueKind == JsonValueKind.True || powEl.ValueKind == JsonValueKind.False))
+            {
+                _enablePluginOverlayWindows = powEl.GetBoolean();
+            }
+
             if (doc.RootElement.TryGetProperty("EnableHangMinidump", out var hmEl) &&
                 (hmEl.ValueKind == JsonValueKind.True || hmEl.ValueKind == JsonValueKind.False))
             {
@@ -429,6 +462,14 @@ internal static class EngineSettings
                         _disabledUiHooks.Add(hookName.Trim());
                 }
             }
+
+            if (doc.RootElement.TryGetProperty("LoggingLevel", out var logLevelEl) &&
+                logLevelEl.ValueKind == JsonValueKind.String)
+            {
+                string? configuredLevel = logLevelEl.GetString();
+                if (!string.IsNullOrWhiteSpace(configuredLevel))
+                    _loggingLevel = configuredLevel;
+            }
         }
         catch (Exception ex)
         {
@@ -459,8 +500,12 @@ internal static class EngineSettings
                 w.WriteBoolean("EnableEngine", _enableEngine);
                 w.WriteNumber("EngineHookCount", _engineHookCount);
                 w.WriteBoolean("EnableImGuiBackend", _enableImGuiBackend);
+                w.WriteBoolean("EnablePluginOverlayWindows", _enablePluginOverlayWindows);
                 w.WriteBoolean("EnableHangMinidump", _enableHangMinidump);
                 w.WriteBoolean("PreventIdleLogoff", _preventIdleLogoff);
+                // Preserve the launcher-chosen level; dropping it here would reset logging to Info.
+                w.WriteString("LoggingLevel", _loggingLevel);
+                CopyUnownedFields(w);
                 if (_decalBridgeMode != DecalBridgeMode.Auto)   // default: leave the file as it was
                     w.WriteString("DecalBridge", _decalBridgeMode.ToString());
                 if (!_decalInGameImGui)   // default true: leave the file as it was
@@ -483,6 +528,37 @@ internal static class EngineSettings
         catch (Exception ex)
         {
             RynthLog.Plugin($"EngineSettings: Failed to save: {ex.Message}");
+        }
+    }
+
+    // Fields Save() writes itself; everything else in engine.json belongs to the launcher
+    // (LogCategories, EnableDcompOverlay, ...) and is copied through untouched.
+    private static readonly string[] OwnedFields =
+    {
+        "PluginPaths", "EnableImGuiShell", "EnablePlugins", "EnableDatShareHook", "EnableAvaloniaOverlay",
+        "EnableD3D9Hook", "EnableEngine", "EngineHookCount", "EnableImGuiBackend", "EnablePluginOverlayWindows",
+        "EnableHangMinidump", "DrawCustomVitalBars", "PreventIdleLogoff", "LoggingLevel",
+        // Save() writes these only when non-default, so copying them through would duplicate keys.
+        "DecalBridge", "DecalInGameImGui", "DecalStandDown",
+    };
+
+    /// <summary>Writes every top-level engine.json field not in <see cref="OwnedFields"/> as-is.</summary>
+    private static void CopyUnownedFields(Utf8JsonWriter w)
+    {
+        try
+        {
+            if (!File.Exists(SettingsPath)) return;
+            using var doc = JsonDocument.Parse(File.ReadAllText(SettingsPath));
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return;
+            foreach (JsonProperty p in doc.RootElement.EnumerateObject())
+            {
+                if (Array.IndexOf(OwnedFields, p.Name) >= 0) continue;
+                p.WriteTo(w);
+            }
+        }
+        catch
+        {
+            // Unreadable file: write only the owned fields (previous behaviour).
         }
     }
 }

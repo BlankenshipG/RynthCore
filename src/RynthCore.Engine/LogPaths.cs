@@ -21,13 +21,15 @@
 
 using System;
 using System.IO;
+using RynthCore.Install;
 
 namespace RynthCore.Engine;
 
 internal static class LogPaths
 {
     /// <summary>Unified log directory for all RynthCore components.</summary>
-    internal const string LogDirectory = @"C:\Games\RynthCore\Logs";
+    // Installer-chosen RynthCore folder (registry Software\Rynth\CoreDir; falls back to C:\Games\RynthCore).
+    internal static readonly string LogDirectory = RynthInstallPaths.CoreLogsDir;
 
     /// <summary>Shared launch/orchestration log (injector + launcher + per-engine session pointer).</summary>
     internal const string SharedLogFileName = "RynthCore.log";

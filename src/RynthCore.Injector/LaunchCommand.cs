@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RynthCore.Install;
 
 namespace RynthCore.Injector;
 
@@ -37,7 +38,7 @@ internal static class LaunchCommand
 {
     // The "bulletproof" private AC copy intended for RynthCore launches — a
     // separate DAT lock domain from the shared Turbine install.
-    private const string PrivateAcClientPath = @"C:\Games\RynthCore\AcClient\acclient.exe";
+    private static readonly string PrivateAcClientPath = Path.Combine(RynthInstallPaths.CoreDir, "AcClient", "acclient.exe");
 
     // Matches LaunchAccountProfile.NoneOption — explicit opt-out of auto-login.
     private const string NoneOption = "(None — no auto-login)";

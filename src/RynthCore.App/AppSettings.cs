@@ -17,6 +17,8 @@ internal sealed class AppSettings
     public bool AutoLaunch { get; set; }
     public bool AutoInjectAfterLaunch { get; set; } = true;
     public bool WatchForAcStart { get; set; } = true;
+    public bool InjectAllRunningClients { get; set; } = true;
+    public string LoggingLevel { get; set; } = "Info";
     public int LaunchStaggerMs { get; set; } = 250;
     public int CrashRelaunchLimitInWindow { get; set; } = 3;
     public int CrashRelaunchWindowMinutes { get; set; } = 5;
@@ -62,6 +64,14 @@ internal sealed class AppSettings
     /// the UI), but is filtered out when syncing PluginPaths into engine.json.
     /// Case-insensitive set semantics; comparisons must use OrdinalIgnoreCase.
     public List<string> DisabledPluginDllPaths { get; set; } = [];
+
+    /// <summary>
+    /// Last installer plugin hand-off (registry <c>Software\Rynth\PendingPluginRegistration</c>)
+    /// the launcher applied. Lets an all-users install, whose HKLM value the launcher cannot
+    /// delete, register its plugins once without re-adding a plugin the user later removed.
+    /// </summary>
+    public string? AppliedInstallerPluginRegistration { get; set; }
+
     public List<LaunchServerProfile> ServerProfiles { get; set; } = [];
     public List<LaunchAccountProfile> AccountProfiles { get; set; } = [];
 

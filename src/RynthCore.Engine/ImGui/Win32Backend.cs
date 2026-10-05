@@ -1025,11 +1025,15 @@ internal static unsafe class Win32Backend
             // HUD drag (keeps our SetCapture from fighting NewFrame's). No-op
             // unless the HUD is drawn.
             if (IsMouseMessage(msg))
+            {
                 TrackMouseButtons(msg, wParam);
+                ItemDragBridge.OnGameMouse(msg, wParam, lParam, _heldButtonsBelongToGame);
+            }
             else if (msg == WM_KILLFOCUS)
             {
                 _heldMouseButtons = 0;
                 _heldButtonsBelongToGame = false;
+                ItemDragBridge.Reset();
             }
 
             // ── Avalonia panel hit-test & input forwarding ────────────────
@@ -1040,7 +1044,7 @@ internal static unsafe class Win32Backend
             {
                 // fall through: AC gets the message
             }
-            else if (IsMouseMessage(msg))
+            else if (IsMouseMessage(msg) && !ImGuiOwnsMouseOverAvalonia())
             {
                 bool handled = TryForwardToAvalonia(msg, wParam, lParam);
                 if (handled)
@@ -1129,6 +1133,14 @@ internal static unsafe class Win32Backend
                 }
             }
 
+            // An AC inventory item dragged onto an ImGui window: AC must not drop it on the
+            // ground behind the window. It gets the release where the drag began instead.
+            if (ItemDragBridge.TryRedirectNativeDrop(msg, out IntPtr pressLParam))
+            {
+                CallWindowProcA(_originalWndProc, hWnd, WM_MOUSEMOVE, (IntPtr)MK_LBUTTON, pressLParam);
+                return CallWindowProcA(_originalWndProc, hWnd, msg, wParam, pressLParam);
+            }
+
             // Pass through to original WndProc
             return CallWindowProcA(_originalWndProc, hWnd, msg, wParam, lParam);
         }
@@ -1137,6 +1149,17 @@ internal static unsafe class Win32Backend
             RynthLog.Render($"Win32Backend.WndProcHook: {ex.GetType().Name}: {ex.Message}");
             return CallWindowProcA(_originalWndProc, hWnd, msg, wParam, lParam);
         }
+    }
+
+    /// <summary>
+    /// ImGui windows are drawn on top of the Avalonia layer, so when the cursor is over
+    /// an ImGui window (or an ImGui widget is active) mouse input must go to ImGui
+    /// instead of the Avalonia panel underneath. An Avalonia drag/resize that is already
+    /// in progress keeps its capture so the release is never lost.
+    /// </summary>
+    private static bool ImGuiOwnsMouseOverAvalonia()
+    {
+        return _wantCaptureMouse && !AvaloniaOverlay.HasPointerCapture;
     }
 
     /// <summary>

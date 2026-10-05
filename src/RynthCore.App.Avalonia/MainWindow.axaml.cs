@@ -18,6 +18,7 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using RynthCore.Injector;
+using RynthCore.Install;
 
 namespace RynthCore.App.Avalonia;
 
@@ -136,6 +137,8 @@ internal partial class MainWindow : Window
         SessionList.ItemsSource = _sessionItems;
         LoadSettings();
         LoadRuntimeControls();
+        InitLoggingControls();
+        ApplyInstallerPluginRegistration();
         LoadPluginDllPaths();
         BuildPluginLoadout();
         WireEvents();
@@ -149,6 +152,8 @@ internal partial class MainWindow : Window
         Closing += (_, _) => SaveWindowLayout();
         ShowVersion();
         AppendActivity("Avalonia launcher preview ready.");
+        // One-line host/runtime sidecar check (full detail in Desktop RynthCore-Launcher.log).
+        AppendActivity(LauncherHostDiagnostics.BuildActivitySummaryLine());
         _ = RefreshServerStatusesAsync();
         _updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync();
         _updateTimer.Start();
@@ -307,6 +312,8 @@ internal partial class MainWindow : Window
         AutoLaunchHeaderCheckBox.IsChecked = _settings.AutoLaunch;
         AutoInjectAfterLaunchCheckBox.IsChecked = _settings.AutoInjectAfterLaunch;
         WatchForAcStartCheckBox.IsChecked = _settings.WatchForAcStart;
+        InjectAllRunningAcCheckBox.IsChecked = _settings.InjectAllRunningClients;
+        SetLoggingLevelSelection(_settings.LoggingLevel);
         OverrideWindowTitleCheckBox.IsChecked = _settings.OverrideWindowTitle;
         LaunchStaggerMsBox.Value = _settings.LaunchStaggerMs;
         CrashRelaunchLimitBox.Value = _settings.CrashRelaunchLimitInWindow;
@@ -1309,6 +1316,8 @@ internal partial class MainWindow : Window
         _settings.AutoLaunch = AutoLaunchHeaderCheckBox.IsChecked == true;
         _settings.AutoInjectAfterLaunch = AutoInjectAfterLaunchCheckBox.IsChecked == true;
         _settings.WatchForAcStart = WatchForAcStartCheckBox.IsChecked == true;
+        _settings.InjectAllRunningClients = InjectAllRunningAcCheckBox.IsChecked == true;
+        _settings.LoggingLevel = GetSelectedLoggingLevel();
         _settings.OverrideWindowTitle = OverrideWindowTitleCheckBox.IsChecked == true;
         if (LaunchStaggerMsBox.Value is decimal staggerMs)
             _settings.LaunchStaggerMs = (int)staggerMs;
@@ -1323,8 +1332,12 @@ internal partial class MainWindow : Window
         if (_settings.EnabledPluginIds.Count == 0)
             _settings.EnabledPluginIds.Add("rynthcore-engine");
         SaveSettings();
+        SyncPluginPathsToEngineSettings();
         if (appendActivity)
+        {
+            AppendActivity($"Logging level saved: {_settings.LoggingLevel}.");
             AppendActivity("Launch behavior saved.");
+        }
     }
 
     private void SaveAutoLaunchPreference()
@@ -1981,6 +1994,78 @@ internal partial class MainWindow : Window
         AppendActivity($"Runtime loadout updated: {Path.GetFileName(dllPath)} {(enabled ? "enabled" : "disabled")} (engine.json synced).");
     }
 
+    /// <summary>
+    /// Applies the installer's one-shot plugin hand-off: the full installer writes the plugin
+    /// DLL paths it placed in the user-chosen RynthSuite folder to
+    /// <c>Software\Rynth\PendingPluginRegistration</c> (';'-separated). Each existing DLL is added
+    /// to the Plugins list, and any entry with the same file name that no longer exists (e.g. the
+    /// old <c>C:\Games\RynthSuite\...</c> path after moving the Suite folder) is replaced.
+    /// Rows pointing inside the RynthCore folder whose file the installer removed are dropped too.
+    /// The value is consumed once (deleted from HKCU; remembered in settings for HKLM).
+    /// </summary>
+    private void ApplyInstallerPluginRegistration()
+    {
+        try
+        {
+            string? pending = RynthInstallPaths.ReadSetting("PendingPluginRegistration");
+            if (string.IsNullOrWhiteSpace(pending)
+                || string.Equals(pending, _settings.AppliedInstallerPluginRegistration, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            _settings.PluginDllPaths ??= [];
+            var added = new List<string>();
+
+            // The installer clears loose DLLs out of the RynthCore folder (old 0.4.x layouts kept plugins
+            // and SDK DLLs there), so drop rows that pointed inside it and are now gone. Rows elsewhere are
+            // left alone, since a missing file there may just be on a drive that isn't mounted.
+            string coreRoot = Path.TrimEndingDirectorySeparator(RynthInstallPaths.CoreDir) + Path.DirectorySeparatorChar;
+            bool IsRemovedCoreFile(string p) =>
+                p.StartsWith(coreRoot, StringComparison.OrdinalIgnoreCase) && !File.Exists(p);
+            int pruned = _settings.PluginDllPaths.RemoveAll(IsRemovedCoreFile);
+            _settings.DisabledPluginDllPaths.RemoveAll(IsRemovedCoreFile);
+
+            foreach (string raw in pending.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                string path;
+                try { path = Path.GetFullPath(raw); } catch { continue; }
+                if (!File.Exists(path)) continue;
+
+                string fileName = Path.GetFileName(path);
+                // Drop stale rows for the same plugin that point at a file which is gone.
+                _settings.PluginDllPaths.RemoveAll(p =>
+                    string.Equals(Path.GetFileName(p), fileName, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(p, path, StringComparison.OrdinalIgnoreCase)
+                    && !File.Exists(p));
+
+                if (!_settings.PluginDllPaths.Any(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase)))
+                {
+                    _settings.PluginDllPaths.Add(path);
+                    added.Add(fileName);
+                }
+            }
+
+            _settings.AppliedInstallerPluginRegistration = pending;
+            SaveSettings();
+            RynthInstallPaths.DeleteUserSetting("PendingPluginRegistration");
+
+            _pluginDllPaths.Clear();
+            foreach (string p in _settings.PluginDllPaths) _pluginDllPaths.Add(p);
+            SyncPluginPathsToEngineSettings();
+
+            string msg = added.Count > 0
+                ? $"Installer registered plugin(s): {string.Join(", ", added)} (engine.json synced)."
+                : "Installer plugin registration already up to date.";
+            if (pruned > 0)
+                msg += $" Removed {pruned} plugin path(s) for files the installer cleared from {RynthInstallPaths.CoreDir}.";
+            LauncherDiag.Info("PLUGINS: " + msg);
+            try { AppendActivity(msg); } catch { }
+        }
+        catch (Exception ex)
+        {
+            LauncherDiag.Info("PLUGINS: installer registration failed: " + ex.Message);
+        }
+    }
+
     private void LoadPluginDllPaths()
     {
         _pluginDllPaths.Clear();
@@ -2069,6 +2154,8 @@ internal partial class MainWindow : Window
                 .Where(p => !disabled.Contains(p))
                 .ToList();
             EngineJsonStore.SetStringArray("PluginPaths", enabledPaths);
+            // The engine reads its log verbosity from engine.json on init (EngineSettings.LoggingLevel).
+            EngineJsonStore.SetString("LoggingLevel", GetSelectedLoggingLevel());
         }
         catch (Exception ex)
         {
@@ -2564,18 +2651,28 @@ internal partial class MainWindow : Window
         try
         {
             SetOperationState(true);
-            Process target = targets.OrderBy(process => process.Id).First();
-            AppendActivity($"Applying selected loadout to running AC (PID {target.Id}).");
+            IReadOnlyList<Process> orderedTargets = targets.OrderBy(process => process.Id).ToList();
+            bool injectAllSessions = InjectAllRunningAcCheckBox.IsChecked == true;
+            IReadOnlyList<Process> targetsToInject = injectAllSessions
+                ? orderedTargets
+                : [orderedTargets[0]];
+            AppendActivity(injectAllSessions
+                ? $"Applying selected loadout to {targetsToInject.Count} running AC session(s)."
+                : $"Applying selected loadout to first running AC session (PID {targetsToInject[0].Id}).");
 
-            InjectionResult result = await Task.Run(() => _injector.InjectIntoProcess(target, enginePath, AppendActivity));
-            if (result.Success)
+            foreach (Process target in targetsToInject)
             {
-                _launchedSessionPids.Add(target.Id);
-                AppendActivity($"Injection complete for PID {target.Id}.");
-            }
-            else
-            {
-                AppendActivity($"Injection failed: {result.Summary}");
+                AppendActivity($"Injecting running AC (PID {target.Id}).");
+                InjectionResult result = await Task.Run(() => _injector.InjectIntoProcess(target, enginePath, AppendActivity));
+                if (result.Success)
+                {
+                    _launchedSessionPids.Add(target.Id);
+                    AppendActivity($"Injection complete for PID {target.Id}.");
+                }
+                else
+                {
+                    AppendActivity($"Injection failed for PID {target.Id}: {result.Summary}");
+                }
             }
         }
         catch (Exception ex)
@@ -2587,6 +2684,39 @@ internal partial class MainWindow : Window
             SetOperationState(false);
             RefreshSessionState();
         }
+    }
+
+    private string GetSelectedLoggingLevel()
+    {
+        return LoggingLevelComboBox.SelectedItem is ComboBoxItem item
+            ? item.Content?.ToString() ?? "Info"
+            : "Info";
+    }
+
+    private void SetLoggingLevelSelection(string? loggingLevel)
+    {
+        string desiredLevel = string.IsNullOrWhiteSpace(loggingLevel) ? "Info" : loggingLevel.Trim();
+        if (LoggingLevelComboBox.Items == null)
+        {
+            LoggingLevelComboBox.SelectedIndex = 0;
+            return;
+        }
+
+        foreach (object? item in LoggingLevelComboBox.Items)
+        {
+            if (item is not ComboBoxItem comboItem)
+                continue;
+
+            string candidate = comboItem.Content?.ToString() ?? string.Empty;
+            if (!string.Equals(candidate, desiredLevel, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            LoggingLevelComboBox.SelectedItem = comboItem;
+            return;
+        }
+
+        // Unknown saved value: fall back to Info (index 3 after Off, Error, Warning), not the quietest level.
+        LoggingLevelComboBox.SelectedIndex = 3;
     }
 
     private void OnPrimarySelectionChanged()
@@ -2988,7 +3118,7 @@ internal partial class MainWindow : Window
 
             // Tail the per-PID log for the last heartbeat line. Cheap: seek to
             // the end, read ~2KB, FileShare-tolerant of the engine's writer.
-            string logPath = System.IO.Path.Combine(@"C:\Games\RynthCore\Logs", $"RynthCore.{pid}.log");
+            string logPath = System.IO.Path.Combine(RynthInstallPaths.CoreLogsDir, $"RynthCore.{pid}.log");
             string tail;
             try
             {

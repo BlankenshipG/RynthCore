@@ -11,6 +11,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Install-location resolver (installer-chosen RynthCore / RynthSuite folders). -->
+    <Compile Include="..\RynthCore.App\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
     <!-- Decal bridge registration (docs/DECAL_BRIDGE_PLAN.md), shared with the launcher. -->
     <Compile Include="..\RynthCore.App\DecalLocator.cs" Link="Shared\DecalLocator.cs" />
     <Compile Include="..\RynthCore.App\DecalBridgeRegistration.cs" Link="Shared\DecalBridgeRegistration.cs" />
