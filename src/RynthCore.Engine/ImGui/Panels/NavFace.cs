@@ -1,7 +1,8 @@
 // ============================================================================
 //  RynthCore.Engine - ImGui/Panels/NavFace.cs
 //  ImGui face of the Nav panel (UI/Panels/NavPanel.cs): active nav + status,
-//  Start/Stop, route type and insert mode, Add Waypoint / Portal (not yet) /
+//  Start/Stop, route type and insert mode, the Breadcrumbs and Route overlay
+//  toggles, Add Waypoint / Portal (not yet) /
 //  Recall / Clear / Save / Dungeon Patrol, a chat waypoint, Save As, the nav
 //  file picker, the nav point reach (RynthAi's FollowNavMin, the same row as
 //  Settings > Navigation), and the waypoint list (click selects the insert
@@ -130,6 +131,24 @@ internal sealed class NavFace : IImGuiPanel
             });
         NextLine(p, 26);
 
+        // Breadcrumbs | Route overlay (RynthAi's NavOverlaySettings; saved per character)
+        p = ImGuiNET.ImGui.GetCursorScreenPos();
+        if (OverlayToggle("##crumbs", "Breadcrumbs", _data.TrackBreadcrumbs, p, half,
+                "Record the trail you walk and draw it on the ground (/ra navtrail on|off).\nTurning it off hides the trail; /ra navtrail clear wipes it."))
+        {
+            bool on = !_data.TrackBreadcrumbs;
+            NavCommands.Send(new NavCmd { Cmd = "setBreadcrumbs", On = on });
+            _data.TrackBreadcrumbs = on;
+        }
+        if (OverlayToggle("##routeovl", "Route overlay", _data.ShowRouteOverlay, new Vector2(p.X + half + 4, p.Y), half,
+                "Draw the route in the world: waypoint rings and lines, waypoint labels and the guide line\nto the active waypoint (/ra navoverlay on|off). The waypoint HUD window is separate."))
+        {
+            bool on = !_data.ShowRouteOverlay;
+            NavCommands.Send(new NavCmd { Cmd = "setRouteOverlay", On = on });
+            _data.ShowRouteOverlay = on;
+        }
+        NextLine(p, 26);
+
         typing |= ReachRow(w);
 
         // Actions
@@ -237,6 +256,18 @@ internal sealed class NavFace : IImGuiPanel
         _typing = typing;
         End(origin, size);
         _picker.Draw();
+    }
+
+    /// <summary>
+    /// A checkbox-style toggle button: ticked box and teal text when on, empty box and muted
+    /// text when off. Returns true when clicked (the caller flips the value).
+    /// </summary>
+    private static bool OverlayToggle(string id, string label, bool on, Vector2 pos, float width, string tooltip)
+    {
+        string text = (on ? PhosphorIcons.CheckSquare : PhosphorIcons.Square) + " " + label;
+        bool clicked = Button(id, text, pos, new Vector2(width, 22), on ? Teal : Mute, BtnFill, leftAlign: true);
+        if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(tooltip);
+        return clicked;
     }
 
     /// <summary>

@@ -171,9 +171,29 @@ internal static class NavPanel
             { e.Handled = true; picker.Close(); }
         };
 
+        // Waypoint list controls live for the panel's lifetime. Rebuild() only refills
+        // waypointStack: a ScrollViewer recreated (or given a new Content) resets its
+        // offset to the top, which made the list jump back every poll and impossible to edit.
+        var waypointStack  = new StackPanel { Spacing = 1 };
+        var waypointScroll = new ScrollViewer
+        {
+            VerticalScrollBarVisibility   = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+            Content = waypointStack,
+        };
+        var waypointHost = new Border { Height = 200, Child = waypointScroll };
+
+        // Last plugin JSON the panel was built from. A rebuild from a user action
+        // (optimistic local edit) clears it so the next poll always resyncs with the plugin.
+        string lastJson = string.Empty;
+        bool   rebuildFromPoll = false;
+
         void Rebuild()
         {
+            if (!rebuildFromPoll) lastJson = string.Empty;
+            Vector keepOffset = waypointScroll.Offset;
             content.Children.Clear();
+            waypointStack.Children.Clear();
             var d = state.Data;
             bool navActive = d.MacroRunning && d.NavigationEnabled;
 
@@ -439,7 +459,6 @@ internal static class NavPanel
                 FontSize   = 10,
             });
 
-            var waypointStack = new StackPanel { Spacing = 1 };
             for (int i = 0; i < d.Points.Count; i++)
             {
                 int  ci         = i;
@@ -516,16 +535,10 @@ internal static class NavPanel
                 waypointStack.Children.Add(row);
             }
 
-            content.Children.Add(new Border
-            {
-                Height = 200,
-                Child = new ScrollViewer
-                {
-                    VerticalScrollBarVisibility   = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
-                    HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
-                    Content = waypointStack,
-                },
-            });
+            content.Children.Add(waypointHost); // same instance every rebuild — keeps scroll offset
+            // Re-apply after layout too: the re-attach / new row extent can coerce it to 0.
+            waypointScroll.Offset = keepOffset;
+            Dispatcher.UIThread.Post(() => waypointScroll.Offset = keepOffset, DispatcherPriority.Loaded);
         }
 
         // ── Poll timer ────────────────────────────────────────────────────────
@@ -536,6 +549,9 @@ internal static class NavPanel
         timer.Tick += (_, _) =>
         {
             if (picker.ActivePicker != null || state.Typing) return;
+            // A rebuild between press and release eats the click on X / row select. seenVersion
+            // is left alone, so the change is picked up once the pointer leaves the list.
+            if (waypointHost.IsPointerOver) return;
             var snap = UiSources.Nav.Current;
             if (snap == null || snap.Version == seenVersion) return;
             seenVersion = snap.Version;

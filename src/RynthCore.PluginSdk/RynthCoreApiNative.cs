@@ -153,6 +153,8 @@ public struct RynthCoreApiNative
     public IntPtr GetServerInfoFn;           // int GetServerInfo(byte* worldName, int capacity) -> flags (bit0 Aelrynth, bit1 staging, bit2 world name known)
     // v76: close an external container (corpse, chest) like the client's window close
     public IntPtr CloseContainerFn;          // int CloseContainer(uint containerId) -> 1 sent or queued
+    // v77: outcome of the latest merge-stack request (cdecl thunk)
+    public IntPtr GetMergeStackResultFn;     // int GetMergeStackResult(uint src, uint tgt, int* amount, int* ageMs)
 }
 
 /// <summary>

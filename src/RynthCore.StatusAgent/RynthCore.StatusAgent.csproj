@@ -30,4 +30,9 @@
     <PackageReference Include="SIPSorcery" Version="10.0.14" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Install-location resolver (installer-chosen RynthCore / RynthSuite folders). -->
+    <Compile Include="..\RynthCore.App\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+  </ItemGroup>
+
 </Project>

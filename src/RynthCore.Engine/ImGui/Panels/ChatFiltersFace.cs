@@ -79,6 +79,8 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         "Colour only: no routing; the rule just colours.",
     };
     private static readonly string[] ColorLabels = { "No colour", "Colour line", "Colour match" };
+    /// <summary>Indexed by <see cref="ChatMatchMode"/>.</summary>
+    private static readonly string[] ModeLabels = { "Regex", "Contains", "Starts with", "Ends with" };
 
     public void Draw()
     {
@@ -118,6 +120,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
             Label("No rules yet. Click \"Add rule\", or right-click a line in the chat", Mute);
             Label("and pick \"Move them to\", \"Hide them\" or \"Colour them\".", Mute);
         }
+        DrawStandardFilters(rowW);
         ImGuiNET.ImGui.PopStyleColor(2);
         ImGuiNET.ImGui.EndChild();
 
@@ -154,6 +157,58 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         _picker.Draw();
         DrawNewTabPopup();
         edit?.Invoke();   // after drawing: the rows above drew from the old list
+    }
+
+    // ── Standard filters (RynthChatPresets) ──────────────────────────────
+
+    /// <summary>
+    /// The canned filters, by group: tick to hide, or pick a tab to move the lines there.
+    /// The router checks them after the rules, for lines no rule moved or hid.
+    /// </summary>
+    private void DrawStandardFilters(float rowW)
+    {
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
+        if (!ImGuiNET.ImGui.CollapsingHeader("Standard filters##std")) return;
+        ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
+        Label("Checked after the rules above, only for lines no rule moved or hid.", Mute);
+        Label("Tick to hide the lines; pick a tab to move them there instead.", Mute);
+        ImGuiNET.ImGui.PopFont();
+        foreach (string group in UI.Panels.RynthChatPresets.Groups)
+        {
+            int on = 0, total = 0;
+            foreach (var p in UI.Panels.RynthChatPresets.All)
+                if (p.Group == group) { total++; if (p.Enabled) on++; }
+            if (!ImGuiNET.ImGui.TreeNode($"{group} ({on}/{total})###grp_{group}")) continue;
+            foreach (var p in UI.Panels.RynthChatPresets.All)
+            {
+                if (p.Group != group) continue;
+                ImGuiNET.ImGui.PushID(p.Id);
+                bool enabled = p.Enabled;
+                if (ImGuiNET.ImGui.Checkbox(p.Label, ref enabled)) { p.Enabled = enabled; ChatModel.FiltersChanged(); }
+                ImGuiNET.ImGui.SetItemTooltip(p.Description + "\nExample: " + p.Example);
+                ImGuiNET.ImGui.SameLine(Math.Max(ImGuiNET.ImGui.GetCursorPosX() + 8, rowW * 0.6f));
+                string tabText = (p.Tab.Length == 0 ? "hide" : "to " + p.Tab) + Caret;
+                if (ImGuiNET.ImGui.SmallButton(tabText))
+                    OpenPresetTabPicker(p, new Vector2(ImGuiNET.ImGui.GetItemRectMin().X, ImGuiNET.ImGui.GetItemRectMax().Y + 2));
+                ImGuiNET.ImGui.SetItemTooltip("Where its lines go: hidden, or moved to a tab");
+                ImGuiNET.ImGui.PopID();
+            }
+            ImGuiNET.ImGui.TreePop();
+        }
+    }
+
+    private void OpenPresetTabPicker(UI.Panels.RynthChatPresets.Preset preset, Vector2 below)
+    {
+        string[] tabs = ChatModel.TargetTabs();
+        var items = new string[tabs.Length + 1];
+        items[0] = "Hide";
+        Array.Copy(tabs, 0, items, 1, tabs.Length);
+        int selected = preset.Tab.Length == 0 ? 0 : Math.Max(0, Array.FindIndex(tabs, t => string.Equals(t, preset.Tab, StringComparison.OrdinalIgnoreCase)) + 1);
+        _picker.Open(below, items, selected, k =>
+        {
+            preset.Tab = k <= 0 ? "" : items[k];
+            ChatModel.FiltersChanged();
+        }, 160);
     }
 
     private void Flash(string message)
@@ -215,6 +270,18 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         // Row 2 (wraps when narrow): When, action, tab, colour mode, swatch.
         float left = p.X + 42, right = card.X + rowW - 4;
         var flow = new Flow(left, p.Y + rowH + 4, right, rowH);
+
+        int matchMode = (int)r.Mode;
+        string modeText = ModeLabels[matchMode] + Caret;
+        Vector2 mPos = flow.Place(ButtonWidth(modeText));
+        if (Button("##mode", modeText, mPos, new Vector2(ButtonWidth(modeText), rowH), Text, BtnFill))
+            _picker.Open(mPos + new Vector2(0, rowH + 2), ModeLabels, matchMode, k =>
+            {
+                rule.Mode = (ChatMatchMode)k;
+                rule.Recompile();
+                ChatModel.FiltersChanged();
+            }, 120);
+        ImGuiNET.ImGui.SetItemTooltip("How the pattern matches: a regex, or plain text anywhere / at the start / at the end of the line.");
 
         string whenText = "When: " + ChatModel.ConditionLabel(r.When) + Caret;
         Vector2 wp = flow.Place(Math.Min(ButtonWidth(whenText), 240));
@@ -484,7 +551,12 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         var trace = new List<ChatRouter.Step>();
         ChatRoute route = ChatModel.TestRouter().Evaluate(text, channel, type, trace);
         foreach (ChatRouter.Step step in trace)
-            _testResult.Add(((step.Rule < 0 ? "Your name" : $"Rule {step.Rule + 1}") + ": " + step.What, Text));
+            _testResult.Add((step.Rule switch
+            {
+                ChatRouter.StandardFilterStep => "Standard",
+                < 0 => "Your name",
+                _ => $"Rule {step.Rule + 1}",
+            } + ": " + step.What, Text));
         if (trace.Count == 0) _testResult.Add(("No rule matches.", Faded(Mute)));
 
         string where;

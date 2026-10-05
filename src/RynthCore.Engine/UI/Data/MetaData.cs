@@ -231,7 +231,8 @@ internal static unsafe class MetaCommands
 /// <summary>Names, hints and .af keywords shared by the Meta faces (mirror RynthSuite's MetaSchema).</summary>
 internal static class MetaVocabulary
 {
-    public const string MetaFolder = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
+    /// <summary>RynthAi's meta folder under the installed RynthSuite folder (installer-chosen).</summary>
+    public static string MetaFolder => System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "MetaFiles");
 
     public static readonly string[] ConditionNames =
     {

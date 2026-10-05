@@ -125,14 +125,18 @@ New-Item -ItemType Directory -Force "$rel\plugins", "$rel\build" | Out-Null
 Step "Building the installer ($Version)"
 & (Join-Path $ScriptDir "Build-Installer.ps1") -Version $Version -RynthSuiteRoot $RynthSuiteRoot
 if (-not $?) { throw "Build-Installer.ps1 failed" }
-# The Decal bridge ships in every release (experimental, opt-in per account): the installer
-# carries it, so a launcher that updates through this feed gets it as a fresh install does.
-# Build-Installer.ps1 fails without Decal; this guards against a -SkipDecalBridge staging.
-$bridgeStaged = Join-Path $ScriptDir "staging\app\DecalBridge\RynthCore.DecalBridge.dll"
-if (-not (Test-Path $bridgeStaged)) { throw "The installer was built without the Decal bridge ($bridgeStaged missing) - not publishing." }
-Write-Host "  Decal bridge in the installer: $((Get-Item $bridgeStaged).VersionInfo.FileVersion)"
-Copy-Item (Join-Path $ScriptDir "Output\RynthCore-Setup.exe") "$rel\RynthCore-Setup.exe"
-Copy-Item (Join-Path $ScriptDir "staging\plugins\RynthAi\RynthCore.Plugin.RynthAi.dll") "$rel\plugins\"
+# The Decal bridge (experimental, opt-in per account) is only in installers built where Decal is
+# installed; a launcher updating through this feed without it can't run "Decal + RynthCore" accounts.
+$bridgeStaged = Join-Path $ScriptDir "staging\core\DecalBridge\RynthCore.DecalBridge.dll"
+if (Test-Path $bridgeStaged) {
+    Write-Host "  Decal bridge in the installer: $((Get-Item $bridgeStaged).VersionInfo.FileVersion)"
+} else {
+    Write-Warning "This installer has no Decal bridge ($bridgeStaged missing); 'Decal + RynthCore' accounts won't work from it."
+}
+# The versioned installer is the primary artifact (the RynthCore-Setup.exe copy is best effort).
+Copy-Item (Join-Path $ScriptDir "Output\RynthCore-Setup-$Version.exe") "$rel\RynthCore-Setup.exe"
+# Build-Installer.ps1 stages RynthSuite files under staging\suite\ (RynthAi -> staging\suite\RynthAi\).
+Copy-Item (Join-Path $ScriptDir "staging\suite\RynthAi\RynthCore.Plugin.RynthAi.dll") "$rel\plugins\"
 
 $suitePlugins = "RynthChat", "RynthTracker", "RynthNav", "RynthVision", "RynthLua", "RynthOracle", "RynthInventory"
 foreach ($name in $suitePlugins) {

@@ -84,13 +84,9 @@ internal static unsafe class Win32Backend
     /// HWNDs drop WM_LBUTTONDOWN on Win11 in some focus states).</summary>
     public const uint WM_RYNTH_RUN_ACTION = 0x8002;
 
-    /// <summary>UI deep-dive finding P0-1 belt-and-braces (2026-07-02):
-    /// posted (not sent) by LayeredWindow.Dispose to destroy an HWND on the
-    /// game thread without blocking the calling thread — DestroyWindow must
-    /// run on the owning thread, but the caller (often the Avalonia UI
-    /// thread, e.g. redocking a panel) doesn't need to wait for it to
-    /// finish. wParam carries the HWND to destroy.</summary>
-    public const uint WM_RYNTH_DESTROY_HWND = 0x8003;
+    // 0x8003 was WM_RYNTH_DESTROY_HWND (destroy a panel via the game window).
+    // Retired: LayeredWindow now posts WM_RYNTH_SELF_DESTROY (0x8051) to the
+    // panel itself so it is destroyed on its real owner thread. Don't reuse 0x8003.
 
     /// <summary>Destroys floating-panel HWNDs on the game thread (their owner).
     /// wParam != 0 includes this engine load's own panels (sent synchronously by
@@ -396,36 +392,12 @@ internal static unsafe class Win32Backend
     }
 
     /// <summary>
-    /// UI deep-dive finding P0-1 (2026-07-02): posts (does not block on) a
-    /// DestroyWindow for <paramref name="hwnd"/> onto the game thread.
-    /// DestroyWindow must run on the HWND's owning thread, but unlike
-    /// RunOnGameThread this never needs the caller to observe a result — so
-    /// it uses a dedicated PostMessage instead of the shared
-    /// RunOnGameThread action slot, avoiding any risk of blocking the
-    /// caller (e.g. LayeredWindow.Dispose called from the Avalonia UI
-    /// thread while redocking a panel) on the game thread's WndProc.
+    /// True once the game window is known AND its WndProc is subclassed, i.e.
+    /// <see cref="RunOnGameThread{T}"/> can actually deliver work to AC's main
+    /// thread. Knowing the HWND alone is not enough: without the subclass,
+    /// WM_RYNTH_RUN_ACTION reaches AC's own WndProc, which ignores it.
     /// </summary>
-    public static void PostDestroyWindow(IntPtr hwnd)
-    {
-        if (hwnd == IntPtr.Zero) return;
-        if (_gameHwnd == IntPtr.Zero)
-        {
-            // No game thread to marshal to (e.g. very early/late in
-            // lifecycle) — best-effort inline as LayeredWindow.Dispose's own
-            // fallback already does for the RunOnGameThread-unavailable case.
-            DestroyWindow(hwnd);
-            return;
-        }
-
-        GetWindowThreadProcessId(_gameHwnd, out uint gameThreadId);
-        if (gameThreadId == GetCurrentThreadId())
-        {
-            DestroyWindow(hwnd);
-            return;
-        }
-
-        PostMessage(_gameHwnd, WM_RYNTH_DESTROY_HWND, hwnd, IntPtr.Zero);
-    }
+    public static bool CanRunOnGameThread => _initialized && _gameHwnd != IntPtr.Zero;
 
     /// <summary>Deactivates chat capture.  The game HWND retains focus throughout so no
     /// Win32 focus transfer is needed.</summary>
@@ -597,10 +569,11 @@ internal static unsafe class Win32Backend
         if (!_initialized) return;
 
         // Destroy floating panels while our hook can still run on the game
-        // thread. LayeredWindow.Dispose only POSTS its destroy, and the game
-        // thread usually hasn't reached that post by the time we unhook below —
-        // AC's own WndProc then drops it and the panel outlives this engine
-        // load, frozen and unclickable (duplicate RynthAi dashboard after RL).
+        // thread. LayeredWindow.Dispose posts its destroy to the panel itself
+        // (handled by the panel's own WndProc, which survives this unhook), but
+        // any panel never disposed would outlive this engine load, frozen and
+        // unclickable (duplicate RynthAi dashboard after RL) — this sweep is the
+        // synchronous backstop for those.
         IntPtr swept = SendMessageTimeout(_gameHwnd, WM_RYNTH_SWEEP_PANELS, new IntPtr(1), IntPtr.Zero,
             SMTO_NORMAL, 2000, out _);
         if (swept == IntPtr.Zero)
@@ -794,24 +767,6 @@ internal static unsafe class Win32Backend
                     try { posted(); }
                     catch (Exception ex) { RynthLog.Info($"Win32Backend: posted action threw {ex.GetType().Name}: {ex.Message}"); }
                 }
-                return IntPtr.Zero;
-            }
-
-            if (msg == WM_RYNTH_DESTROY_HWND)
-            {
-                IntPtr target = wParam;
-                try
-                {
-                    bool destroyed = DestroyWindow(target);
-                    int err = destroyed ? 0 : Marshal.GetLastWin32Error();
-                    RynthLog.Info($"Win32Backend: WM_RYNTH_DESTROY_HWND DestroyWindow(0x{target.ToInt64():X}) = {destroyed} err={err}.");
-                    // 5 = ACCESS_DENIED: the window belongs to another thread. At least
-                    // take it off the screen so a closed panel can't linger beside a
-                    // reopened one (ShowWindow works across threads).
-                    if (!destroyed && err == 5)
-                        ShowWindow(target, 0 /* SW_HIDE */);
-                }
-                catch (Exception ex) { RynthLog.Info($"Win32Backend: WM_RYNTH_DESTROY_HWND threw {ex.GetType().Name}: {ex.Message}"); }
                 return IntPtr.Zero;
             }
 
@@ -1016,11 +971,15 @@ internal static unsafe class Win32Backend
             // HUD drag (keeps our SetCapture from fighting NewFrame's). No-op
             // unless the HUD is drawn.
             if (IsMouseMessage(msg))
+            {
                 TrackMouseButtons(msg, wParam);
+                ItemDragBridge.OnGameMouse(msg, wParam, lParam, _heldButtonsBelongToGame);
+            }
             else if (msg == WM_KILLFOCUS)
             {
                 _heldMouseButtons = 0;
                 _heldButtonsBelongToGame = false;
+                ItemDragBridge.Reset();
             }
 
             // ── Avalonia panel hit-test & input forwarding ────────────────
@@ -1031,7 +990,7 @@ internal static unsafe class Win32Backend
             {
                 // fall through: AC gets the message
             }
-            else if (IsMouseMessage(msg))
+            else if (IsMouseMessage(msg) && !ImGuiOwnsMouseOverAvalonia())
             {
                 bool handled = TryForwardToAvalonia(msg, wParam, lParam);
                 if (handled)
@@ -1120,6 +1079,14 @@ internal static unsafe class Win32Backend
                 }
             }
 
+            // An AC inventory item dragged onto an ImGui window: AC must not drop it on the
+            // ground behind the window. It gets the release where the drag began instead.
+            if (ItemDragBridge.TryRedirectNativeDrop(msg, out IntPtr pressLParam))
+            {
+                CallWindowProcA(_originalWndProc, hWnd, WM_MOUSEMOVE, (IntPtr)MK_LBUTTON, pressLParam);
+                return CallWindowProcA(_originalWndProc, hWnd, msg, wParam, pressLParam);
+            }
+
             // Pass through to original WndProc
             return CallWindowProcA(_originalWndProc, hWnd, msg, wParam, lParam);
         }
@@ -1128,6 +1095,17 @@ internal static unsafe class Win32Backend
             RynthLog.Render($"Win32Backend.WndProcHook: {ex.GetType().Name}: {ex.Message}");
             return CallWindowProcA(_originalWndProc, hWnd, msg, wParam, lParam);
         }
+    }
+
+    /// <summary>
+    /// ImGui windows are drawn on top of the Avalonia layer, so when the cursor is over
+    /// an ImGui window (or an ImGui widget is active) mouse input must go to ImGui
+    /// instead of the Avalonia panel underneath. An Avalonia drag/resize that is already
+    /// in progress keeps its capture so the release is never lost.
+    /// </summary>
+    private static bool ImGuiOwnsMouseOverAvalonia()
+    {
+        return _wantCaptureMouse && !AvaloniaOverlay.HasPointerCapture;
     }
 
     /// <summary>

@@ -333,6 +333,8 @@ internal static class SettingsPanel
                 return SectionHeader(row.Label);
             case SettingKind.Spacer:
                 return Spacer();
+            case SettingKind.Button:
+                return ButtonRow(row.Label, row.ButtonText ?? row.Label, () => row.Click?.Invoke(), row.Tooltip);
             case SettingKind.Note:
                 return new TextBlock
                 {
@@ -686,6 +688,44 @@ internal static class SettingsPanel
         };
         var lblBlock = new TextBlock { Text = label, Foreground = ColTextDim, FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
         btn.MinWidth = 160;
+        Grid.SetColumn(lblBlock, 0);
+        Grid.SetColumn(btn,      1);
+        row.Children.Add(lblBlock);
+        row.Children.Add(btn);
+
+        if (tooltip != null)
+        {
+            ToolTip.SetTip(row, tooltip);
+            ToolTip.SetShowDelay(row, 400);
+        }
+        return row;
+    }
+
+    /// <summary>Label on the left, a single action button on the right.</summary>
+    private static Control ButtonRow(string label, string buttonText, Action onClick, string? tooltip = null)
+    {
+        var btn = new Button
+        {
+            Content = buttonText,
+            FontSize = 10,
+            Height = 20,
+            MinWidth = 160,
+            Padding = new Thickness(4, 1),
+            Background = ColBtnFill,
+            Foreground = ColTextDim,
+            BorderBrush = ColBtnBord,
+            BorderThickness = new Thickness(1),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+        };
+        btn.Click += (_, _) => onClick();
+
+        var row = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            Margin = new Thickness(0, 2, 0, 2),
+            Height = 22,
+        };
+        var lblBlock = new TextBlock { Text = label, Foreground = ColTextDim, FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(lblBlock, 0);
         Grid.SetColumn(btn,      1);
         row.Children.Add(lblBlock);

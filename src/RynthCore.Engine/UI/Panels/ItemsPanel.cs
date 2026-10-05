@@ -2,8 +2,9 @@
 //  RynthCore.Engine — UI/Panels/ItemsPanel.cs
 //  Avalonia replica of the ImGui Items tab (LegacyWeaponsUi.cs).
 //
-//  Three sections:
-//    Weapons     — Name, Element picker, Delete
+//  Four sections:
+//    Weapons     — Name, Element picker, Delete (ItemRules with Action != "Shield")
+//    Shields     — Auto-equip toggle, Name, Delete (ItemRules with Action == "Shield")
 //    Consumables — Name, Type picker, Delete
 //    Mana Stones — Enable tapping toggle, keep count, min mana threshold
 //
@@ -61,6 +62,8 @@ internal static class ItemsPanel
         [JsonPropertyName("manaTapMinMana")]    public int                   ManaTapMinMana    { get; set; } = 2500;
         [JsonPropertyName("manaStoneKeepCount")]public int                   ManaStoneKeepCount{ get; set; } = 5;
         [JsonPropertyName("currentTargetName")] public string                CurrentTargetName { get; set; } = string.Empty;
+        // Null when the plugin predates shields (RynthAi < 0.6.20); the plugin then ignores it on write-back.
+        [JsonPropertyName("autoEquipShield")]   public bool?                 AutoEquipShield   { get; set; }
     }
 
     internal sealed class WeaponEntry
@@ -68,6 +71,10 @@ internal static class ItemsPanel
         [JsonPropertyName("id")]      public int    Id      { get; set; }
         [JsonPropertyName("name")]    public string Name    { get; set; } = string.Empty;
         [JsonPropertyName("element")] public string Element { get; set; } = "Slash";
+        // "Weapon" or "Shield" (older settings may hold "Loot"). Round-tripped untouched.
+        [JsonPropertyName("action")]  public string Action  { get; set; } = "Weapon";
+
+        public bool IsShield => string.Equals(Action, ItemsCommands.ShieldAction, StringComparison.OrdinalIgnoreCase);
     }
 
     internal sealed class ConsumableEntry
@@ -206,34 +213,77 @@ internal static class ItemsPanel
         {
             body.Children.Clear();
 
+            // Weapons and shields share the plugin's ItemRules list (state.Data.Weapons);
+            // rows are split by Action, so deletes remove by reference, not by index.
+            void DeleteItem(WeaponEntry entry)
+            {
+                state.Data.Weapons.Remove(entry);
+                state.Dirty = true;
+                PushChanges(state);
+                Refresh();
+            }
+
             // ── Weapons ──────────────────────────────────────────────────────
             body.Children.Add(BuildSectionHeader("Weapons"));
 
-            if (state.Data.Weapons.Count == 0)
+            var weapons = state.Data.Weapons.Where(w => !w.IsShield).ToList();
+            if (weapons.Count == 0)
             {
                 body.Children.Add(BuildEmptyRow("No weapons configured"));
             }
             else
             {
                 body.Children.Add(BuildTableHeader(new[] { "Item Name", "Element", "" }, new[] { true, false, false }, new double[] { 0, 100, 46 }));
-                for (int i = 0; i < state.Data.Weapons.Count; i++)
+                for (int i = 0; i < weapons.Count; i++)
                 {
-                    var w = state.Data.Weapons[i];
-                    int wi = i;
-                    body.Children.Add(BuildWeaponRow(w, wi % 2 == 0, ShowPicker,
+                    var w = weapons[i];
+                    body.Children.Add(BuildWeaponRow(w, i % 2 == 0, ShowPicker,
                         onChanged: () => { state.Dirty = true; PushChanges(state); },
-                        onDelete: () =>
-                        {
-                            state.Data.Weapons.RemoveAt(wi);
-                            state.Dirty = true;
-                            PushChanges(state);
-                            Refresh();
-                        }));
+                        onDelete: () => DeleteItem(w)));
                 }
             }
 
             body.Children.Add(BuildAddButton("Add Selected Weapon", "(select a weapon in inventory first)",
                 ItemsCommands.AddSelectedWeapon));
+
+            body.Children.Add(BuildDivider());
+
+            // ── Shields (off-hand) ───────────────────────────────────────────
+            body.Children.Add(BuildSectionHeader("Shields (off-hand)"));
+
+            // Plugins older than RynthAi 0.6.20 don't report the setting — hide the toggle then.
+            if (state.Data.AutoEquipShield is bool autoEquip)
+            {
+                body.Children.Add(BuildToggleRow("Auto-equip with one-handed melee weapons", autoEquip,
+                    "On: in melee with a one-handed weapon, combat wields the first shield below unless the monster has its own off-hand (Damage panel or Monsters 'Offhand').\n" +
+                    "Off: only per-monster off-hand choices are equipped.\n" +
+                    "Never used with two-handed weapons, bows, crossbows, atlatls or casters.",
+                    on =>
+                    {
+                        state.Data.AutoEquipShield = on;
+                        state.Dirty = true;
+                        PushChanges(state);
+                        Refresh();
+                    }));
+            }
+
+            var shields = state.Data.Weapons.Where(w => w.IsShield).ToList();
+            if (shields.Count == 0)
+            {
+                body.Children.Add(BuildEmptyRow("No shields configured"));
+            }
+            else
+            {
+                body.Children.Add(BuildTableHeader(new[] { "Shield Name", "" }, new[] { true, false }, new double[] { 0, 46 }));
+                for (int i = 0; i < shields.Count; i++)
+                {
+                    var s = shields[i];
+                    body.Children.Add(BuildShieldRow(s, i % 2 == 0, onDelete: () => DeleteItem(s)));
+                }
+            }
+
+            body.Children.Add(BuildAddButton("Add Selected Shield", "(select a shield in inventory first)",
+                ItemsCommands.AddSelectedShield));
 
             body.Children.Add(BuildDivider());
 
@@ -290,7 +340,8 @@ internal static class ItemsPanel
             bool consumablesChanged = ConsumablesChanged(state.Data.Consumables, fresh.Consumables);
             bool manaChanged       = state.Data.EnableManaTapping  != fresh.EnableManaTapping
                                   || state.Data.ManaTapMinMana     != fresh.ManaTapMinMana
-                                  || state.Data.ManaStoneKeepCount != fresh.ManaStoneKeepCount;
+                                  || state.Data.ManaStoneKeepCount != fresh.ManaStoneKeepCount
+                                  || state.Data.AutoEquipShield    != fresh.AutoEquipShield;
 
             // UI deep-dive finding P0-4 (2026-07-02): state.Data = fresh used
             // to run unconditionally, EVERY poll tick, even when the
@@ -507,6 +558,80 @@ internal static class ItemsPanel
         grid.Children.Add(del);
 
         return grid;
+    }
+
+    // ── Shield table row (name + delete; shields have no element) ─────────────
+    private static Control BuildShieldRow(WeaponEntry s, bool alt, Action onDelete)
+    {
+        var grid = new Grid
+        {
+            Background        = alt ? ColRowAlt : ColPanelBg,
+            Height            = 24,
+            ColumnDefinitions = new ColumnDefinitions("*, 46"),
+        };
+
+        var nameTb = new TextBlock
+        {
+            Text              = s.Name,
+            Foreground        = ColTextDim,
+            FontSize          = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(6, 0),
+            TextTrimming      = TextTrimming.CharacterEllipsis,
+        };
+        Grid.SetColumn(nameTb, 0);
+        grid.Children.Add(nameTb);
+
+        var del = new Button
+        {
+            Content         = "Del",
+            Background      = ColBtnFill,
+            Foreground      = ColRed,
+            BorderBrush     = ColBtnBord,
+            BorderThickness = new Thickness(1),
+            Padding         = new Thickness(4, 2),
+            FontSize        = 10,
+            Margin          = new Thickness(2, 2),
+        };
+        del.Click += (_, _) => onDelete();
+        Grid.SetColumn(del, 1);
+        grid.Children.Add(del);
+
+        return grid;
+    }
+
+    // ── Labelled ON/OFF toggle row (same look as the mana-tapping toggle) ─────
+    private static Control BuildToggleRow(string label, bool value, string tooltip, Action<bool> onToggled)
+    {
+        var row = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(4, 4, 4, 2) };
+
+        var btn = new Button
+        {
+            Content         = value ? "ON" : "OFF",
+            Background      = value ? new SolidColorBrush(Color.FromRgb(0x10, 0x40, 0x10)) : ColBtnFill,
+            Foreground      = value ? new SolidColorBrush(Color.FromRgb(0x33, 0xFF, 0x33)) : ColMute,
+            BorderBrush     = ColBtnBord,
+            BorderThickness = new Thickness(1),
+            Padding         = new Thickness(8, 2),
+            FontSize        = 10,
+            Width           = 50,
+            Margin          = new Thickness(0, 0, 8, 0),
+        };
+        btn.Click += (_, _) => onToggled(!value);
+        ToolTip.SetTip(btn, tooltip);
+        row.Children.Add(btn);
+
+        var lbl = new TextBlock
+        {
+            Text              = label,
+            Foreground        = ColTextDim,
+            FontSize          = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTip.SetTip(lbl, tooltip);
+        row.Children.Add(lbl);
+
+        return row;
     }
 
     // ── Consumable table row ──────────────────────────────────────────────────
@@ -739,7 +864,8 @@ internal static class ItemsPanel
     {
         if (a.Count != b.Count) return true;
         for (int i = 0; i < a.Count; i++)
-            if (a[i].Id != b[i].Id || a[i].Name != b[i].Name || a[i].Element != b[i].Element) return true;
+            if (a[i].Id != b[i].Id || a[i].Name != b[i].Name || a[i].Element != b[i].Element
+                || !string.Equals(a[i].Action, b[i].Action, StringComparison.OrdinalIgnoreCase)) return true;
         return false;
     }
 

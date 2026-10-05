@@ -265,7 +265,7 @@ internal static unsafe class SettingsCommands
 
 // ── Schema ─────────────────────────────────────────────────────────────────
 
-internal enum SettingKind { Bool, Int, Float, Double, Combo, Section, Spacer, Note, CraftingStatus }
+internal enum SettingKind { Bool, Int, Float, Double, Combo, Section, Spacer, Note, CraftingStatus, Button }
 
 /// <summary>
 /// One row of a settings tab. Numeric values go through double (bools as
@@ -283,7 +283,10 @@ internal sealed record SettingRow(
     double Step = 1,
     string[]? Items = null,
     Func<RynthAiSettings, bool>? VisibleWhen = null,
-    bool Gates = false)
+    bool Gates = false,
+    // Button rows: the button's caption (Label is the row label) and its action. Any thread.
+    string? ButtonText = null,
+    Action? Click = null)
 {
     public bool IsVisible(RynthAiSettings s) => VisibleWhen == null || VisibleWhen(s);
 }
@@ -360,6 +363,9 @@ internal static class SettingsSchema
 
     private static SettingRow Note(string text, Func<RynthAiSettings, bool>? when = null) =>
         new(SettingKind.Note, text, VisibleWhen: when);
+
+    private static SettingRow Button(string label, string buttonText, Action click, string? tip = null) =>
+        new(SettingKind.Button, label, tip, ButtonText: buttonText, Click: click);
 
     private static SettingRow[] Tiers(Func<RynthAiSettings, int>[] get, Action<RynthAiSettings, int>[] set)
     {
@@ -687,6 +693,8 @@ internal static class SettingsSchema
                 "After the salvage queue empties, move same-name bags together so the server merges them."),
             Bool("Combine Bags During Salvage", s => s.CombineBagsDuringSalvage, (s, v) => s.CombineBagsDuringSalvage = v,
                 "When salvaging an item, also add any under-full salvage bag of the same material to the salvage panel."),
+            Button("Floating HUDs", "Inventory HUDs...", () => RynthAiCommands.ApplyRemoteCommand("huds", "show"),
+                "Opens the item count HUD / Mini Remote setup window (/ra huds)."),
             Spacer(),
             Section("Loot Timers (ms)"),
             Int("Inter-Item Delay", s => s.LootInterItemDelayMs, (s, v) => s.LootInterItemDelayMs = v, 0, 5000, 25),

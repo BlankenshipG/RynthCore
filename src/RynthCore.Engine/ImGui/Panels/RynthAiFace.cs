@@ -145,6 +145,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         }
         Bars(view, raw, x0, width, boxBg);
         PatrolPopup();
+        CharMenu();
         MeasureAndFit(start.Y);
         // Last: a window of its own, placed against this one's rect (hidden popped out).
         _drawers.Draw();
@@ -477,7 +478,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     private void Launchers(float x0, float width)
     {
         float y = ImGuiNET.ImGui.GetCursorScreenPos().Y;
-        const int buttons = 8;
+        const int buttons = 10;
         float bw = MathF.Floor((width - buttons * LauncherGap) / buttons);
         // Short labels only when every button has room for its icon and label.
         bool labels = bw >= 68;
@@ -516,6 +517,25 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             }
             else _drawers.Toggle(_patrol);
         }
+        x += bw + LauncherGap;
+
+        // Char and Hub open RynthAi's own ImGui overlay windows (Mini Remote, which is the ILT
+        // Hub, its section windows, Inventory HUDs). They draw only when the engine hands plugins
+        // its ImGui context.
+        Launcher("##l_char", PhosphorIcons.User, "Char",
+            "Char. Left-click: ILT Hub / Mini Remote (/ra hub show).  Right-click: Hub windows, Progression (Skills panel).",
+            x, y, bw, labels, () => RynthAiCommands.ApplyRemoteCommand("hub", "show"));
+        if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
+        {
+            ImGuiNET.ImGui.SetNextWindowPos(ImGuiNET.ImGui.GetItemRectMin(), ImGuiCond.Always, new Vector2(0, 1));
+            ImGuiNET.ImGui.OpenPopup("##charmenu");
+        }
+        x += bw + LauncherGap;
+        Launcher("##l_hub", PhosphorIcons.SquaresFour, "Hub",
+            "Hub. Left-click: Mini Remote (/ra remote).  Right-click: Inventory HUDs setup (/ra huds).",
+            x, y, bw, labels, () => RynthAiCommands.ApplyRemoteCommand("remote", "toggle"));
+        if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
+            RynthAiCommands.ApplyRemoteCommand("huds", "show");
 
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y + LauncherH));
     }
@@ -680,6 +700,46 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         float ty = y + 1 + (13 - font.FontSize) * 0.5f;
         dl.AddText(font, font.FontSize, new Vector2(x + 4, ty), Mute, icon);
         dl.AddText(font, font.FontSize, new Vector2(x + 4 + CalcWidth(font, icon) + 3, ty), White, bar.Text ?? "");
+    }
+
+    // ── Char menu (right-click Char): RynthAi's character windows ──────────
+
+    /// <summary>ILT Hub section windows: menu label and the "/ra hub open" section name RynthAi parses.</summary>
+    private static readonly (string Label, string Section)[] HubSections =
+    {
+        ("Character", "character"), ("Quests", "quests"), ("Pets", "pets"),
+        ("Banking", "banking"), ("Gear", "gear"), ("Games", "games"), ("Guardian", "guardian"),
+    };
+
+    private static void CharMenu()
+    {
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.PopupBg, ShellBg);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, BtnBord);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(8, 8));
+        bool open = ImGuiNET.ImGui.BeginPopup("##charmenu");
+        ImGuiNET.ImGui.PopStyleVar();
+        ImGuiNET.ImGui.PopStyleColor(2);
+        if (!open) return;
+        try
+        {
+            // The Mini Remote is the ILT Hub; each former Hub tab is its own window (toggled).
+            if (ImGuiNET.ImGui.MenuItem("Mini Remote (ILT Hub)", "/ra hub"))
+                RynthAiCommands.ApplyRemoteCommand("hub", "toggle");
+            ImGuiNET.ImGui.Separator();
+            foreach ((string label, string section) in HubSections)
+            {
+                if (ImGuiNET.ImGui.MenuItem(label, "/ra hub open " + section))
+                    RynthAiCommands.ApplyRemoteCommand("hub", "open " + section + " toggle");
+            }
+            ImGuiNET.ImGui.Separator();
+            if (ImGuiNET.ImGui.MenuItem("Progression (Skills panel)"))
+                SkillsFace.ShowProgression();
+            ImGuiNET.ImGui.SetItemTooltip("XP planner, augmentations and enlightenment (ILT worlds)");
+        }
+        finally
+        {
+            ImGuiNET.ImGui.EndPopup();
+        }
     }
 
     // ── Patrol popup (right-click Patrol, popped out; docked it's the Patrol drawer) ──

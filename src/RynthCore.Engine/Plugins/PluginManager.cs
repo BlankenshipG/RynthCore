@@ -264,6 +264,7 @@ internal static class PluginManager
     private static VendorBuyCallbackDelegate? _vendorBuyCallback;
     private static VendorSellCallbackDelegate? _vendorSellCallback;
     private static GetVendorTradeStatusCallbackDelegate? _getVendorTradeStatusCallback;
+    private static GetMergeStackResultCallbackDelegate? _getMergeStackResultCallback;
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -1118,6 +1119,109 @@ internal static class PluginManager
             }
         }
     }
+
+    /// <summary>
+    /// ImGui-shell-off counterpart of <see cref="RenderAll"/>: calls the optional
+    /// RynthPluginRenderOverlay export, where a plugin draws only the extra windows that have
+    /// no Avalonia panel (e.g. RynthAi's ILT Hub). They float beside the Avalonia UI and add to it.
+    /// A throw switches off just that plugin's overlay windows; the plugin is NOT marked Failed,
+    /// so its tick/automation and Avalonia panels keep running.
+    /// </summary>
+    public static void RenderOverlayAll()
+    {
+        _overlayCalls++;
+        if (!_loginCompleteObserved)
+        {
+            if (!_loggedOverlayWaitingForLogin)
+            {
+                _loggedOverlayWaitingForLogin = true;
+                RynthLog.Info("PluginManager: RenderOverlayAll called - waiting for login before drawing overlay windows.");
+            }
+            return; // same not-in-world crash zone guard as RenderAll
+        }
+
+        LoadedPlugin[] plugins = System.Threading.Volatile.Read(ref _pluginsRenderSnapshot);
+
+        // Count plugins that will actually be called; log whenever that set changes.
+        int bound = 0;
+        for (int i = 0; i < plugins.Length; i++)
+        {
+            var p = plugins[i];
+            if (p.Initialized && !p.Failed && p.RenderOverlay != null) bound++;
+        }
+        _overlayBound = bound;
+        if (bound != _loggedOverlayBound || plugins.Length != _loggedOverlayTotal)
+        {
+            _loggedOverlayBound = bound;
+            _loggedOverlayTotal = plugins.Length;
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < plugins.Length; i++)
+            {
+                var p = plugins[i];
+                if (sb.Length > 0) sb.Append(", ");
+                sb.Append(p.DisplayName).Append('(')
+                  .Append(p.RenderOverlay != null ? "overlay" : "no-overlay")
+                  .Append(p.Initialized ? "" : ",not-init")
+                  .Append(p.Failed ? ",failed" : "")
+                  .Append(')');
+            }
+            RynthLog.Info($"PluginManager: RenderOverlayAll login seen, {bound} of {plugins.Length} plugin(s) will draw overlay windows: {sb}.");
+        }
+
+        for (int i = 0; i < plugins.Length; i++)
+        {
+            var plugin = plugins[i];
+            var overlay = plugin.RenderOverlay;
+            if (!plugin.Initialized || plugin.Failed || overlay == null)
+                continue;
+
+            if (!plugin.RenderOverlayLogged)
+            {
+                // One line per plugin per session: proves the engine is actually driving the overlay export.
+                plugin.RenderOverlayLogged = true;
+                RynthLog.Plugin($"PluginManager: first RenderOverlay call for {plugin.DisplayName}.");
+            }
+
+            try
+            {
+                overlay();
+            }
+            catch (Exception ex)
+            {
+                plugin.RenderOverlay = null;
+                RynthLog.Error($"PluginManager: {plugin.DisplayName} RenderOverlay threw {ex.GetType().Name}: {ex.Message} - overlay windows off for this session (plugin keeps running).");
+            }
+        }
+    }
+
+    // RenderOverlayAll diagnostics (render thread only).
+    private static long _overlayCalls;
+    private static int _overlayBound;
+    private static bool _loggedOverlayWaitingForLogin;
+    private static int _loggedOverlayBound = -1;
+    private static int _loggedOverlayTotal = -1;
+
+    /// <summary>
+    /// True when an initialized, healthy plugin exports RynthPluginRenderOverlay. Reads the
+    /// render snapshot only (no lock, no allocation): safe every frame on the render thread.
+    /// </summary>
+    internal static bool HasOverlayPlugins
+    {
+        get
+        {
+            LoadedPlugin[] plugins = System.Threading.Volatile.Read(ref _pluginsRenderSnapshot);
+            for (int i = 0; i < plugins.Length; i++)
+            {
+                var p = plugins[i];
+                if (p.Initialized && !p.Failed && p.RenderOverlay != null) return true;
+            }
+            return false;
+        }
+    }
+
+    /// <summary>Overlay stats for the ImGui heartbeat line.</summary>
+    internal static string DescribeOverlayState()
+        => $"overlayCalls={_overlayCalls} loginSeen={_loginCompleteObserved} overlayPlugins={_overlayBound}";
 
     public static void ShutdownAll()
     {
@@ -2285,6 +2389,14 @@ internal static class PluginManager
         // %APPDATA%\RynthCore\engine.json. The engine never auto-scans a
         // bundled Plugins\ folder — that historically caused stray DLLs to
         // load on next start (or after hot-reload) without the user knowing.
+        //
+        // Track DLL file names and canonical paths already staged this generation. engine.json can
+        // list the same plugin twice (e.g. a stale copy in another folder); a second File.Copy to the
+        // same shadow file name fails while the first copy is still mapped ("used by another process")
+        // and breaks hot-reload ordering for later DLLs.
+        var loadedBasenames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var loadedCanonicalPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         var extraPaths = EngineSettings.PluginPaths;
         for (int i = 0; i < extraPaths.Count; i++)
         {
@@ -2295,32 +2407,52 @@ internal static class PluginManager
                 continue;
             }
 
-            // Skip if a plugin with the same filename was already loaded from the default directory.
-            // Both paths share the same session shadow dir — loading the same filename twice would
-            // try to overwrite a locked shadow copy and crash.
-            string extraFileName = Path.GetFileName(dllPath);
-            bool alreadyLoaded = false;
-            for (int j = 0; j < _plugins.Count; j++)
+            string baseName = Path.GetFileName(dllPath);
+            if (loadedBasenames.Contains(baseName))
             {
-                if (string.Equals(Path.GetFileName(_plugins[j].SourceFilePath), extraFileName, StringComparison.OrdinalIgnoreCase))
-                {
-                    alreadyLoaded = true;
-                    break;
-                }
+                RynthLog.Plugin($"PluginManager: Skipping extra plugin (same file name already loaded from plugins directory or earlier extra path): {dllPath}");
+                continue;
             }
-            if (alreadyLoaded)
+
+            if (TryGetCanonicalPath(dllPath, out string extraCanon) && loadedCanonicalPaths.Contains(extraCanon))
             {
-                RynthLog.Plugin($"PluginManager: Extra plugin {extraFileName} already loaded from default directory — skipping.");
+                RynthLog.Plugin($"PluginManager: Skipping extra plugin (same resolved path already loaded): {dllPath}");
                 continue;
             }
 
             RynthLog.Plugin($"PluginManager: Loading extra plugin: {dllPath}");
             var plugin = PluginLoader.LoadSingle(dllPath, _shadowRootDir, _loadGeneration);
             if (plugin != null)
+            {
                 _plugins.Add(plugin);
+                loadedBasenames.Add(plugin.FileName);
+                TryAddCanonicalPath(loadedCanonicalPaths, plugin.SourceFilePath);
+            }
         }
 
+        // RenderAll / RenderOverlayAll iterate only this snapshot; without it they see no plugins.
         PublishPluginsRenderSnapshot();
+        RynthLog.Plugin($"PluginManager: render snapshot published ({_plugins.Count} plugin(s)).");
+    }
+
+    private static void TryAddCanonicalPath(HashSet<string> set, string path)
+    {
+        if (TryGetCanonicalPath(path, out string canon))
+            set.Add(canon);
+    }
+
+    private static bool TryGetCanonicalPath(string path, out string canonical)
+    {
+        try
+        {
+            canonical = Path.GetFullPath(path);
+            return true;
+        }
+        catch
+        {
+            canonical = string.Empty;
+            return false;
+        }
     }
 
     private static void InitializeLoadedPlugins()
@@ -2638,6 +2770,7 @@ internal static class PluginManager
         _vendorBuyCallback ??= VendorBuyAction;
         _vendorSellCallback ??= VendorSellAction;
         _getVendorTradeStatusCallback ??= GetVendorTradeStatusAction;
+        _getMergeStackResultCallback ??= GetMergeStackResultAction;
 
         _api.Version = PluginContractVersion.Current;
         _api.LogFn = Marshal.GetFunctionPointerForDelegate(_logCallback);
@@ -2775,6 +2908,7 @@ internal static class PluginManager
         _api.VendorBuyFn = Marshal.GetFunctionPointerForDelegate(_vendorBuyCallback);
         _api.VendorSellFn = Marshal.GetFunctionPointerForDelegate(_vendorSellCallback);
         _api.GetVendorTradeStatusFn = Marshal.GetFunctionPointerForDelegate(_getVendorTradeStatusCallback);
+        _api.GetMergeStackResultFn = Marshal.GetFunctionPointerForDelegate(_getMergeStackResultCallback);
         RouteApiThroughLoader();
     }
 
@@ -3490,6 +3624,22 @@ internal static class PluginManager
     private static int MergeStackInternal(uint sourceObjectId, uint targetObjectId)
     {
         return ToAbiBool(ClientHelperHooks.MergeStackInternal(sourceObjectId, targetObjectId));
+    }
+
+    // v68: outcome of the latest MergeStackInternal(source, target) (MergeStackResults codes).
+    private static unsafe int GetMergeStackResultAction(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs)
+    {
+        try
+        {
+            int status = MergeStackResults.Get(sourceObjectId, targetObjectId, out int sent, out int age);
+            if (amount != null) *amount = sent;
+            if (ageMs != null) *ageMs = age;
+            return status;
+        }
+        catch
+        {
+            return MergeStackResults.None;
+        }
     }
 
     private static int GiveObjectTo(uint objectId, uint targetId, int amount)

@@ -558,7 +558,7 @@ internal static partial class RynthAiPanel
         var launcherGrid = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("*,*,*"),
-            RowDefinitions = new RowDefinitions("Auto,Auto"),
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto"),
             Margin = new Thickness(0, 4, 0, 0)
         };
         AddSplitLauncher(launcherGrid, 0, 0, "Meta", "⚙", "Lua", "<>",
@@ -567,8 +567,15 @@ internal static partial class RynthAiPanel
         AddMonstersLauncher(launcherGrid, 0, 1);
         AddLauncher(launcherGrid, 0, 2, "Settings",    "⚒",
             onClick: () => PanelRouter.Toggle("Settings"));
-        AddSplitLauncher(launcherGrid, 1, 0, "Nav", "➤", "Map", "🗺",
-            onLeftClick: () => PanelRouter.Toggle("Nav"));
+        // Map: RynthAi's dungeon map is an ImGui overlay window; the right half toggles it like "/ra map".
+        var (_, mapBtn) = AddSplitLauncher(launcherGrid, 1, 0, "Nav", "➤", "Map", "🗺",
+            onLeftClick: () => PanelRouter.Toggle("Nav"),
+            onRightClick: () =>
+            {
+                ClosePicker();
+                RynthAiCommands.ApplyRemoteCommand("map", "toggle");
+            });
+        ToolTip.SetTip(mapBtn, "Show/hide the dungeon map (/ra map). It appears when you are indoors.");
         AddLauncher(launcherGrid, 1, 1, "Items",       "🛡",
             onClick: () => PanelRouter.Toggle("Items"));
         var patrolBtn = AddLauncher(launcherGrid, 1, 2, "Patrol", "⬡",
@@ -581,6 +588,33 @@ internal static partial class RynthAiPanel
             {
                 e.Handled = true;
                 ShowPatrolFlyout(patrolBtn);
+            }
+        };
+        // Char: same as typing "/ra hub show". The ILT Hub is an ImGui overlay window with no
+        // Avalonia panel, so this is the panel's way to open it.
+        var charBtn = AddLauncher(launcherGrid, 2, 0, "Char", "♥",
+            onClick: () =>
+            {
+                ClosePicker();
+                RynthAiCommands.ApplyRemoteCommand("hub", "show");
+            });
+        ToolTip.SetTip(charBtn, "Open the character hub (ILT Hub) window (/ra hub show).");
+
+        // Hub: the Mini Remote and the Inventory HUDs setup are ImGui windows inside RynthAi.
+        var hudBtn = AddLauncher(launcherGrid, 2, 1, "Hub", "▣",
+            onClick: () =>
+            {
+                ClosePicker();
+                RynthAiCommands.ApplyRemoteCommand("remote", "toggle");
+            });
+        ToolTip.SetTip(hudBtn, "Left-click: show/hide the Mini Remote (/ra remote).  Right-click: Inventory HUDs setup (/ra huds).");
+        hudBtn.PointerPressed += (_, e) =>
+        {
+            if (e.GetCurrentPoint(hudBtn).Properties.IsRightButtonPressed)
+            {
+                e.Handled = true;
+                ClosePicker();
+                RynthAiCommands.ApplyRemoteCommand("huds", "show");
             }
         };
 
@@ -1201,16 +1235,18 @@ internal static partial class RynthAiPanel
     /// by side. Used for Nav | Map so the user can pop the navigation panel
     /// or the dungeon map independently from the same row slot.
     /// </summary>
-    private static void AddSplitLauncher(Grid grid, int row, int col,
+    /// <returns>The left and right half buttons (e.g. for tooltips).</returns>
+    private static (Button Left, Button Right) AddSplitLauncher(Grid grid, int row, int col,
         string leftLabel, string leftIcon, string rightLabel, string rightIcon,
         Action? onLeftClick = null, Action? onRightClick = null)
     {
         var splitGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*") };
-        AddLauncher(splitGrid, 0, 0, leftLabel,  leftIcon,  onLeftClick);
-        AddLauncher(splitGrid, 0, 1, rightLabel, rightIcon, onRightClick);
+        var left  = AddLauncher(splitGrid, 0, 0, leftLabel,  leftIcon,  onLeftClick);
+        var right = AddLauncher(splitGrid, 0, 1, rightLabel, rightIcon, onRightClick);
         grid.Children.Add(splitGrid);
         Grid.SetRow(splitGrid, row);
         Grid.SetColumn(splitGrid, col);
+        return (left, right);
     }
 
     private static Button AddLauncher(Grid grid, int row, int col, string label, string icon, Action? onClick = null)

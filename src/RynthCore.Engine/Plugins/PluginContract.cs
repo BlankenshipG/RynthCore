@@ -10,7 +10,11 @@
 //    const char* RynthPluginName()           — human-readable name
 //    const char* RynthPluginVersion()        — version string (e.g. "1.0.0")
 //    void        RynthPluginTick()           — per-frame logic (before render)
-//    void        RynthPluginRender()         — per-frame ImGui drawing
+//    void        RynthPluginRender()         — per-frame ImGui drawing (ImGui shell on)
+//    void        RynthPluginRenderOverlay()  — per-frame ImGui drawing while the ImGui shell is
+//                                              off (Avalonia mode): only windows that have no
+//                                              Avalonia panel. Gated by engine.json
+//                                              "EnablePluginOverlayWindows" (default true).
 // ============================================================================
 
 using System;
@@ -780,6 +784,14 @@ internal struct RynthCoreAPI
     /// AC's main thread (queued in the action ring from other threads, ahead of anything queued
     /// after it). Returns 1 if sent or queued. Requires API v76+.</summary>
     public IntPtr CloseContainerFn;
+
+    /// <summary>v77: <c>int GetMergeStackResult(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs)</c>:
+    /// outcome of the latest MergeStackInternal(source, target) request: 0 none, 1 queued,
+    /// 2 sent (amount = units sent), 3 skipped because the target was already full,
+    /// 4 failed (invalid ids / AC rejected / threw), 5 dropped (main-thread queue full).
+    /// ageMs = how long ago the outcome was recorded. Either out pointer may be null.
+    /// The thunk is cdecl. Any thread. Requires API v77+. APPENDED-AT-END for ABI safety.</summary>
+    public IntPtr GetMergeStackResultFn;
 }
 
 /// <summary>v72 <see cref="TradeStateNative.Flags"/> bits.</summary>
@@ -967,7 +979,7 @@ internal unsafe struct VendorTradeStatusNative
 /// <summary>Current API version. Bump when adding fields to RynthCoreAPI.</summary>
 internal static class PluginContractVersion
 {
-    public const uint Current = 76;
+    public const uint Current = 77; // v77: GetMergeStackResult
 }
 
 internal static class ClientActionHookFlags
@@ -1473,6 +1485,10 @@ internal unsafe delegate uint VendorSellCallbackDelegate(uint vendorId, uint* it
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetVendorTradeStatusCallbackDelegate(VendorTradeStatusNative* status);
+// Cdecl is mandatory on every API delegate: without it x86 marshals a stdcall thunk, the callee and
+// the cdecl caller both pop the args, and the plugin's stack drifts on every call.
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetMergeStackResultCallbackDelegate(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetVTankStateCallbackDelegate(int* sequence);

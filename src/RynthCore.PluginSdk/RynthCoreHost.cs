@@ -6,7 +6,7 @@ namespace RynthCore.PluginSdk;
 
 public readonly unsafe struct RynthCoreHost
 {
-    public const uint CurrentApiVersion = 68;
+    public const uint CurrentApiVersion = 77; // v77: GetMergeStackResult
 
     /// <summary>
     /// The oldest engine API a plugin built on this SDK loads on by default
@@ -139,6 +139,8 @@ public readonly unsafe struct RynthCoreHost
     /// <summary>v76: <see cref="CloseContainer"/> (close a corpse or chest like the client's window close).</summary>
     public bool HasCloseContainer => _api.Version >= 76 && _api.CloseContainerFn != IntPtr.Zero;
     public bool HasGetPluginExportJson     => _api.Version >= 66 && _api.GetPluginExportJsonFn     != IntPtr.Zero;
+    // Version-checked first: on an older engine the field lies past the end of its API table.
+    public bool HasGetMergeStackResult     => _api.Version >= 77 && _api.GetMergeStackResultFn     != IntPtr.Zero;
     public bool HasGetPluginInterface      => _api.Version >= 68 && _api.GetPluginInterfaceFn      != IntPtr.Zero;
     public bool HasGetLiveObjectIds        => _api.Version >= 69 && _api.GetLiveObjectIdsFn        != IntPtr.Zero;
     public bool HasGetLastUseDone          => _api.Version >= 70 && _api.GetLastUseDoneFn          != IntPtr.Zero;
@@ -543,6 +545,37 @@ public readonly unsafe struct RynthCoreHost
     {
         return _api.MergeStackInternalFn != IntPtr.Zero &&
                ((delegate* unmanaged[Cdecl]<uint, uint, int>)_api.MergeStackInternalFn)(sourceObjectId, targetObjectId) != 0;
+    }
+
+    /// <summary>Outcome codes returned by <see cref="GetMergeStackResult"/>.</summary>
+    public static class MergeStackStatus
+    {
+        public const int None       = 0; // no request recorded for this pair (or it aged out)
+        public const int Queued     = 1; // accepted onto AC's main-thread queue, not executed yet
+        public const int Sent       = 2; // merge sent to the server for 'amount' units
+        public const int TargetFull = 3; // skipped: the target stack was already full
+        public const int Failed     = 4; // invalid ids, merge API unavailable, AC rejected, or threw
+        public const int QueueFull  = 5; // dropped: main-thread queue full
+    }
+
+    /// <summary>
+    /// What happened to the latest <see cref="MergeStackInternal"/> request for this pair
+    /// (a <see cref="MergeStackStatus"/> code). <paramref name="amount"/> = units sent
+    /// (Sent only); <paramref name="ageMs"/> = how long ago the outcome was recorded.
+    /// Returns <see cref="MergeStackStatus.None"/> on engines older than API v68.
+    /// </summary>
+    public int GetMergeStackResult(uint sourceObjectId, uint targetObjectId, out int amount, out int ageMs)
+    {
+        amount = 0;
+        ageMs = 0;
+        if (!HasGetMergeStackResult)
+            return MergeStackStatus.None;
+        int a = 0, age = 0;
+        int status = ((delegate* unmanaged[Cdecl]<uint, uint, int*, int*, int>)_api.GetMergeStackResultFn)(
+            sourceObjectId, targetObjectId, &a, &age);
+        amount = a;
+        ageMs = age;
+        return status;
     }
 
     /// <summary>

@@ -265,6 +265,7 @@ internal static unsafe class RynthAiCommands
     private static delegate* unmanaged[Cdecl]<float, void> _adjustOpacity;
     private static delegate* unmanaged[Cdecl]<void> _togglePanelLock;
     private static delegate* unmanaged[Cdecl]<IntPtr, void> _sendNavCommand;
+    private static delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void> _applyRemoteCommand;
 
     static RynthAiCommands()
     {
@@ -272,6 +273,7 @@ internal static unsafe class RynthAiCommands
         {
             _toggleMacro = null; _setSubsystemEnabled = null; _selectProfile = null; _forceRebuff = null;
             _cancelForceRebuff = null; _adjustOpacity = null; _togglePanelLock = null; _sendNavCommand = null;
+            _applyRemoteCommand = null;
         };
     }
 
@@ -340,6 +342,29 @@ internal static unsafe class RynthAiCommands
         finally { Marshal.FreeHGlobal(p); }
         if (refreshPatrol) UiSources.Patrol.RequestRefresh();
         UiSources.Nav.RequestRefresh();   // the plugin applied it: the Nav panels show it next poll
+    });
+
+    /// <summary>
+    /// RynthPluginApplyRemoteCommand(action, value) - the same (action, value) pairs as the
+    /// plugin's /ra chat commands ("huds","show"; "remote","toggle"; "hub","show" ...).
+    /// Older RynthAi builds without the export drop the command (logged once per bind miss).
+    /// </summary>
+    public static void ApplyRemoteCommand(string action, string value) => Run("remote command " + action, () =>
+    {
+        if (_applyRemoteCommand == null) _applyRemoteCommand = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void>)Export("RynthPluginApplyRemoteCommand");
+        if (_applyRemoteCommand == null)
+        {
+            RynthLog.UI($"RynthAiCommands: RynthPluginApplyRemoteCommand not exported; dropped '{action} {value}'.");
+            return;
+        }
+        IntPtr a = Marshal.StringToHGlobalAnsi(action);
+        IntPtr b = Marshal.StringToHGlobalAnsi(value);
+        try { _applyRemoteCommand(a, b); }
+        finally
+        {
+            Marshal.FreeHGlobal(a);
+            Marshal.FreeHGlobal(b);
+        }
     });
 }
 
