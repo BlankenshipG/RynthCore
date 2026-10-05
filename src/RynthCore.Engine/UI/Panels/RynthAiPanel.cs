@@ -744,16 +744,36 @@ internal static partial class RynthAiPanel
                 ShowPatrolFlyout(patrolBtn);
             }
         };
-        // ILT Hub: same as typing "/ra hub show". The Hub is an ImGui overlay window with no
+        // Char: same as typing "/ra hub show". The ILT Hub is an ImGui overlay window with no
         // Avalonia panel, so this is the panel's way to open it.
-        var iltHubBtn = AddLauncher(launcherGrid, 2, 0, "ILT Hub", "♥",
+        var charBtn = AddLauncher(launcherGrid, 2, 0, "Char", "♥",
             onClick: () =>
             {
                 ClosePicker();
                 if (_applyRemoteCommand == null) TryBind();
                 SendRemoteCmd("hub", "show");
             });
-        ToolTip.SetTip(iltHubBtn, "Open the ILT Hub window (/ra hub show).");
+        ToolTip.SetTip(charBtn, "Open the character hub (ILT Hub) window (/ra hub show).");
+
+        // Hub: the Mini Remote and the Inventory HUDs setup are ImGui windows inside RynthAi.
+        var hudBtn = AddLauncher(launcherGrid, 2, 1, "Hub", "▣",
+            onClick: () =>
+            {
+                ClosePicker();
+                if (_applyRemoteCommand == null) TryBind();
+                SendRemoteCmd("remote", "toggle");
+            });
+        ToolTip.SetTip(hudBtn, "Left-click: show/hide the Mini Remote (/ra remote).  Right-click: Inventory HUDs setup (/ra huds).");
+        hudBtn.PointerPressed += (_, e) =>
+        {
+            if (e.GetCurrentPoint(hudBtn).Properties.IsRightButtonPressed)
+            {
+                e.Handled = true;
+                ClosePicker();
+                if (_applyRemoteCommand == null) TryBind();
+                SendRemoteCmd("huds", "show");
+            }
+        };
 
         dash.Children.Add(launcherGrid);
 
