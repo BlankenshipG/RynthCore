@@ -39,6 +39,10 @@ internal sealed class NavPayload
     public int ActiveNavIndex { get; set; }
     public List<string> NavFiles { get; set; } = new();
     public List<NavPoint> Points { get; set; } = new();
+    /// <summary>RynthAi records (and draws) the walked breadcrumb trail. Older plugins omit it (false).</summary>
+    public bool TrackBreadcrumbs { get; set; }
+    /// <summary>RynthAi draws the route overlay (rings / lines, waypoint labels, guide line).</summary>
+    public bool ShowRouteOverlay { get; set; }
 
     /// <summary>A copy a face may change (its own point list); the points themselves are shared.</summary>
     public NavPayload Clone()
@@ -59,6 +63,7 @@ internal sealed class NavCmd
     public int InsertAt { get; set; } = -1;
     public string NavName { get; set; } = string.Empty;
     public string Text { get; set; } = string.Empty;   // addChat
+    public bool On { get; set; }                       // setBreadcrumbs / setRouteOverlay
 }
 
 [JsonSerializable(typeof(NavPayload))]
