@@ -1600,6 +1600,16 @@ internal static partial class RynthAiPanel
     /// typing "/ra &lt;action&gt; &lt;value&gt;". The plugin copies both strings and applies
     /// the command on its pump thread, so the buffers can be freed as soon as this returns.
     /// </summary>
+    /// <summary>
+    /// Lets other engine panels send a "/ra &lt;action&gt; &lt;value&gt;" command to the RynthAi
+    /// plugin, binding the plugin export first if this panel has not done so yet.
+    /// </summary>
+    internal static void SendRynthAiCommand(string action, string value)
+    {
+        if (_applyRemoteCommand == null) TryBind();
+        SendRemoteCmd(action, value);
+    }
+
     private static void SendRemoteCmd(string action, string value)
     {
         if (_applyRemoteCommand == null)
