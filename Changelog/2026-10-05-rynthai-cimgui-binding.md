@@ -38,9 +38,15 @@ ub-Rythai already avoids this with a DllImport resolver bound to the engine's mo
 - No changes to the windows themselves. The Mini Remote looks as it did before the merge: stats,
   ResetXP / Report, item buttons, toggles, profile pickers, Guardian, Translate, Chat XL and Rebuff.
 
-## Also found (not fixed here)
+## Two clients no longer overwrite each other's RynthAi logs (RynthAi 0.5.7-legacy-ui)
 
-- With two clients running, RynthAi's shared log files (`Logs\Diagnostics\rynthai_*.txt` and
-  `Trace\*.txt`) lose and garble lines. Each process opens the file in Append mode once, keeps a
-  buffered writer, and then both write over each other's offsets. Log lines from a two-client session
-  can be missing.
+- Before: with two clients running, RynthAi's shared log files (`Logs\Diagnostics\rynthai_*.txt`,
+  `exceptions_*.txt`, `Trace\*.txt`) lost and garbled lines. Each process opened the file in Append
+  mode once with `FileShare.ReadWrite`, kept a buffered writer, and wrote at its own end-of-file
+  offset, overwriting the other client's lines.
+- Now each file has one writing process. `RynthLog.OpenWriter` opens it with `FileShare.Read`, so
+  readers are fine but a second writer is refused. When another client already holds the file, this
+  process writes `{name}.{pid}.txt` beside it, e.g. `rynthai_2026-10-05.30060.txt`. The engine's own
+  logs (`RynthCore.{pid}.log`) are per process the same way.
+- Retention and pruning are unchanged. The per-process files are `*.txt` in the same folders, so
+  they age out with the rest.
