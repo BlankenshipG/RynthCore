@@ -1991,9 +1991,10 @@ internal static class ClientObjectHooks
 
         // Deep-audit finding #24 (2026-06-18): never touch AC memory off-thread here. PWD-backed
         // stypes were handled above (live on the main thread, snapshot off-thread); InqInt
-        // walks qualities and stays main-thread-only.
+        // walks qualities and stays main-thread-only. Off-thread, the network update cache
+        // (a managed ConcurrentDictionary) still answers for never-appraised objects.
         if (!MainThreadGuard.IsOnMainThread())
-            return false;
+            return PropertyUpdateHooks.TryGetCachedIntProperty(objectId, stype, out value);
 
         // CBaseQualities::InqInt for stypes not in PWD.
         if (_inqInt == null)

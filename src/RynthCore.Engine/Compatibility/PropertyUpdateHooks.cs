@@ -325,11 +325,15 @@ internal static class PropertyUpdateHooks
     {
         var props = _intCache.GetOrAdd(guid, _ => new ConcurrentDictionary<uint, int>());
         props[stype] = value;
+        // The appraisal snapshot is read first off-thread; keep it current (e.g. an essence's
+        // Structure after a refill or summon) instead of serving the value from the last ID.
+        AppraisalHooks.PatchCachedInt(guid, stype, value);
     }
 
     private static void CacheBool(uint guid, uint stype, int value)
     {
         var props = _boolCache.GetOrAdd(guid, _ => new ConcurrentDictionary<uint, int>());
         props[stype] = value;
+        AppraisalHooks.PatchCachedBool(guid, stype, value != 0);
     }
 }
