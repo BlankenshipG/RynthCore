@@ -189,7 +189,60 @@ internal sealed class SettingsFace : IImGuiPanel
             case SettingKind.Note: Note(row.Label, w); break;
             case SettingKind.CraftingStatus: CraftingStatus(row); break;
             case SettingKind.Button: ButtonRow(row, w); break;
+            case SettingKind.TraceCategories: TraceCategoriesRow(row, w); break;
         }
+    }
+
+    // [All on] [All off] [ILT Hub on], then a 3-column grid of square toggles, one per
+    // RynthAi trace category. Edits the copy's DiagCategories and saves like any other row.
+    private void TraceCategoriesRow(SettingRow row, float w)
+    {
+        var cats = TraceCategoryLevels.Parse(_data.DiagCategories);
+        if (cats.Count == 0)
+        {
+            Note("Waiting for RynthAi...", w);
+            return;
+        }
+
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+        if (ImGuiNET.ImGui.Button("All on")) SaveCategories(TraceCategoryLevels.Set(_data.DiagCategories, "", true));
+        ImGuiNET.ImGui.SameLine(0, 6);
+        if (ImGuiNET.ImGui.Button("All off")) SaveCategories(TraceCategoryLevels.Set(_data.DiagCategories, "", false));
+        ImGuiNET.ImGui.SameLine(0, 6);
+        if (ImGuiNET.ImGui.Button("ILT Hub on")) SaveCategories(TraceCategoryLevels.Set(_data.DiagCategories, "", true, "Ilt"));
+        Tooltip(row);
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
+        float colW = Math.Max(80f, w / 3f);
+        int perRow = Math.Max(1, (int)(w / colW));
+        Vector2 start = ImGuiNET.ImGui.GetCursorScreenPos();
+        for (int i = 0; i < cats.Count; i++)
+        {
+            var (name, level) = cats[i];
+            bool on = level != TraceCategoryLevels.Off;
+            string label = TraceCategoryLevels.Label(name, level);
+            var p = start + new Vector2(i % perRow * colW, i / perRow * 18f);
+            ImGuiNET.ImGui.SetCursorScreenPos(p);
+            ImGuiNET.ImGui.PushID(name);
+            if (ImGuiNET.ImGui.InvisibleButton("##cat", new Vector2(colW - 4, 16)))
+                SaveCategories(TraceCategoryLevels.Set(_data.DiagCategories, name, !on));
+            if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+            ImGuiNET.ImGui.PopID();
+            dl.AddRectFilled(p + new Vector2(0, 2), p + new Vector2(12, 14), on ? ToggleOn : ToggleOff, 2);
+            dl.PushClipRect(p, p + new Vector2(colW - 4, 16), true);
+            dl.AddText(p + new Vector2(18, (16 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), TextDim, label);
+            dl.PopClipRect();
+        }
+        int rowsUsed = (cats.Count + perRow - 1) / perRow;
+        ImGuiNET.ImGui.SetCursorScreenPos(start + new Vector2(0, rowsUsed * 18f));
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+    }
+
+    private void SaveCategories(string levels)
+    {
+        _data.DiagCategories = levels;
+        SettingsCommands.Save(_data.Clone());
     }
 
     // Label | [caption]; Click posts its own work (never runs plugin code on AC's thread).
@@ -568,6 +621,7 @@ internal sealed class SettingsFace : IImGuiPanel
         ["Crafting"] = PhosphorIcons.Hammer,
         ["Looting"] = PhosphorIcons.Bag,
         ["Vendoring"] = PhosphorIcons.Storefront,
+        ["Diagnostics"] = PhosphorIcons.Wrench,
         [CharmsTabName] = PhosphorIcons.Gift,
     };
     private static readonly System.Collections.Generic.Dictionary<string, string> TabLabels = new();
