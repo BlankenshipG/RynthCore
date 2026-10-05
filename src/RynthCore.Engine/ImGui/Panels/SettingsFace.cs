@@ -54,13 +54,24 @@ internal sealed class SettingsFace : IImGuiPanel
     }
     private readonly Dictionary<SettingRow, NumberEdit> _edits = new();
 
+    /// <summary>Extra sidebar tab after the schema tabs; drawn from UiSources.Charms, not settings rows.</summary>
+    private const string CharmsTabName = "Charms Tracking";
+    private static int CharmsTab => SettingsSchema.Tabs.Length;
+    private const string CharmsHeader = "Advanced Settings > " + CharmsTabName;
+
     public void OnShown()
     {
         UiSources.Settings.Subscribe();
         UiSources.Settings.RequestRefresh();
+        UiSources.Charms.Subscribe();
+        UiSources.Charms.RequestRefresh();
     }
 
-    public void OnHidden() => UiSources.Settings.Unsubscribe();
+    public void OnHidden()
+    {
+        UiSources.Settings.Unsubscribe();
+        UiSources.Charms.Unsubscribe();
+    }
 
     public void Draw()
     {
@@ -100,9 +111,9 @@ internal sealed class SettingsFace : IImGuiPanel
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         float w = ImGuiNET.ImGui.GetContentRegionAvail().X;
         SettingsTab[] tabs = SettingsSchema.Tabs;
-        for (int i = 0; i < tabs.Length; i++)
+        for (int i = 0; i <= tabs.Length; i++)
         {
-            string tabName = tabs[i].Name;
+            string tabName = i < tabs.Length ? tabs[i].Name : CharmsTabName;
             ImGuiNET.ImGui.Dummy(new Vector2(0, 1));
             Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
             ImGuiNET.ImGui.PushID(i);
@@ -133,13 +144,22 @@ internal sealed class SettingsFace : IImGuiPanel
         float w = ImGuiNET.ImGui.GetContentRegionAvail().X;
 
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        if (_tab >= SettingsSchema.Tabs.Length) _tab = 0;
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), Headers[_tab]);
+        if (_tab > CharmsTab) _tab = 0;
+        bool charms = _tab == CharmsTab;
+        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), charms ? CharmsHeader : Headers[_tab]);
         ImGuiNET.ImGui.PopFont();
         ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
         Vector2 lp = ImGuiNET.ImGui.GetCursorScreenPos();
         dl.AddLine(lp, lp + new Vector2(w, 0), BtnBord);
         ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
+
+        if (charms)
+        {
+            CharmsTabContent(w);
+            ImGuiNET.ImGui.PopStyleVar();
+            ImGuiNET.ImGui.EndChild();
+            return;
+        }
 
         SettingRow[] rows = SettingsSchema.Tabs[_tab].Rows;
         for (int i = 0; i < rows.Length; i++)
@@ -397,6 +417,130 @@ internal sealed class SettingsFace : IImGuiPanel
         }
     }
 
+    // ── Charms Tracking tab ───────────────────────────────────────────────
+
+    private static readonly uint CharmOn = C(0xFF33FF33), CharmDisabled = C(0xFFFF5555);
+
+    /// <summary>Summary line, one table row per ACECustom registry charm, then how each column is known.</summary>
+    private static void CharmsTabContent(float w)
+    {
+        var snap = UiSources.Charms.Current;
+        if (snap == null)
+        {
+            Note("Waiting for RynthAi...", w);
+            return;
+        }
+        CharmsInfo info = snap.Value;
+        if (!info.Available)
+        {
+            Note("Charm tracking is for ILT (Infinite Leaftide / ACECustom) worlds."
+                 + (info.World.Length > 0 ? " Current world: " + info.World + "." : ""), w);
+            Note("Use /ra hub force on to treat this world as ILT.", w);
+            return;
+        }
+
+        ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
+        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFE8B333),
+            $"{info.AcquiredCount} of {info.Total} acquired  |  {info.ActiveCount} active");
+        ImGuiNET.ImGui.PopFont();
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, new Vector2(4, 3));
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.TableRowBg, PanelBg);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.TableRowBgAlt, ShellBg);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.TableHeaderBg, TabActive);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.TableBorderLight, BtnBord);
+        const ImGuiTableFlags flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.SizingFixedFit;
+        if (ImGuiNET.ImGui.BeginTable("##charms", 5, flags, new Vector2(w, 0)))
+        {
+            ImGuiNET.ImGui.TableSetupColumn("Charm", ImGuiTableColumnFlags.WidthStretch);
+            ImGuiNET.ImGui.TableSetupColumn("Acquired", ImGuiTableColumnFlags.WidthFixed, 70);
+            ImGuiNET.ImGui.TableSetupColumn("Status", ImGuiTableColumnFlags.WidthFixed, 44);
+            ImGuiNET.ImGui.TableSetupColumn("Tier", ImGuiTableColumnFlags.WidthFixed, 32);
+            ImGuiNET.ImGui.TableSetupColumn("Server", ImGuiTableColumnFlags.WidthFixed, 56);
+            ImGuiNET.ImGui.TableHeadersRow();
+
+            CharmRow[] rows = info.Charms;
+            for (int i = 0; i < rows.Length; i++)
+            {
+                CharmRow r = rows[i];
+                ImGuiNET.ImGui.PushID(i);
+                ImGuiNET.ImGui.TableNextRow();
+
+                ImGuiNET.ImGui.TableNextColumn();
+                ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), r.Name);
+                if (r.Effect.Length > 0) ImGuiNET.ImGui.SetItemTooltip(r.Effect);
+
+                ImGuiNET.ImGui.TableNextColumn();
+                switch (r.Acquired)
+                {
+                    case "carried":
+                        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), r.Count > 1 ? $"Carried x{r.Count}" : "Carried");
+                        ImGuiNET.ImGui.SetItemTooltip("In your pack or equipped.");
+                        break;
+                    case "seen":
+                        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFE8B333), "Stored");
+                        ImGuiNET.ImGui.SetItemTooltip("Owned but not carried"
+                            + (r.LastSeen.Length > 0 ? " (last carried " + r.LastSeen + ")" : "")
+                            + ". The client only sees items you carry.");
+                        break;
+                    default:
+                        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFB8C8D8), "Not yet");
+                        break;
+                }
+
+                ImGuiNET.ImGui.TableNextColumn();
+                if (r.Acquired != "carried")
+                    ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFB8C8D8), "-");
+                else if (r.Active == "on")
+                    ColoredText(CharmOn, "ON");
+                else if (r.Active == "off")
+                    ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFB8C8D8), "OFF");
+                else
+                {
+                    ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFE8B333), "?");
+                    ImGuiNET.ImGui.SetItemTooltip("Waiting for the charm's appraisal (requested automatically).");
+                }
+
+                ImGuiNET.ImGui.TableNextColumn();
+                string tier = r.Tier <= 0 ? "-" : r.MaxTier > 0 ? $"{r.Tier}/{r.MaxTier}" : r.Tier.ToString(CultureInfo.InvariantCulture);
+                ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), tier);
+
+                ImGuiNET.ImGui.TableNextColumn();
+                if (r.Server == "off")
+                {
+                    ColoredText(CharmDisabled, "Disabled");
+                    ImGuiNET.ImGui.SetItemTooltip("The server refused or reported this charm as disabled.");
+                }
+                else if (r.Server == "on")
+                    ColoredText(CharmOn, "Enabled");
+                else
+                {
+                    ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFB8C8D8), "-");
+                    ImGuiNET.ImGui.SetItemTooltip("Not reported. The server only tells players when a charm is refused.");
+                }
+
+                ImGuiNET.ImGui.PopID();
+            }
+            ImGuiNET.ImGui.EndTable();
+        }
+        ImGuiNET.ImGui.PopStyleColor(4);
+        ImGuiNET.ImGui.PopStyleVar();
+
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
+        Note("Double-click a carried charm in your pack to toggle it. Status comes from the charm's appraisal "
+             + "(Status: ON/OFF) or your character's ability flag. Charms not carried are inactive.", w);
+        Note("Stored = carried by this character before; RynthAi remembers it per character.", w);
+    }
+
+    /// <summary>TextUnformatted in a packed ImGui colour.</summary>
+    private static void ColoredText(uint abgr, string text)
+    {
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, abgr);
+        ImGuiNET.ImGui.TextUnformatted(text);
+        ImGuiNET.ImGui.PopStyleColor();
+    }
+
     private static bool StepButton(string id, Vector2 pos, string glyph)
     {
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
@@ -424,6 +568,7 @@ internal sealed class SettingsFace : IImGuiPanel
         ["Crafting"] = PhosphorIcons.Hammer,
         ["Looting"] = PhosphorIcons.Bag,
         ["Vendoring"] = PhosphorIcons.Storefront,
+        [CharmsTabName] = PhosphorIcons.Gift,
     };
     private static readonly System.Collections.Generic.Dictionary<string, string> TabLabels = new();
 
