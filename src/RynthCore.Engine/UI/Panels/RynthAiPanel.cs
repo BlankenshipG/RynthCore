@@ -700,14 +700,32 @@ internal static partial class RynthAiPanel
             RowDefinitions = new RowDefinitions("Auto,Auto,Auto"),
             Margin = new Thickness(0, 4, 0, 0)
         };
-        AddSplitLauncher(launcherGrid, 0, 0, "Meta", "⚙", "Lua", "<>",
-            onLeftClick: () => AvaloniaOverlay.ActivateBarButton("Meta"));
+        // Lua: the Lua Scripts editor is an ImGui window inside RynthAi (drawn from its
+        // RynthPluginRenderOverlay), so the button toggles it like "/ra lua".
+        var (_, luaBtn) = AddSplitLauncher(launcherGrid, 0, 0, "Meta", "⚙", "Lua", "<>",
+            onLeftClick: () => AvaloniaOverlay.ActivateBarButton("Meta"),
+            onRightClick: () =>
+            {
+                ClosePicker();
+                if (_applyRemoteCommand == null) TryBind();
+                SendRemoteCmd("lua", "toggle");
+            });
+        ToolTip.SetTip(luaBtn, "Show/hide the Lua Scripts editor (/ra lua).");
         AddLauncher(launcherGrid, 0, 1, "Monsters",    "◎",
             onClick: () => AvaloniaOverlay.ActivateBarButton("Monsters"));
         AddLauncher(launcherGrid, 0, 2, "Settings",    "⚒",
             onClick: () => AvaloniaOverlay.ActivateBarButton("Settings"));
-        AddSplitLauncher(launcherGrid, 1, 0, "Nav", "➤", "Map", "🗺",
-            onLeftClick: () => AvaloniaOverlay.ActivateBarButton("Nav"));
+        // Map: the dungeon map is an ImGui window inside RynthAi (DashWindows.ShowDungeonMap),
+        // drawn from its RynthPluginRenderOverlay; the button toggles it like "/ra map".
+        var (_, mapBtn) = AddSplitLauncher(launcherGrid, 1, 0, "Nav", "➤", "Map", "🗺",
+            onLeftClick: () => AvaloniaOverlay.ActivateBarButton("Nav"),
+            onRightClick: () =>
+            {
+                ClosePicker();
+                if (_applyRemoteCommand == null) TryBind();
+                SendRemoteCmd("map", "toggle");
+            });
+        ToolTip.SetTip(mapBtn, "Show/hide the dungeon map (/ra map). It appears when you are indoors.");
         AddLauncher(launcherGrid, 1, 1, "Items",       "🛡",
             onClick: () => AvaloniaOverlay.ActivateBarButton("Items"));
         var patrolBtn = AddLauncher(launcherGrid, 1, 2, "Patrol", "⬡",
@@ -1384,16 +1402,18 @@ internal static partial class RynthAiPanel
     /// by side. Used for Nav | Map so the user can pop the navigation panel
     /// or the dungeon map independently from the same row slot.
     /// </summary>
-    private static void AddSplitLauncher(Grid grid, int row, int col,
+    /// <returns>The left and right half buttons (e.g. for tooltips).</returns>
+    private static (Button Left, Button Right) AddSplitLauncher(Grid grid, int row, int col,
         string leftLabel, string leftIcon, string rightLabel, string rightIcon,
         Action? onLeftClick = null, Action? onRightClick = null)
     {
         var splitGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*") };
-        AddLauncher(splitGrid, 0, 0, leftLabel,  leftIcon,  onLeftClick);
-        AddLauncher(splitGrid, 0, 1, rightLabel, rightIcon, onRightClick);
+        var left  = AddLauncher(splitGrid, 0, 0, leftLabel,  leftIcon,  onLeftClick);
+        var right = AddLauncher(splitGrid, 0, 1, rightLabel, rightIcon, onRightClick);
         grid.Children.Add(splitGrid);
         Grid.SetRow(splitGrid, row);
         Grid.SetColumn(splitGrid, col);
+        return (left, right);
     }
 
     private static Button AddLauncher(Grid grid, int row, int col, string label, string icon, Action? onClick = null)
