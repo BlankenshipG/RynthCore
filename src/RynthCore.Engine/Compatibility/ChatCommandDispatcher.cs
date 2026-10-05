@@ -211,6 +211,35 @@ internal static unsafe class ChatCommandDispatcher
         }
     }
 
+    /// <summary>
+    /// Sends a server command quietly: Talk text that starts with '@', which ACE runs as
+    /// a command (GameActionTalk) exactly as it runs a typed "/command" the client
+    /// forwards. Straight to CM_Communication::Event_Talk: no plugin pre-dispatch, no
+    /// chat-bar keystrokes, nothing said aloud. Printable ASCII only. AC's main thread
+    /// only (the Aelrynth mastery feed calls it from MainThreadSnapshots.Tick); refuses
+    /// anywhere else rather than queueing.
+    /// </summary>
+    public static bool SendServerCommand(string atCommand)
+    {
+        if (!MainThreadGuard.IsOnMainThread())
+            return false;
+        if (string.IsNullOrEmpty(atCommand) || atCommand.Length < 2 || atCommand[0] != '@' || atCommand.Length > 200)
+            return false;
+        foreach (char c in atCommand)
+            if (c < 0x20 || c > 0x7E)
+                return false;
+        try
+        {
+            LogoffOriginProbe.RecordChat("ServerCommand", atCommand);
+            return DispatchSay(atCommand);
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"ChatDispatch: server command '{atCommand}' failed - {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
     private static string ExpandShorthand(string text)
     {
         if (StartsWithCmd(text, "/s ")) return "/say " + text.Substring(3);
@@ -310,6 +339,11 @@ internal static unsafe class ChatCommandDispatcher
     /// </summary>
     private static bool DispatchRaw(string command)
     {
+        // Decal bridge mode: AC's outgoing-chat function belongs to Decal (our hook is not
+        // installed) and there is no window subclass for keystrokes, so the line goes to
+        // Decal's InvokeChatParser, which the bridge runs on AC's main thread.
+        if (DecalBridgeHost.Active)
+            return DecalBridgeHost.TryInvokeChatParser(command);
         if (ChatCallbackHooks.TryDispatchDirect(command))
             return true;
         return SimulateChatInput(command);

@@ -9,8 +9,8 @@
 //  the snapshot.
 //
 //  Plugin exports used:
-//    RynthPluginGetMonstersJson  → polled every 1s for external edits
-//    RynthPluginSetMonstersJson  → debounced write-back on edit
+//    RynthPluginGetMonstersJson  → UiSources.MonsterRules (hub, pump thread; shared with Damage)
+//    RynthPluginSetMonstersJson  → DamageCommands.SetRulesJson (hub)
 // ============================================================================
 
 using System;
@@ -25,6 +25,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using RynthCore.Engine.Plugins;
+using RynthCore.Engine.UI.Data;
 
 namespace RynthCore.Engine.UI.Panels;
 
@@ -35,16 +36,8 @@ internal partial class MonstersPanelJsonContext : JsonSerializerContext { }
 
 internal static class MonstersPanel
 {
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, ExactSpelling = true)]
-    private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
 
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate IntPtr GetMonstersJsonFn();
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate void SetMonstersJsonFn(IntPtr ansiJson);
 
-    private static GetMonstersJsonFn? _getMonstersJson;
-    private static SetMonstersJsonFn? _setMonstersJson;
 
     private static readonly IBrush ColTeal      = new SolidColorBrush(Color.FromRgb(0x26, 0xD9, 0xE6));
     private static readonly IBrush ColAmber     = new SolidColorBrush(Color.FromRgb(0xE8, 0xB3, 0x33));
@@ -125,9 +118,13 @@ internal static class MonstersPanel
         public bool UseRing { get; set; }
         public bool UseStreak { get; set; }
         public bool UseBolt { get; set; } = true;
+        /// <summary>Blast spells (a spread of projectiles). Off in rules saved before 2026-10-03.</summary>
+        public bool UseBlast { get; set; }
         public string ExVuln { get; set; } = "None";
         public int OffhandId { get; set; }
         public string PetDamage { get; set; } = "PAuto";
+        /// <summary>Debuffs the player typed in, comma separated (spell base or full names).</summary>
+        public string CustomDebuffs { get; set; } = string.Empty;
 
         public bool GetToggle(string field) => field switch
         {
@@ -141,6 +138,7 @@ internal static class MonstersPanel
             "UseBolt"     => UseBolt,
             "UseRing"     => UseRing,
             "UseStreak"   => UseStreak,
+            "UseBlast"    => UseBlast,
             _             => false,
         };
 
@@ -158,6 +156,7 @@ internal static class MonstersPanel
                 case "UseBolt":     UseBolt = v; break;
                 case "UseRing":     UseRing = v; break;
                 case "UseStreak":   UseStreak = v; break;
+                case "UseBlast":    UseBlast = v; break;
             }
         }
     }
@@ -175,7 +174,6 @@ internal static class MonstersPanel
 
     public static Control Create()
     {
-        TryBind();
 
         var state = new State();
 
@@ -424,7 +422,6 @@ internal static class MonstersPanel
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1000) };
         timer.Tick += (_, _) =>
         {
-            if (_getMonstersJson == null) TryBind();
             if (state.Dirty) return; // don't clobber pending edits
             if (!TryFetch(out var fresh)) return;
 
@@ -449,8 +446,17 @@ internal static class MonstersPanel
         // Stop with the visual tree — a running DispatcherTimer roots the closed
         // view forever (one immortal poller per open/close). RadarPanel idiom;
         // must restart on attach: drag/resize fires Detached→Attached.
-        root.AttachedToVisualTree   += (_, _) => { if (!timer.IsEnabled) timer.Start(); };
-        root.DetachedFromVisualTree += (_, _) => timer.Stop();
+        root.AttachedToVisualTree += (_, _) =>
+        {
+            UiSources.MonsterRules.Subscribe();
+            UiSources.MonsterRules.RequestRefresh();
+            if (!timer.IsEnabled) timer.Start();
+        };
+        root.DetachedFromVisualTree += (_, _) =>
+        {
+            timer.Stop();
+            UiSources.MonsterRules.Unsubscribe();
+        };
 
         return root;
     }
@@ -957,73 +963,28 @@ internal static class MonstersPanel
     // ── Plugin export binding ───────────────────────────────────────────────
     // RL loads fresh plugin copies without unloading the old ones: drop the
     // exports bound below so the next poll re-binds to the live copy.
-    static MonstersPanel() => PluginManager.PluginsUnloaded += () =>
-    {
-        _getMonstersJson = null;
-        _setMonstersJson = null;
-    };
+    // The hub version at the last save: older snapshots predate it and would
+    // briefly revert the edit on screen, so they're skipped.
+    private static long _savedAtVersion = -1;
 
-    private static void TryBind()
-    {
-        var plugin = PluginManager.Plugins.FirstOrDefault(
-            p => p.DisplayName.Contains("RynthAi", StringComparison.OrdinalIgnoreCase));
-        if (plugin == null || plugin.ModuleHandle == IntPtr.Zero) return;
-
-        if (_getMonstersJson == null)
-        {
-            IntPtr p1 = GetProcAddress(plugin.ModuleHandle, "RynthPluginGetMonstersJson");
-            if (p1 != IntPtr.Zero)
-                _getMonstersJson = Marshal.GetDelegateForFunctionPointer<GetMonstersJsonFn>(p1);
-        }
-
-        if (_setMonstersJson == null)
-        {
-            IntPtr p2 = GetProcAddress(plugin.ModuleHandle, "RynthPluginSetMonstersJson");
-            if (p2 != IntPtr.Zero)
-                _setMonstersJson = Marshal.GetDelegateForFunctionPointer<SetMonstersJsonFn>(p2);
-        }
-    }
-
+    // A private copy of the hub's latest rules (the panel edits it in place).
     private static bool TryFetch(out Payload payload)
     {
         payload = new Payload();
-        if (_getMonstersJson == null) return false;
-        try
-        {
-            IntPtr ptr = _getMonstersJson();
-            if (ptr == IntPtr.Zero) return false;
-            string? json = Marshal.PtrToStringAnsi(ptr);
-            if (string.IsNullOrEmpty(json)) return false;
-            var parsed = JsonSerializer.Deserialize(json, MonstersPanelJsonContext.Default.Payload);
-            if (parsed == null) return false;
-            payload = parsed;
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
+        var snap = UiSources.MonsterRules.Current;
+        if (snap == null || snap.Version <= _savedAtVersion) return false;
+        payload = snap.Value.ParseCopy();
+        return true;
     }
 
     private static void PushChanges(State state)
     {
-        if (_setMonstersJson == null) TryBind();
-        if (_setMonstersJson == null) return;
-
-        IntPtr ansi = IntPtr.Zero;
-        try
-        {
-            // Only the rules array is needed by the setter — avoids round-tripping items list.
-            string json = JsonSerializer.Serialize(new Payload { Rules = state.Data.Rules }, MonstersPanelJsonContext.Default.Payload);
-            ansi = Marshal.StringToHGlobalAnsi(json);
-            _setMonstersJson(ansi);
-            state.Dirty = false;
-        }
-        catch { }
-        finally
-        {
-            if (ansi != IntPtr.Zero) Marshal.FreeHGlobal(ansi);
-        }
+        // Only the rules array is needed by the setter; serialized here, on the
+        // UI thread, because the panel keeps editing state.Data afterwards.
+        string json = JsonSerializer.Serialize(new Payload { Rules = state.Data.Rules }, MonstersPanelJsonContext.Default.Payload);
+        _savedAtVersion = UiSources.MonsterRules.Current?.Version ?? _savedAtVersion;
+        DamageCommands.SetRulesJson(json);
+        state.Dirty = false;
     }
 
     private static bool CapturedEqual(Dictionary<string, CapturedInfo>? a, Dictionary<string, CapturedInfo>? b)
@@ -1056,7 +1017,8 @@ internal static class MonstersPanel
                 || x.Fester != y.Fester || x.Broadside != y.Broadside || x.GravityWell != y.GravityWell
                 || x.Imperil != y.Imperil || x.Yield != y.Yield || x.Vuln != y.Vuln
                 || x.UseArc != y.UseArc || x.UseBolt != y.UseBolt
-                || x.UseRing != y.UseRing || x.UseStreak != y.UseStreak)
+                || x.UseRing != y.UseRing || x.UseStreak != y.UseStreak || x.UseBlast != y.UseBlast
+                || (x.CustomDebuffs ?? "") != (y.CustomDebuffs ?? ""))
                 return false;
         }
         return true;

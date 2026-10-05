@@ -165,6 +165,9 @@ internal static class ClientActionHooks
     {
         // Direct quaternion write — instant snap, most reliable (uses proven SmartBox offsets).
         // Equivalent to old Decal Actions.Heading = value.
+        // Off AC's main thread (plugin pump) SetPlayerHeadingDirect only parks the
+        // heading in AcMainThreadQueue's coalesced slot and returns true; the snap
+        // (and the no-player CommandInterpreter fallback below) run in Drain.
         if (PlayerPhysicsHooks.SetPlayerHeadingDirect(headingDegrees))
             return true;
 

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Offline checks for the "Check Decal bridge" logic (src\RynthCore.App\DecalBridgeCheck.cs,
+    compiled in): which registry view a Decal client reads its filter list from (per-user
+    VirtualStore copy vs machine-wide HKLM) for non-elevated / elevated / UAC-off /
+    manifest / run-as-administrator clients, and every check line, against a fake registry.
+    Never touches the real registry.
+    Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>DecalBridgeCheckTests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\RynthCore.App\DecalBridgeCheck.cs" Link="App\DecalBridgeCheck.cs" />
+    <Compile Include="..\..\src\RynthCore.App\RealDecalCheckHost.cs" Link="App\RealDecalCheckHost.cs" />
+    <Compile Include="..\..\src\RynthCore.App\DecalBridgeRegistration.cs" Link="App\DecalBridgeRegistration.cs" />
+    <Compile Include="..\..\src\RynthCore.App\DecalLocator.cs" Link="App\DecalLocator.cs" />
+  </ItemGroup>
+
+</Project>

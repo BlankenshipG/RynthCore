@@ -132,10 +132,17 @@ internal static class BusyCountHooks
 
         int was = _netBusyCount;
 
-        if (_originalDecrementBusyCount != null)
+        // Decrement exactly what the REAL field holds, never past zero. This used
+        // to call the original decrement max(shadow, 3) times: with the real field
+        // already 0 (AC's UseDone decrements it inline, which the shadow never
+        // sees) that walked it to -1..-3 before the write below put it back.
+        // m_cBusy only drives the cursor (UpdateCursorState: != 0 = busy cursor),
+        // so this was never the item-action lock, but there is no reason to
+        // write below zero. See ClientActionGates for the gates AC really checks.
+        int real = Marshal.ReadInt32(_lastThisPtr + OffsetMCBusy);
+        if (_originalDecrementBusyCount != null && real > 0)
         {
-            int calls = Math.Max(was, 3);
-            for (int i = 0; i < calls && i < 20; i++)
+            for (int i = 0; i < real && i < 20; i++)
                 _originalDecrementBusyCount(_lastThisPtr);
         }
 
@@ -171,11 +178,72 @@ internal static class BusyCountHooks
             catch { /* non-fatal */ }
         }
 
-        RynthLog.Verbose($"Compat: force-reset busy count (was {was})");
+        RynthLog.Verbose($"Compat: force-reset busy count (was real {real}, shadow {was})");
+    }
+
+    // ── Negative m_cBusy repair ─────────────────────────────────────────────
+    // AC never takes m_cBusy below what it added; only a zeroing of ours can:
+    // a force-clear (or the direct-action reconciler) zeroes a count whose
+    // action is still in flight, then the server's UseDone decrements it
+    // inline (Handle_Item::UseDone, not through DecrementBusyCount) to -1.
+    // The real-field watchdog only looks at > 0, so the negative value stayed
+    // for the session: a permanent busy cursor. Repair it after a short grace.
+    private static long _realBusyNegativeSince;
+    private static long _negativeRepairCount;
+    private const long NegativeBusyRepairMs = 2_000;
+    public static long NegativeRepairCount => Interlocked.Read(ref _negativeRepairCount);
+    public static int ShadowBusyCount => Volatile.Read(ref _netBusyCount);
+    public static int PendingReconcileDelta => _pendingCastBusyDelta;
+
+    /// <summary>Read AC's real m_cBusy. False when the ClientUISystem isn't known/readable.</summary>
+    public static bool TryReadRealBusy(out int value)
+    {
+        value = 0;
+        IntPtr p = _lastThisPtr;
+        if (p == IntPtr.Zero || !ClientObjectHooks.IsReadablePointer(p + OffsetMCBusy))
+            return false;
+        try { value = Marshal.ReadInt32(p + OffsetMCBusy); return true; }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// If AC's m_cBusy is negative, set it to 0 and refresh the cursor. Main
+    /// thread only (returns false elsewhere). <paramref name="was"/> is the
+    /// value found.
+    /// </summary>
+    public static bool RepairNegativeBusy(out int was)
+    {
+        was = 0;
+        if (!MainThreadGuard.IsOnMainThread())
+            return false;
+        IntPtr p = _lastThisPtr;
+        if (!TryReadRealBusy(out was) || was >= 0)
+            return false;
+        if (!ClientObjectHooks.IsWritablePointer(p + OffsetMCBusy))
+            return false;
+
+        Marshal.WriteInt32(p + OffsetMCBusy, 0);
+        Interlocked.Exchange(ref _netBusyCount, 0);
+        Interlocked.Increment(ref _negativeRepairCount);
+        if (_updateCursorStateAddress != IntPtr.Zero)
+        {
+            try
+            {
+                var updateCursor = Marshal.GetDelegateForFunctionPointer<UpdateCursorStateDelegate>(_updateCursorStateAddress);
+                updateCursor(p);
+            }
+            catch { /* non-fatal */ }
+        }
+        return true;
     }
 
     public static void Initialize()
     {
+        // The item-action gates (pending request / attacking flag) resolve on
+        // their own; they don't need the busy-count hooks below.
+        try { ClientActionGates.Initialize(); }
+        catch (Exception ex) { RynthLog.Compat($"ClientActionGates: init threw {ex.GetType().Name}: {ex.Message}"); }
+
         if (IsInstalled)
             return;
 
@@ -290,8 +358,10 @@ internal static class BusyCountHooks
     {
         _lastThisPtr = IntPtr.Zero;
         Volatile.Write(ref _realBusyPositiveTickMs, 0);
+        _realBusyNegativeSince = 0;
         _pendingCastBusyDelta = 0;
         _pendingCastGestureSeen = false;
+        try { ClientActionGates.ResetTracking(); } catch { }
     }
 
     // ── Direct-action busy reconciliation (source fix for the per-action leak) ──
@@ -398,6 +468,29 @@ internal static class BusyCountHooks
     {
         long now = Environment.TickCount64;
 
+        // The gates AC actually checks before an item use/move/equip (pending
+        // inventory request, attacking flag). Runs on every call — before each
+        // inbound game event and after each tick — so the attacking flag's
+        // zero window between AttackDone and the next CommenceAttack is seen.
+        if (MainThreadGuard.IsOnMainThread())
+        {
+            try { ClientActionGates.Tick(now, PlayerLifecycleLog.InWorldTransition); }
+            catch { }
+        }
+
+        // Dead or portaling (and just after): the busy count moves on its own
+        // while AC rebuilds the world, and force-clearing it then writes into
+        // AC mid-transition — every death today crashed inside AC during the
+        // death portal (2026-09-28). Restart the timers so a genuinely stuck
+        // count is judged afresh once the world has settled.
+        if (PlayerLifecycleLog.InWorldTransition)
+        {
+            Volatile.Write(ref _realBusyPositiveTickMs, 0);
+            if (Volatile.Read(ref _busyBecamePositiveTickMs) != 0)
+                Volatile.Write(ref _busyBecamePositiveTickMs, now);
+            return;
+        }
+
         // ── Real-field watchdog (catches counter desync) ─────────────────────
         // Trust AC's REAL m_cBusy over our shadow counter: when they diverge a
         // pinned real field is what actually wedges the client (mode-change /
@@ -444,6 +537,40 @@ internal static class BusyCountHooks
                 // stretch caused an instant force-clear when reads resumed
                 // (e.g. first beat after the next login).
                 Volatile.Write(ref _realBusyPositiveTickMs, 0);
+            }
+
+            // Negative real field (ReadRealBusy folds every negative into its -1
+            // "unreadable" sentinel, so read it directly). See RepairNegativeBusy.
+            bool haveReal = TryReadRealBusy(out int signedBusy);
+            if (haveReal && signedBusy < 0)
+            {
+                if (_realBusyNegativeSince == 0)
+                    _realBusyNegativeSince = now;
+                else if (now - _realBusyNegativeSince >= NegativeBusyRepairMs && RepairNegativeBusy(out int neg))
+                {
+                    _realBusyNegativeSince = 0;
+                    RynthLog.Compat($"BusyCountHooks: REAL m_cBusy was negative ({neg}) — reset to 0 (a zeroed count's own UseDone arrived later).");
+                }
+            }
+            else
+            {
+                _realBusyNegativeSince = 0;
+            }
+
+            // Counter-based watchdog below: the shadow counter never sees AC's
+            // inline UseDone decrement, so it reads "stuck" after nearly every use
+            // and cast even though the real field is back at 0. When the real
+            // field is readable and idle, just resync the shadow — force-clearing
+            // there only zeroed the next in-flight action (thousands of needless
+            // force-clears a session). A real field > 0 is the real-field
+            // watchdog's job above.
+            long shadowSince = Volatile.Read(ref _busyBecamePositiveTickMs);
+            if (shadowSince != 0 && haveReal && signedBusy <= 0
+                && now - shadowSince >= BusyWatchdogTimeoutMs)
+            {
+                Interlocked.Exchange(ref _netBusyCount, 0);
+                Volatile.Write(ref _busyBecamePositiveTickMs, 0);
+                return;
             }
         }
 

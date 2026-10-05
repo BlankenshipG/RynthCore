@@ -152,6 +152,27 @@ internal static class LogSettings
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Categories whose emit level is more verbose than the global level, so none of their lines
+    /// are written (e.g. every category at Trace with LoggingLevel Info: an almost empty log).
+    /// Empty when nothing is hidden.
+    /// </summary>
+    internal static string HiddenCategoriesWarning()
+    {
+        EntryPoint.EngineLogLevel global = EntryPoint.LoggingLevel;
+        EntryPoint.EngineLogLevel[] levels = Volatile.Read(ref _levels);
+        var hidden = new StringBuilder();
+        for (int i = 0; i < levels.Length; i++)
+        {
+            if (levels[i] == EntryPoint.EngineLogLevel.Off || levels[i] <= global) continue;
+            if (hidden.Length > 0) hidden.Append(", ");
+            hidden.Append((LogCategory)i).Append('=').Append(levels[i]);
+        }
+        return hidden.Length == 0 ? ""
+            : $"LogSettings: {hidden} write above the global LoggingLevel ({global}), so those lines are NOT logged. " +
+              "Raise LoggingLevel to the most verbose category level, or set the categories to Info.";
+    }
+
     /// <summary>Starts the once-a-second engine.json poll. Idempotent.</summary>
     internal static void StartWatcher()
     {
@@ -199,6 +220,8 @@ internal static class LogSettings
                 // Bypasses the category levels so a change is visible whenever Info is in range.
                 if (EntryPoint.ShouldLog(EntryPoint.EngineLogLevel.Info))
                     EntryPoint.LogTagged("engine", $"LogSettings: engine.json changed - logging reloaded ({summary}).", "INF");
+                string hidden = HiddenCategoriesWarning();
+                if (hidden.Length > 0) RynthLog.Warn(hidden);
             }
             catch
             {

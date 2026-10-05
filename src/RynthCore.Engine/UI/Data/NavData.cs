@@ -1,0 +1,144 @@
+// ============================================================================
+//  RynthCore.Engine - UI/Data/NavData.cs
+//  RynthAi's nav route (active nav, status, route type, waypoints, nav files)
+//  for both Nav faces.
+//
+//  RynthPluginGetNavJson frees its previous buffer on each call, so the hub is
+//  its only caller (NavSource, 1 s). Commands go through
+//  RynthAiCommands.SendNavCommand on the pump; the plugin applies them on the
+//  spot, so the next poll (requested right after) shows the result. ANSI JSON.
+// ============================================================================
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace RynthCore.Engine.UI.Data;
+
+internal sealed class NavPoint
+{
+    public int Idx { get; set; }
+    public string Type { get; set; } = string.Empty;
+    public string Desc { get; set; } = string.Empty;
+    public string Text { get; set; } = string.Empty;   // Chat points: the command (editable)
+    public double NS { get; set; }
+    public double EW { get; set; }
+    public double Z { get; set; }
+}
+
+internal sealed class NavPayload
+{
+    public string ActiveNavName { get; set; } = string.Empty;
+    public string NavStatusLine { get; set; } = string.Empty;
+    public bool NavIsStuck { get; set; }
+    public bool MacroRunning { get; set; }
+    public bool NavigationEnabled { get; set; }
+    public int RouteType { get; set; }
+    public int ActiveNavIndex { get; set; }
+    public List<string> NavFiles { get; set; } = new();
+    public List<NavPoint> Points { get; set; } = new();
+    /// <summary>RynthAi records (and draws) the walked breadcrumb trail. Older plugins omit it (false).</summary>
+    public bool TrackBreadcrumbs { get; set; }
+    /// <summary>RynthAi draws the route overlay (rings / lines, waypoint labels, guide line).</summary>
+    public bool ShowRouteOverlay { get; set; }
+
+    /// <summary>A copy a face may change (its own point list); the points themselves are shared.</summary>
+    public NavPayload Clone()
+    {
+        var c = (NavPayload)MemberwiseClone();
+        c.Points = new List<NavPoint>(Points);
+        return c;
+    }
+}
+
+internal sealed class NavCmd
+{
+    public string Cmd { get; set; } = string.Empty;
+    public int SpellId { get; set; }
+    public int Index { get; set; }
+    public int RouteType { get; set; }
+    public int AddMode { get; set; }
+    public int InsertAt { get; set; } = -1;
+    public string NavName { get; set; } = string.Empty;
+    public string Text { get; set; } = string.Empty;   // addChat
+    public bool On { get; set; }                       // setBreadcrumbs / setRouteOverlay
+}
+
+[JsonSerializable(typeof(NavPayload))]
+[JsonSerializable(typeof(NavCmd))]
+[JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true, WriteIndented = false, IncludeFields = false)]
+internal partial class NavJsonContext : JsonSerializerContext { }
+
+/// <summary>RynthPluginGetNavJson while a Nav face is open (1 s, and after each command).</summary>
+internal sealed unsafe class NavSource : UiSource<NavPayload>
+{
+    private delegate* unmanaged[Cdecl]<IntPtr> _getNavJson;
+    private string? _lastJson;
+
+    public NavSource() : base("Nav", periodMs: 1000) { }
+
+    protected internal override void Poll()
+    {
+        if (_getNavJson == null)
+            _getNavJson = (delegate* unmanaged[Cdecl]<IntPtr>)PluginExportBinder.Resolve("RynthAi", "RynthPluginGetNavJson");
+        if (_getNavJson == null) return;
+        IntPtr ptr = _getNavJson();
+        string? json = ptr == IntPtr.Zero ? null : Marshal.PtrToStringAnsi(ptr);
+        if (string.IsNullOrEmpty(json) || json == _lastJson) return;
+        _lastJson = json;
+        NavPayload? parsed = JsonSerializer.Deserialize(json, NavJsonContext.Default.NavPayload);
+        if (parsed != null) Publish(parsed);
+    }
+
+    protected internal override void Reset()
+    {
+        _getNavJson = null;
+        _lastJson = null;
+        ClearSnapshot();
+    }
+}
+
+/// <summary>Nav panel commands and vocabulary, shared by both faces.</summary>
+internal static class NavCommands
+{
+    public static void Send(NavCmd cmd) =>
+        RynthAiCommands.SendNavCommand(JsonSerializer.Serialize(cmd, NavJsonContext.Default.NavCmd));
+
+    public static readonly string[] RouteTypes = { "Once", "Circular", "Linear", "Follow" };
+    public static readonly string[] AddModes = { "End", "Above", "Below" };
+
+    /// <summary>Route picker index for the plugin's RouteType (1 Circular, 2 Linear, 3 Follow, else Once).</summary>
+    public static int RouteIndex(int routeType) => routeType switch { 1 => 1, 2 => 2, 3 => 3, _ => 0 };
+
+    /// <summary>The plugin's RouteType for a route picker index (Once = 4).</summary>
+    public static int RouteTypeFor(int index) => index switch { 1 => 1, 2 => 2, 3 => 3, _ => 4 };
+
+    public static readonly int[] RecallIds =
+    {
+        48, 2645, 2647,
+        1635, 1636,
+        157, 158, 1637,
+        2648, 2649, 2650,
+        2931, 2023, 2041, 2358, 2813, 2941, 2943,
+        3865, 3929, 3930, 4084, 4198, 4213,
+        4907, 4908, 4909,
+        5175, 5330, 5541, 6150, 6321, 6322,
+    };
+
+    public static readonly string[] RecallLabels = BuildRecallLabels();
+
+    private static string[] BuildRecallLabels()
+    {
+        var labels = new string[RecallIds.Length];
+        for (int i = 0; i < labels.Length; i++) labels[i] = $"Spell {RecallIds[i]} ({RecallIds[i]})";
+        return labels;
+    }
+
+    /// <summary>"[3] Recall ..." or "[3] Point (12.34N, 56.78E, 12.3)".</summary>
+    public static string PointText(NavPoint pt, int i) =>
+        !string.IsNullOrEmpty(pt.Desc)
+            ? $"[{i}] {pt.Desc}"
+            : $"[{i}] {pt.Type} ({pt.NS:F2}N, {pt.EW:F2}E, {pt.Z:F1})";
+}

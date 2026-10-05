@@ -2,9 +2,10 @@
 //  RynthCore.Engine — UI/Panels/MetaPanel.cs
 //  Avalonia port of LegacyMetaUi.cs (RynthSuite plugin).
 //
-//  Plugin exports used:
-//    RynthPluginGetMetaJson      → polled every 2s for live state
-//    RynthPluginSendMetaCommand  → dispatched on user actions
+//  Data goes through UiDataHub (UI/Data/MetaData.cs): the snapshot comes
+//  from UiSources.Meta and commands go out through MetaCommands, so the
+//  plugin's exports run on the pump thread, not on this UI thread. The ImGui
+//  face (ImGui/Panels/MetaFace.cs) reads the same snapshot.
 // =============================================================================
 
 using System;
@@ -20,33 +21,13 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using RynthCore.Engine.Plugins;
-using RynthCore.Install;
+using RynthCore.Engine.UI.Data;
+using Payload = RynthCore.Engine.UI.Data.MetaPayload;
 
 namespace RynthCore.Engine.UI.Panels;
 
-[JsonSerializable(typeof(MetaPanel.Payload))]
-[JsonSerializable(typeof(MetaPanel.MetaCmd))]
-[JsonSerializable(typeof(MetaPanel.MetaRuleDto))]
-[JsonSerializable(typeof(MetaPanel.MetaFile))]
-[JsonSerializable(typeof(List<MetaPanel.MetaRuleDto>), TypeInfoPropertyName = "MetaRuleDtoList")]
-[JsonSerializable(typeof(List<MetaPanel.MetaFile>), TypeInfoPropertyName = "MetaFileList")]
-[JsonSerializable(typeof(List<string>), TypeInfoPropertyName = "StringList")]
-[JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true, WriteIndented = false, IncludeFields = false)]
-internal partial class MetaPanelJsonContext : JsonSerializerContext { }
-
 internal static class MetaPanel
 {
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, ExactSpelling = true)]
-    private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate IntPtr GetMetaJsonFn();
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate void SendMetaCommandFn(IntPtr ansiJson);
-
-    private static GetMetaJsonFn?      _getMetaJson;
-    private static SendMetaCommandFn?  _sendMetaCommand;
-
     // ── Colors ────────────────────────────────────────────────────────────────
     private static readonly IBrush ColTeal    = new SolidColorBrush(Color.FromRgb(0x26, 0xD9, 0xE6));
     private static readonly IBrush ColAmber   = new SolidColorBrush(Color.FromRgb(0xE8, 0xB3, 0x33));
@@ -64,115 +45,14 @@ internal static class MetaPanel
     private static readonly IBrush ColStateHdrA  = new SolidColorBrush(Color.FromRgb(0x0E, 0x1E, 0x30));
     private static readonly IBrush ColStateHdrB  = new SolidColorBrush(Color.FromRgb(0x16, 0x2A, 0x40));
 
-    // ── Condition / action name tables (mirrors LegacyMetaUi) ─────────────────
-    private static readonly string[] ConditionNames =
-    {
-        "Never", "Always", "All", "Any", "Chat Message", "Pack Slots <=",
-        "Seconds in State >=", "Character Death", "Any Vendor Open",
-        "Vendor Closed", "Inventory Item Count <=", "Inventory Item Count >=",
-        "Monster Name Count Within Dist", "Monster Priority Count Within Dist",
-        "Need To Buff", "No Monsters Within Dist", "Landblock ==",
-        "Landcell ==", "Portalspace Entered", "Portalspace Exited", "Not",
-        "Seconds in State (P) >=", "Time Left On Spell >=", "Time Left On Spell <=",
-        "Burden % >=", "Dist Any Route PT >=", "Expression",
-        "Chat Message Capture", "Navroute Empty",
-        "Main Health <=", "Main Health % >=", "Main Mana <=", "Main Mana % >=",
-        "Main Stam <=", "Vitae % >=",
-    };
-
-    private static readonly string[] ConditionHints =
-    {
-        "", "", "(sub-conditions)", "(sub-conditions)", "Regex pattern", "Min slots (e.g. 5)",
-        "Seconds (e.g. 10)", "", "", "",
-        "name,count (e.g. Mana Stone,5)", "name,count (e.g. Mana Stone,5)",
-        "name regex,distance,count", "count,distance (e.g. 1,20)",
-        "", "Distance (e.g. 20)", "Hex (e.g. A9B40000)", "Hex (e.g. A9B40000)",
-        "", "", "(sub-conditions)", "Seconds (e.g. 10)",
-        "spellId,seconds (e.g. 2293,30)", "spellId,seconds (e.g. 2293,30)",
-        "Percentage (e.g. 250)", "Distance (e.g. 10)", "Expression",
-        "Regex pattern", "",
-        "", "", "", "", "", "Vitae % (e.g. 5)",
-    };
-
-    private static readonly string[] ActionNames =
-    {
-        "None", "Chat Command", "Set Meta State", "Embedded Nav Route", "All",
-        "Call Meta State", "Return From Call", "Expression Action", "Chat Expression",
-        "Set Watchdog", "Clear Watchdog", "Get RA Option", "Set RA Option",
-        "Create View", "Destroy View", "Destroy All Views",
-    };
-
-    private static readonly string[] ActionHints =
-    {
-        "", "e.g. /say hello", "State name", "Route name", "(sub-actions)",
-        "State name", "", "Expression", "Expression",
-        "state;meters;seconds (e.g. Default;10;60)", "", "Option name", "OptionName;Value",
-        "", "", "",
-    };
-
-    // Composite condition indices: All=2, Any=3, Not=20
-    private static bool IsCompositeCondition(int idx) => idx is 2 or 3 or 20;
-
-    /// <summary>One condition as text, nested ones included: "Not No Monsters Within Dist: 5",
-    /// "Any(Chat Message: …, Navroute Empty)".</summary>
-    private static string CondText(MetaRuleDto c, int depth = 0)
-    {
-        string name = c.Condition >= 0 && c.Condition < ConditionNames.Length
-            ? ConditionNames[c.Condition] : $"Cond({c.Condition})";
-        if (IsCompositeCondition(c.Condition) && c.Children.Count > 0 && depth < MaxSubConditionDepth)
-        {
-            if (c.Condition == 20) return $"Not {CondText(c.Children[0], depth + 1)}";
-            return $"{name}({string.Join(", ", c.Children.Select(x => CondText(x, depth + 1)))})";
-        }
-        return string.IsNullOrEmpty(c.ConditionData) ? name : $"{name}: {c.ConditionData}";
-    }
-    // All action index = 4
-    private static bool IsAllAction(int idx) => idx == 4;
-
-    // ── Data types ────────────────────────────────────────────────────────────
-
-    internal sealed class MetaRuleDto
-    {
-        public string State { get; set; } = "Default";
-        public int Condition { get; set; }
-        public string ConditionData { get; set; } = string.Empty;
-        public int Action { get; set; }
-        public string ActionData { get; set; } = string.Empty;
-        public List<MetaRuleDto> Children { get; set; } = new();
-        public List<MetaRuleDto> ActionChildren { get; set; } = new();
-        public bool Enabled { get; set; } = true;
-        public long LastFiredMs { get; set; } = 99999;
-    }
-
-    internal sealed class MetaFile
-    {
-        public string Path { get; set; } = string.Empty;
-        public string Display { get; set; } = string.Empty;
-    }
-
-    internal sealed class Payload
-    {
-        public bool EnableMeta { get; set; }
-        public bool MetaDebug { get; set; }
-        public string CurrentState { get; set; } = "Default";
-        public string CurrentMetaPath { get; set; } = string.Empty;
-        public List<MetaRuleDto> Rules { get; set; } = new();
-        public List<MetaFile> Files { get; set; } = new();
-        public List<string> States { get; set; } = new();
-        public List<string> NavFiles { get; set; } = new();
-        public List<string> EmbeddedNavKeys { get; set; } = new();
-        public string SourceText { get; set; } = string.Empty;
-    }
-
-    internal sealed class MetaCmd
-    {
-        public string Op { get; set; } = string.Empty;
-        public int Index { get; set; } = -1;
-        public string Value { get; set; } = string.Empty;
-        public string Path { get; set; } = string.Empty;
-        public string Text { get; set; } = string.Empty;
-        public MetaRuleDto? Rule { get; set; }
-    }
+    // ── Names, hints, text helpers (shared with the ImGui face) ──────────────
+    private static readonly string[] ConditionNames = MetaVocabulary.ConditionNames;
+    private static readonly string[] ConditionHints = MetaVocabulary.ConditionHints;
+    private static readonly string[] ActionNames = MetaVocabulary.ActionNames;
+    private static readonly string[] ActionHints = MetaVocabulary.ActionHints;
+    private static bool IsCompositeCondition(int idx) => MetaVocabulary.IsCompositeCondition(idx);
+    private static bool IsAllAction(int idx) => MetaVocabulary.IsAllAction(idx);
+    private static string CondText(MetaRuleDto c) => MetaVocabulary.CondText(c);
 
     // ── View state ────────────────────────────────────────────────────────────
 
@@ -186,7 +66,13 @@ internal static class MetaPanel
         public MetaRuleDto EditingRule = new() { State = "Default", Action = 1 };
         public string SourceText = string.Empty;
         public string SourceMsg = string.Empty;
+        public bool SourceMsgOk = true;
         public DateTime SourceMsgTime = DateTime.MinValue;
+        public TextBlock? SourceMsgRef;
+        // Source "Apply": the plugin's ApplyResult.Seq before the apply was
+        // sent; a newer seq in a snapshot is this apply's result. -2 = none pending.
+        public long ApplySeqBefore = -2;
+        public DateTime ApplySentAt;
         public string SaveName = string.Empty;
         public bool ShowSaveInput;
         public HashSet<string> CollapsedStates = new();
@@ -205,9 +91,7 @@ internal static class MetaPanel
         // reusing stale ones built from a prior Payload.
         public Dictionary<string, Panel> GroupRowCache = new();
         public string LastSig = "init_sig";   // content signature of the last Rebuild
-        // UI deep-dive Roadmap #4 (2026-07-02): one-shot reconcile timer for
-        // the optimistic-local-mutation pattern — see ScheduleReconcile.
-        public DispatcherTimer? ReconcileTimer;
+        public long SeenVersion = -1;         // hub snapshot version last taken
         // Roadmap #5 (2026-07-02): live references to the bottom-bar state
         // button and the file-picker button, so the poll timer can update
         // their displayed text in place once CurrentState/CurrentMetaPath
@@ -217,37 +101,11 @@ internal static class MetaPanel
         public Button? FileBtnRef;
     }
 
-    // Roadmap #4 (2026-07-02): enable/move/duplicate/delete used to be pure
-    // fire-and-forget Send() calls with no local mutation — the row buttons
-    // stayed dead until the next 2s poll rebuilt the list from the plugin's
-    // authoritative state. Two problems: (1) up to 2s of "did my click even
-    // register?" with no feedback, and (2) capturedGlobalIdx is captured at
-    // RENDER time — a second click on a stale row (e.g. rapid double-delete
-    // before the poll catches up) sends an index that no longer matches
-    // what the plugin thinks is at that position once the first command
-    // has already shifted subsequent rows, deleting/moving/toggling the
-    // WRONG rule. Fix: apply the same mutation locally to ps.Data.Rules
-    // immediately (so capturedGlobalIdx stays valid for anything queued
-    // behind it in the SAME rebuild), rebuild once (user-initiated, so a
-    // single rebuild here is acceptable — this isn't the poll-driven flash
-    // path), then reconcile with the plugin's authoritative state ~250ms
-    // later in case the local guess and the plugin's actual result diverged
-    // (e.g. a command that failed server-side).
-    private static void ScheduleReconcile(PanelState ps, Action rebuild)
-    {
-        ps.ReconcileTimer?.Stop();
-        var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
-        t.Tick += (_, _) =>
-        {
-            t.Stop();
-            if (!TryFetch(out var fresh)) return;
-            ps.Data = fresh;
-            ps.LastSig = PayloadSig(fresh);
-            rebuild();
-        };
-        ps.ReconcileTimer = t;
-        t.Start();
-    }
+    // Roadmap #4 (2026-07-02): enable/move/duplicate/delete apply the same
+    // change locally to ps.Data.Rules right away (instant feedback, and a
+    // second click on a stale row can't hit the wrong index), then the hub's
+    // next snapshot, taken after the plugin applied the command, replaces the
+    // local guess (MetaCommands defers the refresh past the plugin tick).
 
     // Cheap content signature — everything the list view shows EXCEPT the
     // per-tick LastFiredMs (excluded so an idle/botting panel stops flashing;
@@ -357,7 +215,6 @@ internal static class MetaPanel
 
     public static Control Create()
     {
-        TryBind();
         var ps = new PanelState();
 
         var root = new Border
@@ -401,13 +258,20 @@ internal static class MetaPanel
             }
         }
 
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        // Polls the hub's snapshot (fetched every 2 s while subscribed, and
+        // right after each command).
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         timer.Tick += (_, _) =>
         {
-            if (_getMetaJson == null) TryBind();
+            var snap = UiSources.Meta.Current;
+            if (snap != null && snap.Version != ps.SeenVersion)
+                CheckApplyResult(ps, snap.Value);
+            UpdateSourceMsg(ps);
             if (picker.ActivePicker != null) return;
             if (ps.Mode == ViewMode.Editor) return; // don't clobber in-progress edits
-            if (!TryFetch(out var fresh)) return;
+            if (snap == null || snap.Version == ps.SeenVersion) return;
+            ps.SeenVersion = snap.Version;
+            var fresh = snap.Value.Clone();
             ps.Data = fresh;   // keep click-handlers on fresh data even if we skip the redraw
             if (ps.Mode == ViewMode.Source && string.IsNullOrEmpty(ps.SourceText))
                 ps.SourceText = fresh.SourceText;
@@ -417,16 +281,7 @@ internal static class MetaPanel
             // controls in place, every poll, regardless of whether the sig
             // changed — property sets only, no layout churn, no rebuild.
             if (ps.StateBtnRef != null) ps.StateBtnRef.Content = fresh.CurrentState;
-            if (ps.FileBtnRef != null)
-            {
-                string display = "-- None --";
-                if (!string.IsNullOrEmpty(fresh.CurrentMetaPath) && fresh.Files.Count > 1)
-                {
-                    var match = fresh.Files.FirstOrDefault(f => string.Equals(f.Path, fresh.CurrentMetaPath, StringComparison.OrdinalIgnoreCase));
-                    if (match != null) display = match.Display;
-                }
-                ps.FileBtnRef.Content = display;
-            }
+            if (ps.FileBtnRef != null) ps.FileBtnRef.Content = MetaVocabulary.CurrentFileDisplay(fresh);
             string sig = PayloadSig(fresh);
             if (sig == ps.LastSig) return;   // nothing visible changed → no rebuild → no flash
             ps.LastSig = sig;
@@ -447,13 +302,28 @@ internal static class MetaPanel
             if (ps.Mode != ViewMode.List) return;
             Rebuild();
         };
-        timer.Start();
         // Stop with the visual tree — a running DispatcherTimer roots the closed
         // view forever (one immortal poller per open/close). RadarPanel idiom;
         // must restart on attach: drag/resize fires Detached→Attached.
-        root.AttachedToVisualTree   += (_, _) => { if (!timer.IsEnabled) timer.Start(); };
-        root.DetachedFromVisualTree += (_, _) => timer.Stop();
+        root.AttachedToVisualTree += (_, _) =>
+        {
+            UiSources.Meta.Subscribe();
+            UiSources.Meta.RequestRefresh();
+            if (!timer.IsEnabled) timer.Start();
+        };
+        root.DetachedFromVisualTree += (_, _) =>
+        {
+            timer.Stop();
+            UiSources.Meta.Unsubscribe();
+        };
 
+        var first = UiSources.Meta.Current;
+        if (first != null)
+        {
+            ps.SeenVersion = first.Version;
+            ps.Data = first.Value.Clone();
+            ps.LastSig = PayloadSig(ps.Data);
+        }
         Rebuild();
         return root;
     }
@@ -661,7 +531,6 @@ internal static class MetaPanel
                     if (capturedGlobalIdx >= 0 && capturedGlobalIdx < ps.Data.Rules.Count)
                         ps.Data.Rules[capturedGlobalIdx].Enabled = newEnabled;
                     rebuild();
-                    ScheduleReconcile(ps, rebuild);
                 };
                 Grid.SetColumn(enBtn, 0);
                 row.Children.Add(enBtn);
@@ -717,7 +586,6 @@ internal static class MetaPanel
                                 (ps.Data.Rules[otherGlobalIdx], ps.Data.Rules[capturedGlobalIdx]);
                     }
                     rebuild();
-                    ScheduleReconcile(ps, rebuild);
                 };
                 Grid.SetColumn(upBtn, 2);
                 row.Children.Add(upBtn);
@@ -746,7 +614,6 @@ internal static class MetaPanel
                                 (ps.Data.Rules[otherGlobalIdx], ps.Data.Rules[capturedGlobalIdx]);
                     }
                     rebuild();
-                    ScheduleReconcile(ps, rebuild);
                 };
                 Grid.SetColumn(dnBtn, 3);
                 row.Children.Add(dnBtn);
@@ -772,7 +639,6 @@ internal static class MetaPanel
                     int insertAt = Math.Clamp(capturedGlobalIdx + 1, 0, ps.Data.Rules.Count);
                     ps.Data.Rules.Insert(insertAt, CloneRule(rule));
                     rebuild();
-                    ScheduleReconcile(ps, rebuild);
                 };
                 Grid.SetColumn(dupBtn, 4);
                 row.Children.Add(dupBtn);
@@ -800,7 +666,6 @@ internal static class MetaPanel
                     if (capturedGlobalIdx >= 0 && capturedGlobalIdx < ps.Data.Rules.Count)
                         ps.Data.Rules.RemoveAt(capturedGlobalIdx);
                     rebuild();
-                    ScheduleReconcile(ps, rebuild);
                 };
                 Grid.SetColumn(delBtn, 5);
                 row.Children.Add(delBtn);
@@ -956,7 +821,7 @@ internal static class MetaPanel
                 string n = ps.SaveName.Trim();
                 if (!string.IsNullOrEmpty(n))
                 {
-                    string path = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, "MetaFiles", $"{n}.af");
+                    string path = System.IO.Path.Combine(MetaVocabulary.MetaFolder, n + ".af");
                     Send(new MetaCmd { Op = "save_file", Path = path });
                 }
                 ps.ShowSaveInput = false;
@@ -977,13 +842,7 @@ internal static class MetaPanel
         var bar = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto") };
 
         // File picker button
-        string currentDisplay = string.Empty;
-        if (!string.IsNullOrEmpty(d.CurrentMetaPath) && d.Files.Count > 1)
-        {
-            var match = d.Files.FirstOrDefault(f => string.Equals(f.Path, d.CurrentMetaPath, StringComparison.OrdinalIgnoreCase));
-            if (match != null) currentDisplay = match.Display;
-        }
-        var fileBtn = MakePickerBtn(string.IsNullOrEmpty(currentDisplay) ? "-- None --" : currentDisplay);
+        var fileBtn = MakePickerBtn(MetaVocabulary.CurrentFileDisplay(d));
         fileBtn.Click += (_, _) =>
         {
             var items = ps.Data.Files.Select(f => f.Display).ToArray();
@@ -1001,10 +860,7 @@ internal static class MetaPanel
 
         var refreshBtn = MakeSmallBtn("↺");
         ToolTip.SetTip(refreshBtn, "Refresh file list");
-        refreshBtn.Click += (_, _) =>
-        {
-            if (TryFetch(out var fresh)) { ps.Data = fresh; rebuild(); }
-        };
+        refreshBtn.Click += (_, _) => UiSources.Meta.RequestRefresh(); // the timer rebuilds on the new snapshot
         Grid.SetColumn(refreshBtn, 1);
         bar.Children.Add(refreshBtn);
 
@@ -1263,7 +1119,7 @@ internal static class MetaPanel
 
             var subRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*,Auto"), Margin = new Thickness(0, 1, 0, 0) };
 
-            var typeBtn = MakePickerBtn(sub.Condition < names.Length ? names[isAction ? sub.Action : sub.Condition] : "?");
+            var typeBtn = MakePickerBtn(isAction ? MetaVocabulary.ActionName(sub.Action) : MetaVocabulary.ConditionName(sub.Condition));
             typeBtn.FontSize = 9;
             typeBtn.Height = 20;
             typeBtn.Click += (_, _) =>
@@ -1370,13 +1226,9 @@ internal static class MetaPanel
 
         content.Children.Add(new Border { Height = 1, Background = ColBtnBord });
 
-        if (!string.IsNullOrEmpty(ps.SourceMsg) && (DateTime.Now - ps.SourceMsgTime).TotalSeconds < 5)
-        {
-            content.Children.Add(new TextBlock
-            {
-                Text = ps.SourceMsg, Foreground = ColGreen, FontSize = 10,
-            });
-        }
+        ps.SourceMsgRef = new TextBlock { FontSize = 10, TextWrapping = TextWrapping.Wrap };
+        content.Children.Add(ps.SourceMsgRef);
+        UpdateSourceMsg(ps);
 
         var sourceEditor = MetaSourceEditor.Create(
             getText:        () => ps.SourceText,
@@ -1397,10 +1249,10 @@ internal static class MetaPanel
         };
         applyBtn.Click += (_, _) =>
         {
+            ps.ApplySeqBefore = UiSources.Meta.Current?.Value.ApplyResult?.Seq ?? -1;
+            ps.ApplySentAt = DateTime.Now;
             Send(new MetaCmd { Op = "set_source", Text = ps.SourceText });
-            ps.SourceMsg  = "Applied.";
-            ps.SourceMsgTime = DateTime.Now;
-            rebuild();
+            SetSourceMsg(ps, "Applying…", ok: true);
         };
         btnRow.Children.Add(applyBtn);
 
@@ -1510,85 +1362,48 @@ internal static class MetaPanel
         return combined;
     }
 
-    private static MetaRuleDto CloneRule(MetaRuleDto src)
-    {
-        var r = new MetaRuleDto
-        {
-            State = src.State, Condition = src.Condition,
-            ConditionData = src.ConditionData, Action = src.Action,
-            ActionData = src.ActionData, LastFiredMs = src.LastFiredMs,
-            Enabled = src.Enabled,
-        };
-        foreach (var c in src.Children) r.Children.Add(CloneRule(c));
-        foreach (var a in src.ActionChildren) r.ActionChildren.Add(CloneRule(a));
-        return r;
-    }
+    private static MetaRuleDto CloneRule(MetaRuleDto src) => src.Clone();
 
     // =========================================================================
-    //  Plugin bridge
+    //  Source Apply result
     // =========================================================================
 
-    // RL loads fresh plugin copies without unloading the old ones: drop the
-    // exports bound below so the next poll re-binds to the live copy.
-    static MetaPanel() => PluginManager.PluginsUnloaded += () =>
+    private static void SetSourceMsg(PanelState ps, string text, bool ok)
     {
-        _getMetaJson = null;
-        _sendMetaCommand = null;
-    };
+        ps.SourceMsg = text;
+        ps.SourceMsgOk = ok;
+        ps.SourceMsgTime = DateTime.Now;
+        UpdateSourceMsg(ps);
+    }
 
-    private static void TryBind()
+    /// <summary>A snapshot whose ApplyResult is newer than the pending Apply is its result.</summary>
+    private static void CheckApplyResult(PanelState ps, Payload fresh)
     {
-        var plugin = PluginManager.Plugins.FirstOrDefault(
-            p => p.DisplayName.Contains("RynthAi", StringComparison.OrdinalIgnoreCase));
-        if (plugin == null || plugin.ModuleHandle == IntPtr.Zero) return;
-
-        if (_getMetaJson == null)
+        if (ps.ApplySeqBefore == -2) return;
+        MetaApplyResult? r = fresh.ApplyResult;
+        if (r != null && r.Seq > ps.ApplySeqBefore)
         {
-            IntPtr p1 = GetProcAddress(plugin.ModuleHandle, "RynthPluginGetMetaJson");
-            if (p1 != IntPtr.Zero)
-                _getMetaJson = Marshal.GetDelegateForFunctionPointer<GetMetaJsonFn>(p1);
-        }
-        if (_sendMetaCommand == null)
-        {
-            IntPtr p2 = GetProcAddress(plugin.ModuleHandle, "RynthPluginSendMetaCommand");
-            if (p2 != IntPtr.Zero)
-                _sendMetaCommand = Marshal.GetDelegateForFunctionPointer<SendMetaCommandFn>(p2);
+            ps.ApplySeqBefore = -2;
+            SetSourceMsg(ps, r.Text, r.Ok);
         }
     }
 
-    private static bool TryFetch(out Payload payload)
+    /// <summary>Shows the message for 8 s; a plugin that doesn't report results gets a pointer to chat.</summary>
+    private static void UpdateSourceMsg(PanelState ps)
     {
-        payload = new Payload();
-        if (_getMetaJson == null) return false;
-        try
+        if (ps.ApplySeqBefore != -2 && (DateTime.Now - ps.ApplySentAt).TotalSeconds > 3)
         {
-            IntPtr ptr = _getMetaJson();
-            if (ptr == IntPtr.Zero) return false;
-            string? json = Marshal.PtrToStringAnsi(ptr);
-            if (string.IsNullOrEmpty(json)) return false;
-            var parsed = JsonSerializer.Deserialize(json, MetaPanelJsonContext.Default.Payload);
-            if (parsed == null) return false;
-            payload = parsed;
-            return true;
+            ps.ApplySeqBefore = -2;
+            SetSourceMsg(ps, "Sent. This RynthAi version reports the result in chat.", ok: true);
+            return;
         }
-        catch { return false; }
+        if (ps.SourceMsgRef == null) return;
+        bool show = ps.SourceMsg.Length > 0 && (ps.ApplySeqBefore != -2 || (DateTime.Now - ps.SourceMsgTime).TotalSeconds < 8);
+        ps.SourceMsgRef.IsVisible = show;
+        if (!show) return;
+        ps.SourceMsgRef.Text = ps.SourceMsg;
+        ps.SourceMsgRef.Foreground = ps.SourceMsgOk ? ColGreen : ColRed;
     }
 
-    private static void Send(MetaCmd cmd)
-    {
-        if (_sendMetaCommand == null) TryBind();
-        if (_sendMetaCommand == null) return;
-        IntPtr ansi = IntPtr.Zero;
-        try
-        {
-            string json = JsonSerializer.Serialize(cmd, MetaPanelJsonContext.Default.MetaCmd);
-            ansi = Marshal.StringToHGlobalAnsi(json);
-            _sendMetaCommand(ansi);
-        }
-        catch { }
-        finally
-        {
-            if (ansi != IntPtr.Zero) Marshal.FreeHGlobal(ansi);
-        }
-    }
+    private static void Send(MetaCmd cmd) => MetaCommands.Send(cmd);
 }

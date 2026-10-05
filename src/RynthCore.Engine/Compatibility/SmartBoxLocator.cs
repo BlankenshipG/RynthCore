@@ -42,34 +42,10 @@ internal static class SmartBoxLocator
     /// Uses VirtualQuery — safe to call on any address including unmapped pages.
     /// Critical for NativeAOT where AccessViolationException cannot be caught.
     /// </summary>
-    public static bool IsMemoryReadable(IntPtr address, int size)
-    {
-        if (address == IntPtr.Zero || size <= 0)
-            return false;
-
-        if (VirtualQuery(address, out MEMORY_BASIC_INFORMATION mbi,
-                Marshal.SizeOf<MEMORY_BASIC_INFORMATION>()) == 0)
-            return false;
-
-        if (mbi.State != MEM_COMMIT)
-            return false;
-        if ((mbi.Protect & PAGE_NOACCESS) != 0)
-            return false;
-        if ((mbi.Protect & PAGE_GUARD) != 0)
-            return false;
-        if ((mbi.Protect & READABLE_MASK) == 0)
-            return false;
-
-        // Ensure the committed region covers the full requested range.
-        // Deep-audit finding #32 (2026-06-18): this used signed 32-bit
-        // arithmetic (ToInt32()) — acclient.exe is LARGE_ADDRESS_AWARE so
-        // addresses above 0x7FFFFFFF are reachable, and ToInt32() on those
-        // can wrap. Do the comparison in 64-bit (every caller passes a small
-        // compile-time size, so no overflow risk on that side).
-        long regionEnd = mbi.BaseAddress.ToInt64() + mbi.RegionSize.ToInt64();
-        long requestEnd = address.ToInt64() + size;
-        return requestEnd <= regionEnd;
-    }
+    public static bool IsMemoryReadable(IntPtr address, int size) => MemoryProbe.IsReadable(address, size);
+    // Was a VirtualQuery per call (one per CObjectMaint hash bucket and two per node in the
+    // snapshot walks); see MemoryProbe for why that collapsed the frame rate once AC's heap grew.
+    // Same rule: committed, not NOACCESS/GUARD, readable, the whole span (64-bit arithmetic).
 
     public static bool IsInitialized { get; private set; }
     public static int CandidateCount => _smartboxStaticCandidates.Count;

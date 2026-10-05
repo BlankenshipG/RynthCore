@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -407,6 +408,13 @@ internal static class CombatActionHooks
         if (_cancelAttack == null)
             return false;
 
+        // 0x1B7 CM_Combat::Event_CancelAttack: same sender class as MeleeAttack, so the
+        // same gate. Queued in the action ring so it keeps FIFO order after an attack
+        // that is already queued (it used to run at once and could overtake it). The
+        // drain re-enters here on the main thread, where the gate passes.
+        if (!MainThreadGuard.IsOnMainThread())
+            return AcMainThreadQueue.EnqueueCancelAttack();
+
         try
         {
             return _cancelAttack();
@@ -421,6 +429,14 @@ internal static class CombatActionHooks
     {
         if (_queryHealth == null)
             return false;
+
+        // 0x1BF CM_Combat::Event_QueryHealth is a game-action send (AC blob alloc +
+        // send queue): main thread only. The plugin QueryHealthFn arrives on the pump,
+        // so off-thread calls go to the non-gesture QueryHealth queue and the drain
+        // re-enters here on the main thread. Callers ignore the result and read the
+        // async 0x01C0 reply, so "queued" is enough.
+        if (!MainThreadGuard.IsOnMainThread())
+            return targetId != 0 && AcMainThreadQueue.EnqueueQueryHealth(targetId);
 
         try
         {
@@ -437,6 +453,17 @@ internal static class CombatActionHooks
         if (_requestId == null || objectId == 0)
             return false;
 
+        // The 0xC8 IdentifyObject send allocates on AC's heap and bumps the
+        // ClientUISystem busy count (non-atomic, via BusyCountHooks) - main thread
+        // only. Plugin RequestIdFn calls and the PluginManager.TickAll login
+        // self-identify arrive on the plugin pump, so off-thread callers go through
+        // the same non-gesture queue AutoIdService uses. DrainRequestIds re-enters
+        // here on the main thread, where this gate passes and the packet is sent.
+        // Fire-and-forget: the appraisal reply is async anyway, so "queued" keeps
+        // the bool's meaning ("requested").
+        if (!MainThreadGuard.IsOnMainThread())
+            return AcMainThreadQueue.EnqueueRequestId(objectId);
+
         try
         {
             return _requestId(objectId);
@@ -451,6 +478,8 @@ internal static class CombatActionHooks
     {
         if (spellId <= 0) return false;
         if (_castSpellClient == null) return false;
+        // Nameplate debuffs: pairs "You cast <spell> on <name>" with this target id.
+        ImGuiBackend.Hud.HudFeed.OnCast(targetId, spellId);
 
         // P2 cast marshalling — drain-BEFORE-tick variant (2026-06-03, attempt 2).
         // Off the main thread, enqueue the cast; GameTickHooks drains it on AC's
@@ -615,8 +644,13 @@ internal static class CombatActionHooks
         _castSpellClientPtr = IntPtr.Zero;
         _getMagicSystemPtr = IntPtr.Zero;
         _freeHandsCastPtr = IntPtr.Zero;
-        _queryHealthResponseDetour = null;
-        _originalQueryHealthResponse = null;
+        // _queryHealthResponseDetour / _originalQueryHealthResponse are deliberately
+        // NOT cleared (2026-09-30): the MinHook detour on Handle_Combat__QueryHealthResponse
+        // stays enabled across a re-probe, so clearing them unrooted the detour
+        // delegate while AC could still jump to it, made a detour call in that
+        // window skip AC's original handler, and let InstallQueryHealthResponseHook
+        // re-run HookCreate on a live target (the remove-and-retry path, safe only
+        // after shutdown joined every caller). Kept, the install guard is a no-op.
         _identifyObjectDetour = null;
         _originalIdentifyObject = null;
         IsInitialized = false;
@@ -757,10 +791,6 @@ internal static class CombatActionHooks
             if (success == 0 || objectId == 0)
                 return;
 
-            const uint CreatureProfile = 0x0100;
-            if ((flags & CreatureProfile) == 0)
-                return;
-
             int offset = 16; // Past the header
             int iSize = (int)size;
 
@@ -773,6 +803,13 @@ internal static class CombatActionHooks
                 return; // BoolStatsTable
             if ((flags & 0x0004) != 0 && !SkipPackedHashTable(buffer, iSize, ref offset, 12))
                 return; // FloatStatsTable
+
+            // The identify's properties (every table and profile) are cached from the live
+            // seam, SmartBoxHooks.ParseGameEvent -> PropertyWire (2026-09-30); this parser only
+            // runs from the disabled inner-dispatcher hook and reads the creature vitals.
+            const uint CreatureProfile = 0x0100;
+            if ((flags & CreatureProfile) == 0)
+                return;
             if ((flags & 0x0008) != 0 && !SkipStringHashTable(buffer, iSize, ref offset))
                 return; // StringStatsTable
             if ((flags & 0x1000) != 0 && !SkipPackedHashTable(buffer, iSize, ref offset, 8))

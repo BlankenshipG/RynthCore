@@ -2,9 +2,10 @@
 //  RynthCore.Engine — UI/Panels/RadarPanel.cs
 //  Avalonia replica of the ImGui RynthRadar (RynthRadarUi.cs).
 //
-//  Renders the same view, fed by the plugin's RynthPluginGetRadarSnapshot
-//  export. Geometry is cached by MapVersion (= landblock); per-frame data
-//  (player pose, visited overlay, markers) refreshes every 100 ms.
+//  Renders the same view from UiDataHub's radar view (UiSources.Radar,
+//  UI/Data/RadarData.cs), which calls RynthPluginGetRadarSnapshot on the pump
+//  thread and keeps the per-landblock geometry cache. The ImGui face
+//  (ImGui/Panels/RadarFace.cs) draws the same view.
 //
 //  Render order matches the ImGui original:
 //    1. Frame outer/inner/accent + canvas bg
@@ -38,6 +39,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using RynthCore.Engine.Plugins;
+using RynthCore.Engine.UI.Data;
 
 namespace RynthCore.Engine.UI.Panels;
 
@@ -60,6 +62,76 @@ internal static class RadarSettingsStore
     public static bool ShowNpcs = true;
     public static bool ShowPortals = true;
     public static bool ShowDoors = true;
+    // Kinds added 2026-10-04 (RadarKind 4..11). Items on the ground start hidden: noisy.
+    public static bool ShowPlayers = true;
+    public static bool ShowFellows = true;
+    public static bool ShowPets = true;
+    public static bool ShowVendors = true;
+    public static bool ShowCorpses = true;
+    public static bool ShowOwnCorpses = true;
+    public static bool ShowLifestones = true;
+    public static bool ShowGroundItems = false;
+    /// <summary>ImGui face: a left-click on a dot selects that object in game.</summary>
+    public static bool ClickToSelect = true;
+
+    /// <summary>
+    /// Default marker colour per <see cref="RadarKind"/> (ARGB). Chosen to stay apart for
+    /// red-green colour blindness as well: the kinds that share a hue family also differ
+    /// in shape (see RadarMarkerStyle) or brightness.
+    /// </summary>
+    public static readonly uint[] DefaultKindColors =
+    {
+        0xFFFF3333, // monster: red
+        0xFFFFD933, // NPC: yellow
+        0xFFBF4DFF, // portal: purple
+        0xFFFF8C1A, // door: orange
+        0xFF33C7FF, // player: cyan-blue
+        0xFF4DE673, // fellow: green
+        0xFF26BFA6, // your pet: teal
+        0xFFFFB31A, // vendor: gold
+        0xFF8C9399, // corpse: grey
+        0xFFF2F2F2, // your corpse: near white
+        0xFF99D1FF, // lifestone: light blue
+        0xFFD9C78C, // item on the ground: pale tan
+    };
+
+    /// <summary>Marker colour per <see cref="RadarKind"/> (ARGB); the user's picks, else the defaults.</summary>
+    public static readonly uint[] KindColors = (uint[])DefaultKindColors.Clone();
+
+    // Settings-file keys per kind (color.<key>=AARRGGBB).
+    private static readonly string[] KindKeys =
+    {
+        "monster", "npc", "portal", "door", "player", "fellow",
+        "pet", "vendor", "corpse", "ownCorpse", "lifestone", "groundItem",
+    };
+
+    /// <summary>The show/hide flag of a kind (the radar's per-kind check boxes).</summary>
+    public static ref bool ShowFlag(byte kind)
+    {
+        switch (kind)
+        {
+            case RadarKind.Monster:    return ref ShowMonsters;
+            case RadarKind.Npc:        return ref ShowNpcs;
+            case RadarKind.Portal:     return ref ShowPortals;
+            case RadarKind.Door:       return ref ShowDoors;
+            case RadarKind.Player:     return ref ShowPlayers;
+            case RadarKind.Fellow:     return ref ShowFellows;
+            case RadarKind.Pet:        return ref ShowPets;
+            case RadarKind.Vendor:     return ref ShowVendors;
+            case RadarKind.Corpse:     return ref ShowCorpses;
+            case RadarKind.OwnCorpse:  return ref ShowOwnCorpses;
+            case RadarKind.Lifestone:  return ref ShowLifestones;
+            default:                   return ref ShowGroundItems;
+        }
+    }
+
+    /// <summary>Whether markers of this kind are drawn; false for kinds this engine doesn't know.</summary>
+    public static bool ShowKind(byte kind) => kind < RadarKind.Count && ShowFlag(kind);
+
+    /// <summary>The kind's colour (ARGB); white for a kind this engine doesn't know.</summary>
+    public static uint KindColor(byte kind) => kind < KindColors.Length ? KindColors[kind] : 0xFFFFFFFF;
+
+    public static void ResetKindColors() => Array.Copy(DefaultKindColors, KindColors, KindColors.Length);
 
     private static string FilePath
     {
@@ -105,6 +177,23 @@ internal static class RadarSettingsStore
                         case "showNpcs":     ShowNpcs         = val == "1"; break;
                         case "showPortals":  ShowPortals      = val == "1"; break;
                         case "showDoors":    ShowDoors        = val == "1"; break;
+                        case "showPlayers":     ShowPlayers     = val == "1"; break;
+                        case "showFellows":     ShowFellows     = val == "1"; break;
+                        case "showPets":        ShowPets        = val == "1"; break;
+                        case "showVendors":     ShowVendors     = val == "1"; break;
+                        case "showCorpses":     ShowCorpses     = val == "1"; break;
+                        case "showOwnCorpses":  ShowOwnCorpses  = val == "1"; break;
+                        case "showLifestones":  ShowLifestones  = val == "1"; break;
+                        case "showGroundItems": ShowGroundItems = val == "1"; break;
+                        case "clickSelect":  ClickToSelect    = val == "1"; break;
+                        default:
+                            if (key.StartsWith("color.", StringComparison.Ordinal))
+                            {
+                                int k = Array.IndexOf(KindKeys, key["color.".Length..]);
+                                if (k >= 0 && uint.TryParse(val, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint argb))
+                                    KindColors[k] = argb;
+                            }
+                            break;
                     }
                 }
             }
@@ -112,7 +201,10 @@ internal static class RadarSettingsStore
         }
     }
 
-    public static void Save()
+    /// <summary>Writes the settings in the background (callers include AC's render thread).</summary>
+    public static void Save() => UiBackgroundWriter.Enqueue("radar settings", SaveNow);
+
+    private static void SaveNow()
     {
         lock (_sync)
         {
@@ -132,6 +224,19 @@ internal static class RadarSettingsStore
                 sw.WriteLine($"showNpcs={(ShowNpcs ? "1" : "0")}");
                 sw.WriteLine($"showPortals={(ShowPortals ? "1" : "0")}");
                 sw.WriteLine($"showDoors={(ShowDoors ? "1" : "0")}");
+                sw.WriteLine($"showPlayers={(ShowPlayers ? "1" : "0")}");
+                sw.WriteLine($"showFellows={(ShowFellows ? "1" : "0")}");
+                sw.WriteLine($"showPets={(ShowPets ? "1" : "0")}");
+                sw.WriteLine($"showVendors={(ShowVendors ? "1" : "0")}");
+                sw.WriteLine($"showCorpses={(ShowCorpses ? "1" : "0")}");
+                sw.WriteLine($"showOwnCorpses={(ShowOwnCorpses ? "1" : "0")}");
+                sw.WriteLine($"showLifestones={(ShowLifestones ? "1" : "0")}");
+                sw.WriteLine($"showGroundItems={(ShowGroundItems ? "1" : "0")}");
+                sw.WriteLine($"clickSelect={(ClickToSelect ? "1" : "0")}");
+                // Only colours that differ from the default, so a later default change still lands.
+                for (int k = 0; k < KindColors.Length; k++)
+                    if (KindColors[k] != DefaultKindColors[k])
+                        sw.WriteLine(FormattableString.Invariant($"color.{KindKeys[k]}={KindColors[k]:X8}"));
             }
             catch { /* non-fatal */ }
         }
@@ -140,14 +245,6 @@ internal static class RadarSettingsStore
 
 internal static partial class RadarPanel
 {
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, ExactSpelling = true)]
-    private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate IntPtr GetRadarSnapshotFn(uint mapVersion);
-
-    private static GetRadarSnapshotFn? _getRadarSnapshot;
-
     // ── Chrome-less integration hooks ───────────────────────────────────────
     // The radar lives inside the panel system but visually has no window
     // chrome — just the gold-bordered square + coords below. The overlay
@@ -231,81 +328,19 @@ internal static partial class RadarPanel
     private static readonly IBrush ColDoor    = new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x1A));
     private static readonly IBrush ColDoorEdge = new SolidColorBrush(Color.FromRgb(0x66, 0x33, 0x00));
 
-    // ── Snapshot DTO (mirrors RynthCore.Plugin.RynthAi.LegacyUi.RadarSnapshotPayload) ──
-    public sealed class Snapshot
-    {
-        [JsonPropertyName("mapVersion")]       public uint MapVersion       { get; set; }
-        [JsonPropertyName("geometryIncluded")] public bool GeometryIncluded { get; set; }
-        [JsonPropertyName("isIndoor")]         public bool IsIndoor         { get; set; }
-        [JsonPropertyName("player")]           public PlayerInfo Player    { get; set; } = new();
-        [JsonPropertyName("ns")]               public double Ns             { get; set; } = double.NaN;
-        [JsonPropertyName("ew")]               public double Ew             { get; set; } = double.NaN;
-        [JsonPropertyName("layerZs")]          public List<float> LayerZs   { get; set; } = new();
-        [JsonPropertyName("currentLayerZ")]    public float CurrentLayerZ   { get; set; }
-        [JsonPropertyName("walls")]            public List<WallLayer> Walls { get; set; } = new();
-        [JsonPropertyName("fills")]            public List<FillLayer> Fills { get; set; } = new();
-        [JsonPropertyName("visited")]          public List<VisitedLayer> Visited { get; set; } = new();
-        [JsonPropertyName("markers")]          public List<Marker> Markers { get; set; } = new();
-    }
-
-    public sealed class PlayerInfo
-    {
-        [JsonPropertyName("cellId")]    public uint  CellId    { get; set; }
-        [JsonPropertyName("landblock")] public uint  Landblock { get; set; }
-        [JsonPropertyName("x")]         public float X         { get; set; }
-        [JsonPropertyName("y")]         public float Y         { get; set; }
-        [JsonPropertyName("z")]         public float Z         { get; set; }
-        [JsonPropertyName("worldX")]    public float WorldX    { get; set; }
-        [JsonPropertyName("worldY")]    public float WorldY    { get; set; }
-        [JsonPropertyName("heading")]   public float Heading   { get; set; }
-    }
-
-    public sealed class WallLayer
-    {
-        [JsonPropertyName("z")]        public float   Z        { get; set; }
-        [JsonPropertyName("segments")] public float[] Segments { get; set; } = Array.Empty<float>();
-    }
-
-    public sealed class FillLayer
-    {
-        [JsonPropertyName("z")]      public float   Z      { get; set; }
-        [JsonPropertyName("strips")] public float[] Strips { get; set; } = Array.Empty<float>();
-    }
-
-    public sealed class VisitedLayer
-    {
-        [JsonPropertyName("z")]      public float   Z      { get; set; }
-        [JsonPropertyName("strips")] public float[] Strips { get; set; } = Array.Empty<float>();
-    }
-
-    public sealed class Marker
-    {
-        [JsonPropertyName("kind")]  public byte    Kind  { get; set; }
-        [JsonPropertyName("x")]     public float   X     { get; set; }
-        [JsonPropertyName("y")]     public float   Y     { get; set; }
-        [JsonPropertyName("z")]     public float   Z     { get; set; }
-        [JsonPropertyName("label")] public string? Label { get; set; }
-    }
-
-    [JsonSerializable(typeof(Snapshot))]
-    [JsonSourceGenerationOptions(WriteIndented = false)]
-    internal partial class RadarJsonContext : JsonSerializerContext { }
-
     // ── Per-instance state, captured by the surface control ────────────────
     private sealed class State
     {
         // Live data (refreshed every poll).
-        public Snapshot Live = new();
+        public RadarSnapshot Live = new();
 
-        // Cached geometry, indexed by MapVersion. Walls/fills don't change
-        // until the player crosses landblocks — store and reuse.
-        public uint CachedMapVersion;
-        public List<WallLayer> CachedWalls = new();
-        public List<FillLayer> CachedFills = new();
+        // Geometry cached per landblock by the hub (RadarSource).
+        public List<RadarWallLayer> CachedWalls = new();
+        public List<RadarFillLayer> CachedFills = new();
 
-        // UI deep-dive finding P1-A (2026-07-02): last raw snapshot JSON,
-        // used to gate InvalidateVisual — see the timer tick below.
-        public string? LastRawJson;
+        // Hub view version last drawn; gates InvalidateVisual (UI deep-dive
+        // finding P1-A: don't re-raster when nothing moved).
+        public long SeenVersion = -1;
 
         // User-controlled settings — driven by the gear popup. Loaded from
         // RadarSettingsStore on construction; Persist() writes back.
@@ -359,7 +394,6 @@ internal static partial class RadarPanel
 
     public static Control Create()
     {
-        TryBind();
         State state = _persistentState ??= new State();
 
         var surface = new RadarSurface(state);
@@ -600,38 +634,14 @@ internal static partial class RadarPanel
             // re-rastered at 30Hz for no visible change. Track whether
             // anything actually changed this tick and skip the whole
             // refresh+invalidate when it didn't.
-            bool fetched = TryFetch(state.CachedMapVersion, out Snapshot? fresh, out string? rawJson);
-            bool contentChanged = fetched && rawJson != null && rawJson != state.LastRawJson;
-            if (fetched && rawJson != null) state.LastRawJson = rawJson;
-
-            if (fetched && fresh != null)
+            var current = UiSources.Radar.Current;
+            bool contentChanged = current != null && current.Version != state.SeenVersion;
+            if (contentChanged)
             {
-                state.Live = fresh;
-                if (fresh.GeometryIncluded)
-                {
-                    state.CachedMapVersion = fresh.MapVersion;
-                    state.CachedWalls = fresh.Walls;
-                    state.CachedFills = fresh.Fills;
-                }
-                else if (fresh.MapVersion != state.CachedMapVersion && fresh.MapVersion != 0 && !fresh.IsIndoor)
-                {
-                    // Outdoor landblocks: no geometry sent, but version still
-                    // tracks landblock — clear stale walls so they don't bleed
-                    // through when transitioning indoor→outdoor.
-                    state.CachedMapVersion = fresh.MapVersion;
-                    state.CachedWalls = new List<WallLayer>();
-                    state.CachedFills = new List<FillLayer>();
-                }
-
-                // First poll after login can land before raycast is ready, so
-                // the plugin returns an indoor snapshot with empty walls. Once
-                // raycast comes online, we have to re-ask with version=0 or
-                // the plugin sees a matching version and skips the geometry
-                // payload — leaving the radar permanently blank until the
-                // user manually closes/reopens it. Force a re-fetch next tick
-                // whenever we're indoors but lack walls.
-                if (state.Live.IsIndoor && state.CachedWalls.Count == 0)
-                    state.CachedMapVersion = 0;
+                state.SeenVersion = current!.Version;
+                state.Live = current.Value.Live;
+                state.CachedWalls = current.Value.Walls;
+                state.CachedFills = current.Value.Fills;
             }
             // Sync overlay button visibility with current pop-out state.
             //   docked → [↗ popout, ⚙ gear]
@@ -659,9 +669,19 @@ internal static partial class RadarPanel
                 MarkDirty?.Invoke();
             }
         };
-        timer.Start();
-        surface.AttachedToVisualTree   += (_, _) => { if (!timer.IsEnabled) timer.Start(); };
-        surface.DetachedFromVisualTree += (_, _) => timer.Stop();
+        // The hub polls the plugin only while some radar face is subscribed.
+        surface.AttachedToVisualTree += (_, _) =>
+        {
+            UiSources.Radar.Subscribe();
+            UiSources.Radar.RequestRefresh();
+            state.SeenVersion = -1;
+            if (!timer.IsEnabled) timer.Start();
+        };
+        surface.DetachedFromVisualTree += (_, _) =>
+        {
+            timer.Stop();
+            UiSources.Radar.Unsubscribe();
+        };
 
         return radarGrid;
     }
@@ -1304,7 +1324,7 @@ internal static partial class RadarPanel
     }
     private static float AlphaToFloat(byte a) => a == 0 ? 1f : a / 255f;
 
-    private static string FormatCoords(Snapshot s)
+    private static string FormatCoords(RadarSnapshot s)
     {
         // Match the ImGui radar's footer behaviour exactly:
         //   indoor  → "LB AABB  Z 12.3"   (landblock id, no NS/EW)
@@ -1317,47 +1337,5 @@ internal static partial class RadarPanel
             return $"{Math.Abs(s.Ns):0.0}{(s.Ns >= 0 ? "N" : "S")}  {Math.Abs(s.Ew):0.0}{(s.Ew >= 0 ? "E" : "W")}  Z {p.Z:0.0}";
 
         return $"Z {p.Z:0.0}";
-    }
-
-    // ── Plugin export binding ───────────────────────────────────────────────
-    // RL loads fresh plugin copies without unloading the old ones: drop the
-    // exports bound below so the next poll re-binds to the live copy.
-    static RadarPanel() => PluginManager.PluginsUnloaded += () =>
-    {
-        _getRadarSnapshot = null;
-    };
-
-    private static void TryBind()
-    {
-        if (_getRadarSnapshot != null) return;
-        var plugin = PluginManager.Plugins.FirstOrDefault(
-            p => p.DisplayName.Contains("RynthAi", StringComparison.OrdinalIgnoreCase));
-        if (plugin == null || plugin.ModuleHandle == IntPtr.Zero) return;
-
-        IntPtr p1 = GetProcAddress(plugin.ModuleHandle, "RynthPluginGetRadarSnapshot");
-        if (p1 != IntPtr.Zero)
-            _getRadarSnapshot = Marshal.GetDelegateForFunctionPointer<GetRadarSnapshotFn>(p1);
-    }
-
-    private static bool TryFetch(uint engineKnownVersion, out Snapshot? snapshot, out string? rawJson)
-    {
-        snapshot = null;
-        rawJson = null;
-        if (_getRadarSnapshot == null) TryBind();
-        if (_getRadarSnapshot == null) return false;
-        try
-        {
-            IntPtr ptr = _getRadarSnapshot(engineKnownVersion);
-            if (ptr == IntPtr.Zero) return false;
-            string? json = Marshal.PtrToStringAnsi(ptr);
-            if (string.IsNullOrEmpty(json) || json == "{}") return false;
-            snapshot = JsonSerializer.Deserialize(json, RadarJsonContext.Default.Snapshot);
-            rawJson = json;
-            return snapshot != null;
-        }
-        catch
-        {
-            return false;
-        }
     }
 }

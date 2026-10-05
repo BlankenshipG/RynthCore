@@ -55,3 +55,4 @@ installer/previous-release/*.exe
 # Local publish/bundle output (SK-era Build-Installer staging and old bundle exes)
 installer/_toolpublish/
 build_out/
+out/

@@ -106,6 +106,51 @@ internal static class AcMainThreadQueue
         // class. Carries the 5 hold-flags packed into A (bit0=shift, bit1=W,
         // bit2=X, bit3=Z, bit4=C).
         LaunchJumpWithMotion,
+        // v70 WieldItem: CM_Inventory::Event_GetAndWieldItem (the 0x001A GetAndWieldItem
+        // game action) is an inventory send like GiveObjectTo, so it runs here too.
+        WieldItem,
+        // v72 player-to-player trade: CM_Trade::Event_* / ClientTradeSystem::Accept/DeclineTrade
+        // send trade game actions (and Accept/Decline touch the client's Trade object), so they
+        // run here too. A = PlayerTrade.TradeOp, B/C = its arguments.
+        Trade,
+        // Salvage panel marshalled 2026-09-29: CM_Inventory::SendNotice_OpenSalvagePanel,
+        // gmSalvageUI::AddNewItem and gmSalvageUI::Salvage were called straight from
+        // the plugin pump (RynthAi SalvageManager, Meta expressions). AddNewItem and
+        // Salvage are thiscall on the live gmSalvageUI and mutate its UIElement tree
+        // (same class as the SetSelectedObject 0x60D1D AV). A = toolId / itemId.
+        // The instance pointer is NOT carried: the drain re-enters the helper, which
+        // re-reads SalvageHooks.GmSalvageUIInstance on the main thread.
+        SalvageOpen,
+        SalvageAddItem,
+        SalvageExecute,
+        // CancelAttack marshalled 2026-09-29: CM_Combat::Event_CancelAttack (0x1B7) is
+        // the same CM_Combat game-action sender class as Melee/Missile/ChangeCombatMode
+        // but was called straight from the plugin pump. It rides the RING (not a side
+        // queue) on purpose: every RynthAi caller pairs it with ring actions
+        // (StopCompletely, ChangeCombatMode, MoveItemInternal) and it must land after
+        // any attack already queued, so FIFO order with those is what matters. When a
+        // gesture defers the ring, the paired actions wait too, so the teardown stays
+        // one ordered group.
+        CancelAttack,
+        // SetAutonomyLevel marshalled 2026-09-29: CM_Movement::Event_AutonomyLevel
+        // (0xF752 game-action send) is exported to plugins as SetAutonomyLevelFn and
+        // was the only movement sender still called straight from the plugin pump.
+        // Rides the ring beside DoMovement/StopMovement/Jump so it stays ordered with
+        // them. A = level.
+        SetAutonomyLevel,
+        // DropItem (2026-09-30, Inventory panel): CM_Inventory::Event_DropItem (0x001B game
+        // action) is an inventory send like WieldItem / GiveObjectTo. A = item id.
+        DropItem,
+        // Skills panel raises (2026-09-30): CM_Train::Event_TrainAttribute / _TrainAttribute2nd /
+        // _TrainSkill send the RaiseAttribute / RaiseVital / RaiseSkill game actions. A game-action
+        // send like Trade, so it rides the ring too. A = PlayerTraining.TrainKind, B = stype, C = XP
+        // (skill credits for TrainKind.TrainWithCredits: Event_TrainSkillAdvancementClass, 0x0047).
+        Train,
+        // v76 CloseContainer (2026-10-04): CM_Inventory::Event_NoLongerViewingContents (the
+        // 0x0195 game action the client sends when a corpse/chest window closes). An inventory
+        // send like DropItem; in the ring so a close queued before the next corpse's UseObject
+        // goes out first, in the same drain. A = container id.
+        CloseContainer,
     }
 
     // Four payload slots cover every routed action (the 4th was added for
@@ -167,6 +212,9 @@ internal static class AcMainThreadQueue
         Enqueue(ActionKind.MissileAttack, targetId, unchecked((uint)attackHeight),
                 BitConverter.SingleToUInt32Bits(accuracyLevel));
 
+    public static bool EnqueueCancelAttack() =>
+        Enqueue(ActionKind.CancelAttack, 0, 0, 0);
+
     public static bool EnqueueDoMovement(uint motion, float speed, int holdKey) =>
         Enqueue(ActionKind.DoMovement, motion, unchecked((uint)holdKey),
                 BitConverter.SingleToUInt32Bits(speed));
@@ -183,11 +231,81 @@ internal static class AcMainThreadQueue
     public static bool EnqueueStopCompletely() =>
         Enqueue(ActionKind.StopCompletely, 0, 0, 0);
 
+    // ── Direct-heading slot (coalesced, latest value wins) ──────────────────────
+    // PlayerPhysicsHooks.SetPlayerHeadingDirect snaps the player's CPhysicsObj
+    // orientation quaternion with two raw stores (qw, then qz). Plugins call it
+    // (Host.TurnToHeading) from the pump thread on every nav tick; run there it
+    // raced AC's own physics integration and could leave a torn, non-unit
+    // quaternion (new qw with old qz). Off-thread callers now park the heading
+    // here and Drain applies it on the main thread. One slot, not a ring entry:
+    // nav re-issues the heading every tick and only the newest one matters, so a
+    // steering bot can never fill the action ring with headings. Lock-free and
+    // allocation-free; never drops (a newer heading simply replaces an older one).
+    // Deliberately NOT ActionKind.TurnToHeading: that dispatches the gradual
+    // CommandInterpreter turn, which would change the steering behaviour.
+    private static int _directHeadingPending;
+    private static uint _directHeadingBits;
+
+    public static bool EnqueueDirectHeading(float headingDegrees)
+    {
+        Volatile.Write(ref _directHeadingBits, BitConverter.SingleToUInt32Bits(headingDegrees));
+        Volatile.Write(ref _directHeadingPending, 1);
+        return true;
+    }
+
+    // Main thread only (from Drain). Same order as the pre-queue code: the direct
+    // snap first, the CommandInterpreter turn only when there is no player.
+    private static void DrainDirectHeading()
+    {
+        if (Interlocked.Exchange(ref _directHeadingPending, 0) == 0) return;
+        float heading = BitConverter.UInt32BitsToSingle(Volatile.Read(ref _directHeadingBits));
+        try
+        {
+            if (!PlayerPhysicsHooks.SetPlayerHeadingDirect(heading))
+                CommandInterpreterHooks.TurnToHeading(heading);
+        }
+        catch { }
+    }
+
+    // ── Overlay click-to-select slot (coalesced, latest click wins) ─────────────
+    // A click on a Radar dot or a monster nameplate (ImGui overlays, 2026-09-30)
+    // parks the object id here; Drain runs ClientHelperHooks.SelectFromOverlay on
+    // the main thread, which re-checks that the object still exists and that the
+    // client isn't portaling or logging out right before AC's SetSelectedObject.
+    // The faces always park here (never select inside the ImGui frame build), so
+    // the select runs in the same main-thread phase as every other queued action.
+    // One slot, not a ring entry: a click is one select, two clicks in one frame
+    // collapse to the newer one, and the slot sits before the ring's gesture
+    // defer (a selection is a UI change, not a motion; a click in the 3D world
+    // selects mid-gesture too). Lock-free and allocation-free.
+    private static int _overlaySelectPending;
+    private static uint _overlaySelectId;
+
+    public static bool EnqueueOverlaySelect(uint objectId)
+    {
+        if (objectId == 0) return false;
+        Volatile.Write(ref _overlaySelectId, objectId);
+        Volatile.Write(ref _overlaySelectPending, 1);
+        return true;
+    }
+
+    // Main thread only (from Drain).
+    private static void DrainOverlaySelect()
+    {
+        if (Interlocked.Exchange(ref _overlaySelectPending, 0) == 0) return;
+        uint id = Volatile.Read(ref _overlaySelectId);
+        try { ClientHelperHooks.SelectFromOverlay(id); }
+        catch { }
+    }
+
     public static bool EnqueueSetMotion(uint motion, bool enabled) =>
         Enqueue(ActionKind.SetMotion, motion, enabled ? 1u : 0u, 0);
 
     public static bool EnqueueJump(float extent) =>
         Enqueue(ActionKind.Jump, BitConverter.SingleToUInt32Bits(extent), 0, 0);
+
+    public static bool EnqueueSetAutonomyLevel(uint level) =>
+        Enqueue(ActionKind.SetAutonomyLevel, level, 0, 0);
 
     public static bool EnqueueUseObject(uint objectId) =>
         Enqueue(ActionKind.UseObject, objectId, 0, 0);
@@ -212,6 +330,30 @@ internal static class AcMainThreadQueue
 
     public static bool EnqueueGiveObjectTo(uint objectId, uint targetId, int amount) =>
         Enqueue(ActionKind.GiveObjectTo, objectId, targetId, unchecked((uint)amount));
+
+    public static bool EnqueueWieldItem(uint objectId, uint equipMask) =>
+        Enqueue(ActionKind.WieldItem, objectId, equipMask, 0);
+
+    public static bool EnqueueDropItem(uint objectId) =>
+        Enqueue(ActionKind.DropItem, objectId, 0, 0);
+
+    public static bool EnqueueCloseContainer(uint containerId) =>
+        Enqueue(ActionKind.CloseContainer, containerId, 0, 0);
+
+    public static bool EnqueueTrade(uint op, uint a, uint b) =>
+        Enqueue(ActionKind.Trade, op, a, b);
+
+    public static bool EnqueueTrain(uint kind, uint stype, uint xp) =>
+        Enqueue(ActionKind.Train, kind, stype, xp);
+
+    public static bool EnqueueSalvageOpen(uint toolId) =>
+        Enqueue(ActionKind.SalvageOpen, toolId, 0, 0);
+
+    public static bool EnqueueSalvageAddItem(uint itemId) =>
+        Enqueue(ActionKind.SalvageAddItem, itemId, 0, 0);
+
+    public static bool EnqueueSalvageExecute() =>
+        Enqueue(ActionKind.SalvageExecute, 0, 0, 0);
 
     public static bool EnqueueSetSelectedObject(uint objectId) =>
         Enqueue(ActionKind.SetSelectedObject, objectId, 0, 0);
@@ -243,6 +385,9 @@ internal static class AcMainThreadQueue
     /// <summary>Stop executing queued actions/casts permanently (engine teardown).</summary>
     public static void Disarm() => _disarmed = true;
 
+    /// <summary>Engine teardown has begun (ChatCallbackHooks stops holding chat).</summary>
+    public static bool IsDisarmed => _disarmed;
+
     // Single-consumer drain on AC's main thread (EngineFrameController.OnEndScene).
     // Re-invokes the public action methods; on the main thread they execute the
     // real AC call directly (their IsOnMainThread gate is satisfied here).
@@ -254,7 +399,25 @@ internal static class AcMainThreadQueue
 
     public static void Drain()
     {
-        if (_disarmed) return;
+        if (_disarmed)
+        {
+            // Held incoming chat still prints during teardown (the AddTextToScroll detour
+            // stays live until MH_DisableHook(ALL)): it is AC's own line, not a plugin action.
+            try { ChatCallbackHooks.OnMainThreadDrain(disarmed: true); } catch { }
+            return;
+        }
+
+        // We are on AC's main thread by definition. Latch it here too: after a hot
+        // reload the first SmartBox/combat detour (the other latches) can come well
+        // after the first drain, and until the latch is set every dispatch below
+        // thinks it's off-thread and re-queues itself. A chat command a plugin queued
+        // straight after the reload then spun the main thread forever
+        // (DrainChatCommands -> Dispatch -> EnqueueChatCommand, 2026-09-29).
+        MainThreadGuard.RecordIfFirst();
+
+        // Incoming chat held for the plugins' verdict prints first, before anything below
+        // writes its own lines, so the chat window keeps the order lines arrived in.
+        try { ChatCallbackHooks.OnMainThreadDrain(disarmed: false); } catch { }
 
         // Deep-audit finding #22 (2026-06-18): these three queues are
         // documented as deliberately separate from the gesture-gated action
@@ -268,12 +431,27 @@ internal static class AcMainThreadQueue
         DrainChat();
         DrainChatCommands();
         DrainRequestIds();
+        DrainQueryHealth();
         // Vendor buy/sell: a packet send through the client's own SendShopEvent, not a
         // motion, so it sits with the non-gesture queues above. Also polls whether the
         // vendor window is still open. Idle fast path when no vendor is open.
         try { VendorTrade.MainThreadTick(); } catch { }
+        // Char-select service: publishes the UIFlow mode, runs a pending auto-login
+        // LogOnCharacter request and snapshots the native character list (throttled).
+        // Pre-login this runs from the Client::UseTime drain (EndScene is not hooked
+        // until after login). Idle in the world.
+        try { CharacterManagementHooks.MainThreadTick(); } catch { }
 
-        int head = _head;                       // only the main thread writes _head
+        // Plugin heading snap (coalesced slot). Before the ring and its gesture
+        // defer: the pre-queue raw write landed immediately, gesture or not, and
+        // ahead of the SetAutoRun a nav tick queues right after it. Keep both.
+        DrainDirectHeading();
+
+        // Overlay click-to-select (Radar dot / nameplate click): also before the
+        // gesture defer, so a click selects at once even while the bot swings.
+        DrainOverlaySelect();
+
+        int head = _head;                     // only the main thread writes _head
         int tail = Volatile.Read(ref _tail);
 
         // ── Gesture-phase serialization (extends the 56e6946 anim-walk guard
@@ -315,6 +493,9 @@ internal static class AcMainThreadQueue
                         CombatActionHooks.MissileAttack(e.A, unchecked((int)e.B),
                             BitConverter.UInt32BitsToSingle(e.C));
                         break;
+                    case ActionKind.CancelAttack:
+                        CombatActionHooks.CancelAttack();
+                        break;
                     case ActionKind.DoMovement:
                         MovementActionHooks.DoMovement(e.A,
                             BitConverter.UInt32BitsToSingle(e.C), unchecked((int)e.B));
@@ -324,6 +505,9 @@ internal static class AcMainThreadQueue
                         break;
                     case ActionKind.Jump:
                         MovementActionHooks.JumpNonAutonomous(BitConverter.UInt32BitsToSingle(e.A));
+                        break;
+                    case ActionKind.SetAutonomyLevel:
+                        MovementActionHooks.SetAutonomyLevel(e.A);
                         break;
                     case ActionKind.UseObject:
                         ClientHelperHooks.UseObject(e.A);
@@ -348,6 +532,30 @@ internal static class AcMainThreadQueue
                         break;
                     case ActionKind.GiveObjectTo:
                         ClientHelperHooks.GiveObjectTo(e.A, e.B, unchecked((int)e.C));
+                        break;
+                    case ActionKind.WieldItem:
+                        ClientHelperHooks.WieldItem(e.A, e.B);
+                        break;
+                    case ActionKind.DropItem:
+                        ClientHelperHooks.DropItem(e.A);
+                        break;
+                    case ActionKind.CloseContainer:
+                        ClientHelperHooks.CloseContainer(e.A);
+                        break;
+                    case ActionKind.Trade:
+                        PlayerTrade.RunQueued(e.A, e.B, e.C);
+                        break;
+                    case ActionKind.Train:
+                        PlayerTraining.RunQueued(e.A, e.B, e.C);
+                        break;
+                    case ActionKind.SalvageOpen:
+                        ClientHelperHooks.SalvagePanelOpen(e.A);
+                        break;
+                    case ActionKind.SalvageAddItem:
+                        ClientHelperHooks.SalvagePanelAddItem(e.A);
+                        break;
+                    case ActionKind.SalvageExecute:
+                        ClientHelperHooks.SalvagePanelExecute();
                         break;
                     case ActionKind.SetSelectedObject:
                         // On the main thread now -> SetSelectedObjectId's gate is
@@ -400,7 +608,9 @@ internal static class AcMainThreadQueue
         }
     }
 
-    // ── RequestId slot (0xC8 appraisal sends from AutoIdService) ──────────────────
+    // ── RequestId slot (0xC8 appraisal sends from AutoIdService, and every other
+    //    off-thread CombatActionHooks.RequestId caller: plugin RequestIdFn, the
+    //    PluginManager.TickAll login self-identify) ─────────────────────────────
     // AutoIdService runs on a Timer thread; sending 0xC8 directly there does AC heap
     // allocation + a non-atomic shared UI-counter increment off AC's main thread (the
     // off-thread-send class flagged for RequestId). Marshal onto the main thread here.
@@ -431,7 +641,10 @@ internal static class AcMainThreadQueue
     // CombatActionHooks.RequestId sends the 0xC8 directly.
     private static void DrainRequestIds()
     {
-        while (true)
+        // Bounded like DrainChatCommands: a re-queue never spins the main thread.
+        int budget;
+        lock (_requestIdLock) budget = _requestIdQueue.Count;
+        while (budget-- > 0)
         {
             uint id;
             lock (_requestIdLock)
@@ -440,6 +653,58 @@ internal static class AcMainThreadQueue
                 id = _requestIdQueue.Dequeue();
             }
             try { CombatActionHooks.RequestId(id); } catch { }
+        }
+    }
+
+    // ── QueryHealth slot (0x1BF CM_Combat::Event_QueryHealth sends) ─────────────────
+    // Plugins (RynthAi CombatManager, once per fight target) call QueryHealthFn from the
+    // plugin pump; the send allocates an AC blob and pushes AC's send queue, so it is
+    // main-thread-only like 0xC8. Same shape as the RequestId slot: its own small
+    // queue, NOT the gesture-deferred action ring (a packet send doesn't perturb the
+    // motion graph and a health query must not wait out a swing). Callers ignore the
+    // result and only want the async 0x01C0 reply, so a target already waiting here is
+    // not queued twice. Pre-sized, so enqueue does not allocate.
+    private const int MaxQueryHealthQueue = 64;
+    private static readonly System.Collections.Generic.Queue<uint> _queryHealthQueue = new(MaxQueryHealthQueue);
+    private static readonly object _queryHealthLock = new();
+    private static int _queryHealthPending; // lock-free "anything queued?" for the per-frame drain
+
+    // Pump-thread enqueue. Drops (returns false) if the queue is full.
+    public static bool EnqueueQueryHealth(uint targetId)
+    {
+        if (targetId == 0) return false;
+        lock (_queryHealthLock)
+        {
+            if (_queryHealthQueue.Contains(targetId))
+                return true; // already pending; one reply answers both
+            if (_queryHealthQueue.Count >= MaxQueryHealthQueue)
+            {
+                Interlocked.Increment(ref _dropped);
+                return false;
+            }
+            _queryHealthQueue.Enqueue(targetId);
+            Volatile.Write(ref _queryHealthPending, _queryHealthQueue.Count);
+            return true;
+        }
+    }
+
+    // Single-consumer drain on AC's main thread (from Drain()). On the main thread
+    // CombatActionHooks.QueryHealth sends the 0x1BF directly.
+    private static void DrainQueryHealth()
+    {
+        if (Volatile.Read(ref _queryHealthPending) == 0) return;
+        int budget;
+        lock (_queryHealthLock) budget = _queryHealthQueue.Count;
+        while (budget-- > 0)
+        {
+            uint id;
+            lock (_queryHealthLock)
+            {
+                if (_queryHealthQueue.Count == 0) { Volatile.Write(ref _queryHealthPending, 0); return; }
+                id = _queryHealthQueue.Dequeue();
+                Volatile.Write(ref _queryHealthPending, _queryHealthQueue.Count);
+            }
+            try { CombatActionHooks.QueryHealth(id); } catch { }
         }
     }
 
@@ -473,7 +738,10 @@ internal static class AcMainThreadQueue
     // IsOnMainThread gate is satisfied here so it runs AddTextToScroll directly.
     private static void DrainChat()
     {
-        while (true)
+        // Bounded like DrainChatCommands: a re-queue never spins the main thread.
+        int budget;
+        lock (_chatLock) budget = _chatQueue.Count;
+        while (budget-- > 0)
         {
             (string Text, int ChatType) item;
             lock (_chatLock)
@@ -522,7 +790,11 @@ internal static class AcMainThreadQueue
     // instead of re-enqueuing.
     private static void DrainChatCommands()
     {
-        while (true)
+        // Only what was queued before this drain: anything a dispatch queues again
+        // waits for the next frame instead of spinning here.
+        int budget;
+        lock (_chatCommandLock) budget = _chatCommandQueue.Count;
+        while (budget-- > 0)
         {
             string text;
             lock (_chatCommandLock)

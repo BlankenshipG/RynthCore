@@ -7,10 +7,15 @@ namespace RynthCore.Engine.Plugins;
 
 internal static class EngineSettings
 {
-    private static readonly string SettingsPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "RynthCore",
-        "engine.json");
+    // RYNTHCORE_ENGINE_SETTINGS points a test client at its own engine.json (its own
+    // plugin list, no Avalonia, ...) without touching the one real clients share.
+    private static readonly string SettingsPath =
+        Environment.GetEnvironmentVariable("RYNTHCORE_ENGINE_SETTINGS") is { Length: > 0 } overridePath
+            ? overridePath
+            : Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "RynthCore",
+                "engine.json");
 
     private static List<string> _pluginPaths = new();
     private static bool _enableImGuiShell = true;
@@ -23,9 +28,11 @@ internal static class EngineSettings
     private static bool _enableImGuiBackend = true;
     private static bool _enablePluginOverlayWindows = true;
     private static bool _enableHangMinidump = true;
-    private static bool _drawCustomVitalBars = true;
     private static bool _preventIdleLogoff = true;
     private static string _loggingLevel = "Info";
+    private static DecalBridgeMode _decalBridgeMode = DecalBridgeMode.Auto;
+    private static bool _decalInGameImGui = true;
+    private static bool _decalStandDown = true;
     private static bool _loaded;
 
     public static IReadOnlyList<string> PluginPaths
@@ -82,9 +89,24 @@ internal static class EngineSettings
         get
         {
             EnsureLoaded();
+#if ENGINE_CORECLR
+            // Avalonia can't live in an unloadable engine (docs/UNLOADABLE_ENGINE_PLAN.md,
+            // Phase 5): Skia/HarfBuzz keep strong GC handles for their native callbacks, so
+            // the generation never unloads, and the next generation's copy finds the old
+            // one's assemblies ("Call from invalid thread"). The in-game panels are ImGui;
+            // pop-outs return as ImGui windows (IMGUI_PARITY_PLAN P5).
+            if (_enableAvaloniaOverlay && System.Threading.Interlocked.Exchange(ref _avaloniaOffLogged, 1) == 0)
+                RynthLog.Info("EngineSettings: EnableAvaloniaOverlay ignored - the CoreCLR engine runs without Avalonia (it can't be unloaded).");
+            return false;
+#else
             return _enableAvaloniaOverlay;
+#endif
         }
     }
+
+#if ENGINE_CORECLR
+    private static int _avaloniaOffLogged;
+#endif
 
     /// <summary>When false, D3D9Bootstrapper.Start() is skipped at LoginComplete so neither
     /// Direct3DCreate9/CreateDevice nor IDirect3DDevice9::EndScene get hooked. Eliminates the
@@ -145,6 +167,14 @@ internal static class EngineSettings
             EnsureLoaded();
             return _enableImGuiBackend;
         }
+        set
+        {
+            // Set in game with /rc imgui on|off; persisted to engine.json.
+            EnsureLoaded();   // populate _pluginPaths before Save() rewrites the file
+            if (_enableImGuiBackend == value) return;
+            _enableImGuiBackend = value;
+            Save();
+        }
     }
 
     /// <summary>When true (default) and the ImGui shell is off, plugins that export
@@ -173,27 +203,6 @@ internal static class EngineSettings
         }
     }
 
-    /// <summary>When true, the engine draws the custom D3D9 Health/Stamina/Mana HUD
-    /// (<see cref="D3D9.VitalHud"/>) in EndScene. Toggleable live via "/rc vitals";
-    /// the setter persists to engine.json so it survives relaunch. Default true.
-    /// Only takes visible effect on a clean (no-Decal) client where the
-    /// D3D9/EndScene path runs.</summary>
-    public static bool DrawCustomVitalBars
-    {
-        get
-        {
-            EnsureLoaded();
-            return _drawCustomVitalBars;
-        }
-        set
-        {
-            EnsureLoaded();   // populate _pluginPaths before Save() rewrites the file
-            if (_drawCustomVitalBars == value) return;
-            _drawCustomVitalBars = value;
-            Save();
-        }
-    }
-
     /// <summary>When true (default), the engine keeps the retail client's idle clock fresh
     /// while in the world, so ClientUISystem::UseTime's 20-minute idle auto-logoff
     /// (InactiveTimeBeforeLogout) can't log off a character a bot is playing: the bot's
@@ -217,6 +226,56 @@ internal static class EngineSettings
         {
             EnsureLoaded();
             return _loggingLevel;
+        }
+    }
+
+    /// <summary>"DecalBridge" in engine.json: Auto (default), On or Off. Only matters when
+    /// Decal is loaded in the same client (docs/DECAL_BRIDGE_PLAN.md):
+    /// Auto - bridge mode when the RynthCore Decal bridge is registered and says hello
+    ///        within a short wait; otherwise the old coexistence mode.
+    /// On   - bridge mode whenever Decal is loaded (no fallback; for testing).
+    /// Off  - never bridge mode (the old coexistence mode).
+    /// Without Decal the setting is never read past this flag.</summary>
+    public static DecalBridgeMode DecalBridgeMode
+    {
+        get
+        {
+            EnsureLoaded();
+            return _decalBridgeMode;
+        }
+    }
+
+    /// <summary>"DecalInGameImGui" in engine.json (default true since 2026-09-30, after the
+    /// Reset, UB and soak checks in docs/DECAL_BRIDGE_PLAN.md). Only read when Decal is loaded
+    /// in the same client and bridge mode is on: true installs the normal EndScene hook and
+    /// ImGui renderer there (the device is found without creating one); false keeps the old
+    /// Decal-coexistence "no D3D9" path. RYNTHCORE_DECAL_IMGUI=1/0 overrides it for one client.
+    /// Without Decal it is never read.</summary>
+    public static bool DecalInGameImGui
+    {
+        get
+        {
+            string? env = Environment.GetEnvironmentVariable("RYNTHCORE_DECAL_IMGUI");
+            if (env == "1") return true;
+            if (env == "0") return false;
+            EnsureLoaded();
+            return _decalInGameImGui;
+        }
+    }
+
+    /// <summary>"DecalStandDown" in engine.json (default true, 2026-10-03). Only read when
+    /// Decal is loaded in the same client and the Decal bridge is NOT active (not registered
+    /// as the client sees it, no hello, protocol mismatch): true makes the engine stand down
+    /// (EntryPoint.InitWorker) - no plugins, no overlay, none of the hooks that collide with
+    /// Decal; only what the "bridge isn't loaded" chat line needs. The old coexistence path
+    /// (no overlay, then crashes) ran there before. false brings that path back.
+    /// DecalBridge=Off always keeps the old path (tests). Without Decal it is never read.</summary>
+    public static bool DecalStandDown
+    {
+        get
+        {
+            EnsureLoaded();
+            return _decalStandDown;
         }
     }
 
@@ -330,11 +389,23 @@ internal static class EngineSettings
                 _enableHangMinidump = hmEl.GetBoolean();
             }
 
-            if (doc.RootElement.TryGetProperty("DrawCustomVitalBars", out var cvbEl) &&
-                (cvbEl.ValueKind == JsonValueKind.True || cvbEl.ValueKind == JsonValueKind.False))
+
+            if (doc.RootElement.TryGetProperty("DecalBridge", out var dbEl))
             {
-                _drawCustomVitalBars = cvbEl.GetBoolean();
+                if (dbEl.ValueKind == JsonValueKind.True) _decalBridgeMode = DecalBridgeMode.On;
+                else if (dbEl.ValueKind == JsonValueKind.False) _decalBridgeMode = DecalBridgeMode.Off;
+                else if (dbEl.ValueKind == JsonValueKind.String &&
+                         Enum.TryParse(dbEl.GetString(), ignoreCase: true, out DecalBridgeMode dbm))
+                    _decalBridgeMode = dbm;
             }
+
+            if (doc.RootElement.TryGetProperty("DecalInGameImGui", out var dimEl) &&
+                (dimEl.ValueKind == JsonValueKind.True || dimEl.ValueKind == JsonValueKind.False))
+                _decalInGameImGui = dimEl.GetBoolean();
+
+            if (doc.RootElement.TryGetProperty("DecalStandDown", out var dsdEl) &&
+                (dsdEl.ValueKind == JsonValueKind.True || dsdEl.ValueKind == JsonValueKind.False))
+                _decalStandDown = dsdEl.GetBoolean();
 
             if (doc.RootElement.TryGetProperty("PreventIdleLogoff", out var pilEl) &&
                 (pilEl.ValueKind == JsonValueKind.True || pilEl.ValueKind == JsonValueKind.False))
@@ -381,11 +452,16 @@ internal static class EngineSettings
                 w.WriteBoolean("EnableImGuiBackend", _enableImGuiBackend);
                 w.WriteBoolean("EnablePluginOverlayWindows", _enablePluginOverlayWindows);
                 w.WriteBoolean("EnableHangMinidump", _enableHangMinidump);
-                w.WriteBoolean("DrawCustomVitalBars", _drawCustomVitalBars);
                 w.WriteBoolean("PreventIdleLogoff", _preventIdleLogoff);
                 // Preserve the launcher-chosen level; dropping it here would reset logging to Info.
                 w.WriteString("LoggingLevel", _loggingLevel);
                 CopyUnownedFields(w);
+                if (_decalBridgeMode != DecalBridgeMode.Auto)   // default: leave the file as it was
+                    w.WriteString("DecalBridge", _decalBridgeMode.ToString());
+                if (!_decalInGameImGui)   // default true: leave the file as it was
+                    w.WriteBoolean("DecalInGameImGui", false);
+                if (!_decalStandDown)     // default true: leave the file as it was
+                    w.WriteBoolean("DecalStandDown", false);
                 w.WriteEndObject();
             }
             File.WriteAllBytes(SettingsPath, ms.ToArray());
@@ -403,6 +479,8 @@ internal static class EngineSettings
         "PluginPaths", "EnableImGuiShell", "EnablePlugins", "EnableDatShareHook", "EnableAvaloniaOverlay",
         "EnableD3D9Hook", "EnableEngine", "EngineHookCount", "EnableImGuiBackend", "EnablePluginOverlayWindows",
         "EnableHangMinidump", "DrawCustomVitalBars", "PreventIdleLogoff", "LoggingLevel",
+        // Save() writes these only when non-default, so copying them through would duplicate keys.
+        "DecalBridge", "DecalInGameImGui", "DecalStandDown",
     };
 
     /// <summary>Writes every top-level engine.json field not in <see cref="OwnedFields"/> as-is.</summary>
@@ -425,3 +503,6 @@ internal static class EngineSettings
         }
     }
 }
+
+/// <summary>engine.json "DecalBridge" (see <see cref="EngineSettings.DecalBridgeMode"/>).</summary>
+internal enum DecalBridgeMode { Auto = 0, On = 1, Off = 2 }

@@ -1,10 +1,13 @@
 // ============================================================================
 //  RynthCore.Engine - Compatibility/AppraisalHooks.cs
 //
-//  Hooks CM_Examine::SendNotice_SetAppraiseInfo to cache appraisal bool
-//  properties for inventory items whose m_pQualities is null.
-//  CBaseQualities::InqBool returns 0 for such items because the property
-//  setter skips CBaseQualities storage when m_pQualities is null.
+//  Caches what the last identify of each object carried, for objects whose
+//  m_pQualities is null (CBaseQualities::Inq* return 0 for them) and for every
+//  read off AC's main thread (where no Inq* may run). Two feeds: the identify
+//  message itself (OnIdentifyWire, from SmartBoxHooks.ParseGameEvent: all six
+//  tables plus the armour/weapon/hook profiles, see PropertyWire) and, merged
+//  over it, AC's parsed AppraisalProfile via a hook on
+//  CM_Examine::SendNotice_SetAppraiseInfo (int, bool, string, spells, vitals).
 //
 //  VA derivation (map_offset + 0x00401000 = live VA):
 //    002AF5B0 CM_Examine::SendNotice_SetAppraiseInfo → 0x006B05B0
@@ -57,12 +60,23 @@ internal static class AppraisalHooks
     private static readonly HashSet<uint> _appraisedGuids = new();
     // Unix timestamp (seconds) of last appraisal receipt per guid
     private static readonly Dictionary<uint, long> _lastIdTime = new();
-    // Int property cache: guid → (stype → value)
-    private static readonly Dictionary<uint, Dictionary<uint, int>> _intCache = new();
-    // Bool property cache: guid → (stype → value)
-    private static readonly Dictionary<uint, Dictionary<uint, bool>> _boolCache = new();
-    // String property cache: guid → (stype → value)
-    private static readonly Dictionary<uint, Dictionary<uint, string>> _stringCache = new();
+    // Every property the last identify of an object carried: guid → bag (2026-09-30).
+    // Two sources, both on AC's main thread inside UIQueueManager::ProcessNetBlobData:
+    //  - the identify message itself (SmartBoxHooks.ParseGameEvent → OnIdentifyWire, before
+    //    AC handles it): all six tables (int, int64, bool, float, string, data id) plus the
+    //    armour/weapon/hook profile values filed under their property ids (PropertyWire);
+    //  - AC's parsed AppraisalProfile (SendNoticeDetour, after): int, bool and string, the
+    //    long-proven path, merged over the wire values.
+    // Before, only the second existed, so int64, float and data id properties never answered
+    // off the main thread (the float capture of 2026-09-30 sat in a parser nothing called).
+    private static readonly Dictionary<uint, PropertyBag> _bags = new();
+    // The guid whose wire record ParseGameEvent stored in the current dispatch (main thread only):
+    // SendNoticeDetour then merges AC's tables into it instead of replacing them.
+    private static uint _wireGuidThisDispatch;
+    private static int _wireLogCount, _wireMissLogCount;
+    // Hard cap on identified objects kept (they are also evicted on delete and cleared on
+    // logout). Past it the oldest identify is dropped.
+    private const int MaxAppraisedObjects = 4096;
     // Spell book cache: guid → spell ID array (from AppraisalProfile._spellBook PSmartArray<UInt32> at +0x30)
     private static readonly Dictionary<uint, uint[]> _spellIdCache = new();
     private static readonly object _cacheLock = new();
@@ -97,12 +111,136 @@ internal static class AppraisalHooks
         {
             _appraisedGuids.Clear();
             _lastIdTime.Clear();
-            _intCache.Clear();
-            _boolCache.Clear();
-            _stringCache.Clear();
+            _bags.Clear();
             _spellIdCache.Clear();
             _failedRollLogged.Clear();
         }
+    }
+
+    /// <summary>Drops everything cached for an object AC deleted (PropertyUpdateHooks' BeingDeleted hook).</summary>
+    public static void EvictObject(uint guid)
+    {
+        lock (_cacheLock)
+        {
+            _appraisedGuids.Remove(guid);
+            _lastIdTime.Remove(guid);
+            _bags.Remove(guid);
+            _spellIdCache.Remove(guid);
+            _failedRollLogged.Remove(guid);
+        }
+    }
+
+    public static int CachedObjectCount
+    {
+        get { lock (_cacheLock) return _bags.Count; }
+    }
+
+    // Caller holds _cacheLock. Keeps the bag count under MaxAppraisedObjects by dropping the
+    // object identified longest ago (a scan, only when the cap is hit).
+    private static void EnforceCapLocked(uint keep)
+    {
+        while (_bags.Count >= MaxAppraisedObjects)
+        {
+            uint oldest = 0;
+            long oldestTime = long.MaxValue;
+            foreach (uint g in _bags.Keys)
+            {
+                if (g == keep) continue;
+                long t = _lastIdTime.TryGetValue(g, out long v) ? v : 0;
+                if (t < oldestTime) { oldestTime = t; oldest = g; }
+            }
+            if (oldest == 0) return;
+            _bags.Remove(oldest);
+            _appraisedGuids.Remove(oldest);
+            _lastIdTime.Remove(oldest);
+            _spellIdCache.Remove(oldest);
+        }
+    }
+
+    // Caller holds _cacheLock.
+    private static PropertyBag GetOrAddBagLocked(uint guid)
+    {
+        if (!_bags.TryGetValue(guid, out PropertyBag? bag))
+        {
+            EnforceCapLocked(guid);
+            _bags[guid] = bag = new PropertyBag();
+        }
+        return bag;
+    }
+
+    /// <summary>
+    /// Stores what an identify message carried (PropertyWire.TryParseIdentify), replacing the
+    /// object's previous identify. AC's main thread, from SmartBoxHooks.ParseGameEvent, just
+    /// before AC handles the message; SendNoticeDetour then merges AC's own tables in.
+    /// </summary>
+    internal static void StoreIdentify(IdentifyRecord rec)
+    {
+        lock (_cacheLock)
+        {
+            if (!_bags.ContainsKey(rec.ObjectId))
+                EnforceCapLocked(rec.ObjectId);
+            _bags[rec.ObjectId] = rec.Properties;
+        }
+        _wireGuidThisDispatch = rec.ObjectId;
+
+        if (_wireLogCount < 20)
+        {
+            _wireLogCount++;
+            PropertyBag b = rec.Properties;
+            RynthLog.Compat($"Compat: identify wire obj=0x{rec.ObjectId:X8} flags=0x{rec.Flags:X4} ok={rec.Success} " +
+                $"int={b.Ints.Count} int64={b.Int64s.Count} bool={b.Bools.Count} float={b.Floats.Count} " +
+                $"string={b.Strings.Count} did={b.DataIds.Count} armor={rec.HasArmorProfile} weapon={rec.HasWeaponProfile} " +
+                $"hook={rec.HasHookProfile} creature={rec.HasCreatureProfile}{(rec.Truncated ? " TRUNCATED" : "")}");
+        }
+    }
+
+    /// <summary>
+    /// The identify message (game event 0xC9) as UIQueueManager::ProcessNetBlobData received it,
+    /// from its event type on. AC's main thread, before AC handles it. Never touches AC state.
+    /// </summary>
+    internal static unsafe void OnIdentifyWire(IntPtr data, int size)
+    {
+        _wireGuidThisDispatch = 0;
+        if (data == IntPtr.Zero || size < 16)
+            return;
+        if (PropertyWire.TryParseIdentify(new ReadOnlySpan<byte>((void*)data, size), out IdentifyRecord rec))
+            StoreIdentify(rec);
+    }
+
+    /// <summary>
+    /// Folds a property update into an already-identified object so the cache doesn't keep
+    /// serving the value from the last identify (a used pet essence's Structure, a changed
+    /// float or string). Objects never identified are left alone; PropertyUpdateHooks keeps
+    /// their updates.
+    /// </summary>
+    internal static void ApplyUpdate(uint guid, in PropertyUpdate u)
+    {
+        lock (_cacheLock)
+        {
+            if (_bags.TryGetValue(guid, out PropertyBag? bag))
+                bag.Apply(u);
+        }
+    }
+
+    public static bool TryGetCachedInt64Property(uint guid, uint stype, out long value)
+    {
+        value = 0;
+        lock (_cacheLock)
+            return _bags.TryGetValue(guid, out PropertyBag? b) && b.Int64s.TryGetValue(stype, out value);
+    }
+
+    public static bool TryGetCachedDataIdProperty(uint guid, uint stype, out uint value)
+    {
+        value = 0;
+        lock (_cacheLock)
+            return _bags.TryGetValue(guid, out PropertyBag? b) && b.DataIds.TryGetValue(stype, out value);
+    }
+
+    public static bool TryGetCachedInstanceIdProperty(uint guid, uint stype, out uint value)
+    {
+        value = 0;
+        lock (_cacheLock)
+            return _bags.TryGetValue(guid, out PropertyBag? b) && b.InstanceIds.TryGetValue(stype, out value);
     }
 
     /// <summary>
@@ -122,35 +260,7 @@ internal static class AppraisalHooks
     {
         value = 0;
         lock (_cacheLock)
-        {
-            if (!_intCache.TryGetValue(guid, out Dictionary<uint, int>? props))
-                return false;
-            return props.TryGetValue(stype, out value);
-        }
-    }
-
-    /// <summary>
-    /// Applies a later server property update to an already-appraised object so the cache
-    /// doesn't keep serving the value from the last ID. Objects never appraised are left
-    /// alone (the update cache covers them).
-    /// </summary>
-    public static void PatchCachedInt(uint guid, uint stype, int value)
-    {
-        lock (_cacheLock)
-        {
-            if (_intCache.TryGetValue(guid, out Dictionary<uint, int>? props))
-                props[stype] = value;
-        }
-    }
-
-    /// <summary>Bool counterpart of <see cref="PatchCachedInt"/>.</summary>
-    public static void PatchCachedBool(uint guid, uint stype, bool value)
-    {
-        lock (_cacheLock)
-        {
-            if (_boolCache.TryGetValue(guid, out Dictionary<uint, bool>? props))
-                props[stype] = value;
-        }
+            return _bags.TryGetValue(guid, out PropertyBag? b) && b.Ints.TryGetValue(stype, out value);
     }
 
     /// <summary>
@@ -161,11 +271,15 @@ internal static class AppraisalHooks
     {
         value = false;
         lock (_cacheLock)
-        {
-            if (!_boolCache.TryGetValue(guid, out Dictionary<uint, bool>? props))
-                return false;
-            return props.TryGetValue(stype, out value);
-        }
+            return _bags.TryGetValue(guid, out PropertyBag? b) && b.Bools.TryGetValue(stype, out value);
+    }
+
+    /// <summary>A float (double) property from the last server appraisal of this object.</summary>
+    public static bool TryGetCachedDoubleProperty(uint guid, uint stype, out double value)
+    {
+        value = 0;
+        lock (_cacheLock)
+            return _bags.TryGetValue(guid, out PropertyBag? b) && b.Floats.TryGetValue(stype, out value);
     }
 
     /// <summary>
@@ -177,9 +291,27 @@ internal static class AppraisalHooks
         value = string.Empty;
         lock (_cacheLock)
         {
-            if (!_stringCache.TryGetValue(guid, out Dictionary<uint, string>? props))
-                return false;
-            return props.TryGetValue(stype, out value!);
+            if (_bags.TryGetValue(guid, out PropertyBag? b) && b.Strings.TryGetValue(stype, out string? s))
+            {
+                value = s;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    // SendNoticeDetour's tables from AC's AppraisalProfile. When this dispatch's wire record is
+    // in place they are merged over it (same keys win, the profile-derived values stay); when
+    // the wire parse didn't run, they replace the table as they always did.
+    private static void StoreProfileTable<T>(uint guid, Dictionary<uint, T> props, Func<PropertyBag, Dictionary<uint, T>> table)
+    {
+        lock (_cacheLock)
+        {
+            PropertyBag bag = GetOrAddBagLocked(guid);
+            Dictionary<uint, T> dst = table(bag);
+            if (_wireGuidThisDispatch != guid)
+                dst.Clear();
+            foreach (var kv in props) dst[kv.Key] = kv.Value;
         }
     }
 
@@ -242,6 +374,14 @@ internal static class AppraisalHooks
             _lastIdTime[guid] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         }
 
+        if (_wireGuidThisDispatch != guid && _wireMissLogCount < 5 && SmartBoxHooks.IsGameEventHookInstalled)
+        {
+            // The identify reached AC's handler without its wire record: int64, float and data
+            // id properties (and the profile values) are missing for it. Seen once per few ids.
+            _wireMissLogCount++;
+            RynthLog.Compat($"Compat: identify 0x{guid:X8} reached SetAppraiseInfo without its wire record - only int/bool/string cached.");
+        }
+
         try
         {
             CacheIntProps(guid, profilePtr);
@@ -287,6 +427,7 @@ internal static class AppraisalHooks
             try { RynthLog.Compat($"Compat: appraisal creature-vitals error guid=0x{guid:X8} - {ex.GetType().Name}: {ex.Message}"); } catch { }
         }
 
+        _wireGuidThisDispatch = 0;
         return result;
     }
 
@@ -339,10 +480,7 @@ internal static class AppraisalHooks
         if (props.Count == 0)
             return;
 
-        lock (_cacheLock)
-        {
-            _intCache[guid] = props;
-        }
+        StoreProfileTable(guid, props, b => b.Ints);
 
         RynthLog.Verbose($"Compat: cached {props.Count} int prop(s) for guid=0x{guid:X8}");
     }
@@ -396,10 +534,7 @@ internal static class AppraisalHooks
         if (props.Count == 0)
             return;
 
-        lock (_cacheLock)
-        {
-            _boolCache[guid] = props;
-        }
+        StoreProfileTable(guid, props, b => b.Bools);
 
         RynthLog.Verbose($"Compat: cached {props.Count} bool prop(s) for guid=0x{guid:X8}");
     }
@@ -471,10 +606,7 @@ internal static class AppraisalHooks
         if (props.Count == 0)
             return;
 
-        lock (_cacheLock)
-        {
-            _stringCache[guid] = props;
-        }
+        StoreProfileTable(guid, props, b => b.Strings);
 
         RynthLog.Verbose($"Compat: cached {props.Count} string prop(s) for guid=0x{guid:X8}");
     }
@@ -588,6 +720,10 @@ internal static class AppraisalHooks
         }
         else
         {
+            // CreatureAppraisalProfile.enchantment_bitfield (+0x34): low 9 bits = attribute / vital
+            // modified, bits 16..24 = modified upward. The nameplates' "debuffed by others" marker.
+            ImGuiBackend.Hud.HudFeed.OnAppraisal(guid, unchecked((uint)Marshal.ReadInt32(creaturePtr + 0x34)));
+
             int log = Interlocked.Increment(ref _creatureVitalsLogCount);
             if (log <= 50)
                 RynthLog.Compat($"Compat: appraisal creature vitals guid=0x{guid:X8} hp={health}/{maxHealth} stam={stamina}/{maxStamina} mana={mana}/{maxMana}");

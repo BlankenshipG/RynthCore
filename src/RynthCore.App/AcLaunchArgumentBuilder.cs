@@ -6,6 +6,14 @@ namespace RynthCore.App;
 
 internal sealed class AcLaunchArgumentBuilder
 {
+    /// <summary>Text shown in place of the password in previews.</summary>
+    public const string PasswordMask = "********";
+
+    /// <summary>
+    /// The client's command line, with the saved password decrypted now. The result carries the
+    /// password: hand it to the process and never log, display or keep it. Throws when the saved
+    /// password can't be decrypted on this Windows user (never launches with an empty one instead).
+    /// </summary>
     public string BuildArguments(LaunchServerProfile server, LaunchAccountProfile account)
     {
         ArgumentNullException.ThrowIfNull(server);
@@ -13,17 +21,42 @@ internal sealed class AcLaunchArgumentBuilder
 
         Validate(server, account);
 
+        if (!account.TryGetPasswordForLaunch(out string password, out string problem))
+            throw new InvalidOperationException(problem);
+
+        return Build(server, account, password);
+    }
+
+    /// <summary>
+    /// The same command line for display: the password is never decrypted, a saved one shows as
+    /// <see cref="PasswordMask"/>.
+    /// </summary>
+    public string BuildMaskedArguments(LaunchServerProfile server, LaunchAccountProfile account)
+    {
+        ArgumentNullException.ThrowIfNull(server);
+        ArgumentNullException.ThrowIfNull(account);
+
+        Validate(server, account);
+
+        if (account.PasswordNeedsReentry)
+            return LaunchAccountProfile.PasswordNeedsReentryMessage(account.AccountName);
+
+        return Build(server, account, account.HasSavedPassword ? PasswordMask : string.Empty);
+    }
+
+    private static string Build(LaunchServerProfile server, LaunchAccountProfile account, string password)
+    {
         return server.Emulator switch
         {
             AcEmulatorKind.Ace => string.Join(" ",
                 "-a", Quote(account.AccountName),
-                "-v", Quote(account.Password),
+                "-v", Quote(password),
                 "-h", Quote(server.ConnectionString),
                 "-rodat", server.RodatEnabled ? "on" : "off"),
             AcEmulatorKind.Gdle => string.Join(" ",
                 "-h", Quote(server.Host),
                 "-p", server.Port.ToString(CultureInfo.InvariantCulture),
-                "-a", Quote($"{account.AccountName}:{account.Password}"),
+                "-a", Quote($"{account.AccountName}:{password}"),
                 "-rodat", server.RodatEnabled ? "on" : "off"),
             _ => throw new InvalidOperationException($"Unsupported emulator type '{server.Emulator}'.")
         };
