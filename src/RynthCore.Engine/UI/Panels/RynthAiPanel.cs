@@ -59,6 +59,8 @@ internal static partial class RynthAiPanel
     private delegate void FloatFn(float arg);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void PtrFn(IntPtr arg);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void PtrPtrFn(IntPtr a, IntPtr b);
 
     // ── Color palette — exact match to LegacyDashboardRenderer ImGui Vector4
     //    floats (multiplied by 255 and rounded). Don't deepen these; the ImGui
@@ -121,6 +123,8 @@ internal static partial class RynthAiPanel
     private static VoidFn? _togglePanelMinimize;
     private static PtrFn? _sendNavCommand;
     private static GetSnapshotJsonFn? _getPatrolInfoJson;
+    // RynthPluginApplyRemoteCommand(action, value): queued and applied on the plugin pump thread.
+    private static PtrPtrFn? _applyRemoteCommand;
     private static bool _bindingLogged;
 
     /// <summary>
@@ -693,7 +697,7 @@ internal static partial class RynthAiPanel
         var launcherGrid = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("*,*,*"),
-            RowDefinitions = new RowDefinitions("Auto,Auto"),
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto"),
             Margin = new Thickness(0, 4, 0, 0)
         };
         AddSplitLauncher(launcherGrid, 0, 0, "Meta", "⚙", "Lua", "<>",
@@ -722,6 +726,16 @@ internal static partial class RynthAiPanel
                 ShowPatrolFlyout(patrolBtn);
             }
         };
+        // ILT Hub: same as typing "/ra hub show". The Hub is an ImGui overlay window with no
+        // Avalonia panel, so this is the panel's way to open it.
+        var iltHubBtn = AddLauncher(launcherGrid, 2, 0, "ILT Hub", "♥",
+            onClick: () =>
+            {
+                ClosePicker();
+                if (_applyRemoteCommand == null) TryBind();
+                SendRemoteCmd("hub", "show");
+            });
+        ToolTip.SetTip(iltHubBtn, "Open the ILT Hub window (/ra hub show).");
 
         dash.Children.Add(launcherGrid);
 
@@ -1518,6 +1532,7 @@ internal static partial class RynthAiPanel
         _togglePanelMinimize = null;
         _sendNavCommand = null;
         _getPatrolInfoJson = null;
+        _applyRemoteCommand = null;
     };
 
     private static void TryBind()
@@ -1537,6 +1552,7 @@ internal static partial class RynthAiPanel
         _togglePanelMinimize  ??= Bind<VoidFn>(plugin,             "RynthPluginTogglePanelMinimize");
         _sendNavCommand       ??= Bind<PtrFn>(plugin,              "RynthPluginSendNavCommand");
         _getPatrolInfoJson    ??= Bind<GetSnapshotJsonFn>(plugin,  "RynthPluginGetPatrolInfoJson");
+        _applyRemoteCommand   ??= Bind<PtrPtrFn>(plugin,           "RynthPluginApplyRemoteCommand");
 
         if (!_bindingLogged && _getSnapshotJson != null)
         {
@@ -1557,6 +1573,28 @@ internal static partial class RynthAiPanel
         IntPtr ptr = Marshal.StringToHGlobalAnsi(json);
         try { _sendNavCommand(ptr); }
         finally { Marshal.FreeHGlobal(ptr); }
+    }
+
+    /// <summary>
+    /// Sends an (action, value) pair to RynthPluginApplyRemoteCommand — the same path as
+    /// typing "/ra &lt;action&gt; &lt;value&gt;". The plugin copies both strings and applies
+    /// the command on its pump thread, so the buffers can be freed as soon as this returns.
+    /// </summary>
+    private static void SendRemoteCmd(string action, string value)
+    {
+        if (_applyRemoteCommand == null)
+        {
+            RynthLog.UI($"RynthAiPanel: RynthPluginApplyRemoteCommand not bound; dropped '{action} {value}'.");
+            return;
+        }
+        IntPtr a = Marshal.StringToHGlobalAnsi(action);
+        IntPtr b = Marshal.StringToHGlobalAnsi(value);
+        try { _applyRemoteCommand(a, b); }
+        finally
+        {
+            Marshal.FreeHGlobal(a);
+            Marshal.FreeHGlobal(b);
+        }
     }
 
     private sealed class Snapshot

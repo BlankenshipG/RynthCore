@@ -184,6 +184,10 @@ cd C:\Projects\RynthCore\installer
 
 This runs `dotnet publish` for the Launcher, Loader, Engine, and RynthAi plugin (from RynthSuite), stages everything under `installer\staging\app\`, then invokes `ISCC.exe` to produce the installer.
 
+It also publishes the **experimental plugins** — RynthChat, RynthJuice, RynthNav, RynthTracker, RynthVision and **ub-Rythai** (`RynthSuite\Plugins\ub-Rythai\RynthCore.Plugin.UbRythai`) — as optional installer components (unchecked by default) that install to `<RynthSuite>\<Name>\RynthCore.Plugin.<Name>.dll`.
+
+`..\Build-Release-All.ps1 -Version <x.y.z.w>` builds `RynthCore.sln` first and then runs `Build-Installer.ps1`.
+
 Output: `installer\Output\RynthCore-Setup.exe`
 
 ### Options

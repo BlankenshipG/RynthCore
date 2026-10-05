@@ -6,6 +6,9 @@
     <RuntimeIdentifier>win-x86</RuntimeIdentifier>
     <OutputType>Library</OutputType>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Unreachable code (CS0162) is always a bug here: a misplaced statement after a return
+         once left the plugin render snapshot unpublished and silently disabled every overlay window. -->
+    <WarningsAsErrors>$(WarningsAsErrors);CS0162</WarningsAsErrors>
     <Nullable>enable</Nullable>
     <PublishAot>true</PublishAot>
     <NativeLib>Shared</NativeLib>
@@ -38,6 +41,8 @@
     <PackageReference Include="Avalonia.Desktop" Version="11.2.3" />
     <PackageReference Include="Avalonia.Skia" Version="11.2.3" />
     <PackageReference Include="Avalonia.Themes.Simple" Version="11.2.3" />
+    <!-- Overrides Avalonia.FreeDesktop transitive Tmds.DBus.Protocol (NU1903 / GHSA-xrw6-gwf8-vvr9). -->
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
     <PackageReference Include="Avalonia.AvaloniaEdit" Version="11.2.0" />
   </ItemGroup>
 
@@ -116,5 +121,10 @@
       DestinationFiles="@(BundledSupportDll->'$(OutputPath)%(Filename)%(Extension)')"
       SkipUnchangedFiles="true" />
   </Target>
+
+  <ItemGroup>
+    <!-- Install-location resolver (installer-chosen RynthCore / RynthSuite folders). -->
+    <Compile Include="..\RynthCore.App\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+  </ItemGroup>
 
 </Project>

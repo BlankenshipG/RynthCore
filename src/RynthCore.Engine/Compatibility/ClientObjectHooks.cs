@@ -216,6 +216,24 @@ internal static class ClientObjectHooks
     private static DateTime _lastObjectIdentityPrefetchUtc = DateTime.MinValue;
     private static bool _loggedObjectIdentityServe;
     private const int ObjectIdentityPrefetchThrottleMs = 500;
+
+    // Create-time identity seeds. ACCObjectMaint::CreateObject receives the server's
+    // PublicWeenieDesc, which already carries the object's name and ITEM_TYPE before
+    // qualities/appraisal exist. The main-thread snapshot above can't resolve names for
+    // ~10 s after login (qualities not populated yet), so off-thread readers fall back to
+    // these seeds when the snapshot has no entry (or reports type 0). Entries live from
+    // create until delete; the cap only guards against a missed delete hook.
+    private static readonly object _createSeedLock = new();
+    private static readonly Dictionary<uint, string> _createSeedNames = new(1024);
+    private static readonly Dictionary<uint, uint> _createSeedTypes = new(1024);
+    private const int CreateSeedCap = 16384;
+    // PublicWeenieDesc field offsets (Chorizite Weenie.cs; same layout the PWD-direct
+    // fallbacks in TryGetObjectName / TryGetItemType read from the embedded copy).
+    private const int PwdNameOffset = 4;
+    private const int PwdTypeOffset = 56;
+    private static int _createSeedCount;
+    private static bool _loggedCreateSeedServe;
+
     // Every id the same walk visited, swapped whole (readers never see a half-built array).
     private static volatile uint[] _liveObjectIds = Array.Empty<uint>();
 
@@ -258,6 +276,28 @@ internal static class ClientObjectHooks
     private static readonly object _weeniePtrSwapLock = new();
     private static Dictionary<uint, IntPtr> _weeniePtrFront = new(512);
     private static Dictionary<uint, IntPtr> _weeniePtrBack = new(512);
+
+    // PublicWeenieDesc int-field snapshot (stack size, max stack, container, wielder,
+    // locations, capacities, material). Deep-audit finding #24 made the PWD reads main-
+    // thread-only, which left the off-thread plugin pump with NO source for these: every
+    // stack read as unknown (treated as 1) — AutoStack's 1,500 failed merges, AutoCram
+    // amounts, missile-crafting counts and meta item-count expressions. The main-thread
+    // position walk now copies these fields for every live object (pack items included)
+    // into _pwdBack and publishes it with the weenie-pointer swap, so off-thread readers
+    // get values at most ~100 ms old without touching AC memory. Struct values + reused
+    // dictionaries keep the walk zero-alloc (same constraint as _positionCache).
+    private struct PwdIntEntry
+    {
+        public int ContainerId, WielderId, ValidLocations, Location;
+        public int ItemsCapacity, ContainersCapacity, StackSize, MaxStackSize, MaterialType;
+    }
+    private static Dictionary<uint, PwdIntEntry> _pwdFront = new(512);
+    private static Dictionary<uint, PwdIntEntry> _pwdBack = new(512);
+    private static bool _loggedPwdServe;
+    // PWD field offsets (Chorizite Weenie.cs; same layout as the PWD fast paths below).
+    private const int PwdContainerIdOffset = 28, PwdWielderIdOffset = 32, PwdValidLocationsOffset = 40;
+    private const int PwdLocationOffset = 44, PwdItemsCapacityOffset = 48, PwdContainersCapacityOffset = 52;
+    private const int PwdStackSizeOffset = 96, PwdMaxStackSizeOffset = 100, PwdMaterialTypeOffset = 148;
     // Diagnostic (temporary): periodic snapshot-size log + live-read probe of
     // objects with a position but no cached name. Remove once the missing-
     // monsters cause is pinned. _diagSampleBuf preallocated to stay low-alloc.
@@ -1434,6 +1474,23 @@ internal static class ClientObjectHooks
         containerID = 0;
         wielderID = 0;
         location = 0;
+
+        // Off-thread: serve from the main-thread PWD snapshot instead of dereferencing a
+        // cached (possibly freed and reused) weenie pointer — the finding #24 TOCTOU class.
+        if (!MainThreadGuard.IsOnMainThread())
+        {
+            PwdIntEntry e;
+            lock (_weeniePtrSwapLock)
+            {
+                if (!_pwdFront.TryGetValue(objectId, out e))
+                    return false;
+            }
+            containerID = unchecked((uint)e.ContainerId);
+            wielderID = unchecked((uint)e.WielderId);
+            location = unchecked((uint)e.Location);
+            return true;
+        }
+
         if (_getWeenieObject == null)
         {
             if (!Probe() || _getWeenieObject == null)
@@ -1480,8 +1537,9 @@ internal static class ClientObjectHooks
         value = 0;
         if (pwdFieldOffset < 0 || pwdFieldOffset > 172 || (pwdFieldOffset & 3) != 0)
             return false;
+        // Off-thread: only the fields the main-thread PWD snapshot carries are available.
         if (!MainThreadGuard.IsOnMainThread())
-            return false;
+            return TryGetPwdSnapshotInt(objectId, pwdFieldOffset, out value);
         if (_getWeenieObject == null)
         {
             if (!Probe() || _getWeenieObject == null)
@@ -1769,6 +1827,19 @@ internal static class ClientObjectHooks
         {
             lock (_objectIdentityCacheLock)
             {
+                // A zero snapshot value means qualities weren't populated when the walk
+                // ran; prefer the create-time descriptor type in that case.
+                if (_objectTypeCache.TryGetValue(objectId, out typeFlags) && typeFlags != 0)
+                    return true;
+            }
+            if (TryGetCreateSeedType(objectId, out uint seeded))
+            {
+                typeFlags = seeded;
+                return true;
+            }
+            // Snapshot hit with flags=0 is still an answer (static scenery often has no type).
+            lock (_objectIdentityCacheLock)
+            {
                 if (_objectTypeCache.TryGetValue(objectId, out typeFlags))
                     return true;
             }
@@ -1864,9 +1935,49 @@ internal static class ClientObjectHooks
     /// All other stypes fall through to CBaseQualities::InqInt.
     /// Common stypes: LOCATIONS=9, CURRENT_WIELDED_LOCATION=10, STACK_SIZE=12, DAMAGE_TYPE=45.
     /// </summary>
+    /// <summary>PWD offset for STypeInt properties stored in PublicWeenieDesc, or -1.</summary>
+    private static int PwdOffsetForIntStype(uint stype) => stype switch
+    {
+        6   => PwdItemsCapacityOffset,      // ITEMS_CAPACITY → _itemsCapacity
+        7   => PwdContainersCapacityOffset, // CONTAINERS_CAPACITY → _containersCapacity
+        9   => PwdValidLocationsOffset,     // LOCATIONS → _valid_locations
+        10  => PwdLocationOffset,           // CURRENT_WIELDED_LOCATION → _location
+        11  => PwdMaxStackSizeOffset,       // MAX_STACK_SIZE → _maxStackSize
+        12  => PwdStackSizeOffset,          // STACK_SIZE → _stackSize
+        131 => PwdMaterialTypeOffset,       // MATERIAL_TYPE → _material_type
+        _   => -1,
+    };
+
     public static unsafe bool TryGetObjectIntProperty(uint objectId, uint stype, out int value)
     {
         value = 0;
+
+        // Stypes whose values live in PublicWeenieDesc are served from the PWD first: it is
+        // network-populated and current, while the appraisal cache can be stale (a stack
+        // size cached before a merge). On AC's main thread the PWD is read live; off-thread
+        // it comes from the main-thread PWD snapshot (finding #24 forbids live reads there).
+        int pwdOffset = PwdOffsetForIntStype(stype);
+        if (pwdOffset >= 0)
+        {
+            bool gotPwd = MainThreadGuard.IsOnMainThread()
+                ? TryReadPwdInt32(objectId, pwdOffset, out int pwdValue)
+                : TryGetPwdSnapshotInt(objectId, pwdOffset, out pwdValue);
+            // A zero stack field means "not sent" — let a cached appraisal value fill it in.
+            bool isStackField = stype is 11 or 12;
+            if (gotPwd && (!isStackField || pwdValue > 0))
+            {
+                value = pwdValue;
+                return true;
+            }
+            if (AppraisalHooks.TryGetCachedIntProperty(objectId, stype, out value))
+                return true;
+            if (gotPwd)
+            {
+                value = pwdValue;
+                return true;
+            }
+            return false;
+        }
 
         // Appraisal cache covers objects where m_pQualities is null (doors, inventory items, etc.)
         if (AppraisalHooks.TryGetCachedIntProperty(objectId, stype, out value))
@@ -1878,68 +1989,13 @@ internal static class ClientObjectHooks
                 return false;
         }
 
-        // Fast path: stypes whose values live in PublicWeenieDesc.
-        // PWD starts at weenie + _phys_obj_offset + 4. Layout (Chorizite Weenie.cs:1734):
-        //   +28 _containerID, +32 _wielderID, +40 _valid_locations, +44 _location,
-        //   +48 _itemsCapacity, +52 _containersCapacity, +96 _stackSize, +100 _maxStackSize,
-        //   +148 _material_type
-        // CBaseQualities::InqInt fails for inventory/corpse items (m_pQualities is null on pack wienies).
-        // Any stype whose value lives in PWD must be served from here instead.
-        int pwdFieldOffset = stype switch
-        {
-            6   => 48,   // ITEMS_CAPACITY → _itemsCapacity
-            7   => 52,   // CONTAINERS_CAPACITY → _containersCapacity
-            9   => 40,   // LOCATIONS → _valid_locations
-            10  => 44,   // CURRENT_WIELDED_LOCATION → _location
-            11  => 100,  // MAX_STACK_SIZE → _maxStackSize
-            12  => 96,   // STACK_SIZE → _stackSize
-            131 => 148,  // MATERIAL_TYPE → _material_type (4 bytes, int)
-            _   => -1,
-        };
-
-        // Deep-audit finding #24 (2026-06-18): this PWD fast path used to run
-        // BEFORE the IsOnMainThread check below, dereferencing a weenie
-        // pointer captured on a <=100ms-stale main-thread walk with raw
-        // Marshal.ReadInt32. IsReadablePointer catches an unmapped page but
-        // not a freed-then-reallocated one (TOCTOU) — off-thread that risks
-        // feeding a garbage property value into loot/salvage logic. Hoisted
-        // the gate up here (same place the InqInt fallback already gates) so
-        // the fast path only ever runs on the main thread; off-thread
-        // callers fall through to the appraisal cache only (already checked
-        // above) rather than touching AC memory directly.
+        // Deep-audit finding #24 (2026-06-18): never touch AC memory off-thread here. PWD-backed
+        // stypes were handled above (live on the main thread, snapshot off-thread); InqInt
+        // walks qualities and stays main-thread-only.
         if (!MainThreadGuard.IsOnMainThread())
             return false;
 
-        if (pwdFieldOffset >= 0 && _weeniePhysicsObjOffset >= 0)
-        {
-            try
-            {
-                IntPtr weeniePtr = _getWeenieObject(objectId);
-                if (weeniePtr == IntPtr.Zero)
-                    return false;
-
-                int pwdBase = _weeniePhysicsObjOffset + 4;
-                IntPtr fieldAddr = weeniePtr + pwdBase + pwdFieldOffset;
-                // Page-probe BOTH ends of the 4-byte read span (mirrors
-                // TryGetObjectOwnershipInfo's dual-end probe): a freed-but-decommitted
-                // weenie whose field straddles a committed/decommitted page boundary is
-                // an uncatchable AV under NativeAOT; the catch below only covers
-                // null-page faults. All stypes served here are Marshal.ReadInt32
-                // (4 bytes), so the span is [fieldAddr, fieldAddr+3].
-                if (!IsReadablePointer(fieldAddr) || !IsReadablePointer(fieldAddr + 3))
-                    return false;
-
-                value = Marshal.ReadInt32(fieldAddr);
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        // Fall through to CBaseQualities::InqInt for stypes not in PWD.
-        // (IsOnMainThread already checked above, before the PWD fast path.)
+        // CBaseQualities::InqInt for stypes not in PWD.
         if (_inqInt == null)
         {
             if (!Probe() || _inqInt == null)
@@ -2542,6 +2598,101 @@ internal static class ClientObjectHooks
         }
     }
 
+    /// <summary>
+    /// Records an object's name and ITEM_TYPE straight from the PublicWeenieDesc passed
+    /// to ACCObjectMaint::CreateObject. Called from the create hook on AC's main thread,
+    /// after the original returns. The descriptor is server data that exists before the
+    /// object's qualities do, so this makes names/types readable off-thread immediately
+    /// instead of after the first successful identity snapshot (~10 s at login).
+    /// Every read is pointer-validated; a bad descriptor simply records nothing.
+    /// </summary>
+    internal static void SeedIdentityFromCreate(uint objectId, IntPtr weenieDesc)
+    {
+        if (objectId == 0 || weenieDesc == IntPtr.Zero)
+            return;
+
+        try
+        {
+            // PublicWeenieDesc derives from PackObj, so a real descriptor starts with an
+            // acclient.exe vtable; reject anything else before reading fields.
+            if (!LooksLikeAcHeapObject(weenieDesc))
+                return;
+
+            bool gotName = TryReadPwdString(weenieDesc, PwdNameOffset, out string name);
+
+            uint typeFlags = 0;
+            IntPtr typeAddr = weenieDesc + PwdTypeOffset;
+            bool gotType = IsReadablePointer(typeAddr);
+            if (gotType)
+                typeFlags = unchecked((uint)Marshal.ReadInt32(typeAddr));
+
+            if (!gotName && (!gotType || typeFlags == 0))
+                return;
+
+            lock (_createSeedLock)
+            {
+                // Safety valve for a missed delete: drop everything rather than grow forever.
+                // The live snapshot covers anything still in the world.
+                if (_createSeedNames.Count >= CreateSeedCap || _createSeedTypes.Count >= CreateSeedCap)
+                {
+                    _createSeedNames.Clear();
+                    _createSeedTypes.Clear();
+                }
+                if (gotName)
+                    _createSeedNames[objectId] = name;
+                if (gotType && typeFlags != 0)
+                    _createSeedTypes[objectId] = typeFlags;
+            }
+
+            int seedNo = System.Threading.Interlocked.Increment(ref _createSeedCount);
+            // First few samples let a log reader confirm the descriptor offsets resolve
+            // to sensible names/types on this client build.
+            if (seedNo <= 5)
+                RynthLog.Compat($"[CreateSeed] #{seedNo} 0x{objectId:X8} name='{(gotName ? name : "")}' type=0x{typeFlags:X8}");
+            if (!_loggedCreateSeedServe && seedNo >= 50)
+            {
+                _loggedCreateSeedServe = true;
+                int names, types;
+                lock (_createSeedLock) { names = _createSeedNames.Count; types = _createSeedTypes.Count; }
+                RynthLog.Compat($"ClientObjectHooks: create-descriptor identity seeds active — {names} names, {types} types captured at CreateObject.");
+            }
+        }
+        catch
+        {
+            // Descriptor read failures are non-fatal; the periodic snapshot still runs.
+        }
+    }
+
+    /// <summary>Drops create-time seeds for a deleted object (called from the delete hook).</summary>
+    internal static void ForgetCreateSeed(uint objectId)
+    {
+        lock (_createSeedLock)
+        {
+            _createSeedNames.Remove(objectId);
+            _createSeedTypes.Remove(objectId);
+        }
+    }
+
+    private static bool TryGetCreateSeedName(uint objectId, out string name)
+    {
+        lock (_createSeedLock)
+        {
+            if (_createSeedNames.TryGetValue(objectId, out string? seeded) && seeded.Length > 0)
+            {
+                name = seeded;
+                return true;
+            }
+        }
+        name = string.Empty;
+        return false;
+    }
+
+    private static bool TryGetCreateSeedType(uint objectId, out uint typeFlags)
+    {
+        lock (_createSeedLock)
+            return _createSeedTypes.TryGetValue(objectId, out typeFlags);
+    }
+
     public static bool TryGetObjectName(uint objectId, out string name)
     {
         name = string.Empty;
@@ -2557,6 +2708,10 @@ internal static class ClientObjectHooks
                     return true;
                 }
             }
+            // Snapshot miss (login burst / object newer than the last walk): serve the
+            // name captured from the create descriptor.
+            if (TryGetCreateSeedName(objectId, out name))
+                return true;
             name = string.Empty;
             return false;
         }
@@ -2800,14 +2955,24 @@ internal static class ClientObjectHooks
             {
                 _positionCache.Clear();
                 _weeniePtrBack.Clear();
+                _pwdBack.Clear();
                 CObjectMaintHooks.EnumerateLiveWeenieObjectIds(_capturePositionDelegate);
             }
 
-            // Publish the freshly-walked id->weeniePtr map to off-thread readers
-            // (GetWeenieObjectResolve). The swap is brief and is NOT held during
-            // the walk, so the pump's resolver reads never stall on the walk.
+            // Publish the freshly-walked id->weeniePtr map (GetWeenieObjectResolve) and the
+            // PWD int snapshot (TryGetPwdSnapshotInt) to off-thread readers together. The
+            // swap is brief and is NOT held during the walk, so pump reads never stall on it.
             lock (_weeniePtrSwapLock)
+            {
                 (_weeniePtrFront, _weeniePtrBack) = (_weeniePtrBack, _weeniePtrFront);
+                (_pwdFront, _pwdBack) = (_pwdBack, _pwdFront);
+            }
+
+            if (!_loggedPwdServe && _pwdFront.Count > 0)
+            {
+                _loggedPwdServe = true;
+                RynthLog.Compat($"ClientObjectHooks: PWD int snapshot warm — {_pwdFront.Count} objects (stack size / max stack / container / location served off-thread).");
+            }
 
             if (!_loggedPositionServe && _positionCache.Count > 0)
             {
@@ -2893,6 +3058,82 @@ internal static class ClientObjectHooks
     // thread under _positionCacheLock; reads the live position and stores it.
     // Method group is cached in _capturePositionDelegate so the enumerate call
     // allocates no closure per frame.
+    /// <summary>
+    /// Copies the PublicWeenieDesc int fields of a freshly resolved (main-thread, live)
+    /// weenie into <see cref="_pwdBack"/>. One VirtualQuery covers the whole +28..+151
+    /// span when it sits in a single region (the normal case), so the 10 Hz walk stays
+    /// cheap; a span crossing a region boundary is probed at both ends. Zero-alloc.
+    /// </summary>
+    private static void CapturePwdInts(uint id, IntPtr weeniePtr)
+    {
+        if (_weeniePhysicsObjOffset < 0)
+            return;
+        try
+        {
+            IntPtr pwd = weeniePtr + _weeniePhysicsObjOffset + 4;
+            IntPtr first = pwd + PwdContainerIdOffset;
+            IntPtr last = pwd + PwdMaterialTypeOffset + 3;
+            if (!IsReadableRange(first, last))
+                return;
+
+            _pwdBack[id] = new PwdIntEntry
+            {
+                ContainerId        = Marshal.ReadInt32(pwd + PwdContainerIdOffset),
+                WielderId          = Marshal.ReadInt32(pwd + PwdWielderIdOffset),
+                ValidLocations     = Marshal.ReadInt32(pwd + PwdValidLocationsOffset),
+                Location           = Marshal.ReadInt32(pwd + PwdLocationOffset),
+                ItemsCapacity      = Marshal.ReadInt32(pwd + PwdItemsCapacityOffset),
+                ContainersCapacity = Marshal.ReadInt32(pwd + PwdContainersCapacityOffset),
+                StackSize          = Marshal.ReadInt32(pwd + PwdStackSizeOffset),
+                MaxStackSize       = Marshal.ReadInt32(pwd + PwdMaxStackSizeOffset),
+                MaterialType       = Marshal.ReadInt32(pwd + PwdMaterialTypeOffset),
+            };
+        }
+        catch
+        {
+            // Unreadable descriptor: leave the id out of the snapshot (readers fail closed).
+        }
+    }
+
+    /// <summary>True when every byte in [first, last] is committed, readable memory.</summary>
+    private static bool IsReadableRange(IntPtr first, IntPtr last)
+    {
+        if (VirtualQuery(first, out var mbi, Marshal.SizeOf<MEMORY_BASIC_INFORMATION>()) == 0)
+            return false;
+        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
+            return false;
+        long regionEnd = mbi.BaseAddress.ToInt64() + mbi.RegionSize.ToInt64();
+        return last.ToInt64() < regionEnd || IsReadablePointer(last);
+    }
+
+    /// <summary>
+    /// Off-thread read of a PWD int field from the main-thread snapshot. Returns false for
+    /// offsets the snapshot doesn't carry or objects not seen by the last walk.
+    /// </summary>
+    private static bool TryGetPwdSnapshotInt(uint objectId, int pwdFieldOffset, out int value)
+    {
+        value = 0;
+        PwdIntEntry e;
+        lock (_weeniePtrSwapLock)
+        {
+            if (!_pwdFront.TryGetValue(objectId, out e))
+                return false;
+        }
+        switch (pwdFieldOffset)
+        {
+            case PwdContainerIdOffset:        value = e.ContainerId; return true;
+            case PwdWielderIdOffset:          value = e.WielderId; return true;
+            case PwdValidLocationsOffset:     value = e.ValidLocations; return true;
+            case PwdLocationOffset:           value = e.Location; return true;
+            case PwdItemsCapacityOffset:      value = e.ItemsCapacity; return true;
+            case PwdContainersCapacityOffset: value = e.ContainersCapacity; return true;
+            case PwdStackSizeOffset:          value = e.StackSize; return true;
+            case PwdMaxStackSizeOffset:       value = e.MaxStackSize; return true;
+            case PwdMaterialTypeOffset:       value = e.MaterialType; return true;
+            default: return false;
+        }
+    }
+
     private static void CapturePositionForId(uint id)
     {
         // Resolve natively here (we are on AC's main thread, so the CObjectMaint
@@ -2900,7 +3141,10 @@ internal static class ClientObjectHooks
         // via GetWeenieObjectResolve without walking AC's table itself.
         IntPtr weeniePtr = _getWeenieObjectNative != null ? _getWeenieObjectNative(id) : IntPtr.Zero;
         if (weeniePtr != IntPtr.Zero)
+        {
             _weeniePtrBack[id] = weeniePtr;
+            CapturePwdInts(id, weeniePtr);
+        }
         if (ReadObjectPositionLive(id, out uint cell, out float x, out float y, out float z))
             _positionCache[id] = new PosEntry { Cell = cell, X = x, Y = y, Z = z };
     }

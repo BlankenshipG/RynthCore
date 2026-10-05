@@ -10,7 +10,11 @@
 //    const char* RynthPluginName()           — human-readable name
 //    const char* RynthPluginVersion()        — version string (e.g. "1.0.0")
 //    void        RynthPluginTick()           — per-frame logic (before render)
-//    void        RynthPluginRender()         — per-frame ImGui drawing
+//    void        RynthPluginRender()         — per-frame ImGui drawing (ImGui shell on)
+//    void        RynthPluginRenderOverlay()  — per-frame ImGui drawing while the ImGui shell is
+//                                              off (Avalonia mode): only windows that have no
+//                                              Avalonia panel. Gated by engine.json
+//                                              "EnablePluginOverlayWindows" (default true).
 // ============================================================================
 
 using System;
@@ -634,6 +638,14 @@ internal struct RynthCoreAPI
     /// Fills the state of the most recent VendorBuy/VendorSell request. Returns 1 if a
     /// request has been made this session, 0 if not. Any thread. Requires API v67+.</summary>
     public IntPtr GetVendorTradeStatusFn;
+
+    /// <summary>Function pointer: int GetMergeStackResult(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs)
+    /// Outcome of the latest MergeStackInternal(source, target) request: 0 none, 1 queued,
+    /// 2 sent (amount = units sent), 3 skipped because the target was already full,
+    /// 4 failed (invalid ids / AC rejected / threw), 5 dropped (main-thread queue full).
+    /// ageMs = how long ago the outcome was recorded. Either out pointer may be null.
+    /// Any thread. Requires API v68+. APPENDED-AT-END for ABI safety.</summary>
+    public IntPtr GetMergeStackResultFn;
 }
 
 // ─── Vendor trading ABI structs (v67) ───────────────────────────────────
@@ -735,7 +747,7 @@ internal unsafe struct VendorTradeStatusNative
 /// <summary>Current API version. Bump when adding fields to RynthCoreAPI.</summary>
 internal static class PluginContractVersion
 {
-    public const uint Current = 67;
+    public const uint Current = 69; // v69: GetMergeStackResult thunk is cdecl (v68 engines pass a stdcall thunk - unusable)
 }
 
 internal static class ClientActionHookFlags
@@ -1202,3 +1214,7 @@ internal unsafe delegate uint VendorSellCallbackDelegate(uint vendorId, uint* it
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetVendorTradeStatusCallbackDelegate(VendorTradeStatusNative* status);
+// Cdecl is mandatory on every API delegate: without it x86 marshals a stdcall thunk, the callee and
+// the cdecl caller both pop the args, and the plugin's stack drifts on every call.
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetMergeStackResultCallbackDelegate(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs);

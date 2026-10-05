@@ -86,6 +86,9 @@ internal static class PluginLoader
     /// </summary>
     public static void Unload(LoadedPlugin plugin)
     {
+        // Release managed thunks first so the module ref-count can drop to zero on FreeLibrary.
+        plugin.ClearResolvedDelegates();
+
         if (plugin.ModuleHandle != IntPtr.Zero)
         {
             RynthLog.Verbose($"PluginLoader: Skipping FreeLibrary on {plugin.FileName} (NativeAOT — module pages leaked intentionally).");
@@ -478,6 +481,10 @@ internal static class PluginLoader
         IntPtr renderPtr = GetProcAddress(handle, "RynthPluginRender");
         if (renderPtr != IntPtr.Zero)
             plugin.Render = Marshal.GetDelegateForFunctionPointer<PluginRenderDelegate>(renderPtr);
+
+        IntPtr renderOverlayPtr = GetProcAddress(handle, "RynthPluginRenderOverlay");
+        if (renderOverlayPtr != IntPtr.Zero)
+            plugin.RenderOverlay = Marshal.GetDelegateForFunctionPointer<PluginRenderDelegate>(renderOverlayPtr);
 
         // Read name/version from the plugin if available
         if (plugin.GetName != null)

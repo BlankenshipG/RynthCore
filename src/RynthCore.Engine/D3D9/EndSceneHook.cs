@@ -347,6 +347,11 @@ internal static class EndSceneHook
                 if (_uiFrameCount < 30)
                     RynthLog.D3D9($"EndSceneHook: OverlayTextureRenderer.Render error: {ovEx.GetType().Name}: {ovEx.Message}");
             }
+
+            // ImGui draw data (plugin overlay windows, shell) is submitted LAST so it
+            // sits on top of the Avalonia layer. Built earlier in OnEndScene; guarded
+            // internally, so an ImGui draw failure can't skip the original EndScene.
+            EngineFrameController.RenderDeferredImGui();
         }
         catch (Exception ex)
         {

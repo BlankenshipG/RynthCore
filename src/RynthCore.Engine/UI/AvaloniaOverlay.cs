@@ -1487,7 +1487,53 @@ internal class RynthOverlayWindow : Window
         }
     }
 
-    private void RestoreFloatingPanels(List<string> titles)
+    // How often, and for how long, the login-time floating-panel restore waits
+    // for Win32Backend to be able to create windows on AC's game thread.
+    private const int FloatingRestorePollMs = 200;
+    private const long FloatingRestoreMaxWaitMs = 60_000;
+
+    /// <summary>
+    /// Restores saved floating panels, but only once
+    /// <see cref="ImGuiBackend.Win32Backend.CanRunOnGameThread"/> is true, so
+    /// each panel's LayeredWindow is created on AC's game thread like every
+    /// other pop-out. LoginComplete can fire before the engine has found and
+    /// hooked the game window; popping out then makes FloatingPanelHost take
+    /// its legacy path and create the HWND on the Avalonia UI thread instead
+    /// (Win11 WS_EX_NOACTIVATE focus race, cross-thread destroy on redock).
+    /// Polls on the UI thread; after <see cref="FloatingRestoreMaxWaitMs"/> it
+    /// restores anyway (logged) so a never-hooked client doesn't lose the panels.
+    /// </summary>
+    private void RestoreFloatingPanels(List<string> titles) =>
+        RestoreFloatingPanelsWhenGameThreadReady(titles, Environment.TickCount64 + FloatingRestoreMaxWaitMs, loggedWait: false);
+
+    private void RestoreFloatingPanelsWhenGameThreadReady(List<string> titles, long deadline, bool loggedWait)
+    {
+        if (!ImGuiBackend.Win32Backend.CanRunOnGameThread)
+        {
+            if (Environment.TickCount64 < deadline)
+            {
+                if (!loggedWait)
+                {
+                    try { RynthLog.UI($"AvaloniaOverlay: holding {titles.Count} floating panel(s) until the game window is hooked (GameHwnd=0x{ImGuiBackend.Win32Backend.GameHwnd.ToInt64():X}): [{string.Join(", ", titles)}]"); } catch { }
+                }
+                DispatcherTimer.RunOnce(
+                    () => RestoreFloatingPanelsWhenGameThreadReady(titles, deadline, loggedWait: true),
+                    TimeSpan.FromMilliseconds(FloatingRestorePollMs),
+                    DispatcherPriority.Background);
+                return;
+            }
+
+            try { RynthLog.UI($"AvaloniaOverlay: game window still not hooked after {FloatingRestoreMaxWaitMs / 1000}s — restoring floating panels on the legacy (UI-thread) path."); } catch { }
+        }
+        else if (loggedWait)
+        {
+            try { RynthLog.UI("AvaloniaOverlay: game window hooked — restoring held floating panels on the game thread."); } catch { }
+        }
+
+        RestoreFloatingPanelsNow(titles);
+    }
+
+    private void RestoreFloatingPanelsNow(List<string> titles)
     {
         try
         {

@@ -20,6 +20,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using RynthCore.Engine.Plugins;
+using RynthCore.Install;
 
 namespace RynthCore.Engine.UI.Panels;
 
@@ -955,7 +956,7 @@ internal static class MetaPanel
                 string n = ps.SaveName.Trim();
                 if (!string.IsNullOrEmpty(n))
                 {
-                    string path = @$"C:\Games\RynthSuite\RynthAi\MetaFiles\{n}.af";
+                    string path = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, "MetaFiles", $"{n}.af");
                     Send(new MetaCmd { Op = "save_file", Path = path });
                 }
                 ps.ShowSaveInput = false;
