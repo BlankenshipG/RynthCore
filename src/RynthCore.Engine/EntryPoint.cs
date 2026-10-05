@@ -667,6 +667,8 @@ public static class EntryPoint
             Step("account hooks", AccountHooks.Initialize);
             Step("client combat hooks", () => ClientCombatHooks.Probe());
             Step("selected-target hooks", SelectedTargetHooks.Initialize);
+            // Which item AC is dragging (AC keeps the old selection during a drag).
+            Step("drag-start hook", DragDropHooks.Initialize);
             Step("smartbox hooks", SmartBoxHooks.Initialize);
             Step("player vitals hooks", PlayerVitalsHooks.Initialize);
             Step("enchantment hooks", () => EnchantmentHooks.Initialize());

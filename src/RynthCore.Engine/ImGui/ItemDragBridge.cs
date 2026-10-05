@@ -10,10 +10,12 @@
 //      button press, so the payload uses PayloadAutoExpire: it is delivered to
 //      the hovered target on the first frame it is no longer submitted.
 //    • AC's own inventory: a press that began on the game belongs to the game,
-//      and ImGui ignores hovering for it. A left drag that starts with a carried
-//      item selected (AC selects the item under the press) is republished the
-//      same way, under NativePayloadType, and delivered when ImGui sees the
-//      button go up.
+//      and ImGui ignores hovering for it. DragDropHooks reports the item AC
+//      starts dragging (OnNativeDragStart); a carried one is republished the
+//      same way, under PayloadType, and delivered when ImGui sees the button go
+//      up. AC does not select the dragged item, so without that hook the bridge
+//      can only guess from the selection: the guess goes out under
+//      NativePayloadType, which targets treat as unreliable.
 //
 //  A native drag released over an ImGui window would otherwise complete in AC
 //  as a drop on the 3D view (the item lands on the ground). TryRedirectNativeDrop
@@ -36,9 +38,10 @@ internal static unsafe class ItemDragBridge
     public const string PayloadType = "RYNTH_INV_ITEM";
 
     /// <summary>
-    /// Payload type for a drag that began in AC's own UI (uint object id). Any game left-drag with
-    /// a carried item selected looks like this (moving an AC panel too), so targets should take it
-    /// only where a wrong item does no harm (RynthAi: empty slots). Must match MiniRemoteHud.GameItemPayloadType.
+    /// Payload type for a game drag whose item was guessed from the selection (DragDropHooks not
+    /// installed). Any game left-drag with a carried item selected looks like this (moving an AC
+    /// panel too), so targets should take it only where a wrong item does no harm (RynthAi: empty
+    /// slots). Must match MiniRemoteHud.GameItemPayloadType.
     /// </summary>
     public const string NativePayloadType = "RYNTH_GAME_ITEM";
 
@@ -61,6 +64,10 @@ internal static unsafe class ItemDragBridge
     private static int _pressX, _pressY;
     private static long _pressAt;
     private static uint _nativeItem;
+    /// <summary>_nativeItem came from AC's drag start (DragDropHooks), not from the selection.</summary>
+    private static bool _nativeFromHook;
+    /// <summary>The left button is down on a press that belongs to the game.</summary>
+    private static bool _gamePressHeld;
     private static bool _nativeReleased;
     /// <summary>The cursor was over an ImGui window in the last main frame (only tracked during a native drag).</summary>
     private static bool _overImGui;
@@ -98,7 +105,8 @@ internal static unsafe class ItemDragBridge
                 _pressX = LoWord(lParam);
                 _pressY = HiWord(lParam);
                 _pressAt = Stopwatch.GetTimestamp();
-                if (_pressPending) { _nativeItem = 0; _nativeReleased = false; }
+                _gamePressHeld = _pressPending;
+                if (_pressPending) { _nativeItem = 0; _nativeFromHook = false; _nativeReleased = false; }
                 break;
 
             case WM_MOUSEMOVE:
@@ -106,6 +114,7 @@ internal static unsafe class ItemDragBridge
                 {
                     // A release we never saw (outside the window): finish the drag.
                     _pressPending = false;
+                    _gamePressHeld = false;
                     if (_nativeItem != 0) _nativeReleased = true;
                     break;
                 }
@@ -115,12 +124,16 @@ internal static unsafe class ItemDragBridge
                     if (dx * dx + dy * dy >= DragThresholdSq)
                     {
                         _pressPending = false;
-                        _nativeItem = CarriedSelection();
-                        if (_nativeItem != 0)
-                            RynthLog.UI($"ItemDragBridge: native inventory drag 0x{_nativeItem:X8} published to ImGui.");
+                        // With the drag-start hook the real item arrives through OnNativeDragStart.
+                        if (_nativeItem == 0 && !DragDropHooks.IsInstalled)
+                        {
+                            _nativeItem = CarriedSelection();
+                            if (_nativeItem != 0)
+                                RynthLog.UI($"ItemDragBridge: native inventory drag 0x{_nativeItem:X8} (from the selection) published to ImGui.");
+                        }
                     }
                 }
-                else if (_nativeItem != 0 && !_nativeReleased && Stopwatch.GetTimestamp() - _pressAt < SelectionSettleTicks)
+                else if (_nativeItem != 0 && !_nativeFromHook && !_nativeReleased && Stopwatch.GetTimestamp() - _pressAt < SelectionSettleTicks)
                 {
                     // The selection can trail the press by a few messages: follow it while it settles.
                     uint sel = CarriedSelection();
@@ -130,9 +143,24 @@ internal static unsafe class ItemDragBridge
 
             case WM_LBUTTONUP:
                 _pressPending = false;
+                _gamePressHeld = false;
                 if (_nativeItem != 0) _nativeReleased = true;
                 break;
         }
+    }
+
+    /// <summary>
+    /// AC started dragging <paramref name="itemId"/> (DragDropHooks, AC's main thread). Taken while
+    /// a game-owned left press is held and only for items the player carries.
+    /// </summary>
+    public static void OnNativeDragStart(uint itemId)
+    {
+        if (!_gamePressHeld || itemId == 0 || !IsCarried(itemId)) return;
+        _pressPending = false;
+        _nativeItem = itemId;
+        _nativeFromHook = true;
+        _nativeReleased = false;
+        RynthLog.UI($"ItemDragBridge: native inventory drag 0x{itemId:X8} published to ImGui.");
     }
 
     /// <summary>
@@ -162,12 +190,13 @@ internal static unsafe class ItemDragBridge
 
         if (id == 0 && _nativeItem != 0)
         {
-            type = NativePayloadType;
+            type = _nativeFromHook ? PayloadType : NativePayloadType;
             // After the button-up, stop once ImGui itself sees the button up: that frame
             // delivers the drop (the payload outlives its last submission by one frame).
             if (_nativeReleased && !io.MouseDown[0])
             {
                 _nativeItem = 0;
+                _nativeFromHook = false;
                 _nativeReleased = false;
                 _overImGui = false;
                 return;
@@ -191,24 +220,30 @@ internal static unsafe class ItemDragBridge
     {
         _popOutItem = 0;
         _pressPending = false;
+        _gamePressHeld = false;
         _nativeItem = 0;
+        _nativeFromHook = false;
         _nativeReleased = false;
         _overImGui = false;
     }
 
-    /// <summary>The game's selected object when the player carries it (pack, side pack or worn), else 0.</summary>
+    /// <summary>The game's selected object when the player carries it, else 0.</summary>
     private static uint CarriedSelection()
     {
         uint id = ClientHelperHooks.GetSelectedItemId();
-        if (id == 0 || !ClientHelperHooks.HasGetPlayerId) return 0;
+        return IsCarried(id) ? id : 0;
+    }
+
+    /// <summary><paramref name="id"/> is in the player's pack, a side pack, or worn.</summary>
+    private static bool IsCarried(uint id)
+    {
+        if (id == 0 || !ClientHelperHooks.HasGetPlayerId) return false;
         uint player = ClientHelperHooks.GetPlayerId();
-        if (player == 0 || id == player) return 0;
-        if (!ClientObjectHooks.TryGetObjectOwnershipInfo(id, out uint container, out uint wielder, out _)) return 0;
-        if (wielder == player || container == player) return id;
+        if (player == 0 || id == player) return false;
+        if (!ClientObjectHooks.TryGetObjectOwnershipInfo(id, out uint container, out uint wielder, out _)) return false;
+        if (wielder == player || container == player) return true;
         // Side pack in the main pack.
-        if (container != 0 && ClientObjectHooks.TryGetObjectOwnershipInfo(container, out uint outer, out _, out _) && outer == player)
-            return id;
-        return 0;
+        return container != 0 && ClientObjectHooks.TryGetObjectOwnershipInfo(container, out uint outer, out _, out _) && outer == player;
     }
 
     private static int LoWord(IntPtr l) => unchecked((short)((long)l & 0xFFFF));
