@@ -8,7 +8,7 @@ namespace RynthCore.Injector;
 internal static class Program
 {
     // Unified log path — must stay in sync with RynthCore.Engine.LogPaths.
-    private const string UnifiedLogDirectory = @"C:\Games\RynthCore\Logs";
+    private static readonly string UnifiedLogDirectory = RynthCore.Install.RynthInstallPaths.CoreLogsDir; // C:\Games\RynthCore\Logs by default
     private const string UnifiedLogFileName = "RynthCore.log";
 
     private static int Main(string[] args)

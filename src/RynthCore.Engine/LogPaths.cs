@@ -27,7 +27,7 @@ namespace RynthCore.Engine;
 internal static class LogPaths
 {
     /// <summary>Unified log directory for all RynthCore components.</summary>
-    internal const string LogDirectory = @"C:\Games\RynthCore\Logs";
+    internal static string LogDirectory => RynthCore.Install.RynthInstallPaths.CoreLogsDir; // C:\Games\RynthCore\Logs by default
 
     /// <summary>Shared launch/orchestration log (injector + launcher + per-engine session pointer).</summary>
     internal const string SharedLogFileName = "RynthCore.log";

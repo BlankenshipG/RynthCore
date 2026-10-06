@@ -127,8 +127,8 @@ internal static class EngineFrameController
             // between launches. Allocated once, kept alive for the process lifetime.
             try
             {
-                const string iniPath = @"C:\Games\RynthSuite\RynthAi\imgui.ini";
-                System.IO.Directory.CreateDirectory(@"C:\Games\RynthSuite\RynthAi");
+                string iniPath = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "imgui.ini");
+                System.IO.Directory.CreateDirectory(RynthCore.Install.RynthInstallPaths.RynthAiDir);
                 IntPtr iniPtr = System.Runtime.InteropServices.Marshal.StringToHGlobalAnsi(iniPath);
                 unsafe { io.NativePtr->IniFilename = (byte*)iniPtr; }
                 RynthLog.Render($"EngineFrameController: imgui.ini pinned to {iniPath}");
@@ -500,7 +500,8 @@ internal static class EngineFrameController
         if (Plugins.EngineSettings.EnableImGuiShell || ImGuiFontTest.Enabled) return true;
         if (!PanelsLive) return false;
         ImGuiPanelHost.RestoreOnce();
-        return ImGuiPanelHost.NeedsFrame || ImGuiBar.Visible || ImGuiBar.PoppedOut || Hud.MonsterHud.WantsFrame;
+        return ImGuiPanelHost.NeedsFrame || ImGuiBar.Visible || ImGuiBar.PoppedOut || Hud.MonsterHud.WantsFrame
+            || D3D9.VideoPatch.WantsBanner;
     }
 
     /// <summary>
@@ -543,7 +544,7 @@ internal static class EngineFrameController
     }
 
     private static bool HasImGuiContentNoRestore() =>
-        Plugins.EngineSettings.EnableImGuiShell || ImGuiFontTest.Enabled || (PanelsLive && (ImGuiPanelHost.NeedsFrame || ImGuiBar.Visible || ImGuiBar.PoppedOut || Hud.MonsterHud.WantsFrame));
+        Plugins.EngineSettings.EnableImGuiShell || ImGuiFontTest.Enabled || (PanelsLive && (ImGuiPanelHost.NeedsFrame || ImGuiBar.Visible || ImGuiBar.PoppedOut || Hud.MonsterHud.WantsFrame || D3D9.VideoPatch.WantsBanner));
 
     // Keyboard owner between the stacks (plan §3.2 d): whichever side started
     // text entry most recently keeps the keyboard.
@@ -661,7 +662,10 @@ internal static class EngineFrameController
             {
                 // World overlays: built into UnderUiLayer's list, drawn next frame at
                 // AC's 3D->UI transition (under AC's UI and every panel), no input.
-                Hud.MonsterHud.Draw(_uiScale);
+                // Video patch: with no 3D scene only the screen-fixed player plate draws.
+                Hud.MonsterHud.Draw(_uiScale, worldVisible: !D3D9.VideoPatch.SkipWorldThisFrame);
+                // Video patch "all": the "rendering paused" banner (background list, under the panels).
+                VideoPatchBanner.Draw();
                 if (ImGuiBar.Visible)
                     ImGuiBar.Draw(_uiScale);
                 ImGuiPanelHost.DrawAll(_uiScale);

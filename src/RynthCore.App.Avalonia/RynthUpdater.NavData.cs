@@ -33,7 +33,7 @@ namespace RynthCore.App.Avalonia;
 /// </summary>
 internal sealed partial class RynthUpdater
 {
-    public const string NavDataDefaultDir = @"C:\Games\RynthCore\NavData";
+    public static readonly string NavDataDefaultDir = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.CoreDir, "NavData"); // C:\Games\RynthCore\NavData by default
     public const string NavDataIdFile = "navdata.id";
     public const string NavDataLocalMarker = "navdata.local";
     private const string RynthNavFile = "RynthCore.Plugin.RynthNav.dll";

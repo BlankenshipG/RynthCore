@@ -9,8 +9,10 @@
 //            dungeons, towns, portals, with type and distance; takes
 //            coordinates too), favorites and recent places while it's empty,
 //            Go / Route / Arrow / Stop, the "Use portals and recalls" and
-//            "Recalls" switches, the route step by step (the current step
-//            highlighted, with the distance left), then two sections that
+//            "Recalls" switches, the path markers switches (RynthNav 0.6.6:
+//            the trip on the ground, labels, guide line), the route step by
+//            step (the current step highlighted, with the distance left) and
+//            "save as nav route" (a RynthAi .nav in NavProfiles), then two sections that
 //            fold: Recalls (portal ties and where they land, "which tie was
 //            it?", the recalls routes can use) and Info (here, the NavData
 //            folder, the route graph, tiles; Load / Test / Preview and the
@@ -327,6 +329,7 @@ internal sealed class RynthNavFace : IImGuiPanel
             }
             NextLine(p, 28);
             if (st.HasAvoid) AvoidRows(st, w);
+            if (st.HasMarkers) MarkerRow(st, w);
         }
         Line(w);
 
@@ -507,6 +510,7 @@ internal sealed class RynthNavFace : IImGuiPanel
                 dl.AddRectFilled(new Vector2(top.X, top.Y), new Vector2(top.X + 3, bottom), RunGreen, 1);
             }
         }
+        DrawSaveRoute(st, cw);
     }
 
     // ── Recalls section ──────────────────────────────────────────────────
@@ -670,6 +674,76 @@ internal sealed class RynthNavFace : IImGuiPanel
         if (Button("##av_" + key + "_up", "+", new Vector2(x + bw + vw + 8, p.Y), new Vector2(bw, 22), Text, BtnFill, enabled: active))
             RynthNavCommands.Command($"avoid {key} {Fmt(metres + step)}");
         NextLine(p, 26);
+    }
+
+    // Path markers (RynthNav 0.6.6+): the planned trip on the ground, its labels, the guide line.
+    // Each click sends /rnav markers ... (saved in rynthnav.json by RynthNav).
+    private static void MarkerRow(RynthNavStatus st, float w)
+    {
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        float w1 = (w - 8) * 0.40f, w2 = (w - 8) * 0.28f, w3 = w - 8 - w1 - w2;
+        if (Toggle("##mk_on", "Path markers", st.MarkersOn, p, w1))
+            RynthNavCommands.Command(st.MarkersOn ? "markers off" : "markers on");
+        ImGuiNET.ImGui.SetItemTooltip("Show the planned trip on the ground, the way RynthAi shows its nav routes: rings at the\n"
+            + "waypoints, lines between them, the portals, recalls and the goal in their own colours.\n"
+            + "They go when the trip ends, you stop, or you land somewhere that isn't on it."
+            + (st.MarkerStatus.Length > 0 ? "\n\nNow: " + st.MarkerStatus : ""));
+        if (Toggle("##mk_labels", "Labels", st.MarkerLabels, new Vector2(p.X + w1 + 4, p.Y), w2))
+            RynthNavCommands.Command(st.MarkerLabels ? "markers labels off" : "markers labels on");
+        ImGuiNET.ImGui.SetItemTooltip("Names over the portal, recall, Town Network and goal markers.");
+        if (Toggle("##mk_guide", "Guide line", st.MarkerGuide, new Vector2(p.X + w1 + w2 + 8, p.Y), w3))
+            RynthNavCommands.Command(st.MarkerGuide ? "markers guide off" : "markers guide on");
+        ImGuiNET.ImGui.SetItemTooltip("A line from your feet to the next waypoint (to the nearest marker for a plan you're not walking).");
+        NextLine(p, 26);
+    }
+
+    // ── Save as nav route (RynthNav 0.6.6+) ──────────────────────────────
+
+    private readonly byte[] _saveName = new byte[96];
+    private string _saveSeenFor = "\u0001";
+
+    /// <summary>
+    /// Below the route: a name (the place's, to start with) and Save, which writes the trip as a
+    /// RynthAi nav route into NavProfiles (/rnav saveroute). A name already taken: Replace.
+    /// </summary>
+    private void DrawSaveRoute(RynthNavStatus st, float cw)
+    {
+        if (!st.HasSave || !st.CanSave) return;
+        if (st.SaveFor != _saveSeenFor) { _saveSeenFor = st.SaveFor; WriteUtf8(_saveName, st.SaveName); }
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+        SectionLabel("SAVE AS NAV ROUTE");
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        const float bw = 78;
+        float boxW = Math.Max(60, cw - bw - 4);
+        bool enter = TextBox("##save_name", _saveName, p, boxW, "Route name", out _, ImGuiInputTextFlags.EnterReturnsTrue);
+        string name = Utf8(_saveName).Trim();
+        bool can = name.Length > 0 && !st.SaveBusy;
+        if (Button("##save_go", st.SaveBusy ? "Saving…" : PhosphorIcons.FloppyDisk + " Save", new Vector2(p.X + boxW + 4, p.Y), new Vector2(bw, 22),
+                Teal, BtnFill, enabled: can) || (enter && can))
+            RynthNavCommands.Command("saveroute " + name);
+        ImGuiNET.ImGui.SetItemTooltip("Write this trip as a RynthAi nav route (NavProfiles\\" + (name.Length > 0 ? name : "name") + ".nav):\n"
+            + "the walks as waypoints, portals as portal steps, recalls as recall steps.\n"
+            + "RynthAi lists it in its Nav picker; /ra nav load " + (name.Length > 0 ? name : "<name>") + " loads it.");
+        NextLine(p, 26);
+        if (st.SaveConflict.Length > 0 && st.SaveConflict.Equals(name, StringComparison.OrdinalIgnoreCase))
+        {
+            p = ImGuiNET.ImGui.GetCursorScreenPos();
+            float rw = 78, tw = Math.Max(40, cw - rw - 4);
+            var dl = ImGuiNET.ImGui.GetWindowDrawList();
+            dl.PushClipRect(p, new Vector2(p.X + tw, p.Y + 22), true);
+            dl.AddText(new Vector2(p.X, p.Y + (22 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Amber, name + ".nav is already there.");
+            dl.PopClipRect();
+            if (Button("##save_replace", "Replace", new Vector2(p.X + tw + 4, p.Y), new Vector2(rw, 22), Text, BtnFill, enabled: !st.SaveBusy, border: Amber))
+                RynthNavCommands.Command("saveroute " + name + " overwrite");
+            ImGuiNET.ImGui.SetItemTooltip("Replace NavProfiles\\" + name + ".nav with this trip");
+            NextLine(p, 26);
+        }
+        if (st.SaveLast.Length > 0)
+        {
+            ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
+            Wrapped(st.SaveLast, Mute, cw);
+            ImGuiNET.ImGui.PopFont();
+        }
     }
 
     private static bool Toggle(string id, string label, bool on, Vector2 pos, float width)

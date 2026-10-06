@@ -122,6 +122,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         InventoryModel.Hover(0);
         InventoryModel.Unsubscribe();
         _dragItem = _pressItem = null;
+        UiDropTargets.EngineDragObject = 0;
         _lootAdd.Cancel();
     }
 
@@ -152,6 +153,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
 
         InventoryModel.Hover(_dragItem == null ? _hover?.Id ?? 0 : 0);
         FinishDrag();
+        UiDropTargets.EngineDragObject = _dragItem?.Id ?? 0;
         End(origin, size);
 
         Tooltip();
@@ -756,6 +758,10 @@ internal sealed partial class InventoryFace : IImGuiPanel
                 DropOn(t.Kind, t.Id, t.Name, item);
                 return;
             }
+            // Let go outside this panel: another engine panel that takes items (Item Count,
+            // Mini Remote, the Loot Editor) gets it, as with a drag out of AC's own inventory.
+            if (!ImGuiNET.ImGui.IsWindowHovered(ImGuiHoveredFlags.RootAndChildWindows | ImGuiHoveredFlags.AllowWhenBlockedByActiveItem))
+                UiDropTargets.TryClaim(item.Id, 0, out _);
         }
     }
 

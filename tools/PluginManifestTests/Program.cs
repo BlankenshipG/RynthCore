@@ -53,6 +53,11 @@ internal static class Program
             Run(nameof(SdkApiVersionCannotDrift), SdkApiVersionCannotDrift);
             Run(nameof(TrainingStructsMirror), TrainingStructsMirror);
             Run(nameof(ManifestAttributeDrivesRuntimeMinimum), ManifestAttributeDrivesRuntimeMinimum);
+            Run(nameof(DedupeSamePathTwice), DedupeSamePathTwice);
+            Run(nameof(DedupeCaseAndSlashes), DedupeCaseAndSlashes);
+            Run(nameof(DedupeSameNameTwoFolders), DedupeSameNameTwoFolders);
+            Run(nameof(DedupeAgainstAlreadyLoaded), DedupeAgainstAlreadyLoaded);
+            Run(nameof(DedupeKeepsOrderAndText), DedupeKeepsOrderAndText);
             foreach (string dll in args)
                 Run("Plugin " + Path.GetFileName(dll), () => CheckBuiltPlugin(dll));
         }
@@ -487,6 +492,86 @@ internal static class Program
         // ... and an assembly without one (RynthCore.PluginSdk itself has none) gets the baseline.
         Check(typeof(RynthCoreHost).Assembly.GetCustomAttributes(typeof(RynthPluginManifestAttribute), false).Length == 0,
               "the SDK assembly carries no manifest attribute");
+    }
+
+    // ── PluginPaths de-duplication (PluginPathDedupe; Silentkelpie, rynth PR #1) ──
+
+    private const string SuiteDir = @"C:\Games\RynthSuite\Plugins";
+    private const string OtherDir = @"D:\Old\RynthSuite";
+
+    private static void DedupeSamePathTwice()
+    {
+        string ai = Path.Combine(SuiteDir, "RynthCore.Plugin.RynthAi.dll");
+        string chat = Path.Combine(SuiteDir, "RynthCore.Plugin.RynthChat.dll");
+        var r = PluginPathDedupe.Dedupe(new[] { ai, chat, ai });
+        Eq(string.Join("|", r.Load), ai + "|" + chat, "loads each once, in order");
+        Eq(r.Skipped.Count, 1, "one skipped");
+        Check(r.Skipped[0].SameFile && r.Skipped[0].Path == ai && r.Skipped[0].KeptPath == ai, "repeat flagged as the same file");
+        Check(r.Skipped[0].Message.Contains("listed twice") && !r.Skipped[0].Message.Contains("conflict"), "repeat is not called a conflict: " + r.Skipped[0].Message);
+    }
+
+    private static void DedupeCaseAndSlashes()
+    {
+        string ai = SuiteDir + @"\RynthCore.Plugin.RynthAi.dll";
+        string[] spellings =
+        {
+            ai.ToUpperInvariant(),
+            ai.Replace('\\', '/'),
+            @"C:\Games\RynthSuite\Plugins\..\Plugins\.\rynthcore.plugin.rynthai.DLL",
+            "  " + ai + "  ",
+        };
+        foreach (string other in spellings)
+        {
+            var r = PluginPathDedupe.Dedupe(new[] { ai, other });
+            Eq(r.Load.Count, 1, $"'{other}' loads once");
+            Check(r.Skipped.Count == 1 && r.Skipped[0].SameFile, $"'{other}' is the same file, not a conflict");
+        }
+        Eq(PluginPathDedupe.Normalize("C:/Games/RynthSuite/Plugins/"), @"C:\Games\RynthSuite\Plugins", "normalize: slashes and trailing separator");
+    }
+
+    private static void DedupeSameNameTwoFolders()
+    {
+        string first = Path.Combine(SuiteDir, "RynthCore.Plugin.RynthAi.dll");
+        string second = Path.Combine(OtherDir, "rynthcore.plugin.rynthai.dll");
+        string nav = Path.Combine(OtherDir, "RynthCore.Plugin.RynthNav.dll");
+        var r = PluginPathDedupe.Dedupe(new[] { first, nav, second });
+        Eq(string.Join("|", r.Load), first + "|" + nav, "the first listed wins; other plugins in that folder still load");
+        Eq(r.Skipped.Count, 1, "one skipped");
+        PluginPathDedupe.Skipped s = r.Skipped[0];
+        Check(!s.SameFile && !s.KeptAlreadyLoaded, "flagged as a conflict between two copies");
+        Eq(s.KeptPath, first, "kept path");
+        Check(s.Message.StartsWith("plugin conflict") && s.Message.Contains(first) && s.Message.Contains(second) && s.Message.Contains("listed first"),
+              "warning names both copies and which won: " + s.Message);
+
+        // Reversed order: the other one wins. First listed is the rule, not a folder preference.
+        var rev = PluginPathDedupe.Dedupe(new[] { second, first });
+        Eq(rev.Load.Single(), second, "reversed: the first listed wins");
+    }
+
+    private static void DedupeAgainstAlreadyLoaded()
+    {
+        string loaded = Path.Combine(SuiteDir, "RynthCore.Plugin.RynthAi.dll");
+        string copy = Path.Combine(OtherDir, "RynthCore.Plugin.RynthAi.dll");
+        var r = PluginPathDedupe.Dedupe(new[] { loaded.ToLowerInvariant(), copy }, new[] { loaded });
+        Eq(r.Load.Count, 0, "nothing new to load");
+        Eq(r.Skipped.Count, 2, "both skipped");
+        Check(r.Skipped[0].SameFile && r.Skipped[0].KeptAlreadyLoaded && r.Skipped[0].Message.Contains("already loaded"), "same file as a loaded plugin");
+        Check(!r.Skipped[1].SameFile && r.Skipped[1].KeptAlreadyLoaded && r.Skipped[1].Message.Contains("already loaded"), "a second copy of a loaded plugin is a conflict");
+    }
+
+    private static void DedupeKeepsOrderAndText()
+    {
+        string[] paths =
+        {
+            Path.Combine(SuiteDir, "RynthCore.Plugin.RynthChat.dll"),
+            "",
+            Path.Combine(SuiteDir, "RynthCore.Plugin.RynthAi.dll"),
+            Path.Combine(SuiteDir, "RynthCore.Plugin.RynthNav.dll"),
+        };
+        var r = PluginPathDedupe.Dedupe(paths);
+        Eq(string.Join("|", r.Load), paths[0] + "|" + paths[2] + "|" + paths[3], "no duplicates: everything loads, as listed, text unchanged");
+        Eq(r.Skipped.Count, 0, "nothing skipped");
+        Eq(PluginPathDedupe.Dedupe(Array.Empty<string>()).Load.Count, 0, "empty list");
     }
 
     private static string FindUp(string relative)

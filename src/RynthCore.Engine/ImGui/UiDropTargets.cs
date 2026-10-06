@@ -43,6 +43,20 @@ internal static class UiDropTargets
     private static readonly object Sync = new();
 
     /// <summary>
+    /// The item being dragged in the engine's own Inventory panel (0 = none). Set by
+    /// InventoryFace each frame; a drop outside that panel is offered here with TryClaim.
+    /// </summary>
+    public static uint EngineDragObject
+    {
+        get => System.Threading.Volatile.Read(ref _engineDrag);
+        set => System.Threading.Volatile.Write(ref _engineDrag, value);
+    }
+    private static uint _engineDrag;
+
+    /// <summary>An item is being dragged, out of AC's UI or the Inventory panel (the faces' "drop here" look). AC thread.</summary>
+    public static bool AnyDragInProgress => EngineDragObject != 0 || Compatibility.UiElementHooks.CurrentDragObject != 0;
+
+    /// <summary>
     /// Once per frame from a face's Draw: <paramref name="min"/>..<paramref name="max"/> is the
     /// body in screen coordinates as ImGui sees them (FaceKit.Begin's origin and size).
     /// <paramref name="accepting"/> false: drawn, but a drop now wouldn't be used (it then

@@ -1477,39 +1477,53 @@ internal sealed unsafe class LayeredWindow : IDisposable
             }
 
             // Off the screen now, and ask the window's own thread to destroy it
-            // (works for a window created on any thread). Only if that post fails
-            // fall back to the game-thread destroy below: doing both could destroy
-            // an unrelated window that reused the handle in between.
+            // (works for a window created on any thread, never blocks, and still
+            // works after Win32Backend has unhooked the game WndProc: the post
+            // goes to the panel, not to the game window).
             if (Retire(hwnd)) { DisposeDib(); return; }
 
-            // DestroyWindow MUST run on the thread that owns the HWND — Win32
-            // silently no-ops it otherwise. The HWND was created on the game
-            // thread (see FloatingPanelHost ctor's RunOnGameThread wrap), so
-            // marshal the teardown there too. Without this, redocking left
-            // the original floating window visible but orphaned ("frozen
-            // duplicate").
-            //
-            // UI deep-dive finding P0-1 (2026-07-02): this used to block via
-            // RunOnGameThread (a synchronous SendMessage) — Dispose is often
-            // called from the Avalonia UI thread (e.g. redocking a panel),
-            // and blocking it on the game thread's WndProc is part of the
-            // same AB-BA deadlock class the OnInput fix closes. Dispose
-            // doesn't need to observe the destroy completing, so post it
-            // instead — fire-and-forget, never blocks the caller.
-            try
-            {
-                RynthCore.Engine.ImGuiBackend.Win32Backend.PostDestroyWindow(hwnd);
-            }
-            catch (Exception ex)
-            {
-                RynthCore.Engine.RynthLog.Info($"LayeredWindow.Dispose: PostDestroyWindow threw {ex.GetType().Name}: {ex.Message}. Falling back to inline call on thread=0x{GetCurrentThreadId():X}.");
-                // Best-effort fallback if Win32Backend isn't available
-                // (e.g. early shutdown after it's already torn down).
-                bool destroyed = DestroyWindow(hwnd);
-                RynthCore.Engine.RynthLog.Info($"LayeredWindow.Dispose: fallback DestroyWindow(0x{hwnd.ToInt64():X}) = {destroyed}.");
-            }
+            // The post failed: the window is already gone, or its queue is full.
+            // DestroyWindow only works on the owner thread, so destroy here only
+            // when this thread owns it. The old backup posted the destroy to the
+            // game thread, which fails (ACCESS_DENIED) for a panel created on the
+            // Avalonia UI thread.
+            DestroyIfOwnedHere(hwnd);
         }
 
         DisposeDib();
+    }
+
+    private static void DestroyIfOwnedHere(IntPtr hwnd)
+    {
+        try
+        {
+            uint owner = GetWindowThreadProcessId(hwnd, out _);
+            uint current = GetCurrentThreadId();
+            bool ourClass = false;
+            if (owner != 0)
+            {
+                char* buffer = stackalloc char[128];
+                int length = GetClassNameW(hwnd, buffer, 128);
+                ourClass = length > 0 && new string(buffer, 0, length).StartsWith(ClassNamePrefix, StringComparison.Ordinal);
+            }
+
+            switch (PanelDestroyPlan.Choose(owner, current, ourClass))
+            {
+                case PanelDestroyFallback.DestroyHere:
+                    bool destroyed = DestroyWindow(hwnd);
+                    RynthCore.Engine.RynthLog.Info($"LayeredWindow.Dispose: self-destroy post failed; DestroyWindow(0x{hwnd.ToInt64():X}) on its owner thread 0x{current:X} = {destroyed}.");
+                    break;
+                case PanelDestroyFallback.LeaveHidden:
+                    ShowWindowAsync(hwnd, SW_HIDE);
+                    RynthCore.Engine.RynthLog.Info($"LayeredWindow.Dispose: self-destroy post to 0x{hwnd.ToInt64():X} failed; owner thread 0x{owner:X} is not this one (0x{current:X}), so it is left hidden (destroyed with its thread or by the shutdown sweep).");
+                    break;
+                default:
+                    break; // already gone, nothing to destroy
+            }
+        }
+        catch (Exception ex)
+        {
+            RynthCore.Engine.RynthLog.Info($"LayeredWindow.Dispose: destroy fallback threw {ex.GetType().Name}: {ex.Message}.");
+        }
     }
 }

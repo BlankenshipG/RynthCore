@@ -45,7 +45,8 @@ internal static class ImGuiBar
         bool ImGuiOnly = false);
 
     // Engine panels with an ImGui face only (no OverlayHost entry) that get a bar button.
-    private static readonly string[] ImGuiOnlyBarPanels = { Panels.InventoryFace.Title, Panels.SkillsFace.Title, Panels.SenseFace.Title };
+    private static readonly string[] ImGuiOnlyBarPanels =
+        { Panels.InventoryFace.Title, Panels.SkillsFace.Title, Panels.SenseFace.Title, Panels.ItemCountFace.Title, Panels.MiniRemoteFace.Title };
 
     // Known panels' icons (DrakBot's where the same window exists); others show their first letter.
     private static readonly Dictionary<string, string> PanelIcons = new(StringComparer.OrdinalIgnoreCase)
@@ -69,6 +70,8 @@ internal static class ImGuiBar
         ["Status"] = PhosphorIcons.Info,
         ["Inventory"] = PhosphorIcons.Package,   // not Backpack: the dashboard's Items launcher has that
         ["Log"] = PhosphorIcons.TerminalWindow,
+        ["Item Count"] = PhosphorIcons.Bag,
+        ["Mini Remote"] = PhosphorIcons.SquaresFour,
     };
 
     /// <summary>A panel's bar icon: its Phosphor icon, else its first letter (letter = true).</summary>

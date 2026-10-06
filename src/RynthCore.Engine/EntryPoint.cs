@@ -698,8 +698,13 @@ public static class EntryPoint
             // RenderUI::RenderObjects: the world overlays (nameplates, Nav3D markers) draw at
             // the start of AC's 2D UI pass, after all 3D incl. foliage (2026-10-04).
             Step("UI-pass overlay hook", AcUiPassHook.Initialize);
+            // SmartBox::RenderNormalMode: the video patch (/rc video) skips AC's 3D scene on
+            // request; off until asked. Kill switch: engine.json DisabledUiHooks ["VideoPatch"].
+            Step("video patch hook", VideoPatch.Initialize);
             Step("vendor hooks", VendorHooks.Initialize);
             Step("chat callback hooks", ChatCallbackHooks.Initialize);
+            // Flight recorder (Net/FlightRecorder.cs): before the packet hooks that feed it.
+            Step("flight recorder", Net.FlightRecorder.Initialize);
             Step("raw packet hooks", RawPacketHooks.Initialize);
             Step("property-update hooks", PropertyUpdateHooks.Initialize);
             Step("auto-id service", AutoIdService.Start);

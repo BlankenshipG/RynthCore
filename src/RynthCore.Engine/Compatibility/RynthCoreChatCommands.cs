@@ -46,6 +46,11 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item><c>/rc hooks [on|off &lt;name&gt;]</c> (alias <c>/rc uihooks</c>) — the UI hooks
 ///         (screen mode, client cleanup, tooltip, drag/drop; <see cref="UiHookRegistry"/>):
 ///         status, or switch one off/on (now and in engine.json).</item>
+///   <item><c>/rc video [status|off|world|unfocused|all|fps &lt;n&gt;]</c> (alias
+///         <c>/rc videopatch</c>; "on" = world) — the video patch
+///         (<see cref="D3D9.VideoPatch"/>): stop drawing AC's 3D world (world), only while
+///         the client is in the background (unfocused), or AC's UI too (all, session only).
+///         Saved per character (also Settings &gt; Misc); fps = the frame cap while patched.</item>
 ///   <item><c>/rc mastery</c> — the Aelrynth mastery feed's state (<see cref="MasteryFeed"/>),
 ///         and ask the server for /mastery-data again.</item>
 ///   <item><c>/rc worldlayer [auto|uipass|transition|endscene]</c> — where the world overlays
@@ -57,6 +62,10 @@ namespace RynthCore.Engine.Compatibility;
 ///         counters; on/off for this session (engine.json "ServerMessageStream": false is the
 ///         kill switch); log = the SDK parsers run on live messages, results to the log;
 ///         capture = raw datagrams to a .rnc file for tools/NetMessageTests.</item>
+///   <item><c>/rc flightdump [note]</c> - write the flight recorder (<see cref="Net.FlightRecorder"/>:
+///         the last minutes of client/server messages and engine markers) to
+///         Logs\flight-&lt;pid&gt;-&lt;time&gt;.txt; <c>/rc flightdump auto &lt;reason&gt;</c> is the rate-limited
+///         automatic form. <c>/rc flight [status|mark &lt;text&gt;|on|off|auto on|off]</c>.</item>
 /// </list>
 /// </summary>
 internal static class RynthCoreChatCommands
@@ -161,11 +170,47 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
+        // /rc video [status|off|world|unfocused|all|fps <n>] : the video patch (stop drawing the 3D world)
+        if (IsVerb(sub, "video", out string videoArgs) || IsVerb(sub, "videopatch", out videoArgs))
+        {
+            try
+            {
+                foreach (string l in D3D9.VideoPatch.HandleCommand(videoArgs))
+                    Reply(l);
+            }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc video failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
         // /rc hooks [on|off <name>] : the UI hooks (screen mode, client cleanup, tooltip, drag/drop)
         if (IsVerb(sub, "hooks", out string hooksArgs) || IsVerb(sub, "uihooks", out hooksArgs))
         {
             try { HandleHooksCommand(hooksArgs); }
             catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc hooks failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc flightdump [note] | /rc flightdump auto <reason> : write the flight recorder now
+        if (IsVerb(sub, "flightdump", out string dumpArgs))
+        {
+            try
+            {
+                foreach (string l in Net.FlightRecorder.HandleDumpCommand(dumpArgs))
+                    Reply(l);
+            }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc flightdump failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc flight [status|mark <text>|on|off|auto on|off] : the flight recorder
+        if (IsVerb(sub, "flight", out string flightArgs))
+        {
+            try
+            {
+                foreach (string l in Net.FlightRecorder.HandleCommand(flightArgs))
+                    Reply(l);
+            }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc flight failed - {ex.GetType().Name}: {ex.Message}"); }
             return true;
         }
 
@@ -217,6 +262,24 @@ internal static class RynthCoreChatCommands
                     Reply("The Sense panel isn't available (the ImGui layer is off?).");
                 else
                     UI.PanelRouter.Toggle(ImGuiBackend.Panels.SenseFace.Title);
+                return true;
+
+            case "itemcount":
+            case "itemhud":
+                // The ImGui Item Count panel (open/close), like its bar button.
+                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.ItemCountFace.Title))
+                    Reply("The Item Count panel isn't available (the ImGui layer is off?).");
+                else
+                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.ItemCountFace.Title);
+                return true;
+
+            case "remote":
+            case "miniremote":
+                // The ImGui Mini Remote panel (open/close), like its bar button.
+                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.MiniRemoteFace.Title))
+                    Reply("The Mini Remote panel isn't available (the ImGui layer is off?).");
+                else
+                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.MiniRemoteFace.Title);
                 return true;
 
             case "resetbar":

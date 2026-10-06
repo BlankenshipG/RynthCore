@@ -11,7 +11,8 @@
 //
 //  Rules (2026-09-29 overhaul). Each rule is a case-insensitive regex matched
 //  against the line's text as AC printed it (no timestamp, so ^ and $ work),
-//  optionally only for one channel or chat type. It can
+//  or plain text (Contains / Starts with / Ends with, 2026-10-05; see
+//  ChatRuleMatching.cs), optionally only for one channel or chat type. It can
 //    Move  the line to a tab (it leaves All and its channel tab),
 //    Copy  it to a tab as well (it stays where it was),
 //    Hide  it everywhere, or
@@ -173,6 +174,9 @@ internal sealed class ChatFilterRule
     public volatile string Tab = "";
     public volatile ChatRuleAction Action = ChatRuleAction.Move;
     public volatile ChatColorMode ColorMode = ChatColorMode.None;
+    /// <summary>How Pattern is read: a regex (the default, and every rule saved before
+    /// 2026-10-05) or plain text. Recompile after changing it.</summary>
+    public volatile ChatMatchMode Mode = ChatMatchMode.Regex;
     /// <summary>A new rule's colour (amber).</summary>
     public const uint DefaultColor = 0xFFFFD27A;
     /// <summary>0xAARRGGBB.</summary>
@@ -202,21 +206,11 @@ internal sealed class ChatFilterRule
     public void Recompile()
     {
         Slow = false;
-        string pattern = Pattern;
-        if (pattern.Length == 0) { Compiled = null; Error = null; Invalid = true; return; }
-        try
-        {
-            Compiled = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
-                TimeSpan.FromMilliseconds(TimeoutMs));
-            Error = null;
-            Invalid = false;
-        }
-        catch (ArgumentException ex)
-        {
-            Compiled = null;
-            Error = ex.Message;
-            Invalid = true;
-        }
+        // A Regex rule compiles exactly as before; plain text is escaped (ChatRuleMatching).
+        Regex? rx = ChatRuleMatching.Compile(Mode, Pattern, TimeoutMs, out string? error);
+        Compiled = rx;
+        Error = error;
+        Invalid = rx == null;
     }
 
     /// <summary>Does the rule route (Move / Copy with a tab, or Hide)?</summary>
@@ -242,11 +236,8 @@ internal sealed class ChatFilterRule
         public static WhenSpec Parse(string? raw)
         {
             raw = (raw ?? "").Trim();
-            if (raw.StartsWith("chan:", StringComparison.OrdinalIgnoreCase) && raw.Length > 5)
-                return new WhenSpec(raw, raw[5..], -1);
-            if (raw.StartsWith("type:", StringComparison.OrdinalIgnoreCase) && int.TryParse(raw[5..], out int t) && t >= 0)
-                return new WhenSpec(raw, null, t);
-            return Any;
+            (string? channel, int type) = ChatRuleMatching.ParseWhen(raw);
+            return channel == null && type < 0 ? Any : new WhenSpec(raw, channel, type);
         }
     }
 }
@@ -702,6 +693,7 @@ internal static class ChatModel
         ("type:25", "Salvaging"),
         ("type:23", "Recall"),
         ("type:5", "System messages"),
+        ("type:26", "Notices (too busy, missing components)"),
     };
 
     /// <summary>The channel tab a ChatMessageType lands in; mirrors ChatClassifier.ChannelFor in the plugin.</summary>
@@ -811,6 +803,39 @@ internal static class ChatModel
         if (rule.Tab.Length > 0) EnsureCustomTab(rule.Tab);
         FocusRule = rule;
         EditFilters(list => list.Add(rule));
+    }
+
+    /// <summary>The rule a standard filter adds, if the list has it (any action, on or off).</summary>
+    public static ChatFilterRule? FindPresetRule(ChatFilterPreset preset)
+    {
+        foreach (ChatFilterRule r in Filters)
+            if (preset.SameAs(r.Mode, r.Pattern, r.When)) return r;
+        return null;
+    }
+
+    /// <summary>
+    /// Adds a standard filter as an ordinary Hide rule at the end (or turns on and shows the one
+    /// already there). Returns a message for the user.
+    /// </summary>
+    public static string AddPresetRule(ChatFilterPreset preset)
+    {
+        ChatFilterRule? have = FindPresetRule(preset);
+        if (have != null)
+        {
+            FocusRule = have;
+            if (have.Enabled) return $"\"{preset.Label}\" is already in your rules.";
+            have.Enabled = true;
+            FiltersChanged();
+            return $"\"{preset.Label}\" was off; it is on again.";
+        }
+        AddRule(new ChatFilterRule
+        {
+            Mode = preset.Mode,
+            Pattern = preset.Pattern,
+            When = preset.When,
+            Action = ChatRuleAction.Hide,
+        });
+        return $"Added \"{preset.Label}\": it hides those lines (edit or delete it like any rule).";
     }
 
     /// <summary>
@@ -1102,6 +1127,8 @@ internal static class ChatModel
         // Kept while the rule is set to "No colour" too, so switching colour back on
         // after a relaunch finds the colour that was picked.
         Color = f.ColorMode != ChatColorMode.None || f.ColorArgb != ChatFilterRule.DefaultColor ? FormatColor(f.ColorArgb) : null,
+        // Absent for a Regex rule, so a file without plain-text rules is written as before.
+        Mode = ChatRuleMatching.ToJson(f.Mode),
     };
 
     /// <summary>
@@ -1134,6 +1161,8 @@ internal static class ChatModel
                 _ => ChatColorMode.None,
             },
             ColorArgb = ParseColor(f.Color) ?? ChatFilterRule.DefaultColor,
+            // Absent (every file before 2026-10-05): Regex, as those rules always were.
+            Mode = ChatRuleMatching.Parse(f.Mode),
         };
         rule.Recompile();
         return rule;
@@ -1649,69 +1678,3 @@ internal static class ChatModel
         });
     }
 }
-
-// JsonSerializerContext must be at namespace scope (not nested) for source generation.
-internal sealed class RynthChatLineDto
-{
-    [JsonPropertyName("seq")]    public ulong Seq      { get; set; }
-    [JsonPropertyName("ts")]     public string Ts      { get; set; } = "";
-    [JsonPropertyName("chan")]   public string Chan    { get; set; } = "";
-    /// <summary>ChatMessageType; RynthChat before 0.2.0 doesn't send it.</summary>
-    [JsonPropertyName("type")]   public int Type       { get; set; } = -1;
-    [JsonPropertyName("sender")] public string? Sender { get; set; }
-    [JsonPropertyName("text")]   public string Text    { get; set; } = "";
-}
-
-// Property names match the legacy hand-written JSON so existing settings load.
-internal sealed class RynthChatFilterDto
-{
-    [JsonPropertyName("pattern")] public string? Pattern { get; set; }
-    [JsonPropertyName("tab")]     public string? Tab     { get; set; }
-    [JsonPropertyName("enabled")] public bool    Enabled { get; set; } = true;
-    // Version 2:
-    /// <summary>"move" | "copy" | "hide" | "color"; absent in version 1 (see ChatModel.FromDto).</summary>
-    [JsonPropertyName("action")]    public string? Action    { get; set; }
-    /// <summary>"" / absent: any line; "chan:Combat"; "type:3".</summary>
-    [JsonPropertyName("when")]      public string? When      { get; set; }
-    /// <summary>"line" | "match"; absent: no colour.</summary>
-    [JsonPropertyName("colorMode")] public string? ColorMode { get; set; }
-    /// <summary>"#RRGGBB".</summary>
-    [JsonPropertyName("color")]     public string? Color     { get; set; }
-}
-
-internal sealed class RynthChatSettingsDto
-{
-    /// <summary>Absent (0) in version-1 files.</summary>
-    [JsonPropertyName("version")]         public int    Version         { get; set; }
-    [JsonPropertyName("fontSize")]        public double FontSize        { get; set; } = 10;
-    [JsonPropertyName("backgroundAlpha")] public int    BackgroundAlpha { get; set; } = 0xF2;
-    [JsonPropertyName("autoScroll")]      public bool   AutoScroll      { get; set; } = true;
-    [JsonPropertyName("suppressChat")]    public bool   SuppressChat    { get; set; }
-    [JsonPropertyName("logEnabled")]      public bool   LogEnabled      { get; set; }
-    // Chat's own Ctrl-gated click-through, like RadarPanel's (2026-09-02).
-    [JsonPropertyName("ctrlGatedClickThrough")] public bool CtrlGatedClickThrough { get; set; }
-    [JsonPropertyName("activeChannel")]   public string? ActiveChannel  { get; set; }
-    [JsonPropertyName("showTimestamps")]  public bool   ShowTimestamps  { get; set; } = true;
-    [JsonPropertyName("mentionHighlight")] public bool  MentionHighlight { get; set; } = true;
-    [JsonPropertyName("mentionSound")]    public bool   MentionSound    { get; set; }
-    [JsonPropertyName("mentionWords")]    public string? MentionWords   { get; set; }
-    [JsonPropertyName("customTabs")]      public string[]? CustomTabs   { get; set; }
-    [JsonPropertyName("filters")]         public RynthChatFilterDto[]? Filters { get; set; }
-}
-
-/// <summary>Export / import on the clipboard (the rule editor's Export and Import).</summary>
-internal sealed class RynthChatRuleSetDto
-{
-    public const string FormatName = "rynthchat-rules/2";
-    [JsonPropertyName("format")] public string? Format { get; set; }
-    [JsonPropertyName("tabs")]   public string[]? Tabs { get; set; }
-    [JsonPropertyName("rules")]  public RynthChatFilterDto[]? Rules { get; set; }
-}
-
-[JsonSerializable(typeof(RynthChatLineDto[]))]
-[JsonSerializable(typeof(RynthChatLineDto))]
-[JsonSerializable(typeof(RynthChatSettingsDto))]
-[JsonSerializable(typeof(RynthChatRuleSetDto))]
-[JsonSerializable(typeof(RynthChatFilterDto[]))]
-[JsonSourceGenerationOptions(PropertyNameCaseInsensitive = false, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
-internal partial class RynthChatJsonContext : JsonSerializerContext { }

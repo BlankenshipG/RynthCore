@@ -84,13 +84,10 @@ internal static unsafe class Win32Backend
     /// HWNDs drop WM_LBUTTONDOWN on Win11 in some focus states).</summary>
     public const uint WM_RYNTH_RUN_ACTION = 0x8002;
 
-    /// <summary>UI deep-dive finding P0-1 belt-and-braces (2026-07-02):
-    /// posted (not sent) by LayeredWindow.Dispose to destroy an HWND on the
-    /// game thread without blocking the calling thread — DestroyWindow must
-    /// run on the owning thread, but the caller (often the Avalonia UI
-    /// thread, e.g. redocking a panel) doesn't need to wait for it to
-    /// finish. wParam carries the HWND to destroy.</summary>
-    public const uint WM_RYNTH_DESTROY_HWND = 0x8003;
+    // 0x8003 was WM_RYNTH_DESTROY_HWND: LayeredWindow.Dispose's backup that posted a
+    // panel's DestroyWindow to the game thread. Removed 2026-10-05 - DestroyWindow only
+    // works on the window's owner thread, which isn't always the game thread. Panels now
+    // destroy themselves (LayeredWindow WM_RYNTH_SELF_DESTROY). Don't reuse 0x8003.
 
     /// <summary>Destroys floating-panel HWNDs on the game thread (their owner).
     /// wParam != 0 includes this engine load's own panels (sent synchronously by
@@ -393,38 +390,6 @@ internal static unsafe class Win32Backend
     public static void RunOnGameThread(Action action)
     {
         RunOnGameThread<bool>(() => { action(); return true; });
-    }
-
-    /// <summary>
-    /// UI deep-dive finding P0-1 (2026-07-02): posts (does not block on) a
-    /// DestroyWindow for <paramref name="hwnd"/> onto the game thread.
-    /// DestroyWindow must run on the HWND's owning thread, but unlike
-    /// RunOnGameThread this never needs the caller to observe a result — so
-    /// it uses a dedicated PostMessage instead of the shared
-    /// RunOnGameThread action slot, avoiding any risk of blocking the
-    /// caller (e.g. LayeredWindow.Dispose called from the Avalonia UI
-    /// thread while redocking a panel) on the game thread's WndProc.
-    /// </summary>
-    public static void PostDestroyWindow(IntPtr hwnd)
-    {
-        if (hwnd == IntPtr.Zero) return;
-        if (_gameHwnd == IntPtr.Zero)
-        {
-            // No game thread to marshal to (e.g. very early/late in
-            // lifecycle) — best-effort inline as LayeredWindow.Dispose's own
-            // fallback already does for the RunOnGameThread-unavailable case.
-            DestroyWindow(hwnd);
-            return;
-        }
-
-        GetWindowThreadProcessId(_gameHwnd, out uint gameThreadId);
-        if (gameThreadId == GetCurrentThreadId())
-        {
-            DestroyWindow(hwnd);
-            return;
-        }
-
-        PostMessage(_gameHwnd, WM_RYNTH_DESTROY_HWND, hwnd, IntPtr.Zero);
     }
 
     /// <summary>Deactivates chat capture.  The game HWND retains focus throughout so no
@@ -794,24 +759,6 @@ internal static unsafe class Win32Backend
                     try { posted(); }
                     catch (Exception ex) { RynthLog.Info($"Win32Backend: posted action threw {ex.GetType().Name}: {ex.Message}"); }
                 }
-                return IntPtr.Zero;
-            }
-
-            if (msg == WM_RYNTH_DESTROY_HWND)
-            {
-                IntPtr target = wParam;
-                try
-                {
-                    bool destroyed = DestroyWindow(target);
-                    int err = destroyed ? 0 : Marshal.GetLastWin32Error();
-                    RynthLog.Info($"Win32Backend: WM_RYNTH_DESTROY_HWND DestroyWindow(0x{target.ToInt64():X}) = {destroyed} err={err}.");
-                    // 5 = ACCESS_DENIED: the window belongs to another thread. At least
-                    // take it off the screen so a closed panel can't linger beside a
-                    // reopened one (ShowWindow works across threads).
-                    if (!destroyed && err == 5)
-                        ShowWindow(target, 0 /* SW_HIDE */);
-                }
-                catch (Exception ex) { RynthLog.Info($"Win32Backend: WM_RYNTH_DESTROY_HWND threw {ex.GetType().Name}: {ex.Message}"); }
                 return IntPtr.Zero;
             }
 

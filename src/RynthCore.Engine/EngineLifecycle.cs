@@ -136,6 +136,8 @@ internal static class EngineLifecycle
         // AC's UI-pass hook draws the world overlays mid-frame from the same render-side
         // state EndSceneHook.Uninstall tears down: stop it first (its 80 ms drain covers both).
         Step("AcUiPassHook.Uninstall", () => AcUiPassHook.Uninstall());
+        // The video patch's scene hook passes straight to AC from here on (AC draws again).
+        Step("VideoPatch.Uninstall", () => VideoPatch.Uninstall());
         Step("EndSceneHook.Uninstall", () => EndSceneHook.Uninstall());
 
         // Give in-flight EndScene calls a chance to drain. AC's render thread
@@ -173,6 +175,7 @@ internal static class EngineLifecycle
         // it outlived this generation and locked the next one out of the file.
         Step("ChatModel.CloseLog", () => UI.Data.ChatModel.CloseLog());
         Step("ServerMessageStream.Shutdown", () => Net.ServerMessageStream.Shutdown());
+        Step("FlightRecorder.Shutdown", () => Net.FlightRecorder.Shutdown());
 
         Step("PluginManager.ShutdownAll (defensive)", () => PluginManager.ShutdownAll());
 

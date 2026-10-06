@@ -36,6 +36,10 @@ internal static class P1Faces
         SkillsFace.Register();
         // Sense (watch list of names, anywhere the client knows): ImGui only, like Skills.
         SenseFace.Register();
+        // Item Count and Mini Remote (items by name with their carried count; a grid of
+        // items to use): ImGui only, saved per character in item_huds.txt.
+        ItemCountFace.Register();
+        MiniRemoteFace.Register();
     }
 }
 

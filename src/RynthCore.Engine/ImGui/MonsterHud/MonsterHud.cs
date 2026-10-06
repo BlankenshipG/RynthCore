@@ -714,16 +714,24 @@ internal static class MonsterHud
         public ImDrawListPtr Dl;
     }
 
-    /// <summary>AC's render thread, inside the ImGui frame (between NewFrame and Render).</summary>
-    public static void Draw(float uiScale)
+    /// <summary>
+    /// AC's render thread, inside the ImGui frame (between NewFrame and Render).
+    /// <paramref name="worldVisible"/> false (the video patch skipped AC's 3D scene): only
+    /// the screen-fixed player plate draws; the world-anchored plates and combat text don't
+    /// (nothing to anchor them to, and no invisible plate takes a click).
+    /// </summary>
+    public static void Draw(float uiScale, bool worldVisible = true)
     {
         if (!_hasContent) { ResetClick(); PlayerPlate.DropDrag(); return; }
         try
         {
             if (!TryBeginFrame(uiScale, out Frame f)) { ResetClick(); PlayerPlate.DropDrag(); return; }
-            DrawPlates(ref f, MonsterHudSettings.Enabled);
-            PlayerPlate.Draw(ref f);
-            CombatText.Draw(ref f);
+            if (worldVisible)
+            {
+                DrawPlates(ref f, MonsterHudSettings.Enabled);
+                PlayerPlate.Draw(ref f);
+                CombatText.Draw(ref f);
+            }
             // The player plate fixed on screen: ImGui's background list (the normal UI pass), not the layer above.
             PlayerPlate.DrawScreen(ref f);
         }

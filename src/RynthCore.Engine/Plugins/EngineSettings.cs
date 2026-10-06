@@ -34,6 +34,7 @@ internal static class EngineSettings
     // "DisabledUiHooks": the UI hooks (Compatibility/UiHookRegistry) switched off by name.
     private static readonly HashSet<string> _disabledUiHooks = new(StringComparer.OrdinalIgnoreCase);
     private static bool _serverMessageStream = true;
+    private static bool _flightRecorder = true;
     private static bool _loaded;
 
     public static IReadOnlyList<string> PluginPaths
@@ -288,6 +289,19 @@ internal static class EngineSettings
         }
     }
 
+    /// <summary>"FlightRecorder" in engine.json (default true): the always-on flight recorder
+    /// (Net/FlightRecorder.cs, /rc flightdump): a sendto hook plus a ring of the last minutes of
+    /// client/server traffic and engine markers. false = no sendto hook and nothing recorded,
+    /// from the next client start.</summary>
+    public static bool FlightRecorder
+    {
+        get
+        {
+            EnsureLoaded();
+            return _flightRecorder;
+        }
+    }
+
     public static void AddPluginPath(string path)
     {
         EnsureLoaded();
@@ -414,6 +428,10 @@ internal static class EngineSettings
                 (smsEl.ValueKind == JsonValueKind.True || smsEl.ValueKind == JsonValueKind.False))
                 _serverMessageStream = smsEl.GetBoolean();
 
+            if (doc.RootElement.TryGetProperty("FlightRecorder", out var frEl) &&
+                (frEl.ValueKind == JsonValueKind.True || frEl.ValueKind == JsonValueKind.False))
+                _flightRecorder = frEl.GetBoolean();
+
             if (doc.RootElement.TryGetProperty("PreventIdleLogoff", out var pilEl) &&
                 (pilEl.ValueKind == JsonValueKind.True || pilEl.ValueKind == JsonValueKind.False))
             {
@@ -435,6 +453,19 @@ internal static class EngineSettings
             RynthLog.Plugin($"EngineSettings: Failed to load {SettingsPath}: {ex.Message}");
         }
     }
+
+    /// <summary>Every engine.json key EnsureLoaded reads or Save writes. Save rewrites these from
+    /// memory (one written only when not the default is left out, as before) and keeps every
+    /// other key as the file had it. A new engine.json setting goes here too
+    /// (tools/EngineSettingsTests checks this list against this file).</summary>
+    internal static readonly HashSet<string> OwnedKeys = new(StringComparer.Ordinal)
+    {
+        "PluginPaths", "EnableImGuiShell", "EnablePlugins", "EnableDatShareHook",
+        "EnableAvaloniaOverlay", "EnableD3D9Hook", "EnableEngine", "EngineHookCount",
+        "EnableImGuiBackend", "EnableHangMinidump", "PreventIdleLogoff", "DecalBridge",
+        "DecalInGameImGui", "DecalStandDown", "DisabledUiHooks", "ServerMessageStream",
+        "FlightRecorder",
+    };
 
     private static void Save()
     {
@@ -476,9 +507,20 @@ internal static class EngineSettings
                 }
                 if (!_serverMessageStream) // default true: leave the file as it was
                     w.WriteBoolean("ServerMessageStream", false);
+                if (!_flightRecorder)      // default true: leave the file as it was
+                    w.WriteBoolean("FlightRecorder", false);
                 w.WriteEndObject();
             }
-            File.WriteAllBytes(SettingsPath, ms.ToArray());
+
+            // Keep the keys others write (the launcher's), and swap the file in atomically.
+            string? existing = File.Exists(SettingsPath) ? File.ReadAllText(SettingsPath) : null;
+            byte[]? merged = EngineSettingsFile.Merge(existing, ms.ToArray(), OwnedKeys, out string? readError);
+            if (merged == null)
+            {
+                RynthLog.Warn($"EngineSettings: not saving - {SettingsPath} can't be read ({readError}), and rewriting it would lose what it holds. The change holds until the client closes; fix or delete the file to save again.");
+                return;
+            }
+            EngineSettingsFile.WriteAtomic(SettingsPath, merged);
         }
         catch (Exception ex)
         {

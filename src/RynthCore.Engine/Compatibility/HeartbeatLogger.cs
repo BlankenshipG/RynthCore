@@ -162,7 +162,13 @@ internal static class HeartbeatLogger
                     // every use/move/equip meanwhile); atk=1 = its attacking flag is set. Both
                     // omitted while open, so a long run of req= in a log is the item-action lock.
                     string gateField = ClientActionGates.HeartbeatField();
-                    RynthLog.Info($"hb #{tick} up={(nowMs - startMs) / 1000}s fps={fps} draw={draw} plug={pps}/s ws={wsMb}MB login={login} qdrop={dropped} rec={rec} fcl={fcl}{idleField}{uiField}{vaField}{gateField}");
+                    // vp=<mode>:skip|draw cpu=N% = the video patch (D3D9/VideoPatch) and this
+                    // client's CPU share of all cores. Omitted while the patch is off; the patch
+                    // also logs before/after averages around each mode change.
+                    string vpField = "";
+                    try { vpField = D3D9.VideoPatch.OnHeartbeat(draw); }
+                    catch { }
+                    RynthLog.Info($"hb #{tick} up={(nowMs - startMs) / 1000}s fps={fps} draw={draw} plug={pps}/s ws={wsMb}MB login={login} qdrop={dropped} rec={rec} fcl={fcl}{idleField}{uiField}{vaField}{gateField}{vpField}");
 
                     // Every 60 s: garbage collections and the time they paused the process.
                     // Under the CoreCLR host the engine and managed plugins share one GC, so a

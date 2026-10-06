@@ -2988,7 +2988,7 @@ internal partial class MainWindow : Window
 
             // Tail the per-PID log for the last heartbeat line. Cheap: seek to
             // the end, read ~2KB, FileShare-tolerant of the engine's writer.
-            string logPath = System.IO.Path.Combine(@"C:\Games\RynthCore\Logs", $"RynthCore.{pid}.log");
+            string logPath = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.CoreLogsDir, $"RynthCore.{pid}.log");
             string tail;
             try
             {

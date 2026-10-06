@@ -160,6 +160,8 @@ internal static class Nav3DRenderInjector
     {
         if (_markersRenderedThisFrame || dev == IntPtr.Zero) return;
         _markersRenderedThisFrame = true;
+        // Video patch: no 3D scene this frame, so no markers or plates over the black.
+        if (VideoPatch.SkipWorldThisFrame) return;
         _inRender = true;
         try { ImGuiBackend.DX9Backend.RenderNav3D(dev); }
         catch { }
@@ -173,6 +175,13 @@ internal static class Nav3DRenderInjector
     private static bool PresentWorldOverlays(IntPtr dev, bool sceneViewport)
     {
         if (_markersRenderedThisFrame) return false;
+        // Video patch: the 3D scene wasn't drawn this frame; the overlays (projected with
+        // stale matrices) would float over black. Closed for the frame, nothing drawn.
+        if (VideoPatch.SkipWorldThisFrame)
+        {
+            _markersRenderedThisFrame = true;
+            return false;
+        }
         // Decal clients: VVS/Decal/UB draw 3D into their own render targets too; only AC's
         // back buffer gets the markers and nameplates (measured 2026-09-30: without this they
         // showed up inside a Virindi window). Checked once per frame, only with Decal.

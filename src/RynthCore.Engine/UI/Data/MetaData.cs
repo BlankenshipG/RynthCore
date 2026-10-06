@@ -23,31 +23,6 @@ using RynthCore.Engine.Plugins;
 
 namespace RynthCore.Engine.UI.Data;
 
-internal sealed class MetaRuleDto
-{
-    public string State { get; set; } = "Default";
-    public int Condition { get; set; }
-    public string ConditionData { get; set; } = string.Empty;
-    public int Action { get; set; }
-    public string ActionData { get; set; } = string.Empty;
-    public List<MetaRuleDto> Children { get; set; } = new();
-    public List<MetaRuleDto> ActionChildren { get; set; } = new();
-    public bool Enabled { get; set; } = true;
-    public long LastFiredMs { get; set; } = 99999;
-
-    public MetaRuleDto Clone()
-    {
-        var r = new MetaRuleDto
-        {
-            State = State, Condition = Condition, ConditionData = ConditionData,
-            Action = Action, ActionData = ActionData, Enabled = Enabled, LastFiredMs = LastFiredMs,
-        };
-        foreach (MetaRuleDto c in Children) r.Children.Add(c.Clone());
-        foreach (MetaRuleDto a in ActionChildren) r.ActionChildren.Add(a.Clone());
-        return r;
-    }
-}
-
 internal sealed class MetaFile
 {
     public string Path { get; set; } = string.Empty;
@@ -226,12 +201,34 @@ internal static unsafe class MetaCommands
 
     public static void Simple(string op, int index = -1, string value = "", string path = "")
         => Send(new MetaCmd { Op = op, Index = index, Value = value, Path = path });
+
+    /// <summary>
+    /// Copies <paramref name="file"/> to <paramref name="backup"/> (overwriting it) on the pump thread,
+    /// queued like a command, so it runs before any command sent after it reaches the plugin: the
+    /// copy is the file as it was before that save. Nothing happens when the file doesn't exist.
+    /// </summary>
+    public static void Backup(string file, string backup)
+    {
+        UiDataHub.Post("Meta backup", () =>
+        {
+            try
+            {
+                if (!System.IO.File.Exists(file)) return;
+                System.IO.File.Copy(file, backup, overwrite: true);
+                RynthLog.UI($"Meta: backed up {System.IO.Path.GetFileName(file)} to {System.IO.Path.GetFileName(backup)} before the first save");
+            }
+            catch (Exception ex)
+            {
+                RynthLog.UI($"Meta: backup of {file} failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        });
+    }
 }
 
 /// <summary>Names, hints and .af keywords shared by the Meta faces (mirror RynthSuite's MetaSchema).</summary>
 internal static class MetaVocabulary
 {
-    public const string MetaFolder = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
+    public static readonly string MetaFolder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "MetaFiles");
 
     public static readonly string[] ConditionNames =
     {
@@ -246,6 +243,7 @@ internal static class MetaVocabulary
         "Chat Message Capture", "Navroute Empty",
         "Main Health <=", "Main Health % >=", "Main Mana <=", "Main Mana % >=",
         "Main Stam <=", "Vitae % >=",
+        "No Kills Within Minutes",   // RynthAi only (2026-10-06)
     };
 
     public static readonly string[] ConditionHints =
@@ -260,6 +258,7 @@ internal static class MetaVocabulary
         "Percentage (e.g. 250)", "Distance (e.g. 10)", "Expression",
         "Regex pattern", "",
         "", "", "", "", "", "Vitae % (e.g. 5)",
+        "Minutes without a kill (e.g. 5 or 2.5)",
     };
 
     public static readonly string[] ActionNames =
@@ -294,6 +293,7 @@ internal static class MetaVocabulary
         "ChatCapture", "NavEmpty",
         "MainHealthLE", "MainHealthPHE", "MainManaLE", "MainManaPHE",
         "MainStamLE", "VitaePHE",
+        "NoKillsInMins",
     };
 
     public static readonly string[] ActionKeywords =

@@ -34,7 +34,7 @@ internal sealed class UsageStats
     public const string DefaultEndpoint = "https://aelrynth.com/rynth/ping";
 
     /// <summary>Where the engine writes crash/hang minidumps (RynthCore.Engine CrashDump / LogPaths).</summary>
-    public const string DefaultDumpDirectory = @"C:\Games\RynthCore\Logs\dumps";
+    public static readonly string DefaultDumpDirectory = Path.Combine(RynthCore.Install.RynthInstallPaths.CoreLogsDir, "dumps"); // C:\Games\RynthCore\Logs\dumps by default
 
     public const int Schema = 1;
     private const int MaxCrashes = 1000;
@@ -52,12 +52,12 @@ internal sealed class UsageStats
     private CancellationTokenSource _cts = new();
     private int _sending;
 
-    public UsageStats(string endpoint = DefaultEndpoint, string? stateDir = null, string dumpDir = DefaultDumpDirectory)
+    public UsageStats(string endpoint = DefaultEndpoint, string? stateDir = null, string? dumpDir = null)
     {
         _endpoint = endpoint;
         _stateDir = stateDir ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore");
-        _dumpDir = dumpDir;
+        _dumpDir = dumpDir ?? DefaultDumpDirectory;
     }
 
     public string StatePath => Path.Combine(_stateDir, "usage-stats.json");

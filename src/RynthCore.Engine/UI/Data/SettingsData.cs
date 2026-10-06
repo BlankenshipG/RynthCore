@@ -132,6 +132,9 @@ internal sealed class RynthAiSettings
     public float NavHeightOffset { get; set; } = 0.05f;
     public float NavSlopeSink { get; set; } = 1.5f;
     public bool ShowTerrainPassability { get; set; } = true;
+    // Nav3D extras (RynthAi NavOverlay), both off by default: 0 off, 1 numbers, 2 numbers and names.
+    public int NavLabelMode { get; set; }
+    public bool NavGuideLine { get; set; }
     public bool OpenDoors { get; set; }
     public float OpenDoorRange { get; set; } = 5f;
     public bool AutoUnlockDoors { get; set; }
@@ -183,6 +186,8 @@ internal sealed class RynthAiSettings
     // (default off). A RynthAi that predates them doesn't send them; on must not read as off.
     public bool LootOwnCorpse { get; set; } = true;
     public bool TravelToOwnCorpse { get; set; }
+    // Selecting an item prints /ra iteminfo (default on; an older RynthAi doesn't send it).
+    public bool ItemInfoOnSelect { get; set; } = true;
     public bool EnableAutostack { get; set; } = true;
     public bool ReadUnknownScrolls { get; set; } = true;   // VTank's default
     public bool EnableCombineSalvage { get; set; } = true;
@@ -304,7 +309,8 @@ internal static class SettingsSchema
     public const string NavPointReachTip =
         "How close to get to each nav point before moving on to the next, in yards. VTank calls it " +
         "Follow/Nav Min Distance (metas: FollowNavMin, or VTank's NavCloseStopRange). Follow stops this " +
-        "close to its leader, and the nav marker ring shows it. Dungeon doorways use at most 1 yd.";
+        "close to its leader, and the nav marker ring shows it. Dungeon doorways use at most 1 yd. Up to 2 yd, " +
+        "nav walks right up to each point before turning (tight dungeons); bigger values round corners.";
 
     // Also shown by the dashboard's Ranges slide-out (ImGui/Panels/RangesSlideOut.cs), which
     // edits these same rows (found by label with Find).
@@ -331,6 +337,7 @@ internal static class SettingsSchema
 
     public static readonly string[] AttackHeights = { "Low", "Medium", "High" };
     public static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
+    public static readonly string[] NavLabelModes = { "Off", "Numbers", "Numbers and names" };
 
     private static SettingRow Bool(string label, Func<RynthAiSettings, bool> get, Action<RynthAiSettings, bool> set,
         string? tip = null, Func<RynthAiSettings, bool>? when = null, bool gates = false) =>
@@ -446,6 +453,19 @@ internal static class SettingsSchema
             Bool("Enable FPS Limit", s => s.EnableFPSLimit, (s, v) => s.EnableFPSLimit = v, gates: true),
             Int("Focused FPS", s => s.TargetFPSFocused, (s, v) => s.TargetFPSFocused = v, 10, 240, 1, when: s => s.EnableFPSLimit),
             Int("Background FPS", s => s.TargetFPSBackground, (s, v) => s.TargetFPSBackground = v, 5, 60, 1, when: s => s.EnableFPSLimit),
+            // Stored by the engine (D3D9/VideoPatch, %LOCALAPPDATA%\RynthCore\video_patch.txt, per
+            // character), not in the RynthAi profile, so the settings object is ignored here.
+            Combo("Video patch", D3D9.VideoPatchPolicy.ComboItems, _ => (int)D3D9.VideoPatch.Mode,
+                (_, v) => D3D9.VideoPatch.SetMode((D3D9.VideoPatchMode)Math.Clamp(v, 0, 3), save: true, "Settings"),
+                "Stop drawing the game to save CPU and GPU (game logic, the bot and the plugins keep running).\n" +
+                "World when unfocused: the 3D world isn't drawn while another window has the focus.\n" +
+                "World: the 3D world is never drawn; AC's windows and these panels still are.\n" +
+                "All: AC's windows aren't drawn either (this session only; /rc video off restores).\n" +
+                "Saved for this character. The phone live view shows what the client draws. Also: /rc video."),
+            Int("   Frame cap while patched", _ => D3D9.VideoPatch.FrameCapFps, (_, v) => D3D9.VideoPatch.SetFrameCap(v), 0, 60, 1,
+                "While the 3D world isn't drawn the client runs at most this many frames a second, so the\n" +
+                "saved time is slept (0 = no extra cap). Saved for this PC. Also: /rc video fps <n>.",
+                when: _ => D3D9.VideoPatch.Mode != D3D9.VideoPatchMode.Off),
             Spacer(),
             Bool("Auto Cram", s => s.EnableAutocram, (s, v) => s.EnableAutocram = v,
                 "Automatically moves items from your main pack into side packs.\nNote: recently used weapons stay in the main pack."),
@@ -613,6 +633,10 @@ internal static class SettingsSchema
                 "Extra downward offset on slopes only, per unit of terrain steepness. 0 = off; flat ground is unaffected. ~1.5 cancels the float for a default-radius ring."),
             Bool("Show Terrain Passability", s => s.ShowTerrainPassability, (s, v) => s.ShowTerrainPassability = v,
                 "Highlight impassable terrain triangles in red."),
+            Combo("Waypoint Labels", NavLabelModes, s => Math.Clamp(s.NavLabelMode, 0, NavLabelModes.Length - 1), (s, v) => s.NavLabelMode = v,
+                "Text over the route's waypoints within 60 yd. Numbers: each point's number (as in the Nav panel).\nNumbers and names: also checkpoints and jumps, and what happens at a point\n(recall, chat, pause, portal, NPC, vendor) above it."),
+            Bool("Guide Line", s => s.NavGuideLine, (s, v) => s.NavGuideLine = v,
+                "A line from your character to the waypoint nav is heading for."),
             Spacer(),
             Section("Doors"),
             Bool("Open Doors While Navigating", s => s.OpenDoors, (s, v) => s.OpenDoors = v,
@@ -631,7 +655,7 @@ internal static class SettingsSchema
             Float("Sweep Detect Mult", s => s.NavSweepMult, (s, v) => s.NavSweepMult = v, 0.5f, 10f, 0.1f,
                 "Closest-approach detection radius multiplier."),
             Float("Lookahead (yd)", s => s.NavLookaheadYards, (s, v) => s.NavLookaheadYards = MathF.Max(0f, v), 0f, 30f, 0.5f,
-                "Within this distance of a waypoint, blend the aim point toward the next one to cut corners smoothly. 0 = off."),
+                "Within this distance of a waypoint, blend the aim point toward the next one to round corners. The nav point reach limits it: 2 yd per yard of reach over 1 yd (none up to a 2 yd reach). 0 = off."),
             Float("Turn Rate (deg/s)", s => s.NavTurnRateDegPerSec, (s, v) => s.NavTurnRateDegPerSec = v, 30f, 720f, 15f,
                 "Max turn speed while navigating. Higher = snappier turns, lower = gentler."),
             Float("Post-Portal Delay (s)", s => s.PostPortalDelaySec, (s, v) => s.PostPortalDelaySec = MathF.Max(0f, v), 0f, 30f, 0.25f,
@@ -693,6 +717,8 @@ internal static class SettingsSchema
                 "After a death, walk back to where you died with RynthNav (outdoor deaths only),\nfighting on the way as usual, recover the corpse, then carry on. Needs the macro\nrunning and RynthNav loaded. /ra owncorpse stop cancels."),
             Spacer(),
             Section("Inventory Management"),
+            Bool("Item Info On Select", s => s.ItemInfoOnSelect, (s, v) => s.ItemInfoOnSelect = v,
+                "Selecting an item prints its details to chat, Mag-Tools style (/ra iteminfo),\nidentifying it first when needed. Items the bot selects while looting are skipped."),
             Bool("Enable Autostack", s => s.EnableAutostack, (s, v) => s.EnableAutostack = v),
             Bool("Enable Autocram", s => s.EnableAutocram, (s, v) => s.EnableAutocram = v,
                 "Automatically moves items from your main pack into side packs.\nNote: recently used weapons stay in the main pack."),

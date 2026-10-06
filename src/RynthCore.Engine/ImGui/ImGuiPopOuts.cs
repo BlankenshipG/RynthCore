@@ -676,7 +676,7 @@ internal static unsafe class ImGuiPopOuts
     public static string? RequestSnapshot(string title)
     {
         if (!Pops.TryGetValue(title, out PopOut? pop)) return null;
-        string path = System.IO.Path.Combine(@"C:\Games\RynthCore\Logs", $"popout_{title.Replace(' ', '_')}.bmp");
+        string path = System.IO.Path.Combine(LogPaths.LogDirectory, $"popout_{title.Replace(' ', '_')}.bmp");
         pop.Surface.SnapshotPath = path;
         pop.HotFrames = Math.Max(pop.HotFrames, 2);
         return path;

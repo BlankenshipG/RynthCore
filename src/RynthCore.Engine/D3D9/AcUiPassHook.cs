@@ -148,6 +148,12 @@ internal static class AcUiPassHook
         Interlocked.Increment(ref _calls);
         if (IsInstalled && !EngineLifecycle.IsShuttingDown)
         {
+            // Video patch "all": AC's 2D UI isn't drawn this frame (nor the world overlays,
+            // which skip with the 3D scene). Off, or any problem: AC's UI pass as usual.
+            bool skipUi = false;
+            try { skipUi = VideoPatch.SkipAcUiThisFrame; }
+            catch { }
+            if (skipUi) return;
             try { Nav3DRenderInjector.OnAcUiPass(); }
             catch { /* never let an overlay problem take AC's UI pass down */ }
         }

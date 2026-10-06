@@ -249,6 +249,9 @@ internal static class InventoryModel
     public static InventoryPending? Pending => Volatile.Read(ref _pending);
     public static InventoryResult? LastResult => Volatile.Read(ref _result);
     public static InventoryTarget? Target => Volatile.Read(ref _target);
+    /// <summary>The object selected in the game when it is one of the character's items, else 0 (4 Hz while subscribed).</summary>
+    public static uint SelectedItem => Volatile.Read(ref _selectedItem);
+    private static uint _selectedItem;
     public static bool DropAvailable => ClientHelperHooks.HasDropItem;
     public static bool GiveAvailable => ClientHelperHooks.HasGiveObjectTo;
     public static bool WieldAvailable => ClientHelperHooks.HasWieldItem;
@@ -662,6 +665,7 @@ internal static class InventoryModel
     {
         uint sel = ClientHelperHooks.GetSelectedItemId();
         uint player = ClientHelperHooks.GetPlayerId();
+        Volatile.Write(ref _selectedItem, sel != 0 && _items.ContainsKey(sel) ? sel : 0u);
         InventoryTarget? cur = _target;
         if (sel == 0 || sel == player || _items.ContainsKey(sel)
             || !ClientObjectHooks.TryGetItemType(sel, out uint type) || (type & 0x10u) == 0)   // creatures and players only
