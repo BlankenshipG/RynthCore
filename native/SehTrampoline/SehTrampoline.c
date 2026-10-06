@@ -27,7 +27,7 @@
 #include <windows.h>
 
 /* File version of this native module (bump with every behavioural change). */
-#define RC_SEH_TRAMPOLINE_VERSION 2   /* v2: fatal-only crash logger, bounded stack sweep */
+#define RC_SEH_TRAMPOLINE_VERSION 3   /* v3: CoreCLR-hosted engine AVs logged immediately */
 
 /* Crash-logger state that the SEH_* wrappers and DllMain also touch (defined below). */
 static __declspec(thread) int t_sehDepth;       /* >0 while inside an SEH_* wrapper call   */
@@ -281,6 +281,14 @@ SEH_ThiscallIntUintPtr(void* fn, void* this_ptr, unsigned int arg1, void* arg2,
  *     module (engine / plugins). The runtime fail-fasts on those via
  *     RaiseFailFastException, which bypasses every handler including the filter in (1),
  *     so first chance is the only chance to record them. 0xC0000602 / 0xC0000409 too.
+ *  2b. (v3) Same for the CoreCLR-hosted engine (RynthCore.Shim): non-null AVs in JIT'd
+ *     code (private executable memory, no module), coreclr.dll / clrjit.dll, or the
+ *     framework's precompiled System.* / Microsoft.* images. CoreCLR treats a non-null
+ *     AV in managed code as uncatchable and fail-fasts with HandleFatalError (the WER
+ *     signature coreclr.dll+0x2c1c6e c0000005 is that fail-fast site, not the bug), so
+ *     the deferred ring below was never flushed and native-crash.log stayed empty. AVs
+ *     with a data address under 64K are skipped there: CoreCLR turns those into a
+ *     catchable NullReferenceException.
  *  3. First-chance VEH, deferred: every other AV (acclient.exe, drivers, DINPUT8, …) is
  *     formatted into an in-memory ring and written ONLY if the process then dies — via
  *     the filter in (1), or at ExitProcess (DllMain detach) when it happened within the
@@ -424,6 +432,31 @@ static int cl_is_nativeaot_address(unsigned int addr)
     g_modManaged[i] = managed;
     g_modBase[i] = (UINT_PTR)hm;
     return managed;
+}
+
+/* True when addr is code of the CoreCLR-hosted engine: JIT'd code (committed private
+ * executable memory outside any module), the runtime itself (coreclr.dll, clrjit.dll),
+ * or a precompiled framework image (System.* / Microsoft.*, e.g. Marshal.ReadIntPtr in
+ * System.Private.CoreLib.dll). Not cached: the JIT path has no module base to key on,
+ * and VirtualQuery is cheap next to formatting a record. */
+static int cl_is_coreclr_address(unsigned int addr)
+{
+    HMODULE hm = NULL;
+    if (!GetModuleHandleExW(0x4 | 0x2, (LPCWSTR)(UINT_PTR)addr, &hm) || !hm) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQuery((LPCVOID)(UINT_PTR)addr, &mbi, sizeof(mbi)) == 0) { return 0; }
+        return mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE
+            && (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE
+                               | PAGE_EXECUTE_WRITECOPY)) != 0;
+    }
+    {
+        char leaf[MAX_PATH];
+        cl_module_leaf(hm, leaf, MAX_PATH, 1);
+        return cl_starts_with(leaf, "coreclr.dll")
+            || cl_starts_with(leaf, "clrjit.dll")
+            || cl_starts_with(leaf, "system.")
+            || cl_starts_with(leaf, "microsoft.");
+    }
 }
 
 /* ── Record formatting ── */
@@ -579,6 +612,7 @@ static LONG CALLBACK CrashVeh(PEXCEPTION_POINTERS ep)
     DWORD code = ep->ExceptionRecord->ExceptionCode;
     unsigned int exAddr;
     int immediate;
+    int coreclr = 0;
     CL_SLOT* s;
 
     if (code != 0xC0000005 && code != 0xC0000602 && code != 0xC0000409) {
@@ -594,6 +628,14 @@ static LONG CALLBACK CrashVeh(PEXCEPTION_POINTERS ep)
     t_inLogger = 1;
     exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
     immediate = (code != 0xC0000005) || cl_is_nativeaot_address(exAddr);
+    if (!immediate) {
+        /* v3: CoreCLR-hosted engine. A data address under 64K is a null-ref that CoreCLR
+         * hands to managed code as NullReferenceException, so it stays deferred. */
+        unsigned int dataAddr = ep->ExceptionRecord->NumberParameters >= 2
+            ? (unsigned int)ep->ExceptionRecord->ExceptionInformation[1] : 0;
+        coreclr = dataAddr >= 0x10000 && cl_is_coreclr_address(exAddr);
+        immediate = coreclr;
+    }
 
     if (!immediate || InterlockedIncrement(&g_immediateCount) <= CL_MAX_IMMEDIATE) {
         s = cl_claim_slot();
@@ -604,7 +646,9 @@ static LONG CALLBACK CrashVeh(PEXCEPTION_POINTERS ep)
             s->len    = cl_format(s->text, CL_SLOT_BYTES, ep,
                 code != 0xC0000005
                     ? "FAIL-FAST / STACK CHECK (always fatal)"
-                    : (immediate
+                    : (coreclr
+                        ? "AV IN CORECLR-HOSTED CODE (JIT / runtime; fail-fast, non-null address)"
+                    : immediate
                         ? "AV IN NATIVEAOT CODE (runtime fail-fasts unless it is a null-ref)"
                         : "FIRST-CHANCE AV (deferred; written because the process died or exited soon after)"));
             if (immediate) {
