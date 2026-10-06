@@ -55,6 +55,15 @@ internal static class RynthLog
             EntryPoint.LogTagged("engine", msg, "WRN");
     }
 
+    /// <summary>
+    /// Always-on heartbeat line, written at every LoggingLevel (Off included). The launcher's
+    /// wedge watchdog reads RynthCore.&lt;pid&gt;.log going quiet for 120 s as a dead engine and
+    /// kills the client, so this line must never be filtered: on 2026-10-06 LoggingLevel=Info
+    /// with General=Trace dropped it and healthy in-world clients were killed and relaunched
+    /// every few minutes.
+    /// </summary>
+    internal static void Heartbeat(string msg) => EntryPoint.LogTagged("engine", msg, "INF");
+
     /// <summary>Always-on ERROR line — a fault/crash/disable, written even at level Off. Triage with grep "[ERR]".</summary>
     internal static void Error(string msg)
     {
