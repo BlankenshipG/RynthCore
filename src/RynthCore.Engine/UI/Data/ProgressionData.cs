@@ -48,6 +48,10 @@ internal sealed class AttrRaiser
     /// <summary>Time to the next auto run ("" when auto is off).</summary>
     [JsonPropertyName("next")]       public string Next { get; set; } = "";
     [JsonPropertyName("costsAge")]   public string CostsAge { get; set; } = "";
+    /// <summary>Local time the costs were last read ("-" before the first read; "" from older RynthAi).</summary>
+    [JsonPropertyName("updated")]    public string Updated { get; set; } = "";
+    /// <summary>"Level N   Total XP X   Unassigned Y" ("" from older RynthAi).</summary>
+    [JsonPropertyName("xpHeader")]   public string XpHeader { get; set; } = "";
     /// <summary>In raise-priority order.</summary>
     [JsonPropertyName("rows")]       public AttrRow[] Rows { get; set; } = Array.Empty<AttrRow>();
 }
@@ -64,7 +68,19 @@ internal sealed class AttrRow
     [JsonPropertyName("base")]   public int Base { get; set; } = -1;
     /// <summary>Next-level cost from "/xp all", preformatted ("?" until read).</summary>
     [JsonPropertyName("cost")]   public string Cost { get; set; } = "?";
+    /// <summary>Next level fits the raiser's budget (unassigned minus the reserve).</summary>
     [JsonPropertyName("afford")] public bool Afford { get; set; }
+    /// <summary>The next-level cost has been read (false from older RynthAi too).</summary>
+    [JsonPropertyName("known")]      public bool Known { get; set; }
+    /// <summary>By hand: +1 fits the unassigned XP (no reserve).</summary>
+    [JsonPropertyName("afford1")]    public bool Afford1 { get; set; }
+    /// <summary>By hand: the projected +10 fits the unassigned XP.</summary>
+    [JsonPropertyName("afford10")]   public bool Afford10 { get; set; }
+    /// <summary>Projected cost of ten levels (7.7% growth per level), e.g. "~1.2T"; "" from older RynthAi.</summary>
+    [JsonPropertyName("cost10")]     public string Cost10 { get; set; } = "";
+    /// <summary>Exact next-level cost with separators, for the tooltip.</summary>
+    [JsonPropertyName("costFull")]   public string CostFull { get; set; } = "";
+    [JsonPropertyName("cost10Full")] public string Cost10Full { get; set; } = "";
 }
 
 internal sealed class AugPlanner
@@ -78,6 +94,17 @@ internal sealed class AugPlanner
     /// <summary>Empty when the bank holds enough Enlightened Coins.</summary>
     [JsonPropertyName("short")]      public string Short { get; set; } = "";
     [JsonPropertyName("banked")]     public string Banked { get; set; } = "";
+    // Totals row and e-coin summary (all empty / zero from older RynthAi).
+    [JsonPropertyName("totCur")]      public long TotalCurrent { get; set; }
+    [JsonPropertyName("totTgt")]      public long TotalTarget { get; set; }
+    [JsonPropertyName("totInc")]      public long TotalIncrease { get; set; }
+    [JsonPropertyName("totLum")]      public string TotalLum { get; set; } = "";
+    [JsonPropertyName("totCoins")]    public long TotalCoins { get; set; }
+    [JsonPropertyName("coinsLine")]   public string CoinsLine { get; set; } = "";
+    [JsonPropertyName("lumToBuy")]    public string LumToBuy { get; set; } = "";
+    /// <summary>Ready-made clipboard texts (UB's Copy Discord / Copy In-Game).</summary>
+    [JsonPropertyName("copyDiscord")] public string CopyDiscord { get; set; } = "";
+    [JsonPropertyName("copyIngame")]  public string CopyIngame { get; set; } = "";
 }
 
 internal sealed class AugRow
@@ -86,6 +113,8 @@ internal sealed class AugRow
     [JsonPropertyName("label")] public string Label { get; set; } = "";
     [JsonPropertyName("cur")]   public int Current { get; set; }
     [JsonPropertyName("tgt")]   public int Target { get; set; }
+    /// <summary>Levels planned (target - current).</summary>
+    [JsonPropertyName("inc")]   public int Increase { get; set; }
     /// <summary>Highest target allowed (the aug's cap, or the current level when the server reports more).</summary>
     [JsonPropertyName("cap")]   public int Cap { get; set; }
     [JsonPropertyName("lum")]   public string Lum { get; set; } = "-";

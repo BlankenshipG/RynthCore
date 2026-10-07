@@ -4,8 +4,11 @@
 //    - XP planner: exact XP for the next N raises of every attribute and vital,
 //      from the client's XP tables (raising stays on the Attributes & Vitals tab).
 //    - Attribute raiser: infinite attributes past the retail cap. RynthAi reads the
-//      server's costs ("/xp all") and raises with "/attr", by hand (+1 / +10) or on a
-//      timer from unassigned XP, in the order and mode set here.
+//      server's costs ("/xp all") and raises with "/attr", by hand or on a timer from
+//      unassigned XP, in the order and mode set here. Laid out like UB's Leaftide XP
+//      tab: "+1 Level" / "+10 Levels" buttons labelled with their (projected) cost.
+//    - Augmentations: UB's Augs tab - Refresh current (/aug), Current / Target / Inc /
+//      Luminance / Coins with a totals row, Reset targets, Copy Discord / In-Game.
 //    - Augmentations / Enlightenment: RynthAi's ILT Hub planners. RynthAi owns the
 //      math and the saved inputs (UiSources.Progression snapshot); edits and
 //      actions go back as "prog ..." remote commands. /enl and arming
@@ -187,7 +190,8 @@ internal sealed partial class SkillsFace
             if (a == null) { Label("Update RynthAi to use the attribute raiser.", Mute); return; }
             if (a.Off) { Label(a.Reason, Mute); return; }
 
-            Label(a.Unassigned, Teal);
+            Label(a.XpHeader.Length > 0 ? a.XpHeader : a.Unassigned, Teal);
+            if (a.XpHeader.Length > 0 && a.Unassigned.Contains("spendable", StringComparison.Ordinal)) Label(a.Unassigned, Dim);
             Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
             if (a.Running)
             {
@@ -195,8 +199,14 @@ internal sealed partial class SkillsFace
             }
             else if (Button("##attr_run", "Raise now", p, new Vector2(110, 24), Text, StartBg, border: Teal))
                 SendProg("attrrun");
-            if (Button("##attr_costs", "Refresh costs", new Vector2(p.X + 116, p.Y), new Vector2(110, 24), Text, BtnFill))
+            if (Button("##attr_costs", "Refresh XP", new Vector2(p.X + 116, p.Y), new Vector2(100, 24), Text, BtnFill, enabled: !a.Running))
                 SendProg("attrcosts");
+            ImGuiNET.ImGui.SetItemTooltip("Re-reads every next-level cost with /xp all.");
+            if (a.Updated.Length > 0)
+            {
+                ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + 224, p.Y + 4));
+                Label("Last updated: " + a.Updated, Dim);
+            }
             NextLine(p, 28);
             if (a.Status.Length > 0) ImGuiNET.ImGui.TextWrapped(a.Status);
             if (a.LastRun.Length > 0) Label("Last run: " + a.LastRun, Dim);
@@ -243,7 +253,9 @@ internal sealed partial class SkillsFace
             ImGuiNET.ImGui.SetItemTooltip("Unassigned XP the raiser never spends. Accepts k / m / b / t suffixes.");
 
             DrawAttrTable(a, w);
-            Label("Tick the stats Raise now / auto-raise may spend on; arrows set the order. " + a.CostsAge + ".", Dim);
+            Label("Auto: the stats Raise now / auto-raise may spend on; arrows set the order. "
+                  + "+1 / +10 raise by hand (red = not enough unassigned XP). "
+                  + "+10 is an estimate (7.7% dearer per level); the server charges the real cost. " + a.CostsAge + ".", Dim);
         }
         finally
         {
@@ -252,16 +264,21 @@ internal sealed partial class SkillsFace
         }
     }
 
+    /// <summary>
+    /// UB Leaftide XP tab layout: Auto tick, stat, base, then "+1 Level" / "+10 Levels" buttons
+    /// labelled with what they cost, then the priority arrows.
+    /// </summary>
     private void DrawAttrTable(AttrRaiser a, float w)
     {
-        if (!ImGuiNET.ImGui.BeginTable("##prog_attr", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp,
+        if (!ImGuiNET.ImGui.BeginTable("##prog_attr", 6, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp,
                 new Vector2(w - 16, 0)))
             return;
-        ImGuiNET.ImGui.TableSetupColumn("Raise", ImGuiTableColumnFlags.WidthFixed, 40);
+        ImGuiNET.ImGui.TableSetupColumn("Auto", ImGuiTableColumnFlags.WidthFixed, 34);
         ImGuiNET.ImGui.TableSetupColumn("Stat");
         ImGuiNET.ImGui.TableSetupColumn("Base", ImGuiTableColumnFlags.WidthFixed, 56);
-        ImGuiNET.ImGui.TableSetupColumn("Next level", ImGuiTableColumnFlags.WidthFixed, 80);
-        ImGuiNET.ImGui.TableSetupColumn("Order / by hand", ImGuiTableColumnFlags.WidthFixed, 150);
+        ImGuiNET.ImGui.TableSetupColumn("+1 Level", ImGuiTableColumnFlags.WidthFixed, 84);
+        ImGuiNET.ImGui.TableSetupColumn("+10 Levels", ImGuiTableColumnFlags.WidthFixed, 84);
+        ImGuiNET.ImGui.TableSetupColumn("Order", ImGuiTableColumnFlags.WidthFixed, 48);
         ImGuiNET.ImGui.TableHeadersRow();
         for (int i = 0; i < a.Rows.Length; i++)
         {
@@ -281,8 +298,12 @@ internal sealed partial class SkillsFace
             Label(clientBase > 0 ? clientBase.ToString("N0", CultureInfo.InvariantCulture)
                   : r.Base >= 0 ? r.Base.ToString("N0", CultureInfo.InvariantCulture) : "-", Text);
 
+            // Older RynthAi sends no cost10 / afford1: plain buttons, the server decides.
+            bool rich = r.Cost10.Length > 0;
             ImGuiNET.ImGui.TableNextColumn();
-            Label(r.Cost, r.Afford ? Teal : Dim);
+            RaiseButton(a, r, 1, rich ? r.Cost : "+1", rich ? r.Afford1 : true, r.CostFull, rich);
+            ImGuiNET.ImGui.TableNextColumn();
+            RaiseButton(a, r, 10, rich ? r.Cost10 : "+10", rich ? r.Afford10 : true, r.Cost10Full, rich);
 
             ImGuiNET.ImGui.TableNextColumn();
             ImGuiNET.ImGui.BeginDisabled(i == 0);
@@ -292,15 +313,31 @@ internal sealed partial class SkillsFace
             ImGuiNET.ImGui.BeginDisabled(i == a.Rows.Length - 1);
             if (ImGuiNET.ImGui.ArrowButton("##down", ImGuiDir.Down)) SendProg($"attrmove {r.Key} down");
             ImGuiNET.ImGui.EndDisabled();
-            ImGuiNET.ImGui.SameLine(0, 6);
-            ImGuiNET.ImGui.BeginDisabled(a.Running);
-            if (ImGuiNET.ImGui.SmallButton("+1")) SendProg($"attrraise {r.Key} 1");
-            ImGuiNET.ImGui.SameLine(0, 2);
-            if (ImGuiNET.ImGui.SmallButton("+10")) SendProg($"attrraise {r.Key} 10");
-            ImGuiNET.ImGui.EndDisabled();
             ImGuiNET.ImGui.PopID();
         }
         ImGuiNET.ImGui.EndTable();
+    }
+
+    /// <summary>
+    /// One by-hand raise button filling its cell. Unknown cost ("?") stays clickable (the server
+    /// checks); a known cost over the unassigned XP is red and disabled.
+    /// </summary>
+    private static void RaiseButton(AttrRaiser a, AttrRow r, int levels, string label, bool afford, string exact, bool rich)
+    {
+        bool known = rich && r.Known;
+        bool enabled = !a.Running && (!known || afford);
+        uint fg = !known ? Text : afford ? Teal : Red;
+        Vector2 pos = ImGuiNET.ImGui.GetCursorScreenPos();
+        float width = Math.Max(40f, ImGuiNET.ImGui.GetContentRegionAvail().X);
+        if (Button("##raise" + levels, label, pos, new Vector2(width, 20), fg, BtnFill, enabled, border: known && afford ? Teal : 0))
+            SendProg($"attrraise {r.Key} {levels}");
+        string what = $"{r.Label} +{levels} level{(levels > 1 ? "s" : "")}";
+        string tip = !known ? $"{what}: cost not read yet (Refresh XP)."
+                   : levels > 1 ? $"{what}: about {exact} XP (estimate)."
+                   : $"{what}: {exact} XP.";
+        if (known && !afford) tip += " Not enough unassigned XP.";
+        if (a.Running) tip += " Wait for the raise run to finish.";
+        ImGuiNET.ImGui.SetItemTooltip(tip);
     }
 
     /// <summary>The client's own base value for a raiser row (0 when the snapshot has none).</summary>
@@ -319,47 +356,119 @@ internal sealed partial class SkillsFace
         try
         {
             if (a.Off) { Label("/aug is not available on this server.", Mute); return; }
-            if (ImGuiNET.ImGui.SmallButton("Load /aug##prog")) SendProg("augload");
-            ImGuiNET.ImGui.SameLine();
-            Label(a.Status, Dim);
 
-            string lpc = a.LumPerCoin.ToString(CultureInfo.InvariantCulture);
-            ImGuiNET.ImGui.SetNextItemWidth(160);
-            if (ImGuiNET.ImGui.InputTextWithHint("Lum per Enlightened Coin##prog_lpc", "0 = don't price coins", ref lpc, 24u))
-                SendProg("lumpercoin " + lpc.Replace(" ", "", StringComparison.Ordinal));
+            // UB Augs tab buttons: Refresh Current, Reset Target, Copy Discord, Copy In-Game.
+            Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+            float x = p.X;
+            if (Button("##aug_refresh", "Refresh current", new Vector2(x, p.Y), new Vector2(120, 22), Text, StartBg, border: Teal))
+                SendProg("augload");
+            ImGuiNET.ImGui.SetItemTooltip("Reads your augmentation levels with /aug (also done once when this tab first opens).");
+            x += 124;
+            if (Button("##aug_reset", "Reset targets", new Vector2(x, p.Y), new Vector2(104, 22), Text, BtnFill))
+                SendProg("augreset");
+            ImGuiNET.ImGui.SetItemTooltip("Sets every target back to the current level.");
+            x += 108;
+            if (Button("##aug_discord", "Copy Discord", new Vector2(x, p.Y), new Vector2(100, 22), Text, BtnFill, enabled: a.CopyDiscord.Length > 0))
+                ImGuiNET.ImGui.SetClipboardText(a.CopyDiscord);
+            ImGuiNET.ImGui.SetItemTooltip("Copies the plan as a Discord code-block table.");
+            x += 104;
+            if (Button("##aug_ingame", "Copy in-game", new Vector2(x, p.Y), new Vector2(100, 22), Text, BtnFill, enabled: a.CopyIngame.Length > 0))
+                ImGuiNET.ImGui.SetClipboardText(a.CopyIngame);
+            ImGuiNET.ImGui.SetItemTooltip("Copies your current levels as one chat line.");
+            NextLine(p, 26);
+            Label("Status: " + a.Status, Dim);
 
-            if (ImGuiNET.ImGui.BeginTable("##prog_augs", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp,
+            if (ImGuiNET.ImGui.BeginTable("##prog_augs", 6, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp,
                     new Vector2(w - 16, 0)))
             {
                 ImGuiNET.ImGui.TableSetupColumn("Aug");
                 ImGuiNET.ImGui.TableSetupColumn("Current", ImGuiTableColumnFlags.WidthFixed, 56);
-                ImGuiNET.ImGui.TableSetupColumn("Target", ImGuiTableColumnFlags.WidthFixed, 86);
-                ImGuiNET.ImGui.TableSetupColumn("Luminance", ImGuiTableColumnFlags.WidthFixed, 80);
-                ImGuiNET.ImGui.TableSetupColumn("Coins", ImGuiTableColumnFlags.WidthFixed, 60);
+                ImGuiNET.ImGui.TableSetupColumn("Target", ImGuiTableColumnFlags.WidthFixed, 124);
+                ImGuiNET.ImGui.TableSetupColumn("Inc", ImGuiTableColumnFlags.WidthFixed, 44);
+                ImGuiNET.ImGui.TableSetupColumn("Luminance", ImGuiTableColumnFlags.WidthFixed, 76);
+                ImGuiNET.ImGui.TableSetupColumn("Coins", ImGuiTableColumnFlags.WidthFixed, 56);
                 ImGuiNET.ImGui.TableHeadersRow();
                 foreach (AugRow row in a.Rows)
                 {
                     ImGuiNET.ImGui.TableNextRow();
                     ImGuiNET.ImGui.TableNextColumn(); ImGuiNET.ImGui.TextUnformatted(row.Label);
-                    ImGuiNET.ImGui.TableNextColumn(); ImGuiNET.ImGui.TextUnformatted(row.Current.ToString(CultureInfo.InvariantCulture));
+                    ImGuiNET.ImGui.TableNextColumn(); ImGuiNET.ImGui.TextUnformatted(row.Current.ToString("N0", CultureInfo.InvariantCulture));
                     ImGuiNET.ImGui.TableNextColumn();
-                    int tgt = row.Target;
-                    ImGuiNET.ImGui.SetNextItemWidth(80);
-                    if (ImGuiNET.ImGui.InputInt("##prog_tgt_" + row.Key, ref tgt, 0))
-                        SendProg($"augtarget {row.Key} {Math.Clamp(tgt, 0, Math.Max(row.Cap, 0))}");
+                    DrawAugTarget(row);
+                    int inc = row.Increase > 0 ? row.Increase : Math.Max(0, row.Target - row.Current);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(inc > 0 ? inc.ToString("N0", CultureInfo.InvariantCulture) : "-", inc > 0 ? Teal : Dim);
                     ImGuiNET.ImGui.TableNextColumn(); ImGuiNET.ImGui.TextUnformatted(row.Lum);
-                    ImGuiNET.ImGui.TableNextColumn(); ImGuiNET.ImGui.TextUnformatted(row.Coins > 0 ? row.Coins.ToString(CultureInfo.InvariantCulture) : "-");
+                    ImGuiNET.ImGui.TableNextColumn(); ImGuiNET.ImGui.TextUnformatted(row.Coins > 0 ? row.Coins.ToString("N0", CultureInfo.InvariantCulture) : "-");
+                }
+                if (a.TotalLum.Length > 0)
+                {
+                    ImGuiNET.ImGui.TableNextRow();
+                    ImGuiNET.ImGui.TableNextColumn(); Label("TOTALS", Amber);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(a.TotalCurrent.ToString("N0", CultureInfo.InvariantCulture), Amber);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(a.TotalTarget.ToString("N0", CultureInfo.InvariantCulture), Amber);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(a.TotalIncrease.ToString("N0", CultureInfo.InvariantCulture), Amber);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(a.TotalLum, Amber);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(a.TotalCoins.ToString("N0", CultureInfo.InvariantCulture), Amber);
                 }
                 ImGuiNET.ImGui.EndTable();
             }
-            Label(a.Total, Amber);
-            if (a.Short.Length > 0) Label(a.Short, Text);
+
+            // Lum per coin commits on Enter / focus loss, not per keystroke.
+            string shownLpc = a.LumPerCoin.ToString(CultureInfo.InvariantCulture);
+            string lpc = _augLpcEdit ?? shownLpc;
+            ImGuiNET.ImGui.SetNextItemWidth(140);
+            bool lpcEnter = ImGuiNET.ImGui.InputTextWithHint("Lum per e-coin##prog_lpc", "0 = don't price coins", ref lpc, 24u,
+                ImGuiInputTextFlags.EnterReturnsTrue);
+            bool lpcActive = ImGuiNET.ImGui.IsItemActive();
+            if (lpcEnter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
+            {
+                _augLpcEdit = null;
+                string clean = lpc.Replace(" ", "", StringComparison.Ordinal).Replace(",", "", StringComparison.Ordinal);
+                if (!string.Equals(clean, shownLpc, StringComparison.Ordinal)) SendProg("lumpercoin " + clean);
+            }
+            else _augLpcEdit = lpcActive ? lpc : null;
+            ImGuiNET.ImGui.SetItemTooltip("Luminance one Enlightened Coin costs you. Accepts k / m / b / t suffixes.");
+
+            if (a.CoinsLine.Length > 0)
+            {
+                Label(a.CoinsLine, Text);
+                Label(a.LumToBuy, Text);
+            }
+            else
+            {
+                Label(a.Total, Amber);
+                if (a.Short.Length > 0) Label(a.Short, Text);
+            }
             Label(a.Banked, Dim);
         }
         finally
         {
             ImGuiNET.ImGui.Unindent(8);
         }
+    }
+
+    private string? _augLpcEdit;                                              // Lum per coin box being typed in
+    private readonly Dictionary<string, int> _augTargetEdit = new(StringComparer.Ordinal);   // target boxes being typed in
+
+    /// <summary>
+    /// Target cell: -/+ step one level (Ctrl: 100), typing commits on Enter or focus loss so a
+    /// half-typed number never reaches RynthAi. RynthAi clamps to current..cap.
+    /// </summary>
+    private void DrawAugTarget(AugRow row)
+    {
+        int tgt = _augTargetEdit.TryGetValue(row.Key, out int typing) ? typing : row.Target;
+        ImGuiNET.ImGui.SetNextItemWidth(-1);
+        bool commit = ImGuiNET.ImGui.InputInt("##prog_tgt_" + row.Key, ref tgt, 1, 100, ImGuiInputTextFlags.EnterReturnsTrue);
+        bool active = ImGuiNET.ImGui.IsItemActive();
+        if (commit || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
+        {
+            _augTargetEdit.Remove(row.Key);
+            int clamped = Math.Clamp(tgt, row.Current, Math.Max(row.Cap, row.Current));
+            if (clamped != row.Target) SendProg($"augtarget {row.Key} {clamped.ToString(CultureInfo.InvariantCulture)}");
+        }
+        else if (active) _augTargetEdit[row.Key] = tgt;
+        else _augTargetEdit.Remove(row.Key);
+        ImGuiNET.ImGui.SetItemTooltip($"Target {row.Label} level (up to {row.Cap.ToString("N0", CultureInfo.InvariantCulture)}).");
     }
 
     private void DrawEnlPlanner(EnlPlanner e, float w)
