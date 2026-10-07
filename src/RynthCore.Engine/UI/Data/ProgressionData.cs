@@ -105,6 +105,35 @@ internal sealed class AugPlanner
     /// <summary>Ready-made clipboard texts (UB's Copy Discord / Copy In-Game).</summary>
     [JsonPropertyName("copyDiscord")] public string CopyDiscord { get; set; } = "";
     [JsonPropertyName("copyIngame")]  public string CopyIngame { get; set; } = "";
+    /// <summary>This world's cost rules for the Cost settings editor (null from older RynthAi).</summary>
+    [JsonPropertyName("cfg")]         public AugCostConfig? Config { get; set; }
+}
+
+/// <summary>Per-server aug cost rules: level i costs (Base + (i-1)*Base*Pct/100) x the multiplier of its tier.</summary>
+internal sealed class AugCostConfig
+{
+    [JsonPropertyName("world")]  public string World { get; set; } = "";
+    /// <summary>The world has its own saved rules (false = UB / InfiniteLeaftide defaults).</summary>
+    [JsonPropertyName("custom")] public bool Custom { get; set; }
+    /// <summary>Tier multipliers: below S1, from S1, from S2, from S3, from S4.</summary>
+    [JsonPropertyName("mults")]  public double[] Multipliers { get; set; } = Array.Empty<double>();
+    [JsonPropertyName("rows")]   public AugCostRule[] Rows { get; set; } = Array.Empty<AugCostRule>();
+}
+
+internal sealed class AugCostRule
+{
+    [JsonPropertyName("key")]   public string Key { get; set; } = "";
+    [JsonPropertyName("label")] public string Label { get; set; } = "";
+    [JsonPropertyName("base")]  public long Base { get; set; }
+    /// <summary>Percent of Base added per level.</summary>
+    [JsonPropertyName("pct")]   public double Percent { get; set; }
+    [JsonPropertyName("coins")] public int Coins { get; set; }
+    [JsonPropertyName("s1")]    public int S1 { get; set; }
+    [JsonPropertyName("s2")]    public int S2 { get; set; }
+    [JsonPropertyName("s3")]    public int S3 { get; set; }
+    [JsonPropertyName("s4")]    public int S4 { get; set; }
+    /// <summary>Highest target (0 = no limit).</summary>
+    [JsonPropertyName("cap")]   public int Cap { get; set; }
 }
 
 internal sealed class AugRow

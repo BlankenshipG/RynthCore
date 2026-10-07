@@ -440,11 +440,116 @@ internal sealed partial class SkillsFace
                 if (a.Short.Length > 0) Label(a.Short, Text);
             }
             Label(a.Banked, Dim);
+            if (a.Config != null) DrawAugCostSettings(a.Config, w);
         }
         finally
         {
             ImGuiNET.ImGui.Unindent(8);
         }
+    }
+
+    private static readonly string[] AugTierNames = { "Below S1", "From S1", "From S2", "From S3", "From S4" };
+
+    // Cost-settings boxes being typed in, by box id (committed on Enter / focus loss).
+    private readonly Dictionary<string, int> _augCfgIntEdit = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, double> _augCfgDblEdit = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Collapsible editor for this world's aug cost rules (RynthAi saves them per world). The
+    /// defaults are UB's InfiniteLeaftide model; Reset puts a changed world back on them.
+    /// </summary>
+    private void DrawAugCostSettings(AugCostConfig cfg, float w)
+    {
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+        string head = $"Cost settings for {cfg.World}" + (cfg.Custom ? " (custom)" : " (InfiniteLeaftide defaults)");
+        if (!ImGuiNET.ImGui.CollapsingHeader(head + "##aug_cfg")) return;
+
+        ImGuiNET.ImGui.PushTextWrapPos(ImGuiNET.ImGui.GetCursorPosX() + w - 24);
+        Label("Level i costs (Base + (i - 1) x Base x Growth% / 100) x the multiplier of its tier. "
+              + "A tier starts at its S level (UB's InfiniteLeaftide model). Changes apply to this world only.", Dim);
+        ImGuiNET.ImGui.PopTextWrapPos();
+
+        // Tier multipliers, one box each.
+        Label("Tier multipliers", Text);
+        for (int t = 0; t < AugTierNames.Length && t < cfg.Multipliers.Length; t++)
+        {
+            if (t > 0) ImGuiNET.ImGui.SameLine();
+            ImGuiNET.ImGui.BeginGroup();
+            Label(AugTierNames[t], Mute);
+            ImGuiNET.ImGui.SetNextItemWidth(62);
+            CfgDouble($"mult{t}", cfg.Multipliers[t], v => $"augmult {t} {v.ToString("R", CultureInfo.InvariantCulture)}");
+            ImGuiNET.ImGui.EndGroup();
+        }
+
+        // Per-aug rules.
+        if (ImGuiNET.ImGui.BeginTable("##aug_cfg_rows", 9, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp,
+                new Vector2(w - 16, 0)))
+        {
+            ImGuiNET.ImGui.TableSetupColumn("Aug");
+            ImGuiNET.ImGui.TableSetupColumn("Base", ImGuiTableColumnFlags.WidthFixed, 74);
+            ImGuiNET.ImGui.TableSetupColumn("Growth%", ImGuiTableColumnFlags.WidthFixed, 54);
+            ImGuiNET.ImGui.TableSetupColumn("S1", ImGuiTableColumnFlags.WidthFixed, 46);
+            ImGuiNET.ImGui.TableSetupColumn("S2", ImGuiTableColumnFlags.WidthFixed, 46);
+            ImGuiNET.ImGui.TableSetupColumn("S3", ImGuiTableColumnFlags.WidthFixed, 46);
+            ImGuiNET.ImGui.TableSetupColumn("S4", ImGuiTableColumnFlags.WidthFixed, 46);
+            ImGuiNET.ImGui.TableSetupColumn("Cap", ImGuiTableColumnFlags.WidthFixed, 50);
+            ImGuiNET.ImGui.TableSetupColumn("Coins", ImGuiTableColumnFlags.WidthFixed, 42);
+            ImGuiNET.ImGui.TableHeadersRow();
+            foreach (AugCostRule r in cfg.Rows)
+            {
+                ImGuiNET.ImGui.TableNextRow();
+                ImGuiNET.ImGui.TableNextColumn(); ImGuiNET.ImGui.TextUnformatted(r.Label);
+                ImGuiNET.ImGui.TableNextColumn(); CfgInt($"{r.Key}.base", (int)Math.Min(r.Base, int.MaxValue), $"augcfg {r.Key} base");
+                ImGuiNET.ImGui.TableNextColumn(); CfgDouble($"{r.Key}.pct", r.Percent, v => $"augcfg {r.Key} pct {v.ToString("R", CultureInfo.InvariantCulture)}");
+                ImGuiNET.ImGui.TableNextColumn(); CfgInt($"{r.Key}.s1", r.S1, $"augcfg {r.Key} s1");
+                ImGuiNET.ImGui.TableNextColumn(); CfgInt($"{r.Key}.s2", r.S2, $"augcfg {r.Key} s2");
+                ImGuiNET.ImGui.TableNextColumn(); CfgInt($"{r.Key}.s3", r.S3, $"augcfg {r.Key} s3");
+                ImGuiNET.ImGui.TableNextColumn(); CfgInt($"{r.Key}.s4", r.S4, $"augcfg {r.Key} s4");
+                ImGuiNET.ImGui.TableNextColumn(); CfgInt($"{r.Key}.cap", r.Cap, $"augcfg {r.Key} cap");
+                ImGuiNET.ImGui.SetItemTooltip("Highest target level; 0 = no limit.");
+                ImGuiNET.ImGui.TableNextColumn(); CfgInt($"{r.Key}.coins", r.Coins, $"augcfg {r.Key} coins");
+                ImGuiNET.ImGui.SetItemTooltip("Enlightened Coins per level.");
+            }
+            ImGuiNET.ImGui.EndTable();
+        }
+
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        if (Button("##aug_cfg_reset", "Reset to InfiniteLeaftide defaults", p, new Vector2(230, 22), Text, BtnFill, enabled: cfg.Custom))
+            SendProg("augcfgreset");
+        ImGuiNET.ImGui.SetItemTooltip("Drops this world's changes; it goes back to UB's InfiniteLeaftide rules.");
+        NextLine(p, 26);
+    }
+
+    /// <summary>Integer box that sends "<paramref name="verb"/> value" on Enter or focus loss.</summary>
+    private void CfgInt(string id, int value, string verb)
+    {
+        int v = _augCfgIntEdit.TryGetValue(id, out int typing) ? typing : value;
+        ImGuiNET.ImGui.SetNextItemWidth(-1);
+        bool enter = ImGuiNET.ImGui.InputInt("##cfg_" + id, ref v, 0, 0, ImGuiInputTextFlags.EnterReturnsTrue);
+        bool active = ImGuiNET.ImGui.IsItemActive();
+        if (enter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
+        {
+            _augCfgIntEdit.Remove(id);
+            if (v != value) SendProg($"{verb} {Math.Max(0, v).ToString(CultureInfo.InvariantCulture)}");
+        }
+        else if (active) _augCfgIntEdit[id] = v;
+        else _augCfgIntEdit.Remove(id);
+    }
+
+    /// <summary>Decimal box (the caller sets its width) that sends <paramref name="command"/>(value) on Enter or focus loss.</summary>
+    private void CfgDouble(string id, double value, Func<double, string> command)
+    {
+        double v = _augCfgDblEdit.TryGetValue(id, out double typing) ? typing : value;
+        if (!id.StartsWith("mult", StringComparison.Ordinal)) ImGuiNET.ImGui.SetNextItemWidth(-1);
+        bool enter = ImGuiNET.ImGui.InputDouble("##cfg_" + id, ref v, 0, 0, "%.6g", ImGuiInputTextFlags.EnterReturnsTrue);
+        bool active = ImGuiNET.ImGui.IsItemActive();
+        if (enter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
+        {
+            _augCfgDblEdit.Remove(id);
+            if (Math.Abs(v - value) > 1e-9 && double.IsFinite(v)) SendProg(command(Math.Max(0, v)));
+        }
+        else if (active) _augCfgDblEdit[id] = v;
+        else _augCfgDblEdit.Remove(id);
     }
 
     private string? _augLpcEdit;                                              // Lum per coin box being typed in
