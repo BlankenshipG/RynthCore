@@ -73,6 +73,8 @@ internal sealed class RynthAiSettings
     // Recharge
     public int HealAt { get; set; } = 60;
     public int RestamAt { get; set; } = 30;
+    // Once a recharge starts under Re-stam At, recharge to this % (0 = one recharge; an older RynthAi doesn't send it).
+    public int RestamTo { get; set; } = 0;
     public int GetManaAt { get; set; } = 40;
     public int TopOffHP { get; set; } = 95;
     public int TopOffStam { get; set; } = 95;
@@ -512,6 +514,8 @@ internal static class SettingsSchema
                 "While a target is within Monster Range, cast Heal Self when HP < this %."),
             Int("Re-stam At", s => s.RestamAt, (s, v) => s.RestamAt = v, 0, 100, 1,
                 "While a target is within Monster Range, cast Revitalize Self when Stamina < this %."),
+            Int("Re-stam To", s => s.RestamTo, (s, v) => s.RestamTo = v, 0, 100, 1,
+                "Once a recharge starts under Re-stam At, keep recharging until Stamina reaches this %\n(one Revitalize often doesn't get far). 0 = one recharge, as before."),
             Int("Get Mana At", s => s.GetManaAt, (s, v) => s.GetManaAt = v, 0, 100, 1,
                 "While a target is within Monster Range, cast Stamina to Mana Self when Mana < this % (needs stam > 15%)."),
             Spacer(),
