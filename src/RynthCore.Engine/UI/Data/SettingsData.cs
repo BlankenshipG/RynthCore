@@ -44,6 +44,13 @@ internal sealed class RynthAiSettings
     // Decal bridge: stop RynthAi's macro when VTank's starts (one bot per client). Default on;
     // an older RynthAi doesn't send it, and a missing field must not read as "off".
     public bool YieldToVTank { get; set; } = true;
+    // Server Features (RynthAi ServerFeatureGate): world names that turn on the ILT Hub, the
+    // Progression planners and the attribute raiser, plus a manual override. An older RynthAi
+    // doesn't send them; RynthAi lays a save over its current values, so these defaults are
+    // only ever shown, never applied. ServerFeaturesStatus is read-only (RynthAi ignores it).
+    public string FeatureServerNames { get; set; } = "InfiniteLeaftide, *Leaftide*";
+    public bool ForceServerFeatures { get; set; }
+    public string ServerFeaturesStatus { get; set; } = string.Empty;
     public bool EnableRaycasting { get; set; }
     public bool UseArcs { get; set; }
     public float BowArcVelocity { get; set; } = 25f;
@@ -265,7 +272,7 @@ internal static unsafe class SettingsCommands
 
 // ── Schema ─────────────────────────────────────────────────────────────────
 
-internal enum SettingKind { Bool, Int, Float, Double, Combo, Section, Spacer, Note, CraftingStatus, Button }
+internal enum SettingKind { Bool, Int, Float, Double, Combo, Section, Spacer, Note, CraftingStatus, Button, Text, Status }
 
 /// <summary>
 /// One row of a settings tab. Numeric values go through double (bools as
@@ -286,7 +293,12 @@ internal sealed record SettingRow(
     bool Gates = false,
     // Button rows: the button's caption (Label is the row label) and its action. Any thread.
     string? ButtonText = null,
-    Action? Click = null)
+    Action? Click = null,
+    // Text rows: the string value (committed on Enter / focus loss); Status rows: GetText only.
+    Func<RynthAiSettings, string>? GetText = null,
+    Action<RynthAiSettings, string>? SetText = null,
+    // Text rows: greyed hint shown while the box is empty.
+    string? Hint = null)
 {
     public bool IsVisible(RynthAiSettings s) => VisibleWhen == null || VisibleWhen(s);
 }
@@ -366,6 +378,14 @@ internal static class SettingsSchema
 
     private static SettingRow Button(string label, string buttonText, Action click, string? tip = null) =>
         new(SettingKind.Button, label, tip, ButtonText: buttonText, Click: click);
+
+    private static SettingRow Text(string label, Func<RynthAiSettings, string> get, Action<RynthAiSettings, string> set,
+        string? tip = null, string? hint = null) =>
+        new(SettingKind.Text, label, tip, GetText: get, SetText: set, Hint: hint);
+
+    // A one-line status RynthAi computes (read-only; empty = hidden).
+    private static SettingRow Status(Func<RynthAiSettings, string> get) =>
+        new(SettingKind.Status, "", GetText: get, VisibleWhen: s => !string.IsNullOrEmpty(get(s)));
 
     private static SettingRow[] Tiers(Func<RynthAiSettings, int>[] get, Action<RynthAiSettings, int>[] set)
     {
@@ -456,6 +476,17 @@ internal static class SettingsSchema
             Bool("Yield to VTank", s => s.YieldToVTank, (s, v) => s.YieldToVTank = v,
                 "With Decal: when VTank's macro starts (/vt start), RynthAi's macro stops, and it won't start while VTank runs.\nOne bot per client. Without Decal this does nothing. Also: /ra vtankyield on|off."),
             Bool("Enable Raycasting", s => s.EnableRaycasting, (s, v) => s.EnableRaycasting = v),
+            Spacer(),
+            Section("Server Features (ILT / infinite attributes)"),
+            Status(s => s.ServerFeaturesStatus),
+            Text("Servers", s => s.FeatureServerNames, (s, v) => s.FeatureServerNames = v,
+                "Comma-separated world names that turn on the ILT Hub, the Skills panel's Progression planners\n" +
+                "and the attribute raiser. * is a wildcard (*Leaftide* matches any name containing Leaftide).\n" +
+                "Case does not matter. Saved with the RynthAi profile.",
+                hint: "InfiniteLeaftide, *Leaftide*"),
+            Bool("Force enable on this server (manual override)", s => s.ForceServerFeatures, (s, v) => s.ForceServerFeatures = v,
+                "Turn the features on for whatever world you are on, even if it is not in the list.\n" +
+                "Each feature still follows what the server reports (for example /xp off keeps the attribute raiser off)."),
             Spacer(),
             Section("Missile Arc Velocities (m/s)"),
             Bool("Use Arcs for Missile LoS", s => s.UseArcs, (s, v) => s.UseArcs = v,
