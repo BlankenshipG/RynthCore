@@ -269,6 +269,7 @@ internal static partial class PluginManager
     private static VendorBuyCallbackDelegate? _vendorBuyCallback;
     private static VendorSellCallbackDelegate? _vendorSellCallback;
     private static GetVendorTradeStatusCallbackDelegate? _getVendorTradeStatusCallback;
+    private static GetMergeStackResultCallbackDelegate? _getMergeStackResultCallback;
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -2436,6 +2437,14 @@ internal static partial class PluginManager
         // %APPDATA%\RynthCore\engine.json. The engine never auto-scans a
         // bundled Plugins\ folder — that historically caused stray DLLs to
         // load on next start (or after hot-reload) without the user knowing.
+        //
+        // Track DLL file names and canonical paths already staged this generation. engine.json can
+        // list the same plugin twice (e.g. a stale copy in another folder); a second File.Copy to the
+        // same shadow file name fails while the first copy is still mapped ("used by another process")
+        // and breaks hot-reload ordering for later DLLs.
+        var loadedBasenames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var loadedCanonicalPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         var extraPaths = EngineSettings.PluginPaths;
         var candidates = new List<string>(extraPaths.Count);
         for (int i = 0; i < extraPaths.Count; i++)
@@ -2447,30 +2456,21 @@ internal static partial class PluginManager
                 continue;
             }
 
-            // Skip if a plugin with the same filename was already loaded from the default directory.
-            // Both paths share the same session shadow dir — loading the same filename twice would
-            // try to overwrite a locked shadow copy and crash.
-            string extraFileName = Path.GetFileName(dllPath);
-            bool alreadyLoaded = false;
-            for (int j = 0; j < _plugins.Count; j++)
+            string baseName = Path.GetFileName(dllPath);
+            if (loadedBasenames.Contains(baseName))
             {
-                if (string.Equals(Path.GetFileName(_plugins[j].SourceFilePath), extraFileName, StringComparison.OrdinalIgnoreCase))
-                {
-                    alreadyLoaded = true;
-                    break;
-                }
+                RynthLog.Plugin($"PluginManager: Skipping extra plugin (same file name already loaded from plugins directory or earlier extra path): {dllPath}");
+                continue;
             }
-            for (int j = 0; j < candidates.Count && !alreadyLoaded; j++)
+
+            if (TryGetCanonicalPath(dllPath, out string extraCanon) && loadedCanonicalPaths.Contains(extraCanon))
             {
-                if (string.Equals(Path.GetFileName(candidates[j]), extraFileName, StringComparison.OrdinalIgnoreCase))
-                    alreadyLoaded = true;
-            }
-            if (alreadyLoaded)
-            {
-                RynthLog.Plugin($"PluginManager: Extra plugin {extraFileName} already loaded from default directory — skipping.");
+                RynthLog.Plugin($"PluginManager: Skipping extra plugin (same resolved path already loaded): {dllPath}");
                 continue;
             }
             candidates.Add(dllPath);
+            loadedBasenames.Add(baseName);
+            TryAddCanonicalPath(loadedCanonicalPaths, dllPath);
         }
 
         // Manifests (embedded in the DLLs, read without loading them): refuse a plugin that needs
@@ -2503,7 +2503,29 @@ internal static partial class PluginManager
             }
         }
 
+        // RenderAll / RenderOverlayAll iterate only this snapshot; without it they see no plugins.
         PublishPluginsRenderSnapshot();
+        RynthLog.Plugin($"PluginManager: render snapshot published ({_plugins.Count} plugin(s)).");
+    }
+
+    private static void TryAddCanonicalPath(HashSet<string> set, string path)
+    {
+        if (TryGetCanonicalPath(path, out string canon))
+            set.Add(canon);
+    }
+
+    private static bool TryGetCanonicalPath(string path, out string canonical)
+    {
+        try
+        {
+            canonical = Path.GetFullPath(path);
+            return true;
+        }
+        catch
+        {
+            canonical = string.Empty;
+            return false;
+        }
     }
 
     // ── Plugin manifests ─────────────────────────────────────────────────
@@ -2899,6 +2921,7 @@ internal static partial class PluginManager
         _vendorBuyCallback ??= VendorBuyAction;
         _vendorSellCallback ??= VendorSellAction;
         _getVendorTradeStatusCallback ??= GetVendorTradeStatusAction;
+        _getMergeStackResultCallback ??= GetMergeStackResultAction;
 
         _api.Version = PluginContractVersion.Current;
         _api.LogFn = Marshal.GetFunctionPointerForDelegate(_logCallback);
@@ -3042,6 +3065,7 @@ internal static partial class PluginManager
         _api.VendorBuyFn = Marshal.GetFunctionPointerForDelegate(_vendorBuyCallback);
         _api.VendorSellFn = Marshal.GetFunctionPointerForDelegate(_vendorSellCallback);
         _api.GetVendorTradeStatusFn = Marshal.GetFunctionPointerForDelegate(_getVendorTradeStatusCallback);
+        _api.GetMergeStackResultFn = Marshal.GetFunctionPointerForDelegate(_getMergeStackResultCallback);
         RouteApiThroughLoader();
     }
 
@@ -3757,6 +3781,22 @@ internal static partial class PluginManager
     private static int MergeStackInternal(uint sourceObjectId, uint targetObjectId)
     {
         return ToAbiBool(ClientHelperHooks.MergeStackInternal(sourceObjectId, targetObjectId));
+    }
+
+    // v68: outcome of the latest MergeStackInternal(source, target) (MergeStackResults codes).
+    private static unsafe int GetMergeStackResultAction(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs)
+    {
+        try
+        {
+            int status = MergeStackResults.Get(sourceObjectId, targetObjectId, out int sent, out int age);
+            if (amount != null) *amount = sent;
+            if (ageMs != null) *ageMs = age;
+            return status;
+        }
+        catch
+        {
+            return MergeStackResults.None;
+        }
     }
 
     private static int GiveObjectTo(uint objectId, uint targetId, int amount)

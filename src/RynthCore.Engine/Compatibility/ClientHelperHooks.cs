@@ -641,12 +641,21 @@ internal static class ClientHelperHooks
     /// </summary>
     public static bool MergeStackInternal(uint sourceObjectId, uint targetObjectId)
     {
+        // Every exit records its outcome in MergeStackResults so the plugin can poll
+        // GetMergeStackResult instead of guessing from a later inventory snapshot.
         if (!MainThreadGuard.IsOnMainThread())
-            return AcMainThreadQueue.EnqueueMergeStackInternal(sourceObjectId, targetObjectId);
+        {
+            bool queued = AcMainThreadQueue.EnqueueMergeStackInternal(sourceObjectId, targetObjectId);
+            MergeStackResults.Record(sourceObjectId, targetObjectId,
+                queued ? MergeStackResults.Queued : MergeStackResults.QueueFull);
+            return queued;
+        }
 
-        if (_eventStackableMerge == null) return false;
-        if (!IsValidObjectId(sourceObjectId)) return false;
-        if (!IsValidObjectId(targetObjectId)) return false;
+        if (_eventStackableMerge == null || !IsValidObjectId(sourceObjectId) || !IsValidObjectId(targetObjectId))
+        {
+            MergeStackResults.Record(sourceObjectId, targetObjectId, MergeStackResults.Failed);
+            return false;
+        }
 
         // Read counts via the PWD fast path (stypes 11/12 are served from
         // PublicWeenieDesc directly — no broken InqInt for inventory items).
@@ -665,6 +674,7 @@ internal static class ClientHelperHooks
             if (room <= 0)
             {
                 RynthLog.Verbose($"Compat: Event_StackableMerge skipped - target 0x{targetObjectId:X8}({targetCount}) is full (max={maxStack})");
+                MergeStackResults.Record(sourceObjectId, targetObjectId, MergeStackResults.TargetFull);
                 return false;
             }
             amount = Math.Min(sourceCount, room);
@@ -675,17 +685,24 @@ internal static class ClientHelperHooks
             amount = sourceCount;
         }
 
-        if (amount <= 0) return false;
+        if (amount <= 0)
+        {
+            MergeStackResults.Record(sourceObjectId, targetObjectId, MergeStackResults.Failed);
+            return false;
+        }
 
         try
         {
             byte rv = _eventStackableMerge(sourceObjectId, targetObjectId, amount);
             RynthLog.Verbose($"Compat: Event_StackableMerge from=0x{sourceObjectId:X8}({sourceCount}) to=0x{targetObjectId:X8}({targetCount}) amount={amount}/{maxStack} rv={rv}");
+            MergeStackResults.Record(sourceObjectId, targetObjectId,
+                rv != 0 ? MergeStackResults.Sent : MergeStackResults.Failed, rv != 0 ? amount : 0);
             return rv != 0;
         }
         catch (Exception ex)
         {
             RynthLog.Compat($"Compat: Event_StackableMerge threw - {ex.Message}");
+            MergeStackResults.Record(sourceObjectId, targetObjectId, MergeStackResults.Failed);
             return false;
         }
     }

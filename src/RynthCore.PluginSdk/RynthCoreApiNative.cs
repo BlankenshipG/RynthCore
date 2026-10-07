@@ -162,6 +162,8 @@ public struct RynthCoreApiNative
     public IntPtr GetTrainingInfoFn;         // int GetTrainingInfo(TrainingInfoNative* info, TrainingEntryNative* entries, int max) -> entries there are
     public IntPtr RaiseFn;                   // int Raise(uint kind, uint stype, uint ranks, long expectedXp, long* xpSent) -> RaiseResult
     public IntPtr TrainSkillFn;              // int TrainSkill(uint stype, int expectedCredits) -> RaiseResult
+    // v80: outcome of the latest merge-stack request (cdecl thunk); was v77 on QOL-items
+    public IntPtr GetMergeStackResultFn;     // int GetMergeStackResult(uint src, uint tgt, int* amount, int* ageMs)
 }
 
 /// <summary>

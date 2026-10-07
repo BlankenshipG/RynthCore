@@ -15,5 +15,6 @@ namespace RynthCore.Engine.Plugins;
 /// <summary>Current API version. Bump when adding fields to RynthCoreAPI (and the SDK's RynthCoreApiNative).</summary>
 internal static class PluginContractVersion
 {
-    public const uint Current = 79;
+    // v80: GetMergeStackResult (was v77 on QOL-items, renumbered after upstream's v77-v79).
+    public const uint Current = 80;
 }

@@ -468,11 +468,11 @@ internal static class Program
             Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.TrainingEntryNative>(f.Name), (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.TrainingEntryNative>(f.Name), "TrainingEntryNative." + f.Name + " offset");
         Eq(RynthCore.PluginSdk.TrainingInfoFlags.Busy, RynthCore.Engine.Plugins.TrainingInfoFlags.Busy, "info flag bits");
         Eq(RynthCore.PluginSdk.TrainingEntryFlags.Trainable, RynthCore.Engine.Plugins.TrainingEntryFlags.Trainable, "entry flag bits");
-        // The three v79 slots are the table's last three, in this order.
-        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).TakeLast(3).ToArray();
-        Check(names.SequenceEqual(new[] { "GetTrainingInfoFn", "RaiseFn", "TrainSkillFn" }), "v79 slots last: " + string.Join(",", names));
-        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).TakeLast(3).ToArray();
-        Check(sdkNames.SequenceEqual(names), "SDK v79 slots in the same order");
+        // The three v79 slots, then v80's GetMergeStackResultFn, end the table in this order.
+        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).TakeLast(4).ToArray();
+        Check(names.SequenceEqual(new[] { "GetTrainingInfoFn", "RaiseFn", "TrainSkillFn", "GetMergeStackResultFn" }), "v79 then v80 slots last: " + string.Join(",", names));
+        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).TakeLast(4).ToArray();
+        Check(sdkNames.SequenceEqual(names), "SDK v79 and v80 slots in the same order");
     }
 
     private sealed class ProbePlugin : RynthCore.PluginCore.RynthPluginBase { }

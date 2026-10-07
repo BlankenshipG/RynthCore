@@ -2625,36 +2625,7 @@ internal static class ClientObjectHooks
             return TryGetPwdSnapshotInt(objectId, stype, out value);
         }
 
-        if (pwdFieldOffset >= 0 && _weeniePhysicsObjOffset >= 0)
-        {
-            try
-            {
-                IntPtr weeniePtr = _getWeenieObject(objectId);
-                if (weeniePtr == IntPtr.Zero)
-                    return false;
-
-                int pwdBase = _weeniePhysicsObjOffset + 4;
-                IntPtr fieldAddr = weeniePtr + pwdBase + pwdFieldOffset;
-                // Page-probe BOTH ends of the 4-byte read span (mirrors
-                // TryGetObjectOwnershipInfo's dual-end probe): a freed-but-decommitted
-                // weenie whose field straddles a committed/decommitted page boundary is
-                // an uncatchable AV under NativeAOT; the catch below only covers
-                // null-page faults. All stypes served here are Marshal.ReadInt32
-                // (4 bytes), so the span is [fieldAddr, fieldAddr+3].
-                if (!IsReadablePointer(fieldAddr) || !IsReadablePointer(fieldAddr + 3))
-                    return false;
-
-                value = Marshal.ReadInt32(fieldAddr);
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        // Fall through to CBaseQualities::InqInt for stypes not in PWD.
-        // (IsOnMainThread already checked above, before the PWD fast path.)
+        // CBaseQualities::InqInt for stypes not in PWD.
         if (_inqInt == null)
         {
             if (!Probe() || _inqInt == null)

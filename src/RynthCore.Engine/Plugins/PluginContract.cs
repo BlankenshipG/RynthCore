@@ -10,7 +10,11 @@
 //    const char* RynthPluginName()           — human-readable name
 //    const char* RynthPluginVersion()        — version string (e.g. "1.0.0")
 //    void        RynthPluginTick()           — per-frame logic (before render)
-//    void        RynthPluginRender()         — per-frame ImGui drawing
+//    void        RynthPluginRender()         — per-frame ImGui drawing (ImGui shell on)
+//    void        RynthPluginRenderOverlay()  — per-frame ImGui drawing while the ImGui shell is
+//                                              off (Avalonia mode): only windows that have no
+//                                              Avalonia panel. Gated by engine.json
+//                                              "EnablePluginOverlayWindows" (default true).
 //    void        RynthPluginOnServerMessage(uint opcode, byte* data, int length)
 //                                            — v78, reassembled server messages the plugin
 //                                              asked for with SetServerMessageInterestFn
@@ -844,6 +848,15 @@ internal struct RynthCoreAPI
     /// must equal that price; 0 skips the comparison. Same results and threading as Raise.
     /// Requires API v79+.</summary>
     public IntPtr TrainSkillFn;
+
+    /// <summary>v80: <c>int GetMergeStackResult(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs)</c>:
+    /// outcome of the latest MergeStackInternal(source, target) request: 0 none, 1 queued,
+    /// 2 sent (amount = units sent), 3 skipped because the target was already full,
+    /// 4 failed (invalid ids / AC rejected / threw), 5 dropped (main-thread queue full).
+    /// ageMs = how long ago the outcome was recorded. Either out pointer may be null.
+    /// The thunk is cdecl. Any thread. Requires API v80+ (it was v77 on QOL-items before
+    /// upstream's v77-v79 landed; plugins built against that SDK must be rebuilt).</summary>
+    public IntPtr GetMergeStackResultFn;
 }
 
 /// <summary>v79 <see cref="TrainingInfoNative.Flags"/> bits.</summary>
@@ -1634,6 +1647,10 @@ internal unsafe delegate uint VendorSellCallbackDelegate(uint vendorId, uint* it
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetVendorTradeStatusCallbackDelegate(VendorTradeStatusNative* status);
+// Cdecl is mandatory on every API delegate: without it x86 marshals a stdcall thunk, the callee and
+// the cdecl caller both pop the args, and the plugin's stack drifts on every call.
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetMergeStackResultCallbackDelegate(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetVTankStateCallbackDelegate(int* sequence);

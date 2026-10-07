@@ -207,7 +207,7 @@ internal sealed unsafe class LayeredWindow : IDisposable
     [DllImport("user32.dll")] private static extern bool   BringWindowToTop(IntPtr hWnd);
     private const uint GW_OWNER = 4;
     [DllImport("user32.dll")] private static extern bool   ReleaseCapture();
-    [DllImport("user32.dll")] private static extern bool   PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] private static extern bool   AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
     [DllImport("user32.dll")] private static extern uint   GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
     [DllImport("user32.dll")] private static extern bool   GetCursorPos(out POINT lpPoint);
@@ -275,15 +275,20 @@ internal sealed unsafe class LayeredWindow : IDisposable
     /// DestroyWindow only works there. A window created on the overlay thread
     /// (not the game thread) could not be destroyed by a destroy posted to the
     /// game thread (ACCESS_DENIED) and stayed on screen: the double dashboard.
+    /// Must not collide with Win32Backend's game-window messages (0x8001-0x8005).
     /// </summary>
     private const uint WM_RYNTH_SELF_DESTROY = 0x8051;
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     private static IntPtr StaticWndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
+        // Handled before the instance lookup: Dispose has already removed the
+        // instance by the time this posted message is dispatched.
         if (msg == WM_RYNTH_SELF_DESTROY)
         {
-            DestroyWindow(hwnd);
+            bool destroyed = DestroyWindow(hwnd);
+            int err = destroyed ? 0 : Marshal.GetLastWin32Error();
+            RynthCore.Engine.RynthLog.Info($"LayeredWindow: self-destroy DestroyWindow(0x{hwnd.ToInt64():X}) = {destroyed} err={err} on thread=0x{GetCurrentThreadId():X}.");
             return IntPtr.Zero;
         }
 
@@ -317,12 +322,11 @@ internal sealed unsafe class LayeredWindow : IDisposable
     /// FloatingPanelHost's RunOnGameThread) and DestroyWindow only works on
     /// the owning thread.
     ///
-    /// Dispose only posts the destroy, and Win32Backend.Shutdown unhooks the
-    /// game WndProc ~1 ms after the overlay stops — usually before the game
-    /// thread gets to the post. AC's own WndProc then drops it, and because
-    /// the engine module is never unloaded the panel lives on: frozen on its
-    /// last frame, deaf to input, and hidden under the next generation's copy
-    /// of it until that one is moved ("two RynthAi windows").
+    /// Synchronous backstop for panels that were never disposed: because the
+    /// engine module is never unloaded, such a panel lives on after shutdown,
+    /// frozen on its last frame, deaf to input, and hidden under the next
+    /// generation's copy of it until that one is moved ("two RynthAi windows").
+    /// (Disposed panels destroy themselves via WM_RYNTH_SELF_DESTROY.)
     ///
     /// <paramref name="includeThisGeneration"/>=false spares this engine
     /// load's own windows (class names carry a per-load Guid) and removes only
@@ -1501,34 +1505,51 @@ internal sealed unsafe class LayeredWindow : IDisposable
             // an unrelated window that reused the handle in between.
             if (Retire(hwnd)) { DisposeDib(); return; }
 
-            // DestroyWindow MUST run on the thread that owns the HWND — Win32
-            // silently no-ops it otherwise. The HWND was created on the game
-            // thread (see FloatingPanelHost ctor's RunOnGameThread wrap), so
-            // marshal the teardown there too. Without this, redocking left
-            // the original floating window visible but orphaned ("frozen
-            // duplicate").
-            //
-            // UI deep-dive finding P0-1 (2026-07-02): this used to block via
-            // RunOnGameThread (a synchronous SendMessage) — Dispose is often
-            // called from the Avalonia UI thread (e.g. redocking a panel),
-            // and blocking it on the game thread's WndProc is part of the
-            // same AB-BA deadlock class the OnInput fix closes. Dispose
-            // doesn't need to observe the destroy completing, so post it
-            // instead — fire-and-forget, never blocks the caller.
-            try
-            {
-                RynthCore.Engine.ImGuiBackend.Win32Backend.PostDestroyWindow(hwnd);
-            }
-            catch (Exception ex)
-            {
-                RynthCore.Engine.RynthLog.Info($"LayeredWindow.Dispose: PostDestroyWindow threw {ex.GetType().Name}: {ex.Message}. Falling back to inline call on thread=0x{GetCurrentThreadId():X}.");
-                // Best-effort fallback if Win32Backend isn't available
-                // (e.g. early shutdown after it's already torn down).
-                bool destroyed = DestroyWindow(hwnd);
-                RynthCore.Engine.RynthLog.Info($"LayeredWindow.Dispose: fallback DestroyWindow(0x{hwnd.ToInt64():X}) = {destroyed}.");
-            }
+            // DestroyWindow MUST run on the thread that owns the HWND (Win32
+            // fails it with ERROR_ACCESS_DENIED otherwise); a missed destroy
+            // leaves the floating window visible but orphaned ("frozen duplicate").
+            DestroyOnOwnerThread(hwnd);
         }
 
         DisposeDib();
+    }
+
+    /// <summary>
+    /// Destroys <paramref name="hwnd"/> on the thread that actually owns it, never
+    /// blocking the caller. Inline when the caller is the owner; otherwise posts
+    /// WM_RYNTH_SELF_DESTROY to the window itself so its own WndProc destroys it.
+    /// Posting to the panel (not the game window) works for panels created on
+    /// any thread, and still works after Win32Backend has unhooked the game
+    /// WndProc at shutdown — a post to the game window would be dropped by AC.
+    /// </summary>
+    private static void DestroyOnOwnerThread(IntPtr hwnd)
+    {
+        uint ownerThread = GetWindowThreadProcessId(hwnd, out _);
+        uint currentThread = GetCurrentThreadId();
+
+        if (ownerThread == 0)
+        {
+            // Window already gone (e.g. its owning thread exited, which destroys it).
+            RynthCore.Engine.RynthLog.Info($"LayeredWindow.Dispose: HWND=0x{hwnd.ToInt64():X} no longer exists — nothing to destroy.");
+            return;
+        }
+
+        if (ownerThread == currentThread)
+        {
+            bool destroyed = DestroyWindow(hwnd);
+            int err = destroyed ? 0 : Marshal.GetLastWin32Error();
+            RynthCore.Engine.RynthLog.Info($"LayeredWindow.Dispose: DestroyWindow(0x{hwnd.ToInt64():X}) inline on owner thread=0x{currentThread:X} = {destroyed} err={err}.");
+            return;
+        }
+
+        if (PostMessage(hwnd, WM_RYNTH_SELF_DESTROY, IntPtr.Zero, IntPtr.Zero))
+        {
+            RynthCore.Engine.RynthLog.Info($"LayeredWindow.Dispose: posted self-destroy to HWND=0x{hwnd.ToInt64():X} (owner thread=0x{ownerThread:X}, caller thread=0x{currentThread:X}).");
+            return;
+        }
+
+        // Post failed (queue full or HWND destroyed in the meantime); a cross-thread
+        // DestroyWindow would only fail, so report it rather than attempt it.
+        RynthCore.Engine.RynthLog.Error($"LayeredWindow.Dispose: PostMessage(self-destroy) to HWND=0x{hwnd.ToInt64():X} failed err={Marshal.GetLastWin32Error()} (owner thread=0x{ownerThread:X}).");
     }
 }
