@@ -53,6 +53,8 @@ internal sealed class SettingsFace : IImGuiPanel
         public bool Active;     // the box had keyboard focus last frame
     }
     private readonly Dictionary<SettingRow, NumberEdit> _edits = new();
+    // Text rows being typed in (the saved value shows again once the box loses focus).
+    private readonly Dictionary<SettingRow, string> _textEdits = new();
 
     /// <summary>Extra sidebar tab after the schema tabs; drawn from UiSources.Charms, not settings rows.</summary>
     private const string CharmsTabName = "Charms Tracking";
@@ -190,6 +192,8 @@ internal sealed class SettingsFace : IImGuiPanel
             case SettingKind.CraftingStatus: CraftingStatus(row); break;
             case SettingKind.Button: ButtonRow(row, w); break;
             case SettingKind.TraceCategories: TraceCategoriesRow(row, w); break;
+            case SettingKind.Text: TextRow(row, w); break;
+            case SettingKind.Status: StatusRow(row, w); break;
         }
     }
 
@@ -243,6 +247,59 @@ internal sealed class SettingsFace : IImGuiPanel
     {
         _data.DiagCategories = levels;
         SettingsCommands.Save(_data.Clone());
+    }
+
+    // Label, then a full-width box; the value commits on Enter or focus loss (like the number boxes).
+    private void TextRow(SettingRow row, float w)
+    {
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, TextDim);
+        ImGuiNET.ImGui.TextUnformatted(row.Label);
+        ImGuiNET.ImGui.PopStyleColor();
+        Tooltip(row);
+
+        string saved = row.GetText?.Invoke(_data) ?? string.Empty;
+        string text = _textEdits.TryGetValue(row, out string? typing) ? typing : saved;
+        ImGuiNET.ImGui.SetNextItemWidth(Math.Max(80, w - 4));
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.FrameBg, PanelBg);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Amber);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, BtnBord);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1f);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 0f);
+        bool enter = ImGuiNET.ImGui.InputTextWithHint("##text", row.Hint ?? string.Empty, ref text, 512u,
+            ImGuiInputTextFlags.EnterReturnsTrue);
+        bool active = ImGuiNET.ImGui.IsItemActive();
+        bool committed = enter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit();
+        ImGuiNET.ImGui.PopStyleVar(2);
+        ImGuiNET.ImGui.PopStyleColor(3);
+        Tooltip(row);
+        _editing |= active;
+
+        if (committed)
+        {
+            _textEdits.Remove(row);
+            if (!string.Equals(text, saved, StringComparison.Ordinal))
+            {
+                row.SetText?.Invoke(_data, text);
+                SettingsCommands.Save(_data.Clone());
+            }
+        }
+        else if (active) _textEdits[row] = text;
+        else _textEdits.Remove(row);
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+    }
+
+    // RynthAi's one-line status (teal), wrapped to the column.
+    private void StatusRow(SettingRow row, float w)
+    {
+        string text = row.GetText?.Invoke(_data) ?? string.Empty;
+        if (text.Length == 0) return;
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Teal);
+        ImGuiNET.ImGui.PushTextWrapPos(ImGuiNET.ImGui.GetCursorPosX() + w);
+        ImGuiNET.ImGui.TextUnformatted(text);
+        ImGuiNET.ImGui.PopTextWrapPos();
+        ImGuiNET.ImGui.PopStyleColor();
     }
 
     // Label | [caption]; Click posts its own work (never runs plugin code on AC's thread).
