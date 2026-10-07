@@ -12,10 +12,11 @@ using System.Threading;
 using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.UI.ScriptWindows;
 using RynthCore.Engine.D3D9;
+using RynthCore.PluginSdk.Manifest;
 
 namespace RynthCore.Engine.Plugins;
 
-internal static class PluginManager
+internal static partial class PluginManager
 {
     // Held: set when AC hasn't printed the line yet (ChatCallbackHooks holds it until the
     // plugins' verdict is in; see IncomingChatHold.cs). Null for lines AC already printed.
@@ -259,6 +260,10 @@ internal static class PluginManager
     private static GetCharacterTitlesCallbackDelegate? _getCharacterTitlesCallback;   // v75
     private static GetServerInfoCallbackDelegate? _getServerInfoCallback;             // v75
     private static CloseContainerCallbackDelegate? _closeContainerCallback;           // v76
+    private static SetServerMessageInterestCallbackDelegate? _setServerMessageInterestCallback; // v78
+    private static GetTrainingInfoCallbackDelegate? _getTrainingInfoCallback;       // v79
+    private static RaiseCallbackDelegate? _raiseCallback;                           // v79
+    private static TrainSkillCallbackDelegate? _trainSkillCallback;                 // v79
     private static GetVendorInfoCallbackDelegate? _getVendorInfoCallback;
     private static GetVendorItemsCallbackDelegate? _getVendorItemsCallback;
     private static VendorBuyCallbackDelegate? _vendorBuyCallback;
@@ -522,6 +527,10 @@ internal static class PluginManager
 
     public static void ProcessPendingActions(IntPtr imguiContext, IntPtr d3dDevice, IntPtr gameHwnd)
     {
+        // v77: Client::Cleanup started (UiFlowHooks): tell the plugins once, then no more events.
+        if (ProcessClientCleanup())
+            return;
+
         UiLifecycleHooks.Poll();
         LoginLifecycleHooks.Poll();
         SessionStateRegistry.Poll();
@@ -540,6 +549,11 @@ internal static class PluginManager
         //   • View BEFORE Stop — a container open-then-close in one frame must
         //     end "closed"; draining Stop-then-View left the plugin believing the
         //     container was still open.
+        // v78 server messages first: the wire comes before the client's handling of it,
+        // which is what the queued events below report. Cheap when nobody asked for any.
+        try { Net.ServerMessageStream.Pump(_initialized && ServerMessageSubscriberCount() > 0); }
+        catch (Exception ex) { RynthLog.Compat($"PluginManager: server message pump failed - {ex.GetType().Name}: {ex.Message}"); }
+
         DispatchQueuedBusyCountIncremented();
         DispatchQueuedBusyCountDecremented();
         DispatchQueuedCombatModeChange();
@@ -559,6 +573,7 @@ internal static class PluginManager
         DispatchQueuedEnchantmentAdded();
         DispatchQueuedEnchantmentRemoved();
         DispatchQueuedChatWindowText();
+        DispatchQueuedUiEvents();   // v77 screen / tooltip / drag / drop (PluginManager.UiHooks.cs)
 
         if (_rescanRequested)
         {
@@ -1005,6 +1020,10 @@ internal static class PluginManager
     public static void TickAll()
     {
         TickCount++;
+        Volatile.Write(ref _tickThread, Environment.CurrentManagedThreadId);
+        // v77: after Client::Cleanup no plugin ticks (AC is tearing its UI down); Shutdown still comes.
+        if (UiFlowHooks.ClientCleanupStarted)
+            return;
 
         // Fire the delayed login self-identify once AC's vitals UI has settled
         // (armed in DispatchLoginCompleteToLoadedPlugins; deferred past the
@@ -1321,6 +1340,35 @@ internal static class PluginManager
             return GetProcAddress(p.ModuleHandle, exportName);
         }
         return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// Reload deferral (2026-10-05, ReloadDeferral): asks every running plugin's optional
+    /// <c>const char* RynthPluginReloadBlocker(void)</c> export whether a hot reload now would
+    /// hurt. Null or "" = safe; a plugin without the export never objects. Fixed signature, so no
+    /// mismatch can reach the stack; the plugin owns the buffer and it is copied at once. Called
+    /// on the loader's reload thread before the engine tears down, while every plugin is loaded.
+    /// </summary>
+    internal static unsafe IReadOnlyList<(string Plugin, string Reason)> QueryReloadBlockers()
+    {
+        var result = new List<(string, string)>();
+        LoadedPlugin[] plugins;
+        try { plugins = _plugins.ToArray(); }
+        catch { return result; }   // the list changed under us (a plugin loading): don't hold the reload on it
+        foreach (var p in plugins)
+        {
+            try
+            {
+                if (p.ModuleHandle == IntPtr.Zero || !p.Initialized || p.Failed) continue;
+                IntPtr fn = GetProcAddress(p.ModuleHandle, "RynthPluginReloadBlocker");
+                if (fn == IntPtr.Zero) continue;
+                IntPtr text = ((delegate* unmanaged[Cdecl]<IntPtr>)fn)();
+                string? reason = text != IntPtr.Zero ? Marshal.PtrToStringAnsi(text) : null;
+                if (!string.IsNullOrWhiteSpace(reason)) result.Add((p.DisplayName, reason.Trim()));
+            }
+            catch { /* a plugin that can't answer doesn't hold the reload */ }
+        }
+        return result;
     }
 
     private static void LogFromPlugin(IntPtr messageUtf8)
@@ -2398,6 +2446,7 @@ internal static class PluginManager
         var loadedCanonicalPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         var extraPaths = EngineSettings.PluginPaths;
+        var candidates = new List<string>(extraPaths.Count);
         for (int i = 0; i < extraPaths.Count; i++)
         {
             string dllPath = extraPaths[i];
@@ -2419,14 +2468,38 @@ internal static class PluginManager
                 RynthLog.Plugin($"PluginManager: Skipping extra plugin (same resolved path already loaded): {dllPath}");
                 continue;
             }
+            candidates.Add(dllPath);
+            loadedBasenames.Add(baseName);
+            TryAddCanonicalPath(loadedCanonicalPaths, dllPath);
+        }
+
+        // Manifests (embedded in the DLLs, read without loading them): refuse a plugin that needs
+        // a newer engine API or a missing plugin, and put required plugins first. Without
+        // manifests the list loads exactly as before.
+        PluginManifestGate.LoadPlan plan = PluginManifestGate.Plan(candidates, PluginContractVersion.Current, RawFileVersion);
+        foreach (string line in plan.Log)
+            RynthLog.Plugin($"PluginManager: {line}");
+        foreach (PluginRefusal refusal in plan.Refused)
+            RefusePlugin(Path.GetFileName(refusal.Plugin.Key), refusal.Reason);
+
+        foreach ((string dllPath, RynthPluginManifest? manifest) in plan.Load)
+        {
+            // A required plugin that failed to load (PluginLoader said no) takes its dependents with it.
+            string? missing = PluginManifestGate.CheckRequiredStarted(manifest, name => FindPlugin(name) != null ? true : null);
+            if (missing != null)
+            {
+                RefusePlugin(Path.GetFileName(dllPath), missing);
+                continue;
+            }
 
             RynthLog.Plugin($"PluginManager: Loading extra plugin: {dllPath}");
             var plugin = PluginLoader.LoadSingle(dllPath, _shadowRootDir, _loadGeneration);
             if (plugin != null)
             {
+                plugin.Manifest = manifest;
+                if (manifest != null && !string.Equals(manifest.Name, plugin.DisplayName, StringComparison.OrdinalIgnoreCase))
+                    RynthLog.Plugin($"PluginManager: {plugin.FileName}: manifest name '{manifest.Name}' differs from RynthPluginName '{plugin.DisplayName}'; dependencies use the manifest's.");
                 _plugins.Add(plugin);
-                loadedBasenames.Add(plugin.FileName);
-                TryAddCanonicalPath(loadedCanonicalPaths, plugin.SourceFilePath);
             }
         }
 
@@ -2455,6 +2528,63 @@ internal static class PluginManager
         }
     }
 
+    // ── Plugin manifests ─────────────────────────────────────────────────
+
+    /// <summary>Refusals not yet said in chat; said once each, at login (see AnnouncePluginRefusals).</summary>
+    private static readonly List<string> _pendingRefusalNotices = new();
+    private static readonly HashSet<string> _announcedRefusals = new(StringComparer.Ordinal);
+
+    private static void RefusePlugin(string fileName, string reason)
+    {
+        RynthLog.Plugin($"PluginManager: NOT starting {fileName}: {reason} (this RynthCore is plugin API {PluginContractVersion.Current}).");
+        lock (_pendingRefusalNotices)
+        {
+            if (!_announcedRefusals.Contains(reason) && !_pendingRefusalNotices.Contains(reason))
+                _pendingRefusalNotices.Add(reason);
+        }
+        if (_loginCompleteObserved)
+            AnnouncePluginRefusals();
+    }
+
+    /// <summary>Says each refusal once in chat ("[RynthCore] RynthOracle needs a newer RynthCore (API 77) - not started."). Pump thread.</summary>
+    private static void AnnouncePluginRefusals()
+    {
+        List<string> lines;
+        lock (_pendingRefusalNotices)
+        {
+            if (_pendingRefusalNotices.Count == 0) return;
+            lines = new List<string>(_pendingRefusalNotices);
+            _pendingRefusalNotices.Clear();
+            foreach (string l in lines) _announcedRefusals.Add(l);
+        }
+        foreach (string line in lines)
+            AcMainThreadQueue.EnqueueWriteToChat($"[RynthCore] {line} - not started.", 1);
+    }
+
+    /// <summary>The loaded plugin going by <paramref name="name"/>: manifest name, else its file's name, else RynthPluginName.</summary>
+    private static LoadedPlugin? FindPlugin(string name)
+    {
+        for (int i = 0; i < _plugins.Count; i++)
+        {
+            LoadedPlugin p = _plugins[i];
+            if (p.Manifest != null && string.Equals(p.Manifest.Name, name, StringComparison.OrdinalIgnoreCase)) return p;
+        }
+        for (int i = 0; i < _plugins.Count; i++)
+        {
+            LoadedPlugin p = _plugins[i];
+            if (string.Equals(RynthPluginManifest.NameFromFile(p.SourceFilePath), name, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(p.DisplayName, name, StringComparison.OrdinalIgnoreCase))
+                return p;
+        }
+        return null;
+    }
+
+    private static string RawFileVersion(string path)
+    {
+        try { return System.Diagnostics.FileVersionInfo.GetVersionInfo(path).ProductVersion ?? ""; }
+        catch { return ""; }
+    }
+
     private static void InitializeLoadedPlugins()
     {
         if (_plugins.Count == 0)
@@ -2469,6 +2599,20 @@ internal static class PluginManager
         for (int i = 0; i < _plugins.Count; i++)
         {
             var plugin = _plugins[i];
+
+            // Manifest: a plugin whose required plugin didn't start isn't started either (they
+            // come first: LoadPluginsFromDisk ordered them). No manifest, no check.
+            string? blocked = PluginManifestGate.CheckRequiredStarted(plugin.Manifest, name =>
+                FindPlugin(name) is { } dep ? dep.Initialized && !dep.Failed : null);
+            if (blocked != null)
+            {
+                plugin.Failed = true;
+                plugin.NotStartedReason = blocked;
+                RefusePlugin(plugin.FileName, blocked);
+                continue;
+            }
+            plugin.NotStartedReason = "";
+
             LoadedPlugin? outer = EnterDispatch(plugin);
             try
             {
@@ -2583,6 +2727,7 @@ internal static class PluginManager
             return;
 
         _loginDispatchPending = false;
+        AnnouncePluginRefusals();   // plugins the manifests kept out, once each, now that chat is up
 
         for (int i = 0; i < _plugins.Count; i++)
         {
@@ -2765,6 +2910,12 @@ internal static class PluginManager
         unsafe { _getCharacterTitlesCallback ??= GetCharacterTitlesAction; }
         unsafe { _getServerInfoCallback ??= GetServerInfoAction; }
         _closeContainerCallback ??= CloseContainerAction;
+        unsafe { _getScreenModeCallback ??= GetScreenModeAction; }   // v77 (PluginManager.UiHooks.cs)
+        _getUiHookFlagsCallback ??= GetUiHookFlagsAction;
+        unsafe { _setServerMessageInterestCallback ??= SetServerMessageInterestAction; }
+        unsafe { _getTrainingInfoCallback ??= GetTrainingInfoAction; }   // v79
+        unsafe { _raiseCallback ??= RaiseAction; }
+        _trainSkillCallback ??= TrainSkillAction;
         _getVendorInfoCallback ??= GetVendorInfoAction;
         _getVendorItemsCallback ??= GetVendorItemsAction;
         _vendorBuyCallback ??= VendorBuyAction;
@@ -2903,6 +3054,12 @@ internal static class PluginManager
         _api.GetCharacterTitlesFn = Marshal.GetFunctionPointerForDelegate(_getCharacterTitlesCallback);
         _api.GetServerInfoFn = Marshal.GetFunctionPointerForDelegate(_getServerInfoCallback);
         _api.CloseContainerFn = Marshal.GetFunctionPointerForDelegate(_closeContainerCallback);
+        _api.GetScreenModeFn = Marshal.GetFunctionPointerForDelegate(_getScreenModeCallback);
+        _api.GetUiHookFlagsFn = Marshal.GetFunctionPointerForDelegate(_getUiHookFlagsCallback);
+        _api.SetServerMessageInterestFn = Marshal.GetFunctionPointerForDelegate(_setServerMessageInterestCallback);
+        _api.GetTrainingInfoFn = Marshal.GetFunctionPointerForDelegate(_getTrainingInfoCallback);
+        _api.RaiseFn = Marshal.GetFunctionPointerForDelegate(_raiseCallback);
+        _api.TrainSkillFn = Marshal.GetFunctionPointerForDelegate(_trainSkillCallback);
         _api.GetVendorInfoFn = Marshal.GetFunctionPointerForDelegate(_getVendorInfoCallback);
         _api.GetVendorItemsFn = Marshal.GetFunctionPointerForDelegate(_getVendorItemsCallback);
         _api.VendorBuyFn = Marshal.GetFunctionPointerForDelegate(_vendorBuyCallback);
@@ -3977,6 +4134,133 @@ internal static class PluginManager
 
     /// <summary>v72: see PluginContract.TradeCloseFn.</summary>
     private static int TradeCloseAction() => ToAbiBool(PlayerTrade.Close());
+
+    // ── v79: spending experience (Compatibility/TrainingApi.cs) ─────────
+
+    /// <summary>v79: see PluginContract.GetTrainingInfoFn.</summary>
+    private static unsafe int GetTrainingInfoAction(TrainingInfoNative* info, TrainingEntryNative* entries, int maxEntries)
+    {
+        try
+        {
+            return TrainingApi.GetInfo(info, entries, maxEntries);
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>v79: see PluginContract.RaiseFn.</summary>
+    private static unsafe int RaiseAction(uint kind, uint stype, uint ranks, long expectedXp, long* xpSent)
+    {
+        try
+        {
+            RaiseStatus r = TrainingApi.Raise(kind, stype, ranks, expectedXp, out long sent);
+            if (xpSent != null) *xpSent = sent;
+            return (int)r;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"Raise failed - {ex.GetType().Name}: {ex.Message}");
+            return (int)RaiseStatus.SendFailed;
+        }
+    }
+
+    /// <summary>v79: see PluginContract.TrainSkillFn.</summary>
+    private static int TrainSkillAction(uint stype, int expectedCredits)
+    {
+        try
+        {
+            return (int)TrainingApi.TrainSkill(stype, expectedCredits);
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"TrainSkill failed - {ex.GetType().Name}: {ex.Message}");
+            return (int)RaiseStatus.SendFailed;
+        }
+    }
+
+    /// <summary>v78: see PluginContract.SetServerMessageInterestFn.</summary>
+    private static unsafe int SetServerMessageInterestAction(uint* opcodes, int opcodeCount, uint* gameEvents, int eventCount)
+    {
+        try
+        {
+            LoadedPlugin? owner = CurrentDispatch;
+            if (owner == null)
+                return -1;
+            if (opcodeCount == 0 && eventCount == 0)
+            {
+                owner.ServerMessageInterest?.Clear();
+                RynthLog.Plugin($"PluginManager: {owner.DisplayName} stopped server messages.");
+                return 1;
+            }
+            if (owner.OnServerMessagePtr == IntPtr.Zero)
+                owner.OnServerMessagePtr = GetProcAddress(owner.ModuleHandle, "RynthPluginOnServerMessage");
+            if (owner.OnServerMessagePtr == IntPtr.Zero)
+                return 0;
+            var interest = owner.ServerMessageInterest ??= new Net.ServerMessageInterest();
+            if (!interest.Set(opcodes, opcodeCount, gameEvents, eventCount))
+                return -3;
+            RynthLog.Plugin($"PluginManager: {owner.DisplayName} wants server messages: " +
+                (interest.All ? "all" : $"{interest.OpcodeCount} opcode(s), {interest.EventCount} game event(s){(interest.AllGameEvents ? " + all game events" : "")}"));
+            return EngineSettings.ServerMessageStream ? 1 : 2;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Plugin($"PluginManager: SetServerMessageInterest failed - {ex.GetType().Name}: {ex.Message}");
+            return -3;
+        }
+    }
+
+    /// <summary>v78: initialized, healthy plugins with a non-empty server-message interest.</summary>
+    internal static int ServerMessageSubscriberCount()
+    {
+        int n = 0;
+        for (int i = 0; i < _plugins.Count; i++)
+        {
+            var p = _plugins[i];
+            if (p.Initialized && !p.Failed && p.OnServerMessagePtr != IntPtr.Zero &&
+                p.ServerMessageInterest is { IsEmpty: false })
+                n++;
+        }
+        return n;
+    }
+
+    /// <summary>
+    /// v78: one reassembled server message to the plugins that asked for it (called from
+    /// ServerMessageStream.Pump, on this pump). <paramref name="body"/> is the message after
+    /// its opcode, valid only during the call. Returns how many plugins were called.
+    /// </summary>
+    internal static unsafe int DispatchServerMessage(uint opcode, uint eventType, byte* body, int length)
+    {
+        int called = 0;
+        for (int i = 0; i < _plugins.Count; i++)
+        {
+            var plugin = _plugins[i];
+            if (!plugin.Initialized || plugin.Failed || plugin.OnServerMessagePtr == IntPtr.Zero)
+                continue;
+            var interest = plugin.ServerMessageInterest;
+            if (interest == null || !interest.Wants(opcode, eventType))
+                continue;
+
+            LoadedPlugin? outer = EnterDispatch(plugin);
+            try
+            {
+                ((delegate* unmanaged[Cdecl]<uint, byte*, int, void>)plugin.OnServerMessagePtr)(opcode, body, length);
+                called++;
+            }
+            catch (Exception ex)
+            {
+                plugin.Failed = true;
+                RynthLog.Error($"PluginManager: {plugin.DisplayName} OnServerMessage threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)} - disabled.");
+            }
+            finally
+            {
+                LeaveDispatch(outer);
+            }
+        }
+        return called;
+    }
 
     /// <summary>v76: close an external container (see PluginContract.CloseContainerFn).</summary>
     private static int CloseContainerAction(uint containerId)

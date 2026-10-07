@@ -205,11 +205,45 @@ internal sealed class LootEditorFace : IImGuiPanel
             else RuleView(origin, size, w);
         }
         End(origin, size);
+        AcceptAcDrops(origin, size);
         _lootAdd.Draw();
         // An item rule added to the open profile: show it (the state already carries it and its Focus).
         if (_lootAdd.TakeAdded() && _mode == Mode.List && _state != null && _state.Focus >= 0 && _state.Focus < _state.Rules.Count)
             _scrollTo = _state.Focus;
         _picker.Draw();
+    }
+
+    // ── Drop an item from AC's own inventory on the editor (2026-10-05) ──
+    // Compatibility/UiElementHooks keeps a drop over this body from AC (AC's own
+    // "not caught" path, the item stays put) and hands the item here; it opens the
+    // same "Add to loot profile" popup as "Add selected item", for that item.
+
+    private const string DropKey = "LootEditor";
+
+    private void AcceptAcDrops(Vector2 origin, Vector2 size)
+    {
+        LootEditStateDto? s = _state;
+        bool can = !_unavailable && s != null && s.Path.Length > 0 && !s.Dirty
+            && (!s.ReadOnly || s.Format == "json") && !_lootAdd.IsOpen;
+        UiDropTargets.Publish(DropKey, Title, origin, origin + size, can);
+
+        if (UiDropTargets.TryTake(DropKey, out uint itemId) && can)
+        {
+            Compatibility.ClientObjectHooks.TryGetObjectName(itemId, out string name);
+            _lootAdd.Open(itemId, name ?? string.Empty, toOpenProfile: true);
+        }
+
+        // While AC drags an item: show that letting go here adds a rule.
+        if (!can || Compatibility.UiElementHooks.CurrentDragObject == 0)
+            return;
+        bool over = UiDropTargets.IsCursorOver(DropKey);
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
+        dl.AddRect(origin + new Vector2(1, 1), origin + size - new Vector2(1, 1), over ? Green : Teal, 4, ImDrawFlags.None, over ? 3f : 1.5f);
+        string hint = over ? "Let go: add a loot rule for this item" : "Drop an item here to add a loot rule";
+        Vector2 ts = ImGuiNET.ImGui.CalcTextSize(hint);
+        Vector2 at = new(origin.X + (size.X - ts.X) * 0.5f, origin.Y + size.Y - ts.Y - 10);
+        dl.AddRectFilled(at - new Vector2(6, 3), at + ts + new Vector2(6, 3), ShellBg, 4);
+        dl.AddText(at, over ? Green : Teal, hint);
     }
 
     private void RequestOpen(string path)

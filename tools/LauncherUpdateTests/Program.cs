@@ -55,6 +55,11 @@ internal static class Program
             await Run(nameof(UpdateCardStates), UpdateCardStates);
             await Run(nameof(UpdateCardDownloading), UpdateCardDownloading);
             await Run(nameof(UpdateCardWhatsNew), UpdateCardWhatsNew);
+            await Run(nameof(TooNewPluginIsNotInstalled), TooNewPluginIsNotInstalled);
+            await Run(nameof(TooNewPluginWithoutCoreApiSaysTheApi), TooNewPluginWithoutCoreApiSaysTheApi);
+            await Run(nameof(TooNewUpdateIsHeldBack), TooNewUpdateIsHeldBack);
+            await Run(nameof(TooNewCompanionWaits), TooNewCompanionWaits);
+            await Run(nameof(MinEngineApiAtOrBelowInstalledIsFine), MinEngineApiAtOrBelowInstalledIsFine);
         }
         finally
         {
@@ -148,8 +153,10 @@ internal static class Program
     /// </summary>
     private static Feed Setup(string tag, bool descriptions = true, IEnumerable<string>? extraPlugins = null,
         Dictionary<string, string>? descriptionOverride = null, bool signDescriptions = true, string? badUrlFor = null,
-        string[]? changes = null)
+        string[]? changes = null, Dictionary<string, uint>? minEngineApi = null, uint coreEngineApi = 0)
     {
+        _minEngineApi = minEngineApi;
+        _coreEngineApi = coreEngineApi;
         string dir = Path.Combine(_root, tag);
         string state = Path.Combine(dir, "state"), app = Path.Combine(dir, "app"), suite = Path.Combine(dir, "Games", "RynthSuite");
         Directory.CreateDirectory(state); Directory.CreateDirectory(app);
@@ -180,13 +187,16 @@ internal static class Program
                 ["size"] = body.Length, ["sha256"] = Sha(body),
             };
             if (descriptions) p["description"] = descriptionOverride != null && descriptionOverride.TryGetValue(name, out string? d) ? d : $"Feed line for {name}.";
+            if (_minEngineApi != null && _minEngineApi.TryGetValue(name, out uint min)) p["minEngineApi"] = min;
             plugins.Add(p);
         }
+        var core = new Dictionary<string, object> { ["release"] = 2026100501, ["version"] = "2026.10.5.1", ["url"] = _base + $"{tag}/releases/1/RynthCore-Setup.exe", ["size"] = 1, ["sha256"] = "00" };
+        if (_coreEngineApi != 0) core["engineApi"] = _coreEngineApi;
         var manifest = new Dictionary<string, object?>
         {
             ["schema"] = 1, ["release"] = 2026100501, ["version"] = "2026.10.5.1",
             ["published"] = Published.ToString("yyyy-MM-ddTHH:mm:ssZ"), ["notes"] = "Release notes for players.",
-            ["core"] = new Dictionary<string, object> { ["release"] = 2026100501, ["version"] = "2026.10.5.1", ["url"] = _base + $"{tag}/releases/1/RynthCore-Setup.exe", ["size"] = 1, ["sha256"] = "00" },
+            ["core"] = core,
             ["plugins"] = plugins,
         };
         if (changes != null) manifest["changes"] = changes;
@@ -347,6 +357,106 @@ internal static class Program
         Check(!f.Upd.GetAvailable(c, paths).Any(a => a.Entry.Name == "RynthOracle"), "no longer available");
         var c2 = await f.Upd.CheckAsync(paths);
         Check(c2.Plugins.Any(p => p.Entry.Name == "RynthOracle" && p.State == RynthUpdater.PluginState.UpToDate), "the next check sees it up to date");
+    }
+
+    // ── Plugin manifests: minEngineApi ───────────────────────────────────────
+
+    // The feed fixture's optional fields (set by Setup, read by WriteFeed).
+    private static Dictionary<string, uint>? _minEngineApi;
+    private static uint _coreEngineApi;
+    private const uint Installed = 76;   // the engine API the test launcher "installed"
+
+    private static async Task TooNewPluginIsNotInstalled()
+    {
+        // RynthOracle's build needs API 77; this feed's core release brings it.
+        var f = Setup("api-new", minEngineApi: new() { ["RynthOracle"] = Installed + 1, ["RynthChat"] = 66 }, coreEngineApi: Installed + 1);
+        f.Upd.InstalledEngineApi = Installed;
+        var paths = new List<string> { f.RynthAiPath };
+        var c = await f.Upd.CheckAsync(paths);
+        var oracle = c.Available.Single(a => a.Entry.Name == "RynthOracle");
+        Check(oracle.Entry.MinEngineApi == Installed + 1, "minEngineApi read from the feed");
+        Check(!oracle.CanInstall, "a too-new plugin can't be installed");
+        Check(oracle.Blocker == "needs RynthCore 2026.10.5.1", "it says which RynthCore it needs: " + oracle.Blocker);
+        Check(c.Available.Single(a => a.Entry.Name == "RynthChat").CanInstall, "a plugin within the engine's API still can");
+        Check(c.Available.Single(a => a.Entry.Name == "RynthNav").CanInstall, "a plugin without minEngineApi still can");
+        try
+        {
+            await f.Upd.InstallPluginAsync(c, "RynthOracle", paths);
+            Check(false, "InstallPluginAsync should refuse a too-new plugin");
+        }
+        catch (InvalidOperationException ex)
+        {
+            Check(ex.Message.Contains("needs RynthCore"), "refused with the reason: " + ex.Message);
+        }
+        Check(!File.Exists(oracle.Path), "nothing written");
+        Check(!Directory.Exists(Path.GetDirectoryName(oracle.Path)!), "no folder created");
+    }
+
+    private static async Task TooNewPluginWithoutCoreApiSaysTheApi()
+    {
+        // The feed's core doesn't say its API (or brings an older one): name the API instead.
+        var f = Setup("api-nocore", minEngineApi: new() { ["RynthOracle"] = Installed + 2 }, coreEngineApi: Installed + 1);
+        f.Upd.InstalledEngineApi = Installed;
+        var c = await f.Upd.CheckAsync(new[] { f.RynthAiPath });
+        var oracle = c.Available.Single(a => a.Entry.Name == "RynthOracle");
+        Check(oracle.Blocker == $"needs a newer RynthCore (API {Installed + 2})", "names the API: " + oracle.Blocker);
+
+        var g = Setup("api-nocore2", minEngineApi: new() { ["RynthOracle"] = Installed + 1 });
+        g.Upd.InstalledEngineApi = Installed;
+        var c2 = await g.Upd.CheckAsync(new[] { g.RynthAiPath });
+        Check(c2.Available.Single(a => a.Entry.Name == "RynthOracle").Blocker == $"needs a newer RynthCore (API {Installed + 1})",
+              "a core without engineApi: the API too");
+    }
+
+    private static async Task TooNewUpdateIsHeldBack()
+    {
+        var f = Setup("api-update", minEngineApi: new() { ["RynthChat"] = Installed + 1, ["RynthNav"] = Installed }, coreEngineApi: Installed + 1);
+        f.Upd.InstalledEngineApi = Installed;
+        string chat = Place(f, "RynthChat"), nav = Place(f, "RynthNav");
+        byte[] oldChat = Encoding.UTF8.GetBytes("dll RynthChat v1"), oldNav = Encoding.UTF8.GetBytes("dll RynthNav v1");
+        File.WriteAllBytes(chat, oldChat); File.SetLastWriteTimeUtc(chat, Published.AddDays(-3));
+        File.WriteAllBytes(nav, oldNav); File.SetLastWriteTimeUtc(nav, Published.AddDays(-3));
+        var c = await f.Upd.CheckAsync(new[] { f.RynthAiPath, chat, nav });
+        var chatStatus = c.Plugins.Single(p => p.Entry.Name == "RynthChat");
+        Check(chatStatus.State == RynthUpdater.PluginState.NeedsNewerEngine, "too-new update held back: " + chatStatus.State);
+        Check(chatStatus.Blocker == "needs RynthCore 2026.10.5.1", "with the reason: " + chatStatus.Blocker);
+        Check(c.PluginsWaitingForCore.Any(p => p.Entry.Name == "RynthChat"), "listed as waiting for RynthCore");
+        Check(c.Plugins.Single(p => p.Entry.Name == "RynthNav").State == RynthUpdater.PluginState.NeedsUpdate, "an update at the installed API goes ahead");
+        Check(c.PluginsToUpdate.Select(p => p.Entry.Name).SequenceEqual(new[] { "RynthNav" }), "only RynthNav is updated");
+        await f.Upd.UpdatePluginsAsync(c);
+        Check(File.ReadAllBytes(chat).SequenceEqual(oldChat), "RynthChat kept as it was (the engine would refuse the new build)");
+        Check(!File.Exists(chat + ".previous"), "no .previous for RynthChat");
+        Check(File.ReadAllBytes(nav).SequenceEqual(Body("RynthNav")), "RynthNav updated");
+
+        // After RynthCore is updated (the new launcher knows the new API), the update goes through.
+        f.Upd.InstalledEngineApi = Installed + 1;
+        var after = await f.Upd.CheckAsync(new[] { f.RynthAiPath, chat, nav });
+        Check(after.Plugins.Single(p => p.Entry.Name == "RynthChat").State == RynthUpdater.PluginState.NeedsUpdate, "updated once RynthCore catches up");
+    }
+
+    private static async Task TooNewCompanionWaits()
+    {
+        var f = Setup("api-companion", minEngineApi: new() { ["RynthLua"] = Installed + 1 }, coreEngineApi: Installed + 1);
+        f.Upd.InstalledEngineApi = Installed;
+        var c = await f.Upd.CheckAsync(new[] { f.RynthAiPath });
+        Check(c.Companions.Count == 0, "a too-new companion isn't installed beside RynthAi");
+        Check(c.Available.Single(a => a.Entry.Name == "RynthLua").Blocker.Length > 0, "and shows what it needs under Available");
+        f.Upd.InstalledEngineApi = Installed + 1;
+        var later = await f.Upd.CheckAsync(new[] { f.RynthAiPath });
+        Check(later.Companions.Count == 1 && later.Companions[0].Entry.Name == "RynthLua", "offered once RynthCore catches up (not marked as offered before)");
+    }
+
+    private static async Task MinEngineApiAtOrBelowInstalledIsFine()
+    {
+        var f = Setup("api-ok", minEngineApi: new() { ["RynthOracle"] = Installed, ["RynthInventory"] = 71 });
+        f.Upd.InstalledEngineApi = Installed;
+        var paths = new List<string> { f.RynthAiPath };
+        var c = await f.Upd.CheckAsync(paths);
+        Check(c.Available.All(a => a.CanInstall), "everything installable: " + string.Join(",", c.Available.Where(a => !a.CanInstall).Select(a => a.Entry.Name)));
+        var done = await f.Upd.InstallPluginAsync(c, "RynthOracle", paths);
+        Check(done.Downloaded && File.Exists(done.Path), "installed at the exact minimum");
+        Check(f.Upd.InstalledEngineApi == Installed && new RynthUpdater().InstalledEngineApi == RynthCore.Engine.Plugins.PluginContractVersion.Current,
+              "the launcher's default is the engine's own API constant");
     }
 
     private static async Task InstallRefusesTamperedFile()

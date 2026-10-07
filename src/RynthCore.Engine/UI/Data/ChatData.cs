@@ -1190,7 +1190,7 @@ internal static class ChatModel
                 _ => ChatColorMode.None,
             },
             ColorArgb = ParseColor(f.Color) ?? ChatFilterRule.DefaultColor,
-            // Absent (older settings, upstream format): Regex.
+            // Absent (settings saved before match modes existed): Regex.
             Mode = Enum.TryParse(f.Mode, ignoreCase: true, out ChatMatchMode mode) ? mode : ChatMatchMode.Regex,
         };
         rule.Recompile();

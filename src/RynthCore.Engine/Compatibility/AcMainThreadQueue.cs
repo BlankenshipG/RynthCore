@@ -419,6 +419,9 @@ internal static class AcMainThreadQueue
         // writes its own lines, so the chat window keeps the order lines arrived in.
         try { ChatCallbackHooks.OnMainThreadDrain(disarmed: false); } catch { }
 
+        // Keep the off-thread combat-mode cache true to the client (stale after a hot reload).
+        CombatModeHooks.MainThreadRefresh();
+
         // Deep-audit finding #22 (2026-06-18): these three queues are
         // documented as deliberately separate from the gesture-gated action
         // ring below specifically so appraisals/chat "can never get

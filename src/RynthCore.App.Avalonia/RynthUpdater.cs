@@ -42,9 +42,14 @@ internal sealed partial class RynthUpdater
     /// One plugin in the feed. <paramref name="Description"/> is the optional one-line "description"
     /// (written since 2026.10.5); older feeds have none and the launcher's own table fills in
     /// (<see cref="DescribePlugin"/>). Launchers before it ignore the field.
+    /// <paramref name="MinEngineApi"/> is the optional "minEngineApi", from the plugin's embedded
+    /// manifest (Publish-Update.ps1 copies it): the oldest engine plugin API the build runs on.
+    /// 0 (older feeds, plugins without a manifest) means no limit. See <see cref="EngineBlocker"/>.
     /// </summary>
-    public sealed record PluginEntry(string Name, string File, string Url, long Size, string Sha256, string Description = "");
-    public sealed record InstallerEntry(int Release, string Version, string Url, long Size, string Sha256);
+    public sealed record PluginEntry(string Name, string File, string Url, long Size, string Sha256, string Description = "",
+                                     uint MinEngineApi = 0);
+    /// <summary>The core release. <paramref name="EngineApi"/>: the optional "engineApi", its engine's plugin API (0 = not said).</summary>
+    public sealed record InstallerEntry(int Release, string Version, string Url, long Size, string Sha256, uint EngineApi = 0);
     public sealed record Manifest(int Release, string Version, DateTime PublishedUtc, string Notes,
                                   InstallerEntry Core, IReadOnlyList<PluginEntry> Plugins, NavDataEntry? NavData = null)
     {
@@ -56,8 +61,17 @@ internal sealed partial class RynthUpdater
     }
 
     /// <summary>One installed copy of a plugin the feed knows.</summary>
-    public sealed record PluginStatus(PluginEntry Entry, string Path, PluginState State);
-    public enum PluginState { UpToDate, NeedsUpdate, LocalBuild }
+    public sealed record PluginStatus(PluginEntry Entry, string Path, PluginState State)
+    {
+        /// <summary>For <see cref="PluginState.NeedsNewerEngine"/>: "needs RynthCore 2026.10.6.1".</summary>
+        public string Blocker { get; init; } = "";
+    }
+    /// <summary>
+    /// NeedsNewerEngine: the feed's build needs a newer engine plugin API than the RynthCore installed
+    /// here, so the installed copy is kept until RynthCore itself is updated (the engine would refuse
+    /// the new build and the player would lose the plugin meanwhile).
+    /// </summary>
+    public enum PluginState { UpToDate, NeedsUpdate, LocalBuild, NeedsNewerEngine }
 
     /// <summary>A plugin split out of one the player has, to be installed beside it (see <see cref="Companions"/>).</summary>
     public sealed record CompanionInstall(PluginEntry Entry, string Path, string Reason);
@@ -66,6 +80,8 @@ internal sealed partial class RynthUpdater
     {
         public bool CoreUpdateAvailable => Manifest.Core.Release > InstalledCoreRelease;
         public IEnumerable<PluginStatus> PluginsToUpdate => Plugins.Where(p => p.State == PluginState.NeedsUpdate);
+        /// <summary>Plugin updates held back until RynthCore is updated (<see cref="PluginState.NeedsNewerEngine"/>).</summary>
+        public IEnumerable<PluginStatus> PluginsWaitingForCore => Plugins.Where(p => p.State == PluginState.NeedsNewerEngine);
         /// <summary>New plugins that came out of an installed one; installed with the plugin updates.</summary>
         public IReadOnlyList<CompanionInstall> Companions { get; init; } = Array.Empty<CompanionInstall>();
         /// <summary>Feed plugins not in the plugin list, for the player to install or not (see <see cref="GetAvailable"/>).</summary>
@@ -113,6 +129,26 @@ internal sealed partial class RynthUpdater
         _appDir = appDir ?? AppContext.BaseDirectory;
     }
 
+    /// <summary>
+    /// The plugin API of the engine installed with this launcher. The installer ships the launcher and
+    /// the engine together (a core update replaces both), so it is the engine's own constant,
+    /// compiled in from PluginContractVersion.cs. Tests set it.
+    /// </summary>
+    internal uint InstalledEngineApi { get; set; } = RynthCore.Engine.Plugins.PluginContractVersion.Current;
+
+    /// <summary>
+    /// Empty when the installed engine runs <paramref name="e"/>; otherwise what the player needs, shown
+    /// in place of the Install button: "needs RynthCore 2026.10.6.1" when the feed's own core release
+    /// brings a new enough engine, else "needs a newer RynthCore (API 77)".
+    /// </summary>
+    public string EngineBlocker(PluginEntry e, Manifest manifest)
+    {
+        if (e.MinEngineApi == 0 || e.MinEngineApi <= InstalledEngineApi) return "";
+        InstallerEntry core = manifest.Core;
+        bool coreBringsIt = core.EngineApi >= e.MinEngineApi && core.Release > InstalledCoreRelease && core.Version.Length > 0;
+        return coreBringsIt ? $"needs RynthCore {core.Version}" : $"needs a newer RynthCore (API {e.MinEngineApi})";
+    }
+
     /// <summary>False until the signing keys exist: with no trusted key nothing can verify.</summary>
     public bool IsConfigured => _trustedKeys.Count > 0;
 
@@ -158,13 +194,16 @@ internal sealed partial class RynthUpdater
                 continue;   // not a plugin this feed ships (a private or third-party one): never touched
 
             PluginState state;
+            string blocker = "";
             if (string.Equals(Sha256File(path), entry.Sha256, StringComparison.OrdinalIgnoreCase))
                 state = PluginState.UpToDate;
             else if (File.GetLastWriteTimeUtc(path) > manifest.PublishedUtc.AddMinutes(1))
                 state = PluginState.LocalBuild;   // newer than the release: someone's own build, leave it
+            else if ((blocker = EngineBlocker(entry, manifest)).Length > 0)
+                state = PluginState.NeedsNewerEngine;   // keep the copy that runs until RynthCore catches up
             else
                 state = PluginState.NeedsUpdate;
-            statuses.Add(new PluginStatus(entry, path, state));
+            statuses.Add(new PluginStatus(entry, path, state) { Blocker = blocker });
         }
 
         List<CompanionInstall> companions = FindCompanions(manifest, pluginPaths);
@@ -191,6 +230,7 @@ internal sealed partial class RynthUpdater
                 string.Equals(Path.GetFileName(p), parentFile, StringComparison.OrdinalIgnoreCase) && File.Exists(p));
             PluginEntry? child = manifest.Plugins.FirstOrDefault(e => string.Equals(e.Name, childName, StringComparison.OrdinalIgnoreCase));
             if (parent == null || child == null) continue;
+            if (EngineBlocker(child, manifest).Length > 0) continue;   // not yet: offered once RynthCore is updated
             if (paths.Any(p => string.Equals(Path.GetFileName(p), child.File, StringComparison.OrdinalIgnoreCase)))
             {
                 MarkCompanionOffered(childName);   // already there: nothing to do, ever
@@ -336,7 +376,8 @@ internal sealed partial class RynthUpdater
 
         JsonElement c = r.GetProperty("core");
         var core = new InstallerEntry(c.GetProperty("release").GetInt32(), c.GetProperty("version").GetString() ?? "",
-            CheckUrl(c.GetProperty("url").GetString()), c.GetProperty("size").GetInt64(), c.GetProperty("sha256").GetString() ?? "");
+            CheckUrl(c.GetProperty("url").GetString()), c.GetProperty("size").GetInt64(), c.GetProperty("sha256").GetString() ?? "",
+            ReadApi(c, "engineApi"));
 
         var plugins = new List<PluginEntry>();
         foreach (JsonElement p in r.GetProperty("plugins").EnumerateArray())
@@ -346,7 +387,7 @@ internal sealed partial class RynthUpdater
                 throw new InvalidDataException($"bad plugin file name '{file}'");
             plugins.Add(new PluginEntry(p.GetProperty("name").GetString() ?? file, file,
                 CheckUrl(p.GetProperty("url").GetString()), p.GetProperty("size").GetInt64(), p.GetProperty("sha256").GetString() ?? "",
-                ReadDescription(p)));
+                ReadDescription(p), ReadApi(p, "minEngineApi")));
         }
 
         return new Manifest(r.GetProperty("release").GetInt32(), r.GetProperty("version").GetString() ?? "",

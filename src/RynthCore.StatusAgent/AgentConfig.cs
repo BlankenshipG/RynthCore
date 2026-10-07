@@ -105,6 +105,14 @@ internal sealed class AgentConfig
     /// /maps returns an empty list and /map 404s — no other feature is affected.</summary>
     [JsonPropertyName("MapsDirectory")] public string MapsDirectory { get; set; } = Path.Combine(RynthInstallPaths.RynthAiDir, "Maps");
 
+    /// <summary>cell.dat the landscape map (GET /worldmap) is drawn from, once, then cached as worldmap-v1.jpg in
+    /// <see cref="StatusDirectory"/>. Absent = no world map (capabilities.worldMap false); nothing else changes.</summary>
+    [JsonPropertyName("CellDatPath")] public string CellDatPath { get; set; } = @"C:\Games\RynthCore\AcClient\client_cell_1.dat";
+
+    /// <summary>RynthNav's Atlas (NavData\locations.json), searched by GET /nav/search for the phone's Travel tab.
+    /// Absent = no travel (capabilities.travel false). The travel itself also needs EnableRemoteControl.</summary>
+    [JsonPropertyName("NavAtlasPath")] public string NavAtlasPath { get; set; } = @"C:\Games\RynthCore\NavData\locations.json";
+
     public static string DefaultConfigPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "RynthCore", "statusagent.json");

@@ -11,6 +11,7 @@
 // ============================================================================
 
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -163,6 +164,9 @@ internal sealed class RynthAiSettings
     public bool RebuffWhenIdle { get; set; }
     public int RebuffSecondsRemaining { get; set; } = 300;
     public int RebuffTopOffSecondsRemaining { get; set; } = 1200;
+    // Cast our own buff even when gear already gives it (servers with buff augments). Default
+    // on; a RynthAi that predates it doesn't send it, and must not read as off.
+    public bool CastBuffsOverItemBuffs { get; set; } = true;
     public int BuffMinSkillLevelTier1 { get; set; } = 35;
     public int BuffMinSkillLevelTier2 { get; set; } = 85;
     public int BuffMinSkillLevelTier3 { get; set; } = 135;
@@ -183,6 +187,10 @@ internal sealed class RynthAiSettings
     public bool LootJumpEnabled { get; set; }
     public int LootJumpHeight { get; set; } = 10;
     public int LootOwnership { get; set; }
+    // Recover your own death corpse whole (default on), and travel back to it after a death
+    // (default off). A RynthAi that predates them doesn't send them; on must not read as off.
+    public bool LootOwnCorpse { get; set; } = true;
+    public bool TravelToOwnCorpse { get; set; }
     public bool EnableAutostack { get; set; } = true;
     public bool ReadUnknownScrolls { get; set; } = true;   // VTank's default
     public bool EnableCombineSalvage { get; set; } = true;
@@ -202,6 +210,16 @@ internal sealed class RynthAiSettings
     public int SalvageSalvageDelayMs { get; set; } = 50;
     public int SalvageResultDelayFirstMs { get; set; } = 1000;
     public int SalvageResultDelayFastMs { get; set; } = 250;
+    // Ground loot and item info
+    public bool EnableGroundLoot { get; set; }
+    public bool ItemInfoOnSelect { get; set; }
+    // Diagnostics (RynthAi's RynthLog: per PC in Logs\Diagnostics\diagnostics.json, not the profile)
+    public bool DiagDebugToChat { get; set; }
+    public bool DiagFileLogAll { get; set; } = true;
+    /// <summary>"Name=Level" per trace category, ','-joined; Level 0 Off, 1 Trace, 2 Info. See <see cref="TraceCategoryLevels"/>.</summary>
+    public string DiagCategories { get; set; } = string.Empty;
+    /// <summary>Read-only (RynthAi ignores it on save): the diagnostics folder.</summary>
+    public string DiagFolder { get; set; } = string.Empty;
 
     /// <summary>A private copy for a face to edit (all members are values or strings).</summary>
     public RynthAiSettings Clone() => (RynthAiSettings)MemberwiseClone();
@@ -272,7 +290,60 @@ internal static unsafe class SettingsCommands
 
 // ── Schema ─────────────────────────────────────────────────────────────────
 
-internal enum SettingKind { Bool, Int, Float, Double, Combo, Section, Spacer, Note, CraftingStatus, Button, Text, Status }
+internal enum SettingKind { Bool, Int, Float, Double, Combo, Section, Spacer, Note, CraftingStatus, Button, TraceCategories, Text, Status }
+
+/// <summary>
+/// Reads and edits <see cref="RynthAiSettings.DiagCategories"/> ("Name=Level,..."). The category
+/// list comes from RynthAi, so a category it adds shows up without an engine change.
+/// </summary>
+internal static class TraceCategoryLevels
+{
+    public const int Off = 0, Trace = 1, Info = 2;
+
+    /// <summary>The categories in RynthAi's order; malformed entries are skipped.</summary>
+    public static List<(string Name, int Level)> Parse(string? levels)
+    {
+        var list = new List<(string, int)>();
+        if (string.IsNullOrWhiteSpace(levels)) return list;
+        foreach (string entry in levels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            int eq = entry.IndexOf('=');
+            if (eq <= 0 || !int.TryParse(entry[(eq + 1)..], out int level)) continue;
+            list.Add((entry[..eq], Math.Clamp(level, Off, Info)));
+        }
+        return list;
+    }
+
+    private static string Format(List<(string Name, int Level)> list)
+    {
+        var parts = new string[list.Count];
+        for (int i = 0; i < list.Count; i++) parts[i] = list[i].Name + "=" + list[i].Level;
+        return string.Join(",", parts);
+    }
+
+    /// <summary>
+    /// Turns tracing on or off for one category (empty <paramref name="name"/> with a
+    /// <paramref name="prefix"/>: every category starting with it; both empty: all). On keeps
+    /// a category already at Info at Info, the same rule as /ra trace.
+    /// </summary>
+    public static string Set(string? levels, string name, bool on, string prefix = "")
+    {
+        List<(string Name, int Level)> list = Parse(levels);
+        for (int i = 0; i < list.Count; i++)
+        {
+            var (n, level) = list[i];
+            bool match = name.Length > 0
+                ? string.Equals(n, name, StringComparison.OrdinalIgnoreCase)
+                : n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+            if (!match) continue;
+            list[i] = (n, !on ? Off : level == Off ? Trace : level);
+        }
+        return Format(list);
+    }
+
+    /// <summary>Checkbox label: the name, plus " +log" at Info (trace lines also go to the normal log).</summary>
+    public static string Label(string name, int level) => level == Info ? name + " +log" : name;
+}
 
 /// <summary>
 /// One row of a settings tab. Numeric values go through double (bools as
@@ -433,6 +504,12 @@ internal static class SettingsSchema
             TextSize("Status", "Status"),
             TextSize("Log", "Log"),
             TextSize("Tracker", "Tracker"),
+            Spacer(),
+            Section("Item Info"),
+            Bool("Describe Items When Selected", s => s.ItemInfoOnSelect, (s, v) => s.ItemInfoOnSelect = v,
+                "Print a Mag-style description of an item in chat when you select it.\nAlso: /ra iteminfo on|off."),
+            Button("Item Info Options", "Open...", () => RynthAiCommands.ApplyRemoteCommand("iteminfo", "window"),
+                "Which fields the description shows and which item types are described on select (/ra iteminfo window)."),
         }),
 
         new("UI", new[]
@@ -683,6 +760,8 @@ internal static class SettingsSchema
                 "Recast a self buff when its remaining duration drops below this value.\nDefault 300 (5 minutes). Lower values rebuff more eagerly."),
             Int("Also Refresh Under (seconds left)", s => s.RebuffTopOffSecondsRemaining, (s, v) => s.RebuffTopOffSecondsRemaining = v, 30, 3600, 60,
                 "When a buff is due, also recast every other buff with less than this much time left,\nso they land together. Buffs with more time are left alone. Default 1200 (20 minutes).\nAt or below 'Rebuff With', only the expiring buff is recast."),
+            Bool("Cast buffs even when an item gives them", s => s.CastBuffsOverItemBuffs, (s, v) => s.CastBuffsOverItemBuffs = v,
+                "Cast your own buff even when worn gear already gives that buff.\nFor servers with buff augments, where your own cast is stronger or lasts longer.\nOn by default: on retail it costs a few extra casts."),
             Spacer(),
             Section("Buff Difficulty (Min Buffed Skill)"),
             Tiers(
@@ -712,9 +791,15 @@ internal static class SettingsSchema
                 "Don't start on another corpse when no pack has a free slot (says so once in chat)."),
             Bool("Jump When Looting", s => s.LootJumpEnabled, (s, v) => s.LootJumpEnabled = v, gates: true),
             Int("Jump Height", s => s.LootJumpHeight, (s, v) => s.LootJumpHeight = v, 1, 100, 5, when: s => s.LootJumpEnabled),
+            Bool("Loot Items On Ground", s => s.EnableGroundLoot, (s, v) => s.EnableGroundLoot = v,
+                "Pick up loose items on the ground that match your loot profile, within Corpse Max range.\nCorpses always come first. Status and rescan: /ra groundloot."),
             Spacer(),
             Section("Corpse Ownership"),
             Combo("Loot From", LootOwnershipModes, s => s.LootOwnership, (s, v) => s.LootOwnership = v),
+            Bool("Recover My Corpse", s => s.LootOwnCorpse, (s, v) => s.LootOwnCorpse = v,
+                "When your own corpse (\"Corpse of <you>\") is within loot range, open it and take every\nitem on it, whatever the loot profile and Loot From say. Needs Enable Looting.\n/ra owncorpse says where your last corpse is."),
+            Bool("Travel Back To My Corpse", s => s.TravelToOwnCorpse, (s, v) => s.TravelToOwnCorpse = v,
+                "After a death, walk back to where you died with RynthNav (outdoor deaths only),\nfighting on the way as usual, recover the corpse, then carry on. Needs the macro\nrunning and RynthNav loaded. /ra owncorpse stop cancels."),
             Spacer(),
             Section("Inventory Management"),
             Bool("Enable Autostack", s => s.EnableAutostack, (s, v) => s.EnableAutostack = v),
@@ -767,6 +852,25 @@ internal static class SettingsSchema
             Int("Time Between Tries (ms)", s => s.AutoVendorTriesTime, (s, v) => s.AutoVendorTriesTime = v, 500, 30000, 250),
             Spacer(),
             Note("Never sold: equipped, attuned, bonded, retained, tinkered, imbued, inscribed, rare, zero value, packs, or anything a Keep rule could match."),
+        }),
+
+        new("Diagnostics", new[]
+        {
+            Section("Logging & Debugging"),
+            Bool("Debug to chat", s => s.DiagDebugToChat, (s, v) => s.DiagDebugToChat = v,
+                "Echo trace lines and errors from the categories ticked below into the chat window.\nAlso: /ra debug on|off."),
+            Bool("Daily RynthAi log file", s => s.DiagFileLogAll, (s, v) => s.DiagFileLogAll = v,
+                "Mirror every RynthAi log line to rynthai_<date>.txt in the log folder (kept 7 days).\nAlso: /ra logs file on|off."),
+            Button("Log Folder", "Open", () => RynthAiCommands.ApplyRemoteCommand("logs", "open"),
+                "Open RynthAi's Logs\\Diagnostics folder in Explorer (/ra logs open)."),
+            Button("Old Log Files", "Prune", () => RynthAiCommands.ApplyRemoteCommand("logs", "prune"),
+                "Delete diagnostics files past the retention limit now (/ra logs prune)."),
+            Spacer(),
+            Section("Trace Per Category"),
+            new SettingRow(SettingKind.TraceCategories, "Categories",
+                "Ticked categories write their trace lines to Trace\\<Category>_<date>.txt (/ra trace <category> on|off)."),
+            Note("+log = the category is at Info: its trace lines also go to the normal log. The launcher's Logging page sets Off, Trace or Info."),
+            Note("Exceptions always go to exceptions_<date>.txt with full stack traces (throttled). Settings here are for this PC, not the profile."),
         }),
     };
 }

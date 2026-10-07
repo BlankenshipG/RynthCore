@@ -3,7 +3,9 @@
   <!--
     Offline tests for the launcher's Available plugins list, plugin installs with download
     progress and Cancel (RynthUpdater.Available.cs, DownloadProgress.cs), and the front page's
-    update card (UpdateCardModel.cs). A throwaway key signs a feed served by a local
+    update card (UpdateCardModel.cs), and plugin manifests' minEngineApi (a plugin build the
+    installed engine would refuse is neither installed nor updated; "needs RynthCore X"
+    instead). A throwaway key signs a feed served by a local
     HttpListener; plugins install into temp folders. Never opens the launcher window, never
     reads or writes outside %TEMP%.
     Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
@@ -23,6 +25,7 @@
     <Compile Include="..\..\src\RynthCore.App.Avalonia\DownloadProgress.cs" Link="Linked\DownloadProgress.cs" />
     <Compile Include="..\..\src\RynthCore.App.Avalonia\UpdateCardModel.cs" Link="Linked\UpdateCardModel.cs" />
     <Compile Include="..\..\src\RynthCore.App.Avalonia\UpdateTrust.cs" Link="Linked\UpdateTrust.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\Plugins\PluginContractVersion.cs" Link="Linked\PluginContractVersion.cs" />
   </ItemGroup>
 
 </Project>

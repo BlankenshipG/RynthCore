@@ -271,6 +271,13 @@ $pluginDescriptions = @{
     RynthOracle    = "Quests, character, titles and leaderboards."
     RynthInventory = "Search every character's items."
 }
+# Plugin manifests (embedded in each DLL by the SDK's build targets): each plugin's minEngineApi
+# goes into its feed entry, and the core entry says its engine's API ("engineApi"), so launchers
+# (from plugin manifests on) don't install a plugin build the installed engine would refuse; they
+# say "needs RynthCore <version>" instead. Older launchers ignore both fields.
+. (Join-Path $ScriptDir "PluginManifest.ps1")
+$engineApi = Get-RynthEngineApi $RepoRoot
+Write-Host "  engine plugin API: $engineApi"
 $plugins = foreach ($dll in Get-ChildItem "$rel\plugins\*.dll" | Sort-Object Name) {
     $pluginName = $dll.BaseName -replace '^RynthCore\.Plugin\.', ''
     $entry = [ordered]@{
@@ -282,6 +289,17 @@ $plugins = foreach ($dll in Get-ChildItem "$rel\plugins\*.dll" | Sort-Object Nam
     }
     if ($pluginDescriptions[$pluginName]) { $entry.description = $pluginDescriptions[$pluginName] }
     else { Write-Warning "No description for $pluginName - the launcher shows its own (or none). Add one to `$pluginDescriptions." }
+    $pm = Get-RynthPluginManifest $dll.FullName
+    if ($pm) {
+        if ($pm.name -ne $pluginName) { throw "$($dll.Name): its manifest says '$($pm.name)', the feed would say '$pluginName'." }
+        if ($pm.version -and $pm.version -ne $Version) { throw "$($dll.Name): its manifest is version $($pm.version), not $Version (stale build?)." }
+        $min = [int]$pm.minEngineApi
+        if ($min -gt $engineApi) { throw "$($dll.Name) needs engine API $min but this release's engine is $engineApi - it would never load." }
+        if ($min -gt 0) { $entry.minEngineApi = $min }
+        Write-Host "  $pluginName $($pm.version): engine API $min+"
+    } else {
+        Write-Warning "$($dll.Name) has no plugin manifest - launchers install it on any engine."
+    }
     $entry
 }
 $manifest = [ordered]@{
@@ -299,6 +317,8 @@ $manifest = [ordered]@{
         url     = "$BaseUrl/releases/$release/RynthCore-Setup.exe"
         size    = $setup.Length
         sha256  = Sha256 $setup.FullName
+        # The plugin API of the engine in this installer (see the plugins' minEngineApi above).
+        engineApi = $engineApi
     }
     plugins   = @($plugins)
 }

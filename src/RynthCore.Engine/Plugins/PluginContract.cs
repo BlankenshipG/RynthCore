@@ -15,6 +15,9 @@
 //                                              off (Avalonia mode): only windows that have no
 //                                              Avalonia panel. Gated by engine.json
 //                                              "EnablePluginOverlayWindows" (default true).
+//    void        RynthPluginOnServerMessage(uint opcode, byte* data, int length)
+//                                            — v78, reassembled server messages the plugin
+//                                              asked for with SetServerMessageInterestFn
 // ============================================================================
 
 using System;
@@ -785,13 +788,164 @@ internal struct RynthCoreAPI
     /// after it). Returns 1 if sent or queued. Requires API v76+.</summary>
     public IntPtr CloseContainerFn;
 
-    /// <summary>v77: <c>int GetMergeStackResult(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs)</c>:
+    /// <summary>v77: <c>int GetScreenMode(int* previousMode)</c>: the client's screen (UIFlow mode,
+    /// Compatibility/UiFlowHooks.cs): 0x10000001 intro, 0x10000002 disconnected, 0x10000008 the
+    /// world, 0x10000009 epilogue, 0x1000000A character select, 0x1000000B character creation;
+    /// 0 = not known yet. *previousMode (may be null) = the screen before. Any thread.
+    /// Requires API v77+.</summary>
+    public IntPtr GetScreenModeFn;
+
+    /// <summary>v77: <c>uint GetUiHookFlags(void)</c>: which UI hooks are live, so a plugin knows
+    /// which v77 callbacks can arrive. bit0 RynthPluginOnScreenChanged from the UseNewMode hook,
+    /// bit1 ... from the +0x8C mode poll instead (one tick late), bit2 RynthPluginOnClientCleanup,
+    /// bit3 RynthPluginOnTooltipShow, bit4 RynthPluginOnTooltipHide, bit5 RynthPluginOnDragStart,
+    /// bit6 RynthPluginOnItemDropped, bit7 Client::Cleanup has started. Any thread.
+    /// Requires API v77+.</summary>
+    public IntPtr GetUiHookFlagsFn;
+
+    /// <summary>v78: <c>int SetServerMessageInterest(uint* opcodes, int opcodeCount, uint* gameEvents,
+    /// int eventCount)</c>: which reassembled server messages the calling plugin wants on its
+    /// <c>void RynthPluginOnServerMessage(uint opcode, byte* data, int length)</c> export (Cdecl;
+    /// data = the message after its u32 opcode, valid only during the call; for 0xF7B0 it starts
+    /// with object id, sequence, event type). Replaces the plugin's previous set; both counts 0 =
+    /// none. Opcodes are 16-bit; 0xF7B0 = every game event, 0xFFFFFFFF = every message;
+    /// gameEvents lists single event types. Read-only: the client's packets are never changed.
+    /// Call from the plugin's Init, Tick or an event (the engine finds the caller that way).
+    /// Returns 1 = streaming, 2 = accepted but the stream is off (engine.json
+    /// "ServerMessageStream": false or /rc netmsg off), 0 = the plugin has no
+    /// RynthPluginOnServerMessage export, -1 = caller unknown (another thread), -3 = bad
+    /// arguments. Requires API v78+.</summary>
+    public IntPtr SetServerMessageInterestFn;
+
+    /// <summary>v79: <c>int GetTrainingInfo(TrainingInfoNative* info, TrainingEntryNative* entries,
+    /// int maxEntries)</c>: what spending experience would do (Compatibility/TrainingApi.cs): the
+    /// unassigned XP, skill credits and level, and one entry per attribute (1..6), vital maximum
+    /// (1 health, 3 stamina, 5 mana) and portal-SkillTable skill with ranks, XP spent, base and
+    /// buffed value and the XP for +1 / +10 from the portal XpTable. Set info->Size to sizeof
+    /// before the call (info may be null; entries may be null to ask for the count). Returns the
+    /// number of entries there are (at most maxEntries written), 0 when there are no numbers yet
+    /// (not in the world, or the first read hasn't happened: it is asked for by this call and
+    /// comes within a couple of seconds). Asking keeps the numbers coming every 2 s for 5 s.
+    /// Any thread. Requires API v79+.</summary>
+    public IntPtr GetTrainingInfoFn;
+
+    /// <summary>v79: <c>int Raise(uint kind, uint stype, uint ranks, long expectedXp, long* xpSent)</c>:
+    /// spend unassigned XP like the character window's "+": kind 1 attribute (stype 1..6), 2 vital
+    /// (1 health, 3 stamina, 5 mana), 3 trained or specialized skill; ranks 1..100. The engine works
+    /// the XP out from the numbers GetTrainingInfo reports and sends it with the client's own
+    /// CM_Train sender (0x0045 / 0x0044 / 0x0046) on AC's main thread. expectedXp &gt; 0 must equal
+    /// that XP (the cost the user confirmed), else nothing is sent; 0 skips the comparison.
+    /// *xpSent (may be null) = the XP sent. Returns 1 sent or queued, 0 the senders aren't bound,
+    /// -1 not in the world, -2 bad arguments, -3 no numbers yet, -4 the numbers are over 3 s old
+    /// (a read was asked for: call again shortly), -5 the cost changed, -6 not enough XP, -7 not
+    /// raisable (top rank, untrained skill), -8 an earlier raise hasn't landed yet, -9 the send
+    /// failed. Any thread. Requires API v79+.</summary>
+    public IntPtr RaiseFn;
+
+    /// <summary>v79: <c>int TrainSkill(uint stype, int expectedCredits)</c>: train an untrained
+    /// skill with skill credits, as the skills window's train dialog does (0x0047, exactly the
+    /// portal SkillTable's TrainedCost; the server refuses anything else). expectedCredits &gt; 0
+    /// must equal that price; 0 skips the comparison. Same results and threading as Raise.
+    /// Requires API v79+.</summary>
+    public IntPtr TrainSkillFn;
+
+    /// <summary>v80: <c>int GetMergeStackResult(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs)</c>:
     /// outcome of the latest MergeStackInternal(source, target) request: 0 none, 1 queued,
     /// 2 sent (amount = units sent), 3 skipped because the target was already full,
     /// 4 failed (invalid ids / AC rejected / threw), 5 dropped (main-thread queue full).
     /// ageMs = how long ago the outcome was recorded. Either out pointer may be null.
-    /// The thunk is cdecl. Any thread. Requires API v77+. APPENDED-AT-END for ABI safety.</summary>
+    /// The thunk is cdecl. Any thread. Requires API v80+ (it was v77 on QOL-items before
+    /// upstream's v77-v79 landed; plugins built against that SDK must be rebuilt).</summary>
     public IntPtr GetMergeStackResultFn;
+}
+
+/// <summary>v79 <see cref="TrainingInfoNative.Flags"/> bits.</summary>
+internal static class TrainingInfoFlags
+{
+    public const uint InWorld = 1u << 0;
+    /// <summary>The attribute, vital and skill raise senders are bound on this client.</summary>
+    public const uint RaiseBound = 1u << 1;
+    /// <summary>The train-with-credits sender is bound.</summary>
+    public const uint TrainBound = 1u << 2;
+    /// <summary>The player's numbers have been read (entries follow).</summary>
+    public const uint HaveNumbers = 1u << 3;
+    /// <summary>The portal SkillTable and XpTable are loaded.</summary>
+    public const uint HaveTables = 1u << 4;
+    /// <summary>A raise or train from the API hasn't shown up in the numbers yet.</summary>
+    public const uint Busy = 1u << 5;
+}
+
+/// <summary>v79 <see cref="TrainingEntryNative.Flags"/> bits.</summary>
+internal static class TrainingEntryFlags
+{
+    /// <summary>Can be raised with XP (an attribute, a vital, a trained or specialized skill below the top rank).</summary>
+    public const uint Raisable = 1u << 0;
+    public const uint AtTop = 1u << 1;
+    /// <summary>Skills: usable untrained (the SkillTable's min level 1).</summary>
+    public const uint UsableUntrained = 1u << 2;
+    /// <summary>Skills: untrained, and the SkillTable prices training it (TrainCredits).</summary>
+    public const uint Trainable = 1u << 3;
+}
+
+/// <summary>
+/// v79 <c>GetTrainingInfo</c> header. Pack 4, 64 bytes; later versions only append.
+/// Mirrored by RynthCore.PluginSdk (TrainingInfoNative in RynthCoreApiNative.cs).
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal unsafe struct TrainingInfoNative
+{
+    /// <summary>In: the caller's sizeof. Out: bytes written.</summary>
+    public uint Size;
+    /// <summary><see cref="TrainingInfoFlags"/>.</summary>
+    public uint Flags;
+    /// <summary>Changes whenever any number changes.</summary>
+    public uint SnapshotVersion;
+    /// <summary>Milliseconds since the numbers were read; 0xFFFFFFFF = never.</summary>
+    public uint AgeMs;
+    /// <summary>-1 when unknown.</summary>
+    public long UnassignedXp;
+    /// <summary>-1 when unknown.</summary>
+    public long TotalXp;
+    public int Level;
+    /// <summary>-1 when unknown.</summary>
+    public int SkillCredits;
+    public int EntryCount;
+    /// <summary>Raise refuses numbers older than this (Stale).</summary>
+    public int StaleAfterMs;
+    public fixed uint Reserved[4];
+}
+
+/// <summary>
+/// v79 <c>GetTrainingInfo</c> entry: one attribute, vital or skill. Pack 4, 64 bytes; later
+/// versions only append. Mirrored by RynthCore.PluginSdk (TrainingEntryNative).
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal struct TrainingEntryNative
+{
+    /// <summary>1 attribute, 2 vital, 3 skill.</summary>
+    public uint Kind;
+    /// <summary>Attribute 1..6, vital maximum 1 / 3 / 5, skill id.</summary>
+    public uint Stype;
+    /// <summary>Skills: 0 not in the table, 1 untrained, 2 trained, 3 specialized. 0 otherwise.</summary>
+    public uint Class;
+    public uint Ranks;
+    public uint XpSpent;
+    /// <summary>The innate (starting) level.</summary>
+    public uint Innate;
+    /// <summary>Without enchantments (a vital's maximum).</summary>
+    public int Base;
+    public int Buffed;
+    /// <summary>XP for one more rank; -1 at the top or not raisable.</summary>
+    public long CostOne;
+    /// <summary>XP for ten more ranks; -1 when fewer than ten are left or not raisable.</summary>
+    public long CostTen;
+    public int RanksLeft;
+    /// <summary>Ranks in a row the unassigned XP buys now.</summary>
+    public int Affordable;
+    /// <summary>Untrained skills: the credits to train it (0 = can't be trained from the client).</summary>
+    public int TrainCredits;
+    /// <summary><see cref="TrainingEntryFlags"/>.</summary>
+    public uint Flags;
 }
 
 /// <summary>v72 <see cref="TradeStateNative.Flags"/> bits.</summary>
@@ -976,11 +1130,8 @@ internal unsafe struct VendorTradeStatusNative
 
 
 
-/// <summary>Current API version. Bump when adding fields to RynthCoreAPI.</summary>
-internal static class PluginContractVersion
-{
-    public const uint Current = 77; // v77: GetMergeStackResult
-}
+// PluginContractVersion (the current API version) lives in PluginContractVersion.cs, which
+// the SDK and the launcher compile in too, so their copies can't drift from the engine's.
 
 internal static class ClientActionHookFlags
 {
@@ -1088,6 +1239,17 @@ internal delegate void PluginTickDelegate();
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate void PluginRenderDelegate();
+
+// v77 callbacks (exports resolved by PluginManager.ResolveUiExports, not PluginLoader):
+//   void RynthPluginOnScreenChanged(int oldMode, int newMode)    - UIFlow mode change (GetScreenModeFn values)
+//   void RynthPluginOnClientCleanup(void)                        - Client::Cleanup starting; no ticks after it
+//   void RynthPluginOnTooltipShow(uint objectId, uint spellId)   - AC shows a tooltip (0/0: not an item or spell)
+//   void RynthPluginOnTooltipHide(void)                          - that tooltip is gone
+//   void RynthPluginOnDragStart(uint objectId, uint spellId, uint iconId) - a drag out of AC's UI began
+//   void RynthPluginOnItemDropped(uint objectId, uint spellId, uint targetElementId) - AC caught a drop
+// All cdecl, all on the plugin pump like the other events, except OnClientCleanup (see
+// PluginManager.DispatchClientCleanup).
+
 
 // ─── Log callback that plugins can call ─────────────────────────────────
 
@@ -1501,3 +1663,21 @@ internal unsafe delegate int GetServerInfoCallbackDelegate(byte* worldName, int 
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate int CloseContainerCallbackDelegate(uint containerId);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetScreenModeCallbackDelegate(int* previousMode);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate uint GetUiHookFlagsCallbackDelegate();
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int SetServerMessageInterestCallbackDelegate(uint* opcodes, int opcodeCount, uint* gameEvents, int eventCount);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetTrainingInfoCallbackDelegate(TrainingInfoNative* info, TrainingEntryNative* entries, int maxEntries);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int RaiseCallbackDelegate(uint kind, uint stype, uint ranks, long expectedXp, long* xpSent);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int TrainSkillCallbackDelegate(uint stype, int expectedCredits);

@@ -68,6 +68,12 @@ internal static class MonsterHudSettingsUi
         changed |= Toggle("Weak-to element", ref MonsterHudSettings.ShowWeakness,
             "What the monster takes most damage from, from RynthAi's Damage data (needs RynthAi).");
         changed |= Toggle("Distance", ref MonsterHudSettings.ShowDistance, null);
+        changed |= SizeSlider("Bar width", ref MonsterHudSettings.MonsterBarWidth, MonsterHudSettings.MinBarWidth, MonsterHudSettings.MaxBarWidth, w,
+            "How wide a monster's health bar is (1.00x = the default). On top of Look > Scale.");
+        changed |= SizeSlider("Bar height", ref MonsterHudSettings.MonsterBarHeight, MonsterHudSettings.MinBarHeight, MonsterHudSettings.MaxBarHeight, w,
+            "How tall (thick) a monster's health bar is (1.00x = the default). HP numbers need a bar at least 9 px tall.");
+        changed |= SizeSlider("Text size", ref MonsterHudSettings.MonsterTextSize, MonsterHudSettings.MinTextSize, MonsterHudSettings.MaxTextSize, w,
+            "The monster plate's text: name, level badge, HP numbers, weak-to pill and distance (1.00x = the default).");
 
         Section("Names over NPCs and players", w);
         changed |= Toggle("NPC names", ref MonsterHudSettings.NpcNames,
@@ -77,8 +83,12 @@ internal static class MonsterHudSettingsUi
             MonsterHudSettings.MinNpcDistance, MonsterHudSettings.MaxNpcDistanceLimit, "%.0f", w);
         changed |= SliderI("Max names", ref MonsterHudSettings.MaxNpcLabels,
             MonsterHudSettings.MinNpcLabels, MonsterHudSettings.MaxNpcLabelsLimit, w);
+        changed |= SizeSlider("NPC name size", ref MonsterHudSettings.NpcTextSize, MonsterHudSettings.MinTextSize, MonsterHudSettings.MaxTextSize, w,
+            "Text size of the names over NPCs and vendors (1.00x = the default). Names have no bar.");
         changed |= Toggle("Player names", ref MonsterHudSettings.PlayerNames,
             "The name over other players too (blue), within the same distance and count. Chat: /rv plates players.");
+        changed |= SizeSlider("Player name size", ref MonsterHudSettings.PlayerTextSize, MonsterHudSettings.MinTextSize, MonsterHudSettings.MaxTextSize, w,
+            "Text size of the names over other players (1.00x = the default). Names have no bar.");
         Note("Names count apart from the monster plates, so they never push one out; the nearest win.", w);
 
         Section("Debuffs", w);
@@ -94,6 +104,12 @@ internal static class MonsterHudSettingsUi
             "Your own health, stamina and mana bars: fixed on screen, or following your character. Chat: /rv plates self.");
         changed |= Toggle("Numbers on your bars", ref MonsterHudSettings.SelfNumbers, "\"cur / max\" inside each bar (taller bars).", sub: true);
         changed |= Toggle("Your name", ref MonsterHudSettings.SelfName, null, sub: true);
+        changed |= SizeSlider("Your bar width", ref MonsterHudSettings.SelfBarWidth, MonsterHudSettings.MinBarWidth, MonsterHudSettings.MaxBarWidth, w,
+            "How wide your health, stamina and mana bars are (1.00x = the default).");
+        changed |= SizeSlider("Your bar height", ref MonsterHudSettings.SelfBarHeight, MonsterHudSettings.MinBarHeight, MonsterHudSettings.MaxBarHeight, w,
+            "How tall (thick) each of your bars is (1.00x = the default). The numbers need a bar at least 8 px tall.");
+        changed |= SizeSlider("Your text size", ref MonsterHudSettings.SelfTextSize, MonsterHudSettings.MinTextSize, MonsterHudSettings.MaxTextSize, w,
+            "Your plate's text: the cur / max numbers and your name (1.00x = the default).");
 
         bool fixedOn = MonsterHudSettings.SelfPlacement == SelfPlacement.Fixed;
         if (Toggle("Fixed on screen", ref fixedOn,
@@ -151,6 +167,14 @@ internal static class MonsterHudSettingsUi
         changed |= Toggle("Fade and shrink with distance", ref MonsterHudSettings.FadeWithDistance, null);
 
         ImGuiNET.ImGui.Dummy(new Vector2(0, 8));
+        if (SmallButton("Reset bar and text sizes"))
+        {
+            MonsterHudSettings.ResetSizes();   // saves
+            changed = false;
+        }
+        if (ImGuiNET.ImGui.IsItemHovered())
+            ImGuiNET.ImGui.SetTooltip("Every plate type's bar width, bar height and text size back to 1.00x.");
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
         if (SmallButton("Reset all to defaults"))
         {
             MonsterHudSettings.ResetToDefaults();
@@ -235,6 +259,15 @@ internal static class MonsterHudSettingsUi
     {
         BeginSliderRow(label, w);
         bool changed = ImGuiNET.ImGui.SliderFloat("##v", ref value, min, max, fmt, ImGuiSliderFlags.AlwaysClamp);
+        return EndSliderRow(changed);
+    }
+
+    /// <summary>A size multiplier slider ("1.00x" = the default look) with a tooltip. Labels are the ids: keep them unique.</summary>
+    private static bool SizeSlider(string label, ref float value, float min, float max, float w, string tip)
+    {
+        BeginSliderRow(label, w);
+        bool changed = ImGuiNET.ImGui.SliderFloat("##v", ref value, min, max, "%.2fx", ImGuiSliderFlags.AlwaysClamp);
+        if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(tip);
         return EndSliderRow(changed);
     }
 

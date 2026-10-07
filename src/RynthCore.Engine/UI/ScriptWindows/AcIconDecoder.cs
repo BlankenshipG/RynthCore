@@ -5,13 +5,20 @@
 //  into one picture. Pure code: no AC memory, no D3D, no engine state, so the
 //  RynthSuite offline tests compile it in and decode real icons.
 //
-//  The texture formats and their byte layouts are the ones RynthCore.StatusAgent
-//  (Dat/IconDecoder.cs, the phone remote's icons) decodes, ported from
-//  ACEmulator's DatLoader; DXT1/3/5 use the StatusAgent's DxtUtil.cs (MonoGame,
-//  Ms-PL), linked into the engine project. The dat reader is the on-demand
-//  B-tree walk of ImGui/MonsterHud/PortalSpellTable.cs over one open stream:
-//  header at 0x140, a B-tree searched by file id, block chains whose first
-//  dword is the next block's offset.
+//  Written for RynthCore (MIT); the dat reader and the texture decoding were
+//  rewritten on 2026-10-05 from the public dat container layout and the
+//  Texture / Palette layouts as Chorizite's DatReaderWriter (MIT) describes
+//  them (its notice is in RynthCore.StatusAgent/Dat/DatDatabase.cs):
+//    - header at 0x140: magic, block size, file size, ..., root node offset
+//      (uint32 at 0x160); a block starts with the next block's offset (0 =
+//      last); the directory is a B-tree of nodes (62 child offsets, an entry
+//      count, entries of 24 bytes: flags, id, offset, size, date, iteration);
+//    - Texture: id u32, data category u32, width i32, height i32, format u32,
+//      length i32, data[length], and for P8 / INDEX16 a palette id u32;
+//      Palette: id u32, count i32, count x u32 A8R8G8B8.
+//  DXT1/3/5 use the StatusAgent's DxtUtil.cs, linked into the engine project.
+//  The pixels are the same as the StatusAgent's Dat/IconDecoder.cs (the phone
+//  remote's icons) produces.
 //
 //  Threads: whatever thread owns the AcDatFile (the icon worker). Every read is
 //  bounds-checked; a bad file returns null, never throws out of Decode/Compose.
@@ -21,26 +28,30 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
-using ACE.DatLoader;
+using RynthCore.Imaging;
 
 namespace RynthCore.Engine.UI.ScriptWindows;
 
 /// <summary>A read-only portal.dat opened for a batch of reads. Not thread-safe.</summary>
 internal sealed class AcDatFile : IDisposable
 {
-    private const int HeaderOffset = 0x140;
-    private const int Branches = 62, MaxEntries = 61, EntrySize = 24;
-    private const int NodeSize = 4 * Branches + 4 + EntrySize * MaxEntries;   // 1716
-    private const int MaxDepth = 16;
+    private const long HeaderOffset = 0x140;
+    private const int ChildSlots = 62, MaxEntries = 61, EntryBytes = 24;
+    private const int EntriesOffset = ChildSlots * 4 + 4;                    // 252
+    private const int NodeBytes = EntriesOffset + MaxEntries * EntryBytes;   // 1716
+    private const int DepthLimit = 16;
 
     private readonly FileStream _fs;
-    private readonly uint _blockSize;
+    private readonly long _length;
+    private readonly int _payload;   // block size - 4
     private readonly uint _root;
+    private readonly byte[] _node = new byte[NodeBytes];
 
     private AcDatFile(FileStream fs, uint blockSize, uint root)
     {
         _fs = fs;
-        _blockSize = blockSize;
+        _length = fs.Length;
+        _payload = (int)blockSize - 4;
         _root = root;
     }
 
@@ -52,24 +63,24 @@ internal sealed class AcDatFile : IDisposable
         {
             fs = new FileStream(path, FileMode.Open, FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.RandomAccess);
-            Span<byte> hdr = stackalloc byte[36];
-            fs.Seek(HeaderOffset, SeekOrigin.Begin);
-            if (!ReadFully(fs, hdr)) { why = "short header"; fs.Dispose(); return null; }
-            uint blockSize = BinaryPrimitives.ReadUInt32LittleEndian(hdr.Slice(4, 4));
-            uint root = BinaryPrimitives.ReadUInt32LittleEndian(hdr.Slice(32, 4));
+            Span<byte> header = stackalloc byte[36];
+            fs.Position = HeaderOffset;
+            if (!ReadFully(fs, header)) { why = "short header"; fs.Dispose(); return null; }
+            uint blockSize = BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(4));
+            uint root = BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(32));
             if (blockSize <= 4 || blockSize > 65536 || root == 0 || root >= fs.Length)
             {
-                why = "bad header";
+                why = $"not a dat file (block size {blockSize}, root 0x{root:X8})";
                 fs.Dispose();
                 return null;
             }
-            why = string.Empty;
+            why = "";
             return new AcDatFile(fs, blockSize, root);
         }
         catch (Exception ex)
         {
             fs?.Dispose();
-            why = $"{ex.GetType().Name}: {ex.Message}";
+            why = ex.Message;
             return null;
         }
     }
@@ -104,26 +115,34 @@ internal sealed class AcDatFile : IDisposable
     {
         try
         {
-            uint offset = _root;
-            for (int depth = 0; depth < MaxDepth && offset != 0; depth++)
+            uint at = _root;
+            for (int depth = 0; depth < DepthLimit && at != 0; depth++)
             {
-                byte[]? node = ReadChain(offset, NodeSize);
-                if (node == null) return null;
-                uint count = BinaryPrimitives.ReadUInt32LittleEndian(node.AsSpan(4 * Branches));
-                if (count > MaxEntries) return null;
-                int i = 0;
-                while (i < count && EntryId(node, i) < fileId) i++;
-                if (i < count && EntryId(node, i) == fileId)
+                int got = ReadChain(at, _node);
+                if (got < EntriesOffset) return null;
+                int count = BinaryPrimitives.ReadInt32LittleEndian(_node.AsSpan(EntriesOffset - 4));
+                if (count < 0 || count > MaxEntries || got < EntriesOffset + count * EntryBytes) return null;
+
+                // Entries are sorted by id: binary search for the first id >= fileId.
+                int lo = 0, hi = count;
+                while (lo < hi)
                 {
-                    int e = 4 * Branches + 4 + i * EntrySize;
-                    uint fileOffset = BinaryPrimitives.ReadUInt32LittleEndian(node.AsSpan(e + 8));
-                    uint fileSize = BinaryPrimitives.ReadUInt32LittleEndian(node.AsSpan(e + 12));
-                    if (fileSize == 0 || fileSize > (uint)maxSize) return null;
-                    return ReadChain(fileOffset, (int)fileSize);
+                    int mid = (lo + hi) >> 1;
+                    if (IdAt(mid) < fileId) lo = mid + 1; else hi = mid;
                 }
-                bool leaf = BinaryPrimitives.ReadUInt32LittleEndian(node) == 0;
-                if (leaf || i >= Branches) return null;
-                offset = BinaryPrimitives.ReadUInt32LittleEndian(node.AsSpan(i * 4));
+                if (lo < count && IdAt(lo) == fileId)
+                {
+                    var e = _node.AsSpan(EntriesOffset + lo * EntryBytes);
+                    uint offset = BinaryPrimitives.ReadUInt32LittleEndian(e.Slice(8));
+                    uint size = BinaryPrimitives.ReadUInt32LittleEndian(e.Slice(12));
+                    if (size == 0 || size > (uint)maxSize || size > _length) return null;
+                    var data = new byte[size];
+                    return ReadChain(offset, data) == data.Length ? data : null;
+                }
+                // Not in this node: a leaf (first child offset 0) ends the search; otherwise
+                // child `lo` holds the ids between entries lo-1 and lo.
+                if (BinaryPrimitives.ReadUInt32LittleEndian(_node) == 0) return null;
+                at = BinaryPrimitives.ReadUInt32LittleEndian(_node.AsSpan(lo * 4));
             }
             return null;
         }
@@ -133,41 +152,36 @@ internal sealed class AcDatFile : IDisposable
         }
     }
 
-    private static uint EntryId(byte[] node, int i) =>
-        BinaryPrimitives.ReadUInt32LittleEndian(node.AsSpan(4 * Branches + 4 + i * EntrySize + 4));
+    private uint IdAt(int i) => BinaryPrimitives.ReadUInt32LittleEndian(_node.AsSpan(EntriesOffset + i * EntryBytes + 4));
 
-    /// <summary>A block chain: each block starts with the next block's offset (0 = last).</summary>
-    private byte[]? ReadChain(uint offset, int size)
+    // Copies the block chain at byte offset `first` into `dest`; returns the bytes
+    // filled (fewer than dest.Length when the chain ends first), -1 on a bad link.
+    private int ReadChain(uint first, Span<byte> dest)
     {
-        if ((long)offset + 4 > _fs.Length) return null;
-        var buffer = new byte[size];
-        Span<byte> next = stackalloc byte[4];
-        _fs.Seek(offset, SeekOrigin.Begin);
-        if (!ReadFully(_fs, next)) return null;
-        uint nextAddr = BinaryPrimitives.ReadUInt32LittleEndian(next);
+        long block = first;
         int done = 0;
-        int guard = 0;
-        while (done < size)
+        Span<byte> link = stackalloc byte[4];
+        while (done < dest.Length)
         {
-            int take = Math.Min((int)_blockSize - 4, size - done);
-            if (!ReadFully(_fs, buffer.AsSpan(done, take))) return null;
+            if (block == 0) return done;
+            if (block + 4 > _length) return -1;
+            int take = Math.Min(_payload, dest.Length - done);
+            _fs.Position = block;
+            if (!ReadFully(_fs, link) || !ReadFully(_fs, dest.Slice(done, take))) return -1;
             done += take;
-            if (done >= size) break;
-            if (nextAddr == 0 || nextAddr >= _fs.Length || ++guard > 1_000_000) return null;
-            _fs.Seek(nextAddr, SeekOrigin.Begin);
-            if (!ReadFully(_fs, next)) return null;
-            nextAddr = BinaryPrimitives.ReadUInt32LittleEndian(next);
+            block = BinaryPrimitives.ReadUInt32LittleEndian(link);
         }
-        return buffer;
+        return done;
     }
 
     private static bool ReadFully(FileStream fs, Span<byte> dest)
     {
-        while (dest.Length > 0)
+        int got = 0;
+        while (got < dest.Length)
         {
-            int n = fs.Read(dest);
+            int n = fs.Read(dest.Slice(got));
             if (n <= 0) return false;
-            dest = dest.Slice(n);
+            got += n;
         }
         return true;
     }
@@ -251,7 +265,7 @@ internal static class AcIconDecoder
 
     /// <summary>
     /// A 0x06 Texture as RGBA, or null (not a texture id, missing, an unsupported format, larger
-    /// than <see cref="MaxSide"/>, or short data). Layout: id u32, unknown i32, width i32,
+    /// than <see cref="MaxSide"/>, or short data). Layout: id u32, data category u32, width i32,
     /// height i32, format u32, length i32, data[length], then for INDEX16/P8 a palette id u32.
     /// </summary>
     public static AcIconImage? Decode(AcDatFile dat, uint textureId) => Decode(dat, textureId, MaxSide);
@@ -274,106 +288,109 @@ internal static class AcIconDecoder
         }
     }
 
+    private const uint FmtR8G8B8 = 0x14, FmtA8R8G8B8 = 0x15, FmtR5G6B5 = 0x17, FmtA4R4G4B4 = 0x1A, FmtA8 = 0x1C,
+        FmtP8 = 0x29, FmtIndex16 = 0x65, FmtLscapeR8G8B8 = 0xF3, FmtLscapeAlpha = 0xF4,
+        FmtDxt1 = 0x31545844, FmtDxt3 = 0x33545844, FmtDxt5 = 0x35545844;
+
     /// <summary>A Texture file's bytes as RGBA (see <see cref="Decode(AcDatFile, uint)"/>); <paramref name="readPalette"/> loads a 0x04 palette.</summary>
     internal static AcIconImage? DecodeTextureFile(byte[] data, Func<uint, byte[]?> readPalette, int maxSide = MaxSide)
     {
         if (data.Length < 24) return null;
-        maxSide = Math.Clamp(maxSide, 1, MaxUiSide);
-        ReadOnlySpan<byte> d = data;
-        int w = BinaryPrimitives.ReadInt32LittleEndian(d[8..]);
-        int h = BinaryPrimitives.ReadInt32LittleEndian(d[12..]);
-        uint fmt = BinaryPrimitives.ReadUInt32LittleEndian(d[16..]);
-        int len = BinaryPrimitives.ReadInt32LittleEndian(d[20..]);
-        if (w <= 0 || h <= 0 || w > maxSide || h > maxSide || len < 0 || len > data.Length - 24) return null;
-        byte[] src = d.Slice(24, len).ToArray();
+        var file = new ReadOnlySpan<byte>(data);
+        int w = BinaryPrimitives.ReadInt32LittleEndian(file.Slice(8));
+        int h = BinaryPrimitives.ReadInt32LittleEndian(file.Slice(12));
+        uint format = BinaryPrimitives.ReadUInt32LittleEndian(file.Slice(16));
+        int length = BinaryPrimitives.ReadInt32LittleEndian(file.Slice(20));
+        int limit = Math.Min(maxSide, MaxUiSide);
+        if (w <= 0 || h <= 0 || w > limit || h > limit) return null;
+        if (length < 0 || 24L + length > data.Length) return null;
+        var src = file.Slice(24, length);
         int n = w * h;
 
-        switch (fmt)
+        switch (format)
         {
-            case 827611204: return Dxt(src, w, h, 8, DxtUtil.DecompressDxt1);    // DXT1
-            case 861165636: return Dxt(src, w, h, 16, DxtUtil.DecompressDxt3);   // DXT3
-            case 894720068: return Dxt(src, w, h, 16, DxtUtil.DecompressDxt5);   // DXT5
+            case FmtDxt1: return Dxt(src, w, h, 8, DxtUtil.DecompressDxt1);
+            case FmtDxt3: return Dxt(src, w, h, 16, DxtUtil.DecompressDxt3);
+            case FmtDxt5: return Dxt(src, w, h, 16, DxtUtil.DecompressDxt5);
         }
 
-        var rgba = new byte[n * 4];
-        void Px(int i, int r, int g, int b, int a)
+        var px = new byte[n * 4];
+        switch (format)
         {
-            int o = i * 4;
-            rgba[o] = (byte)r; rgba[o + 1] = (byte)g; rgba[o + 2] = (byte)b; rgba[o + 3] = (byte)a;
-        }
-
-        switch (fmt)
-        {
-            case 20:  // R8G8B8, stored B, G, R
-                for (int i = 0; i < n && i * 3 + 2 < src.Length; i++) Px(i, src[i * 3 + 2], src[i * 3 + 1], src[i * 3], 255);
+            case FmtA8R8G8B8:       // memory order B, G, R, A
+                if (length < n * 4) return null;
+                for (int i = 0; i < n; i++) Set(px, i, src[i * 4 + 2], src[i * 4 + 1], src[i * 4], src[i * 4 + 3]);
                 break;
-            case 243: // CUSTOM_LSCAPE_R8G8B8, stored R, G, B
-                for (int i = 0; i < n && i * 3 + 2 < src.Length; i++) Px(i, src[i * 3], src[i * 3 + 1], src[i * 3 + 2], 255);
+            case FmtR8G8B8:         // B, G, R
+                if (length < n * 3) return null;
+                for (int i = 0; i < n; i++) Set(px, i, src[i * 3 + 2], src[i * 3 + 1], src[i * 3], 255);
                 break;
-            case 21:  // A8R8G8B8, stored B, G, R, A
-            case 22:  // X8R8G8B8
-                for (int i = 0; i < n && i * 4 + 3 < src.Length; i++)
-                    Px(i, src[i * 4 + 2], src[i * 4 + 1], src[i * 4], fmt == 22 ? 255 : src[i * 4 + 3]);
+            case FmtLscapeR8G8B8:   // R, G, B
+                if (length < n * 3) return null;
+                for (int i = 0; i < n; i++) Set(px, i, src[i * 3], src[i * 3 + 1], src[i * 3 + 2], 255);
                 break;
-            case 23:  // R5G6B5
-                for (int i = 0; i < n && i * 2 + 1 < src.Length; i++)
-                {
-                    int v = src[i * 2] | (src[i * 2 + 1] << 8);
-                    Px(i, ((v >> 11) & 0x1F) << 3, ((v >> 5) & 0x3F) << 2, (v & 0x1F) << 3, 255);
-                }
-                break;
-            case 26:  // A4R4G4B4
-                for (int i = 0; i < n && i * 2 + 1 < src.Length; i++)
-                {
-                    int v = src[i * 2] | (src[i * 2 + 1] << 8);
-                    Px(i, ((v >> 8) & 0xF) * 17, ((v >> 4) & 0xF) * 17, (v & 0xF) * 17, ((v >> 12) & 0xF) * 17);
-                }
-                break;
-            case 28:  // A8 (greyscale)
-            case 244: // LSCAPE_ALPHA
-                for (int i = 0; i < n && i < src.Length; i++) Px(i, src[i], src[i], src[i], 255);
-                break;
-            case 101: // INDEX16
-            case 41:  // P8
-            {
-                if (data.Length < 24 + len + 4) return null;
-                uint paletteId = BinaryPrimitives.ReadUInt32LittleEndian(d[(24 + len)..]);
-                uint[]? pal = Palette(readPalette(paletteId));
-                if (pal == null || pal.Length == 0) return null;
-                bool p8 = fmt == 41;
+            case FmtR5G6B5:         // top bits only, as the StatusAgent's decoder
+                if (length < n * 2) return null;
                 for (int i = 0; i < n; i++)
                 {
-                    int idx;
-                    if (p8) { if (i >= src.Length) break; idx = src[i]; }
-                    else { if (i * 2 + 1 >= src.Length) break; idx = src[i * 2] | (src[i * 2 + 1] << 8); }
-                    uint c = pal[idx % pal.Length];
-                    Px(i, (int)((c >> 16) & 0xFF), (int)((c >> 8) & 0xFF), (int)(c & 0xFF), (int)((c >> 24) & 0xFF));
+                    int v = src[i * 2] | (src[i * 2 + 1] << 8);
+                    Set(px, i, (byte)(((v >> 11) & 0x1F) << 3), (byte)(((v >> 5) & 0x3F) << 2), (byte)((v & 0x1F) << 3), 255);
+                }
+                break;
+            case FmtA4R4G4B4:
+                if (length < n * 2) return null;
+                for (int i = 0; i < n; i++)
+                {
+                    int v = src[i * 2] | (src[i * 2 + 1] << 8);
+                    Set(px, i, (byte)(((v >> 8) & 0xF) * 17), (byte)(((v >> 4) & 0xF) * 17), (byte)((v & 0xF) * 17), (byte)(((v >> 12) & 0xF) * 17));
+                }
+                break;
+            case FmtA8:             // one byte a pixel: an opaque grey level
+            case FmtLscapeAlpha:
+                if (length < n) return null;
+                for (int i = 0; i < n; i++) Set(px, i, src[i], src[i], src[i], 255);
+                break;
+            case FmtP8:
+            case FmtIndex16:
+            {
+                int bytesPer = format == FmtP8 ? 1 : 2;
+                if (length < n * bytesPer || 24L + length + 4 > data.Length) return null;
+                uint[]? palette = Palette(readPalette(BinaryPrimitives.ReadUInt32LittleEndian(file.Slice(24 + length))));
+                if (palette == null) return null;
+                for (int i = 0; i < n; i++)
+                {
+                    int idx = bytesPer == 1 ? src[i] : src[i * 2] | (src[i * 2 + 1] << 8);
+                    uint argb = idx < palette.Length ? palette[idx] : 0;
+                    Set(px, i, (byte)(argb >> 16), (byte)(argb >> 8), (byte)argb, (byte)(argb >> 24));
                 }
                 break;
             }
             default:
-                return null;   // a format icons don't use
+                return null;   // raw JPEG, anything else
         }
-        return new AcIconImage { Width = w, Height = h, Pixels = rgba };
+        return new AcIconImage { Width = w, Height = h, Pixels = px };
     }
 
-    private static AcIconImage? Dxt(byte[] src, int w, int h, int blockBytes, Func<byte[], int, int, byte[]> decompress)
+    private static void Set(byte[] px, int i, byte r, byte g, byte b, byte a)
+    {
+        px[i * 4] = r; px[i * 4 + 1] = g; px[i * 4 + 2] = b; px[i * 4 + 3] = a;
+    }
+
+    private static AcIconImage? Dxt(ReadOnlySpan<byte> src, int w, int h, int blockBytes, Func<byte[], int, int, byte[]> decompress)
     {
         long need = (long)((w + 3) / 4) * ((h + 3) / 4) * blockBytes;
-        if (src.Length < need) return null;   // DxtUtil would read past the end
-        byte[] rgba = decompress(src, w, h);
-        return rgba.Length == w * h * 4 ? new AcIconImage { Width = w, Height = h, Pixels = rgba } : null;
+        if (src.Length < need) return null;
+        return new AcIconImage { Width = w, Height = h, Pixels = decompress(src.Slice(0, (int)need).ToArray(), w, h) };
     }
 
     /// <summary>Palette (0x04): id u32, count i32, count x u32 ARGB.</summary>
     private static uint[]? Palette(byte[]? data)
     {
         if (data == null || data.Length < 8) return null;
-        int n = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(4));
-        if (n <= 0 || n > 65536) return null;
-        n = Math.Min(n, (data.Length - 8) / 4);
-        var pal = new uint[n];
-        for (int i = 0; i < n; i++) pal[i] = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(8 + i * 4));
-        return pal;
+        int count = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(4));
+        if (count < 0 || 8L + count * 4L > data.Length) return null;
+        var colours = new uint[count];
+        for (int i = 0; i < count; i++) colours[i] = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(8 + i * 4));
+        return colours;
     }
 }

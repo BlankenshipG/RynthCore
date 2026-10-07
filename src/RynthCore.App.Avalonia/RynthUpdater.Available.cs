@@ -37,7 +37,15 @@ internal sealed partial class RynthUpdater
     private static readonly Regex SafeFolderName = new(@"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", RegexOptions.CultureInvariant);
 
     /// <summary>A feed plugin the player can install: where it would go, what it is, and whether it's new.</summary>
-    public sealed record AvailablePlugin(PluginEntry Entry, string Path, string Description, string Version, bool IsNew);
+    public sealed record AvailablePlugin(PluginEntry Entry, string Path, string Description, string Version, bool IsNew)
+    {
+        /// <summary>
+        /// Empty when it can be installed; otherwise shown instead of the Install button: the feed's
+        /// build needs a newer engine than the one installed ("needs RynthCore 2026.10.6.1").
+        /// </summary>
+        public string Blocker { get; init; } = "";
+        public bool CanInstall => Blocker.Length == 0;
+    }
 
     /// <summary>What <see cref="InstallPluginAsync"/> did: Downloaded is false when a good copy was already there.</summary>
     public sealed record PluginInstall(PluginEntry Entry, string Path, string Description, bool Downloaded);
@@ -119,7 +127,7 @@ internal sealed partial class RynthUpdater
             if (listed.Contains(e.File) || skip.Contains(e.File)) continue;
             if (TargetPath(e, suite) is not { } target) continue;
             bool isNew = seen.TryGetValue(e.Name, out DateTime first) && now - first < NewBadgeFor;
-            result.Add(new AvailablePlugin(e, target, DescribePlugin(e), manifest.Version, isNew));
+            result.Add(new AvailablePlugin(e, target, DescribePlugin(e), manifest.Version, isNew) { Blocker = EngineBlocker(e, manifest) });
         }
         // New ones first, then by name.
         return result.OrderByDescending(a => a.IsNew).ThenBy(a => a.Entry.Name, StringComparer.OrdinalIgnoreCase).ToList();
@@ -145,6 +153,9 @@ internal sealed partial class RynthUpdater
             throw new InvalidOperationException($"{e.Name} is already in your plugin list");
         string target = TargetPath(e, SuiteDir(check.Manifest, paths))
             ?? throw new InvalidDataException($"bad plugin name '{e.Name}' in the feed");
+        // A build the installed engine would refuse (its manifest's minEngineApi) isn't installed.
+        if (EngineBlocker(e, check.Manifest) is { Length: > 0 } blocker)
+            throw new InvalidOperationException($"{e.Name} {blocker}");
 
         if (File.Exists(target))
         {
@@ -179,6 +190,17 @@ internal sealed partial class RynthUpdater
     {
         if (!p.TryGetProperty("description", out JsonElement d) || d.ValueKind != JsonValueKind.String) return "";
         return OneLine(d.GetString(), MaxDescriptionLength);
+    }
+
+    /// <summary>
+    /// An optional engine API number ("minEngineApi" on a plugin, "engineApi" on the core; written
+    /// since plugin manifests). Missing or unreadable: 0, no limit, as with older feeds.
+    /// </summary>
+    private static uint ReadApi(JsonElement o, string name)
+    {
+        if (!o.TryGetProperty(name, out JsonElement v)) return 0;
+        if (v.ValueKind == JsonValueKind.Number && v.TryGetUInt32(out uint n)) return n;
+        return 0;
     }
 
     /// <summary>The manifest's optional "changes": up to 20 lines.</summary>

@@ -853,6 +853,15 @@ internal static unsafe class Win32Backend
                 }
             }
 
+            // ── Remote tap-to-click (the phone, via the StatusAgent's PostMessage) ──
+            // A posted mouse message whose point is not where the cursor was when it was queued did not come
+            // from the mouse: it is the StatusAgent clicking where the phone tapped. Without this, the ImGui
+            // capture below judged it by the REAL cursor (NewFrame's GetCursorPos): on the focused client,
+            // with the PC's mouse parked over a RynthCore panel, every remote click was eaten, and the
+            // phone's tap still fed ImGui a fake cursor. Hand it straight to AC instead.
+            if (IsRemoteClientMouse(hWnd, msg, lParam))
+                return CallWindowProcA(_originalWndProc, hWnd, msg, wParam, lParam);
+
             // ── Chat capture: consume all key input for the chat TextBox ────
             // Game HWND keeps Win32 focus throughout; callbacks dispatch Text
             // updates to the panel on Avalonia's UI thread — no Avalonia focus needed.
@@ -1462,6 +1471,29 @@ internal static unsafe class Win32Backend
             0x5B => ImGuiKey.LeftSuper,
             _ => ImGuiKey.None,
         };
+    }
+
+    [DllImport("user32.dll")]
+    private static extern uint GetMessagePos();
+
+    /// <summary>
+    /// True for a client-area mouse message another process posted (the StatusAgent's remote click):
+    /// Windows stamps every queued message with the cursor position at the time it was queued
+    /// (GetMessagePos). Mouse input carries that same point in lParam; a PostMessage from elsewhere
+    /// carries its own point while the stamp is wherever the real cursor sat. A 2 px slack covers
+    /// rounding. Only the move/click messages whose lParam is client coordinates are tested (the wheel's
+    /// lParam is screen coordinates).
+    /// </summary>
+    private static bool IsRemoteClientMouse(IntPtr hWnd, uint msg, IntPtr lParam)
+    {
+        if (msg != WM_MOUSEMOVE && msg != WM_LBUTTONDOWN && msg != WM_LBUTTONUP && msg != WM_RBUTTONDOWN && msg != WM_RBUTTONUP)
+            return false;
+        uint pos = GetMessagePos();
+        var stamp = new POINT { X = (short)(pos & 0xFFFF), Y = (short)((pos >> 16) & 0xFFFF) };
+        if (!ScreenToClient(hWnd, ref stamp))
+            return false;
+        int x = (short)((long)lParam & 0xFFFF), y = (short)(((long)lParam >> 16) & 0xFFFF);
+        return Math.Abs(stamp.X - x) > 2 || Math.Abs(stamp.Y - y) > 2;
     }
 
     private static bool IsMouseMessage(uint msg)

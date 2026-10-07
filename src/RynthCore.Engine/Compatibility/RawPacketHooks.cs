@@ -15,6 +15,8 @@ namespace RynthCore.Engine.Compatibility;
 /// We read the function address, install a MinHook detour, call through to the
 /// original on every receive, then hand the buffer to RawPacketParser for
 /// opcode extraction. The hook is purely read-only and never modifies traffic.
+/// It also feeds Net.ServerMessageStream (API v78), which copies fragment datagrams
+/// for reassembly on the plugin pump while a plugin wants server messages.
 /// </summary>
 internal static class RawPacketHooks
 {
@@ -82,6 +84,11 @@ internal static class RawPacketHooks
             // This guard prevents any parser bug from crashing the client.
             try
             {
+                // v78 server-message stream: a volatile check, and while a plugin wants
+                // messages, one copy into a ring for the pump (never blocks, never allocates).
+                // A MSG_PEEK (0x2) read leaves the datagram queued; the real read copies it.
+                if ((flags & 0x2) == 0)
+                    Net.ServerMessageStream.OnDatagram((byte*)buf, bytesRead);
                 RawPacketParser.Parse((byte*)buf, bytesRead);
             }
             catch

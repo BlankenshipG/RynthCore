@@ -301,6 +301,44 @@ internal static class CombatModeHooks
         PluginManager.QueueCombatModeChange(currentCombatMode, previousCombatMode);
     }
 
+    // Main-thread refresh of the off-thread cache (2026-10-05). After the engine hot reload at
+    // 13:42:55 Drakkon was in Magic (he had just cast Heal Self), but _lastObservedCombatMode
+    // starts at NonCombat in a new engine and only the SetCombatMode detour (a mode CHANGE) or a
+    // main-thread ReadCurrentCombatMode moved it. The plugin pump reads off the main thread, so
+    // the engine synced "combat mode 1" to the plugins at 13:43:03 and RynthAi's heal at 13:43:12
+    // asked for a Magic stance the client already had (RequestCombatMode req=8 clientField=8),
+    // then waited out the stance settle. Drain calls this every frame; it reads the client's field
+    // at most every MainThreadRefreshMs and, when the cache was wrong, heals it and tells the
+    // plugins the way the detour does.
+    private static long _lastMainThreadRefreshMs;
+    private const long MainThreadRefreshMs = 250;
+
+    /// <summary>AC's main thread only (AcMainThreadQueue.Drain).</summary>
+    internal static unsafe void MainThreadRefresh()
+    {
+        if (!IsInstalled) return;
+        long now = Environment.TickCount64;
+        if (now - _lastMainThreadRefreshMs < MainThreadRefreshMs) return;
+        _lastMainThreadRefreshMs = now;
+        try
+        {
+            IntPtr slot = (IntPtr)_combatSystemPtrAddr;
+            if (!ClientObjectHooks.IsReadablePointer(slot)) return;
+            IntPtr combatSystem = *(IntPtr*)slot;
+            if (combatSystem == IntPtr.Zero || !ClientObjectHooks.IsReadablePointer(combatSystem + CombatModeOffset)) return;
+            int raw = NormalizeCombatMode(*(int*)(combatSystem + CombatModeOffset));
+            if (raw is not (CombatActionHooks.CombatModeNonCombat or CombatActionHooks.CombatModeMelee
+                            or CombatActionHooks.CombatModeMissile or CombatActionHooks.CombatModeMagic))
+                return;   // not a mode (a singleton being torn down): leave the cache alone
+            int previous = Interlocked.Exchange(ref _lastObservedCombatMode, raw);
+            if (raw == previous) return;
+            RynthLog.Compat($"CombatModeHooks: the cached combat mode was {previous} but the client reads {raw} " +
+                            "(no SetCombatMode seen since this engine started, e.g. after a hot reload): cache healed, plugins told.");
+            PluginManager.QueueCombatModeChange(raw, previous);
+        }
+        catch { }
+    }
+
     private static int NormalizeCombatMode(int combatMode)
     {
         return combatMode switch

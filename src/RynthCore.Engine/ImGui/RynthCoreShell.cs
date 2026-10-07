@@ -369,6 +369,8 @@ internal static class RynthCoreShell
             new System.Threading.Thread(() =>
             {
                 System.Threading.Thread.Sleep(120);
+                // Asked for by hand: the reload deferral (EntryPoint.Shutdown) doesn't hold it.
+                EntryPoint.NoteManualReload();
                 bool ok = EngineLifecycle.SignalReload();
                 RynthLog.Info($"ERl: SignalReload returned {ok}.");
             })

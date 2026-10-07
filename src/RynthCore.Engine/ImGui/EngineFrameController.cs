@@ -521,6 +521,10 @@ internal static class EngineFrameController
             if (Compatibility.DecalBridgeHost.Active)
                 Compatibility.DecalBridgeHost.Drain();
             PluginManager.ProcessPendingActions(pluginContext, device, _gameHwnd);
+            // Client::Cleanup started (UiFlowHooks): the call above told the plugins; from
+            // here on no plugin tick and no plugin export for the panels' data.
+            if (Compatibility.UiFlowHooks.ClientCleanupStarted)
+                return;
             PluginManager.FlushPendingDeletes(); // closes the create→delete race window
             PluginManager.TickAll();
             // Panel data: plugin exports for the UI are called here, on the same
@@ -535,6 +539,21 @@ internal static class EngineFrameController
         {
             System.Threading.Interlocked.Exchange(ref _pluginPumpInFrame, 0);
         }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="action"/> on the calling thread while no plugin pump frame runs,
+    /// holding the pump's frame guard so it can't start one meanwhile. False (not run) when a
+    /// frame is running. For Client::Cleanup (UiFlowHooks): AC's main thread tells the
+    /// plugins itself when the pump is idle or no longer running frames.
+    /// </summary>
+    internal static bool TryRunOutsidePumpFrame(Action action)
+    {
+        if (System.Threading.Interlocked.CompareExchange(ref _pluginPumpInFrame, 1, 0) != 0)
+            return false;
+        try { action(); }
+        finally { System.Threading.Interlocked.Exchange(ref _pluginPumpInFrame, 0); }
+        return true;
     }
 
     /// <summary>True when anything ImGui should be drawn this frame.</summary>
@@ -556,9 +575,13 @@ internal static class EngineFrameController
 
     /// <summary>
     /// Panel faces show only in the world, like the Avalonia overlay (hidden
-    /// between characters, not closed).
+    /// between characters, not closed). Also off as soon as AC leaves the world screen
+    /// (UiFlowHooks, before the logout dispatch catches up) and for good once
+    /// Client::Cleanup starts.
     /// </summary>
-    private static bool PanelsLive => Compatibility.LoginLifecycleHooks.HasObservedLoginComplete;
+    private static bool PanelsLive => Compatibility.LoginLifecycleHooks.HasObservedLoginComplete
+        && Compatibility.UiFlowHooks.InWorldOrUnknown
+        && !Compatibility.UiFlowHooks.ClientCleanupStarted;
 
     /// <summary>DPI scale the fonts and style were built for (see Init).</summary>
     private static float _uiScale = 1f;

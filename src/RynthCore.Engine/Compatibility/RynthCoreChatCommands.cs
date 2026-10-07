@@ -43,12 +43,20 @@ namespace RynthCore.Engine.Compatibility;
 ///         never sees it; every other "/rv" line still goes to the plugin.</item>
 ///   <item><c>/rc server [auto|aelrynth|other]</c> — which server the engine detects
 ///         (<see cref="ServerInfo"/>) and why; aelrynth/other force it for this session.</item>
+///   <item><c>/rc hooks [on|off &lt;name&gt;]</c> (alias <c>/rc uihooks</c>) — the UI hooks
+///         (screen mode, client cleanup, tooltip, drag/drop; <see cref="UiHookRegistry"/>):
+///         status, or switch one off/on (now and in engine.json).</item>
 ///   <item><c>/rc mastery</c> — the Aelrynth mastery feed's state (<see cref="MasteryFeed"/>),
 ///         and ask the server for /mastery-data again.</item>
 ///   <item><c>/rc worldlayer [auto|uipass|transition|endscene]</c> — where the world overlays
 ///         (nameplates, combat text, Nav3D markers) draw in AC's frame
 ///         (<see cref="D3D9.Nav3DRenderInjector"/>): alone it reports the path and counters;
 ///         a mode forces it for this session (A/B checks). Auto at every start; not saved.</item>
+///   <item><c>/rc netmsg [status|on|off|log on|off|capture on|off]</c> - the reassembled
+///         server-message stream for plugins (<see cref="Net.ServerMessageStream"/>, API v78):
+///         counters; on/off for this session (engine.json "ServerMessageStream": false is the
+///         kill switch); log = the SDK parsers run on live messages, results to the log;
+///         capture = raw datagrams to a .rnc file for tools/NetMessageTests.</item>
 /// </list>
 /// </summary>
 internal static class RynthCoreChatCommands
@@ -150,6 +158,26 @@ internal static class RynthCoreChatCommands
         {
             try { HandleWorldLayerCommand(worldArgs); }
             catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc worldlayer failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc hooks [on|off <name>] : the UI hooks (screen mode, client cleanup, tooltip, drag/drop)
+        if (IsVerb(sub, "hooks", out string hooksArgs) || IsVerb(sub, "uihooks", out hooksArgs))
+        {
+            try { HandleHooksCommand(hooksArgs); }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc hooks failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc netmsg [status|on|off|log on|off|capture on|off] : the v78 server message stream
+        if (IsVerb(sub, "netmsg", out string netArgs))
+        {
+            try
+            {
+                foreach (string l in Net.ServerMessageStream.HandleCommand(netArgs))
+                    Reply(l);
+            }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc netmsg failed - {ex.GetType().Name}: {ex.Message}"); }
             return true;
         }
 
@@ -658,6 +686,30 @@ internal static class RynthCoreChatCommands
     {
         v = 0;
         return s != null && float.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v);
+    }
+
+    /// <summary>
+    /// /rc hooks: one line per UI hook (UiHookRegistry: UseNewMode, ClientCleanup,
+    /// StartTooltip, ResetTooltip, CheckTooltip, StartDragandDrop, CatchDroppedItem) with
+    /// its address, how it was found, on/off and how often it fired, then the screen and
+    /// tooltip/drag state. "/rc hooks off &lt;name&gt;" makes that hook pass straight to AC
+    /// now and leaves it out at the next start (engine.json DisabledUiHooks); "on" undoes it.
+    /// </summary>
+    private static void HandleHooksCommand(string args)
+    {
+        string[] parts = args.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 2 && (parts[0].Equals("on", StringComparison.OrdinalIgnoreCase) || parts[0].Equals("off", StringComparison.OrdinalIgnoreCase)))
+        {
+            Reply(UiHookRegistry.SetEnabled(parts[1], parts[0].Equals("on", StringComparison.OrdinalIgnoreCase)));
+            return;
+        }
+        if (parts.Length != 0 && !(parts.Length == 1 && parts[0].Equals("status", StringComparison.OrdinalIgnoreCase)))
+        {
+            Reply("Usage: /rc hooks [status] | /rc hooks on|off <name>");
+            return;
+        }
+        foreach (string line in UiHookRegistry.DescribeLines())
+            Reply(line);
     }
 
     /// <summary>"on"/"off" sets; anything else (or nothing) toggles.</summary>

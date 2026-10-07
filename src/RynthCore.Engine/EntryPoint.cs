@@ -102,6 +102,10 @@ public static class EntryPoint
     [UnmanagedCallersOnly(EntryPoint = "RynthCoreShutdown")]
     public static uint Shutdown(IntPtr lpParam)
     {
+        // Only the loader's hot reload calls this export (process exit and the engine's own
+        // teardowns call EngineLifecycle.Shutdown directly), on its reload thread: wait here,
+        // with the game running on this engine, while a plugin says a reload now would hurt.
+        try { DeferReloadWhilePluginsObject(); } catch { }
         try
         {
             EngineLifecycle.Shutdown();
@@ -115,6 +119,39 @@ public static class EntryPoint
             RynthLog.Info($"FATAL in RynthCoreShutdown: {ex}");
             return 1;
         }
+    }
+
+    // The shell's ERl button: a reload asked for by hand isn't held for the plugins. Only the
+    // reload that follows within ManualReloadWindowMs counts (a refused or coalesced signal
+    // must not exempt the next file-watcher reload).
+    private static long _manualReloadAtMs;
+    private const long ManualReloadWindowMs = 10_000;
+    internal static void NoteManualReload() => Interlocked.Exchange(ref _manualReloadAtMs, Environment.TickCount64);
+
+    /// <summary>
+    /// Reload deferral (2026-10-05, see ReloadDeferral.cs): asks the plugins
+    /// (RynthPluginReloadBlocker) and waits up to ReloadDeferral.DefaultCap while one objects,
+    /// e.g. "engine reload waiting: RynthAi in combat (a monster engaged, ...)". Says so in chat
+    /// once. Never throws; a query that fails counts as "nothing objects".
+    /// </summary>
+    private static void DeferReloadWhilePluginsObject()
+    {
+        long manualAt = Interlocked.Exchange(ref _manualReloadAtMs, 0);
+        if (manualAt != 0 && Environment.TickCount64 - manualAt < ManualReloadWindowMs)
+        {
+            RynthLog.Info("engine reload: asked for by hand (ERl), so it isn't deferred for the plugins.");
+            return;
+        }
+        var deferral = new ReloadDeferral
+        {
+            Query = PluginManager.QueryReloadBlockers,
+            Log = msg => RynthLog.Info(msg),
+            Notify = why => Compatibility.AcMainThreadQueue.EnqueueWriteToChat(
+                $"[RynthCore] A new RynthCore build is ready. It loads when this is clear: {why} (at most {ReloadDeferral.DefaultCap.TotalMinutes:0} minutes).", 1),
+        };
+        ReloadDeferral.Outcome outcome = deferral.Run(out TimeSpan waited);
+        if (outcome != ReloadDeferral.Outcome.Clear)
+            RynthLog.Info($"engine reload: deferral {outcome} after {waited.TotalSeconds:0.0} s.");
     }
 
     private static uint InitializeCore(IntPtr lpParam)
@@ -716,6 +753,12 @@ public static class EntryPoint
             Step("raw packet hooks", RawPacketHooks.Initialize);
             Step("property-update hooks", PropertyUpdateHooks.Initialize);
             Step("auto-id service", AutoIdService.Start);
+            // Screen-mode + client-teardown hooks (UIFlow::UseNewMode, Client::Cleanup) and
+            // AC's tooltip / drag / drop (2026-10-05, Chorizite gaps #4-#5). Each hook has its
+            // own switch (engine.json DisabledUiHooks, /rc hooks); one that doesn't resolve
+            // stays out and says why in /rc hooks.
+            Step("UI flow hooks", UiFlowHooks.Initialize);
+            Step("UI element hooks", UiElementHooks.Initialize);
             // Bridge mode: wait (bounded) for the bridge's hello. In Auto mode a bridge that
             // never shows up means the old coexistence mode: install what was skipped.
             if (bridgeSkipped != null && !DecalBridgeHost.WaitForBridge(InitAborted))

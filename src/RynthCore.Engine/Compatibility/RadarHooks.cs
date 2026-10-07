@@ -320,6 +320,9 @@ internal static class RadarHooks
         IntPtr inst = _gmRadarUIInstance;
         if (inst == IntPtr.Zero)
             return false;
+        // Outside the world AC has freed the radar panel this points at (UiFlowHooks).
+        if (!UiFlowHooks.InWorldOrUnknown || UiFlowHooks.ClientCleanupStarted)
+            return false;
         if (_uiElementGetSurfaceBoxAddress == IntPtr.Zero)
             return false;
 
