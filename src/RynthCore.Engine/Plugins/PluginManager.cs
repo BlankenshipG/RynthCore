@@ -647,6 +647,8 @@ internal static partial class PluginManager
     {
         // RynthVision overlays (debuffs, combat text, gains) read chat engine-side, plugins or not.
         ImGuiBackend.Hud.HudFeed.OnChat(text);
+        // Who to /reply and /retell to (ChatCommandDispatcher rewrites those to a /tell).
+        Compatibility.TellMemory.Shared.OnChatLine(text);
 
         if (!_initialized || _plugins.Count == 0)
             return false;

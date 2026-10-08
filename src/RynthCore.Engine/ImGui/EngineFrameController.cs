@@ -690,7 +690,11 @@ internal static class EngineFrameController
             // too (ImGuiTextFocus): the keys typed right after the click stay out of AC.
             ImGuiTextFocus.EndMainFrame(io.WantTextInput);
             bool typing = io.WantTextInput || ImGuiTextFocus.MainBoxActive;
-            Win32Backend.UpdateCaptureFlags(io.WantCaptureMouse || Hud.MonsterHud.WantsMouse, typing);
+            // A plate that is only hovered lets the mouse moves through, so AC's own
+            // mouse-over stays current (MonsterHud.MouseMovesToGame, Compatibility/AcMouseOver).
+            Win32Backend.UpdateCaptureFlags(io.WantCaptureMouse || Hud.MonsterHud.WantsMouse, typing,
+                mouseMovesToGame: !io.WantCaptureMouse && Hud.MonsterHud.MouseMovesToGame);
+            Compatibility.AcMouseOver.Tick();   // /rc acmouse watch, when on
             // The UI is released (Insert): no text box keeps the keyboard. Keys are not
             // gated by the toggle any more (Win32Backend.UpdateCaptureFlags), so the edit
             // ends instead and the next keys go to the game.

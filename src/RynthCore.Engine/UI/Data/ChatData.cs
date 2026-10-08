@@ -1300,6 +1300,27 @@ internal static class ChatModel
             else { _historyIndex = -1; text = ""; }
             SetInput(text, text.Length, null);
         };
+        // The line has no selection: copy and cut take all of it, paste goes in at the caret.
+        Win32Backend.OnChatPaste = () =>
+        {
+            InputState s = _input;
+            string text = ChatInputPaste.Insert(s.Text, s.Cursor, GetClipboardText(), out int cursor);
+            if (ReferenceEquals(text, s.Text)) return;
+            _historyIndex = -1;
+            SetInput(text, cursor, null);
+        };
+        Win32Backend.OnChatCopy = () =>
+        {
+            string text = _input.Text;
+            if (text.Length > 0) SetClipboardText(text);
+        };
+        Win32Backend.OnChatCut = () =>
+        {
+            string text = _input.Text;
+            if (text.Length == 0 || !SetClipboardText(text)) return;
+            _historyIndex = -1;
+            SetInput("", 0, null);
+        };
         Win32Backend.OnChatSend = OnSend;
         Win32Backend.OnChatCancel = () =>
         {
@@ -1326,11 +1347,24 @@ internal static class ChatModel
             SetInput("", 0, "Select an NPC or player in the game first, then Tell.");
             return false;
         }
+        BeginTellTo(name);
+        return true;
+    }
+
+    /// <summary>Starts "/tell &lt;name&gt;, " and keeps typing. AC's main thread.</summary>
+    private static void BeginTellTo(string name)
+    {
         string text = $"/tell {name}, ";
         _historyIndex = -1;
         Win32Backend.ChatCaptureActive = true;   // keys now go to this line
         SetInput(text, text.Length, null);
-        return true;
+    }
+
+    private static void AddHistory(string text)
+    {
+        if (text.Length == 0 || (History.Count > 0 && History[^1] == text)) return;
+        History.Add(text);
+        if (History.Count > 100) History.RemoveAt(0);
     }
 
     // Win32Backend has already cleared ChatCaptureActive. RynthChatSendLine runs
@@ -1346,11 +1380,26 @@ internal static class ChatModel
             return;
         }
         _historyIndex = -1;
-        if (text.Length > 0 && (History.Count == 0 || History[^1] != text))
+        // /reply and /retell (TellMemory.cs; the dispatcher turns them into a /tell). Alone they
+        // start "/tell <name>, " the way "/tell" alone does; with no one to address, the box
+        // says so and the line stays in history (Up brings it back).
+        TellShortcut shortcut = TellMemory.Parse(text, out string tellMessage);
+        if (shortcut != TellShortcut.None)
         {
-            History.Add(text);
-            if (History.Count > 100) History.RemoveAt(0);
+            string? name = TellMemory.Shared.TargetFor(shortcut);
+            if (name == null)
+            {
+                AddHistory(text);
+                SetInput("", 0, shortcut == TellShortcut.Reply ? TellMemory.NoTellerMessage : TellMemory.NoTelleeMessage);
+                return;
+            }
+            if (tellMessage.Length == 0)
+            {
+                BeginTellTo(name);
+                return;
+            }
         }
+        AddHistory(text);
         SetInput("", 0, null);
         IntPtr send = SendLinePtr;
         if (text.Length == 0 || send == IntPtr.Zero) return;

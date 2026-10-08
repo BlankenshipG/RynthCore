@@ -120,6 +120,8 @@ internal static class MonstersPanel
         public bool UseBolt { get; set; } = true;
         /// <summary>Blast spells (a spread of projectiles). Off in rules saved before 2026-10-03.</summary>
         public bool UseBlast { get; set; }
+        /// <summary>Wall spells (RynthAi faces the target, then casts). Off in rules saved before 2026-10-08.</summary>
+        public bool UseWall { get; set; }
         public string ExVuln { get; set; } = "None";
         public int OffhandId { get; set; }
         public string PetDamage { get; set; } = "PAuto";
@@ -139,6 +141,7 @@ internal static class MonstersPanel
             "UseRing"     => UseRing,
             "UseStreak"   => UseStreak,
             "UseBlast"    => UseBlast,
+            "UseWall"     => UseWall,
             _             => false,
         };
 
@@ -157,6 +160,7 @@ internal static class MonstersPanel
                 case "UseRing":     UseRing = v; break;
                 case "UseStreak":   UseStreak = v; break;
                 case "UseBlast":    UseBlast = v; break;
+                case "UseWall":     UseWall = v; break;
             }
         }
     }
@@ -1017,7 +1021,7 @@ internal static class MonstersPanel
                 || x.Fester != y.Fester || x.Broadside != y.Broadside || x.GravityWell != y.GravityWell
                 || x.Imperil != y.Imperil || x.Yield != y.Yield || x.Vuln != y.Vuln
                 || x.UseArc != y.UseArc || x.UseBolt != y.UseBolt
-                || x.UseRing != y.UseRing || x.UseStreak != y.UseStreak || x.UseBlast != y.UseBlast
+                || x.UseRing != y.UseRing || x.UseStreak != y.UseStreak || x.UseBlast != y.UseBlast || x.UseWall != y.UseWall
                 || (x.CustomDebuffs ?? "") != (y.CustomDebuffs ?? ""))
                 return false;
         }

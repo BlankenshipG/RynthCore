@@ -41,6 +41,9 @@ internal sealed class RynthAiSettings
     public bool PeaceModeWhenIdle { get; set; }
     public bool StartMacroOnLogin { get; set; }
     public bool PatrolOnLogin { get; set; }
+    // RynthAi's Escape Acid and Lava. Default on; an older RynthAi doesn't send it, and a missing
+    // field must not read as "off".
+    public bool EscapeHazards { get; set; } = true;
     // Decal bridge: stop RynthAi's macro when VTank's starts (one bot per client). Default on;
     // an older RynthAi doesn't send it, and a missing field must not read as "off".
     public bool YieldToVTank { get; set; } = true;
@@ -112,6 +115,10 @@ internal sealed class RynthAiSettings
     public int MinRingTargets { get; set; } = 4;
     public int BlastRange { get; set; }
     public int MinBlastTargets { get; set; } = 3;
+    // RynthAi's wall override (2026-10-08). Nullable in RynthAi's payload: an engine without these
+    // rows leaves its values alone.
+    public int WallRange { get; set; }
+    public int MinWallTargets { get; set; } = 3;
     public int MinSkillLevelTier1 { get; set; } = 35;
     public int MinSkillLevelTier2 { get; set; } = 85;
     public int MinSkillLevelTier3 { get; set; } = 135;
@@ -476,6 +483,8 @@ internal static class SettingsSchema
                 "Automatically starts the macro when RynthAi loads."),
             Bool("Patrol On Login", s => s.PatrolOnLogin, (s, v) => s.PatrolOnLogin = v,
                 "Automatically starts dungeon patrol when RynthAi loads."),
+            Bool("Escape Acid and Lava", s => s.EscapeHazards, (s, v) => s.EscapeHazards = v,
+                "When acid or lava hurts you, stop everything (combat, buffs, healing, looting)\nand walk back out the way you came. The spot is remembered so the patrol avoids it.\nTurn off for a character that walks through acid on purpose."),
             Bool("Yield to VTank", s => s.YieldToVTank, (s, v) => s.YieldToVTank = v,
                 "With Decal: when VTank's macro starts (/vt start), RynthAi's macro stops, and it won't start while VTank runs.\nOne bot per client. Without Decal this does nothing. Also: /ra vtankyield on|off."),
             Bool("Enable Raycasting", s => s.EnableRaycasting, (s, v) => s.EnableRaycasting = v),
@@ -589,8 +598,8 @@ internal static class SettingsSchema
             Section("War/Void Casting Settings"),
             Int("Buff Spell Interval (ms)", s => s.SpellCastIntervalMs, (s, v) => s.SpellCastIntervalMs = v, 100, 1500, 50,
                 "Delay between BUFF / utility spell casts (not combat).\nLower = faster buff chains. 400ms is a good balance.\nBelow 200ms may cause fizzles or dropped casts on laggy servers."),
-            Int("Attack Spell Delay (ms)", s => s.AttackSpellIntervalMs, (s, v) => s.AttackSpellIntervalMs = v, 250, 5000, 50,
-                "Delay between offensive (war/void) COMBAT casts only.\nSpacing casts ~1-2s (1500ms default) stops back-to-back\n\"You're too busy!\" refusals that drop casts and cost kills.\nDoes NOT affect buffing speed."),
+            Int("Attack Spell Delay (ms)", s => s.AttackSpellIntervalMs, (s, v) => s.AttackSpellIntervalMs = v, 0, 5000, 50,
+                "Least time between offensive (war/void) COMBAT casts at one target.\nThe next cast also waits until the last one is finished (the server's\nanswer and the casting animation), so 0 = cast again as soon as it is.\nDoes NOT affect buffing speed."),
             Bool("Cast Dispel Self", s => s.CastDispelSelf, (s, v) => s.CastDispelSelf = v),
             Spacer(),
             Section("Ring Spell Override"),
@@ -602,6 +611,12 @@ internal static class SettingsSchema
                 "0 = off: monsters with Blast on always cast blasts.\nAbove 0: a blast is cast only when Min Blast Targets monsters are\nwithin this range in the blast's fan toward the target (it fires 3\nprojectiles over 90 degrees); otherwise the monster's other shape, or a bolt."),
             Int("Min Blast Targets", s => s.MinBlastTargets, (s, v) => s.MinBlastTargets = v, 1, 20, 1,
                 "How many monsters (the target included) must be in the blast's fan, within Blast Range."),
+            Spacer(),
+            Section("Wall Spell Override"),
+            Int("Wall Range (yd)", s => s.WallRange, (s, v) => s.WallRange = v, 0, 100, 1,
+                "0 = off: walls are never cast.\nAbove 0: monsters with Wall on cast a wall when Min Wall Targets monsters stand in its\npath toward the target, within this range. RynthAi turns to face the target first\n(a wall flies straight ahead of the caster)."),
+            Int("Min Wall Targets", s => s.MinWallTargets, (s, v) => s.MinWallTargets = v, 1, 20, 1,
+                "How many monsters (the target included) must be in the wall's path, within Wall Range."),
             Spacer(),
             Section("Spell Difficulty (Min Buffed Skill)"),
             Tiers(

@@ -139,6 +139,8 @@ internal sealed class LootEditItemRequestDto
     public string RuleName { get; set; } = string.Empty;
     /// <summary>True: the profile open in the Loot Editor; false: the one RynthAi loots with.</summary>
     public bool ToOpenProfile { get; set; }
+    /// <summary>Also require the item's T11 attributes (added 2026-10-07; an older RynthAi ignores it).</summary>
+    public bool IncludeT11 { get; set; }
     public int Seq { get; set; }
 }
 
@@ -157,6 +159,10 @@ internal sealed class LootEditItemDraftDto
     public bool TargetInUse { get; set; }
     public string Format { get; set; } = string.Empty;
     public int Match { get; set; }
+    /// <summary>The rule includes the item's T11 attributes (added 2026-10-07; false from an older RynthAi).</summary>
+    public bool IncludeT11 { get; set; }
+    /// <summary>The item is T11 gear (added 2026-10-07; false from an older RynthAi).</summary>
+    public bool IsT11 { get; set; }
     public int Action { get; set; }
     public int KeepCount { get; set; }
     public string RuleName { get; set; } = string.Empty;

@@ -57,6 +57,8 @@ internal static unsafe class ChatCommandDispatcher
     private const uint WM_KEYUP = 0x0101;
     private const uint WM_CHAR = 0x0102;
     private const int VK_RETURN = 0x0D;
+    /// <summary>ChatMessageType AC prints its own command notices in ("Someone must @tell you first!").</summary>
+    private const int ChatTypeNotice = 0x1A;
 
     /// <summary>
     /// When true, all commands are dispatched via keyboard simulation
@@ -167,6 +169,18 @@ internal static unsafe class ChatCommandDispatcher
                     RynthLog.Compat($"ChatDispatch: plugin pre-dispatch threw on '{trimmed}' - {ex.GetType().Name}: {ex.Message}");
                 }
                 finally { _inPluginPreDispatch = false; }
+            }
+
+            // /reply (/r) and /retell (/rt) become a /tell to the last person who told you
+            // something / you told something (TellMemory.cs says why AC can't do them here).
+            if (TellMemory.Shared.TryRewrite(trimmed, out string? tellLine, out string? tellError))
+            {
+                if (tellLine == null)
+                {
+                    AcMainThreadQueue.EnqueueWriteToChat(tellError!, ChatTypeNotice);
+                    return false;
+                }
+                trimmed = tellLine;
             }
 
             // Direct Chat Input mode — everything goes through keyboard sim
@@ -298,6 +312,8 @@ internal static unsafe class ChatCommandDispatcher
         if (targetName.Length == 0 || message.Length == 0)
             return false;
 
+        // AC's /tell would remember this name for its /retell; this call skips AC's parser.
+        TellMemory.Shared.NoteTellSent(targetName);
         var psMsg = LegacyPString.Create(message);
         var psTarget = LegacyPString.Create(targetName);
         try

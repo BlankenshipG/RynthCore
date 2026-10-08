@@ -20,7 +20,9 @@
 //
 //  The input line belongs to ChatModel (UI/Data/ChatData.cs): Win32Backend
 //  turns the chat keys into ChatModel edits on AC's thread, which is also
-//  this face's thread. Clicking the box starts typing, like Enter.
+//  this face's thread. Clicking the box starts typing, like Enter. While
+//  typing, Ctrl+V pastes and Ctrl+C / Ctrl+X copy / cut the whole line;
+//  /r and /rt reply and retell (TellMemory).
 //
 //  The panel has no strip under the body for the resize grip (PanelSpec.
 //  GripInBody): the input row stops short of the bottom-right corner by
@@ -639,7 +641,7 @@ internal sealed class ChatFace : IImGuiPanel
         ImGuiNET.ImGui.SetCursorScreenPos(p);
         if (ImGuiNET.ImGui.InvisibleButton("##chat_input", new Vector2(boxW, h)))
             ChatModel.BeginTyping();
-        if (!typing && ChatHooks.RynthChatOwnsChat) ImGuiNET.ImGui.SetItemTooltip("Click or press Enter to chat");
+        if (!typing && ChatHooks.RynthChatOwnsChat) ImGuiNET.ImGui.SetItemTooltip("Click or press Enter to chat (Ctrl+V pastes; /r replies, /rt retells)");
         dl.AddRectFilled(p, p + new Vector2(boxW, h), InputBg, 3);
         dl.AddRect(p, p + new Vector2(boxW, h), typing ? InputActive : InputBorder, 3);
 

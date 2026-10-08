@@ -684,7 +684,7 @@ internal static unsafe class DamageCommands
         ExVuln = s.ExVuln, PetDamage = "PAuto",
         Fester = s.Fester, Broadside = s.Broadside, GravityWell = s.GravityWell,
         Imperil = s.Imperil, Yield = s.Yield, Vuln = s.Vuln,
-        UseArc = s.UseArc, UseBolt = s.UseBolt, UseRing = s.UseRing, UseStreak = s.UseStreak, UseBlast = s.UseBlast,
+        UseArc = s.UseArc, UseBolt = s.UseBolt, UseRing = s.UseRing, UseStreak = s.UseStreak, UseBlast = s.UseBlast, UseWall = s.UseWall,
         CustomDebuffs = s.CustomDebuffs,
     };
 
@@ -765,6 +765,9 @@ internal static unsafe class DamageCommands
         ("UseBlast",  "Blast",  "Blast spells (Flame Blast, Frost Blast...): a spread of projectiles, from level III.\n" +
                                 "Used instead of Bolt when both are on (Arc and Streak come first). A character who knows\n" +
                                 "no blast of the element casts its Bolt."),
+        ("UseWall",   "Wall",   "Wall spells (Slithering Flames, Os' Wall...): a line of projectiles straight ahead.\n" +
+                                "Cast only when Wall Range is on and Min Wall Targets monsters stand in the wall's path to\n" +
+                                "the target; RynthAi turns to face the target first. Otherwise the monster's other shape, or a bolt."),
     };
 
     public static readonly string[] ExVulnTypes =
@@ -786,13 +789,13 @@ internal static unsafe class DamageCommands
     {
         bool on = !rule.GetToggle(field);
         rule.SetToggle(field, on);
-        bool shape = field is "UseArc" or "UseBolt" or "UseRing" or "UseStreak" or "UseBlast";
+        bool shape = field is "UseArc" or "UseBolt" or "UseRing" or "UseStreak" or "UseBlast" or "UseWall";
         if (shape && !on && !HasAnyShape(rule))
             rule.UseBolt = true;
     }
 
     /// <summary>At least one spell shape is on (RynthAi refuses to attack with magic otherwise).</summary>
-    public static bool HasAnyShape(MonstersPanel.Rule r) => r.UseArc || r.UseBolt || r.UseRing || r.UseStreak || r.UseBlast;
+    public static bool HasAnyShape(MonstersPanel.Rule r) => r.UseArc || r.UseBolt || r.UseRing || r.UseStreak || r.UseBlast || r.UseWall;
 
     /// <summary>The shape RynthAi casts when no ring is due (RynthAi CombatManager.PickBaseShape): Arc, Streak, Blast, then Bolt.</summary>
     public static string BaseShapeName(MonstersPanel.Rule r)
@@ -800,7 +803,7 @@ internal static unsafe class DamageCommands
         if (r.UseArc) return "Arc";
         if (r.UseStreak) return "Streak";
         if (r.UseBlast) return "Blast";
-        if (r.UseBolt || r.UseRing) return "Bolt";
+        if (r.UseBolt || r.UseRing || r.UseWall) return "Bolt";
         return "";
     }
 }

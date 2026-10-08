@@ -18,7 +18,11 @@
 //  on a plate and no ImGui panel is under it, WantsMouse asks the game window
 //  to keep that click from AC (EngineFrameController ORs it into the capture
 //  flags), and the press selects the plate's monster through the main-thread
-//  overlay-select slot. Every other click still goes to the game.
+//  overlay-select slot. Every other click still goes to the game - including
+//  one on an AC window that covers a plate: a plate only counts where AC's own
+//  mouse-over is the 3D world (Compatibility/AcMouseOver), and while a plate
+//  is only hovered the mouse moves still reach AC (MouseMovesToGame) so that
+//  answer follows the cursor.
 //
 //  Two rates:
 //    Update (AC's render thread, before the ImGui frame): at most 4x a second
@@ -221,6 +225,13 @@ internal static class MonsterHud
     /// built, on AC's render thread.
     /// </summary>
     public static bool WantsMouse => _wantsMouse || PlayerPlate.WantsMouse;
+
+    /// <summary>
+    /// The plates want the mouse only because one is under the cursor (no press held, no
+    /// self-plate drag): mouse moves still go to AC then, so AC's own mouse-over (what
+    /// AcMouseOver reads) follows the cursor onto a window that covers the plate.
+    /// </summary>
+    public static bool MouseMovesToGame => _wantsMouse && _pressId == 0 && !PlayerPlate.WantsMouse;
 
     /// <summary>Plates being tracked (diagnostics).</summary>
     public static int PlateCount => Plates.Count;
@@ -712,6 +723,7 @@ internal static class MonsterHud
         public long Now;
         public float UiScale;
         public ImDrawListPtr Dl;
+        public bool UnderUi;             // Dl is UnderUiLayer's (under AC's windows), not the background list
     }
 
     /// <summary>
@@ -773,7 +785,8 @@ internal static class MonsterHud
         // plates (UnderUiLayer). The background list (over AC's UI) only if the
         // layer isn't available.
         f.Dl = UnderUiLayer.BeginBuild(display);
-        if (!UnderUiLayer.IsBuilding) f.Dl = ImGuiNET.ImGui.GetBackgroundDrawList();
+        f.UnderUi = UnderUiLayer.IsBuilding;
+        if (!f.UnderUi) f.Dl = ImGuiNET.ImGui.GetBackgroundDrawList();
         return true;
     }
 
@@ -933,7 +946,7 @@ internal static class MonsterHud
         }
 
         // ── Click-to-select: which plate is under the cursor, and a press on it ──
-        PlateClick(f.UiScale);
+        PlateClick(f.UiScale, f.UnderUi);
 
         // ── Paint: farthest first, nearest (and the target) on top ──
         for (int i = DrawOrder.Count - 1; i >= 0; i--)
@@ -1103,8 +1116,12 @@ internal static class MonsterHud
     /// (Win32Backend.MouseCaptured) were up, so AC never saw it. The press selects at
     /// once (as a click in the 3D world does) and the capture stays until the button
     /// is released, so the release never reaches AC either. One select per press.
+    /// Drawn under AC's windows (<paramref name="underUi"/>), a plate only counts where
+    /// AC itself has the 3D world under the cursor (AcMouseOver): where one of AC's
+    /// windows covers it (inventory, chat, radar, the selected-object bar...) the
+    /// click is AC's. AC's UI state unreadable: the plate counts, as before.
     /// </summary>
-    private static void PlateClick(float uiScale)
+    private static void PlateClick(float uiScale, bool underUi)
     {
         uint prevHover = _hoverId;   // the plate whose hover put the capture up for this frame's input
         _hoverId = 0;
@@ -1121,6 +1138,14 @@ internal static class MonsterHud
                 _hoverId = p.Id;
                 break;
             }
+        }
+
+        // A plate (or last frame's, for a press that slipped off it) under one of AC's windows:
+        // no capture, no select. Only asked when a plate could take the mouse (one read per frame).
+        if (usable && underUi && (_hoverId != 0 || (_pressId == 0 && prevHover != 0)) && AcWindowUnderCursor())
+        {
+            _hoverId = 0;
+            prevHover = 0;
         }
 
         if (_pressId == 0)
@@ -1142,6 +1167,22 @@ internal static class MonsterHud
         }
 
         _wantsMouse = _hoverId != 0 || _pressId != 0;
+    }
+
+    private static int _leftToAcLogged;
+
+    /// <summary>AC's own UI has one of its windows under the cursor (not the 3D world). AC's main thread.</summary>
+    private static bool AcWindowUnderCursor()
+    {
+        AcMouseOver.Sample s = AcMouseOver.Read();
+        if (AcMouseOverRules.UnderUiOverlayMayTakeClick(s.Target))
+            return false;
+        if (_leftToAcLogged < 3)
+        {
+            _leftToAcLogged++;
+            RynthLog.UI($"MonsterHud: a plate is under AC's UI element 0x{s.ElementId:X8} (type 0x{s.Type:X8}) - its click stays with AC.");
+        }
+        return true;
     }
 
     /// <summary>Text width at <paramref name="size"/> px. No font push: this runs outside any window.</summary>
@@ -1581,6 +1622,7 @@ internal static class MonsterHud
             $"weakness data {(_weakByWcid.Count + _weakByName.Count > 0 ? "loaded" : "none")}.",
             PlateDebuffs.Describe(),
             PlayerPlate.Describe() + " " + CombatText.Describe(),
+            AcMouseOver.Describe(),
         };
     }
 }

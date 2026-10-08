@@ -7,6 +7,9 @@
 //
 //    item      its name and the profile the rule goes to
 //    match     name + class (default), name only, items like this
+//    T11       "Include T11 attributes": also require the item's T11 tier,
+//              grade, damage %, modifiers, slot special and Cast on Strike,
+//              each at least this item's (any match; 2026-10-07)
 //    action    Keep, Keep # (with the count), Salvage, Sell, Read
 //    name      the rule's name (empty: RynthAi's default, "Keep Copper Pea")
 //    preview   the rule in words, where it goes in the list and why, notes
@@ -48,6 +51,7 @@ internal sealed class LootAddDialog
 
     // What the popup asks for (0 / -1 = RynthAi's default).
     private int _match, _action, _keep = -1;
+    private bool _includeT11;
     private readonly byte[] _name = new byte[128];
     private int _keepEdit = 1;
 
@@ -88,6 +92,7 @@ internal sealed class LootAddDialog
         _match = 0;
         _action = 0;
         _keep = -1;
+        _includeT11 = false;
         Array.Clear(_name);
         _draft = null;
         _adding = false;
@@ -113,7 +118,7 @@ internal sealed class LootAddDialog
             Item = new LootEditItemRequestDto
             {
                 ItemId = _itemId, Match = _match, Action = _action, KeepCount = _keep,
-                RuleName = Utf8(_name).Trim(), ToOpenProfile = _toOpenProfile, Seq = _seq,
+                RuleName = Utf8(_name).Trim(), ToOpenProfile = _toOpenProfile, IncludeT11 = _includeT11, Seq = _seq,
             },
         });
     }
@@ -253,6 +258,24 @@ internal sealed class LootAddDialog
                 changed = true;
             }
             if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(MatchTips[i]);
+        }
+
+        // T11 attributes. Shown for every item: a non-T11 item answers with a note saying so.
+        bool t11 = _includeT11;
+        if (ImGuiNET.ImGui.Checkbox("Include T11 attributes##la_t11", ref t11))
+        {
+            _includeT11 = t11;
+            changed = true;
+        }
+        if (ImGuiNET.ImGui.IsItemHovered())
+            ImGuiNET.ImGui.SetTooltip(
+                "Also require this item's T11 tier, weapon grade, damage %, every modifier, slot special\n" +
+                "and Cast on Strike, each at least as good as this one. Works with any match.\n" +
+                "Not added: Can Wield (depends on your character) and Zone Locked (depends on where it was assessed).");
+        if (!d.IsT11)
+        {
+            ImGuiNET.ImGui.SameLine();
+            ImGuiNET.ImGui.TextDisabled("(not a T11 item)");
         }
 
         // Action.

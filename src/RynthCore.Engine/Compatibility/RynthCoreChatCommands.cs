@@ -57,6 +57,10 @@ namespace RynthCore.Engine.Compatibility;
 ///         (nameplates, combat text, Nav3D markers) draw in AC's frame
 ///         (<see cref="D3D9.Nav3DRenderInjector"/>): alone it reports the path and counters;
 ///         a mode forces it for this session (A/B checks). Auto at every start; not saved.</item>
+///   <item><c>/rc acmouse [watch [seconds]]</c> (alias <c>/rc mouseover</c>) - what AC's own UI
+///         has under the cursor (<see cref="AcMouseOver"/>: the 3D world or one of its windows,
+///         with the element's id and type), i.e. whether a nameplate there may take the click;
+///         watch = every change for a while (default 20 s), to chat and the log.</item>
 ///   <item><c>/rc netmsg [status|on|off|log on|off|capture on|off]</c> - the reassembled
 ///         server-message stream for plugins (<see cref="Net.ServerMessageStream"/>, API v78):
 ///         counters; on/off for this session (engine.json "ServerMessageStream": false is the
@@ -167,6 +171,28 @@ internal static class RynthCoreChatCommands
         {
             try { HandleWorldLayerCommand(worldArgs); }
             catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc worldlayer failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc acmouse [watch [seconds]] : what AC's own UI has under the cursor (the 3D world or
+        // one of its windows) - whether a nameplate there may take the click (AcMouseOver)
+        if (IsVerb(sub, "acmouse", out string acMouseArgs) || IsVerb(sub, "mouseover", out acMouseArgs))
+        {
+            try
+            {
+                string[] p = acMouseArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (p.Length > 0 && p[0].Equals("watch", StringComparison.OrdinalIgnoreCase))
+                {
+                    int secs = p.Length > 1 && int.TryParse(p[1], out int n) ? n : 20;
+                    AcMouseOver.Watch(secs);
+                    Reply($"Watching AC's mouse-over for {Math.Clamp(secs, 1, 120)} s: move the cursor over the world and over AC's windows.");
+                }
+                else
+                {
+                    Reply(AcMouseOver.Describe());
+                }
+            }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc acmouse failed - {ex.GetType().Name}: {ex.Message}"); }
             return true;
         }
 

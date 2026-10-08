@@ -403,6 +403,10 @@ internal static unsafe class Win32Backend
     private static readonly Queue<QueuedInputMessage> _pendingInput = new();
     private static volatile bool _wantCaptureMouse;
     private static volatile bool _wantCaptureKeyboard;
+    /// <summary>The mouse capture is only a nameplate under the cursor (MonsterHud.MouseMovesToGame):
+    /// WM_MOUSEMOVE still reaches AC, so AC's own mouse-over follows the cursor (Compatibility/AcMouseOver).
+    /// Means nothing while _wantCaptureMouse is false.</summary>
+    private static volatile bool _mouseMovesToGame;
 
     /// <summary>
     /// True while the game window eats mouse input for the ImGui layer: the capture
@@ -479,6 +483,12 @@ internal static unsafe class Win32Backend
     public static Action? OnChatUp;
     /// <summary>Fired on VK_DOWN while capture is active (history next).</summary>
     public static Action? OnChatDown;
+    /// <summary>Fired on Ctrl+V / Shift+Insert while capture is active.</summary>
+    public static Action? OnChatPaste;
+    /// <summary>Fired on Ctrl+C / Ctrl+Insert while capture is active.</summary>
+    public static Action? OnChatCopy;
+    /// <summary>Fired on Ctrl+X while capture is active.</summary>
+    public static Action? OnChatCut;
     private static int  _lastPanelClientX;     // last game-client pos over the panel (for wheel)
     private static int  _lastPanelClientY;
 
@@ -684,8 +694,9 @@ internal static unsafe class Win32Backend
         bool insertDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
         // GetAsyncKeyState reads the physical key whatever window has focus: without
         // the focus test, Insert (or Shift/Ctrl+Insert paste/copy) pressed in another
-        // client or app flipped this client's capture off unseen.
-        if (insertDown && !_insertWasDown && _hasFocus)
+        // client or app flipped this client's capture off unseen. Not while typing in
+        // RynthChat: there Shift/Ctrl+Insert are paste/copy.
+        if (insertDown && !_insertWasDown && _hasFocus && !ChatCaptureActive)
         {
             _uiCaptureEnabled = !_uiCaptureEnabled;
             RynthLog.Render($"Win32Backend: ImGui capture {(_uiCaptureEnabled ? "ENABLED" : "DISABLED")} (Insert)");
@@ -868,7 +879,13 @@ internal static unsafe class Win32Backend
                 else if (msg == WM_KEYDOWN)
                 {
                     int vk = (int)wParam;
-                    if      (vk == VK_RETURN && !IsExtendedKey(lParam))  { ChatCaptureActive = false; _swallowEnterTail = true; PostMessage(_gameHwnd, WM_RYNTHCORE_CHAT, IntPtr.Zero, IntPtr.Zero); }
+                    // Clipboard keys. Their WM_CHARs (Ctrl+V is 0x16, Ctrl+C 0x03) are
+                    // control characters the branch above drops, so paste did nothing.
+                    bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0, shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    if      ((ctrl && vk == 'V') || (shift && !ctrl && vk == VK_INSERT)) { OnChatPaste?.Invoke(); }
+                    else if (ctrl && (vk == 'C' || vk == VK_INSERT))                     { OnChatCopy?.Invoke(); }
+                    else if (ctrl && vk == 'X')                                          { OnChatCut?.Invoke(); }
+                    else if (vk == VK_RETURN && !IsExtendedKey(lParam))  { ChatCaptureActive = false; _swallowEnterTail = true; PostMessage(_gameHwnd, WM_RYNTHCORE_CHAT, IntPtr.Zero, IntPtr.Zero); }
                     else if (vk == VK_ESCAPE)  { ChatCaptureActive = false; _swallowEnterTail = true; OnChatCancel?.Invoke(); }
                     else if (vk == VK_BACK)    { OnChatBackspace?.Invoke(); }
                     else if (vk == VK_DELETE)  { OnChatDelete?.Invoke(); }
@@ -1038,7 +1055,9 @@ internal static unsafe class Win32Backend
 
             // ImGui wants the mouse (io.WantCaptureMouse): eat it, unless the held
             // buttons were pressed for the game (see _heldButtonsBelongToGame).
-            if (_wantCaptureMouse && IsMouseMessage(msg) && !_heldButtonsBelongToGame)
+            // A nameplate that is only hovered keeps the clicks but not the moves.
+            if (_wantCaptureMouse && IsMouseMessage(msg) && !_heldButtonsBelongToGame
+                && !(msg == WM_MOUSEMOVE && _mouseMovesToGame))
                 return IntPtr.Zero;
 
             // An ImGui text box is being typed in (io.WantTextInput): keep keys from
@@ -1523,10 +1542,14 @@ internal static unsafe class Win32Backend
     /// box left open with the gate shut typed into the box AND the game. A key that
     /// reaches the game WndProc means AC has keyboard focus anyway; Insert-off ends
     /// the text edit instead (EngineFrameController), so keys go back to the game.
+    ///
+    /// <paramref name="mouseMovesToGame"/>: the mouse is wanted only by a nameplate under
+    /// the cursor (no ImGui window, no press held); its clicks are eaten, its moves are not.
     /// </summary>
-    public static void UpdateCaptureFlags(bool wantMouse, bool wantTextInput)
+    public static void UpdateCaptureFlags(bool wantMouse, bool wantTextInput, bool mouseMovesToGame = false)
     {
         bool live = _uiCaptureEnabled && _hasFocus;
+        _mouseMovesToGame = mouseMovesToGame;
         _wantCaptureMouse = live && wantMouse;
         _wantCaptureKeyboard = wantTextInput;
         ImGuiTextInputActive = wantTextInput;

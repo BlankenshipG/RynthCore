@@ -554,19 +554,45 @@ internal sealed partial class RynthAiFace : IImGuiPanel
 
     // ── Footer: FPS | version | uptime ─────────────────────────────────────
 
+    private static string Clock(TimeSpan t) =>
+        t.TotalHours >= 1 ? $"{(int)t.TotalHours}:{t.Minutes:D2}:{t.Seconds:D2}" : $"{t.Minutes}:{t.Seconds:D2}";
+
+    private static DateTime _clientStartedUtc = DateTime.MinValue;
+    private static bool _clientStartRead;
+
+    /// <summary>When acclient.exe started (read once; MinValue if Windows won't say).</summary>
+    private static DateTime ClientStartedUtc()
+    {
+        if (_clientStartRead) return _clientStartedUtc;
+        _clientStartRead = true;
+        try
+        {
+            using var p = System.Diagnostics.Process.GetCurrentProcess();
+            _clientStartedUtc = p.StartTime.ToUniversalTime();
+        }
+        catch { _clientStartedUtc = DateTime.MinValue; }
+        return _clientStartedUtc;
+    }
+
     private void Footer(RynthAiView? view, float x0, float width)
     {
         int fps = (int)MathF.Round(D3D9.EndSceneHook.MeasuredFps);
         if (fps != _fpsShown) { _fpsShown = fps; _fpsText = fps > 0 ? $"FPS {fps}" : "FPS —"; }
+        // Bot: since this engine loaded (a hot reload restarts it). Client: since the game client
+        // started (2026-10-08), which a reload doesn't touch.
         DateTime started = EntryPoint.InitStartedUtc;
         if (started != DateTime.MinValue)
         {
-            TimeSpan up = DateTime.UtcNow - started;
+            DateTime now = DateTime.UtcNow;
+            TimeSpan up = now - started;
             long secs = (long)up.TotalSeconds;
             if (secs != _upShown)
             {
                 _upShown = secs;
-                _upText = up.TotalHours >= 1 ? $"Up {(int)up.TotalHours}:{up.Minutes:D2}:{up.Seconds:D2}" : $"Up {up.Minutes}:{up.Seconds:D2}";
+                DateTime client = ClientStartedUtc();
+                _upText = client != DateTime.MinValue
+                    ? $"Bot {Clock(up)}  Client {Clock(now - client)}"
+                    : $"Up {Clock(up)}";
             }
         }
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
