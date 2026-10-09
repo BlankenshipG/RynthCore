@@ -3,7 +3,8 @@
 //  ImGui face of RynthChat (docked or popped out; the old Avalonia face is
 //  UI/Panels/RynthChatPanel.cs): channel and custom tabs with unread counts
 //  (right-click a tab: mark read, rename, delete), Filters (the ChatFilters
-//  rule editor), the settings gear, search, the coloured scrollback, and the
+//  rule editor), the settings gear (with a colour per kind of line under
+//  "Line colours", ChatLineColors), search, the coloured scrollback, and the
 //  input line with Tell and the panel's resize grip beside it.
 //
 //  Scrollback: wrapped lines, heights cached per wrap width and font; only
@@ -91,6 +92,8 @@ internal sealed class ChatFace : IImGuiPanel
     private string _unreadTab = "";
 
     private bool _openSettings, _openNewTab, _focusNewTab, _openTabMenu, _openLineMenu, _openRename;
+    /// <summary>A line colour changed and isn't saved yet (saved once the picker is let go).</summary>
+    private bool _coloursDirty;
     private string? _ctxTab, _renameFrom;
     private ChatLine? _ctxLine;
     private string _ctxPattern = "";
@@ -747,7 +750,11 @@ internal sealed class ChatFace : IImGuiPanel
 
     private void DrawSettingsPopup()
     {
-        if (!ImGuiNET.ImGui.BeginPopup("##chat_settings")) return;
+        if (!ImGuiNET.ImGui.BeginPopup("##chat_settings"))
+        {
+            if (_coloursDirty) SaveColours();   // closed mid-drag
+            return;
+        }
         ImGuiNET.ImGui.PushItemWidth(150);
         int font = (int)MathF.Round(ChatModel.FontSize);
         if (ImGuiNET.ImGui.SliderInt("Font size", ref font, 8, 18)) ChatModel.FontSize = font;
@@ -819,8 +826,94 @@ internal sealed class ChatFace : IImGuiPanel
                 ChatModel.SaveSettings();
             }
         }
+        ImGuiNET.ImGui.Separator();
+        if (ImGuiNET.ImGui.CollapsingHeader("Line colours")) DrawLineColours();
+
         if (!ChatModel.PluginBound) Label("Plugin not bound", Mute);
+        // A colour drag changes it every frame: save once the picker lets go.
+        if (_coloursDirty && !ImGuiNET.ImGui.IsAnyItemActive()) SaveColours();
         ImGuiNET.ImGui.EndPopup();
+    }
+
+    private void SaveColours()
+    {
+        _coloursDirty = false;
+        ChatModel.SaveSettings();
+    }
+
+    /// <summary>
+    /// A colour per kind of line (ChatLineColors), two to a row: say, tells,
+    /// allegiance, fellowship, emotes; each chat channel by its [Tag] (and any
+    /// other tag seen this session); then the tab colours everything else takes.
+    /// A rule's line colour still wins over all of these. x puts one back to its default.
+    /// </summary>
+    private void DrawLineColours()
+    {
+        Label("A rule's colour wins over these.", Mute);
+        ColourGroup("Chat", ChatLineColors.ChatKinds);
+
+        var channels = new List<ChatColorKind>(ChatLineColors.ChannelKinds);
+        var others = new List<string>(ChatLineColors.SeenTags);
+        foreach (string key in ChatLineColors.SetKeys)
+            if (ChatLineColors.IsOtherChannel(key)) others.Add(key[ChatLineColors.ChanPrefix.Length..]);
+        foreach (string tag in others)
+            if (!channels.Exists(c => string.Equals(c.Label, tag, StringComparison.OrdinalIgnoreCase)))
+                channels.Add(new ChatColorKind(ChatLineColors.ChanPrefix + tag, tag, $"[{tag}] lines", "Channels"));
+        ColourGroup("Channels", channels);
+
+        ColourGroup("Tabs (everything else)", ChatLineColors.TabKinds);
+
+        if (ChatLineColors.AnySet)
+        {
+            if (ImGuiNET.ImGui.SmallButton("Reset all colours"))
+            {
+                ChatLineColors.ResetAll();
+                SaveColours();
+            }
+        }
+    }
+
+    private void ColourGroup(string title, IReadOnlyList<ChatColorKind> kinds)
+    {
+        Label(title, Teal);
+        float x0 = ImGuiNET.ImGui.GetCursorPosX();
+        for (int i = 0; i < kinds.Count; i++)
+        {
+            if (i % 2 == 1) ImGuiNET.ImGui.SameLine(x0 + 150);
+            ColourRow(kinds[i]);
+        }
+    }
+
+    private void ColourRow(ChatColorKind kind)
+    {
+        uint argb = ChatLineColors.EffectiveArgb(kind);
+        bool set = ChatLineColors.Get(kind.Key) != null;
+        ImGuiNET.ImGui.PushID(kind.Key);
+        Vector4 v = RynthTheme.Vec(argb);
+        var rgb = new Vector3(v.X, v.Y, v.Z);
+        if (ImGuiNET.ImGui.ColorEdit3("##col", ref rgb, ImGuiColorEditFlags.NoInputs | ImGuiColorEditFlags.NoLabel))
+        {
+            ChatLineColors.Set(kind.Key, 0xFF000000
+                | ((uint)Math.Clamp((int)MathF.Round(rgb.X * 255), 0, 255) << 16)
+                | ((uint)Math.Clamp((int)MathF.Round(rgb.Y * 255), 0, 255) << 8)
+                | (uint)Math.Clamp((int)MathF.Round(rgb.Z * 255), 0, 255));
+            _coloursDirty = true;
+        }
+        ImGuiNET.ImGui.SameLine();
+        Label(kind.Label, RynthTheme.Argb(argb));
+        ImGuiNET.ImGui.SetItemTooltip(kind.Hint + (set ? "" : kind.Key.StartsWith(ChatLineColors.TabPrefix, StringComparison.Ordinal)
+            ? "\nThe built-in colour." : $"\nNot set: the {kind.Tab} tab's colour."));
+        if (set)
+        {
+            ImGuiNET.ImGui.SameLine();
+            if (ImGuiNET.ImGui.SmallButton("x"))
+            {
+                ChatLineColors.Reset(kind.Key);
+                SaveColours();
+            }
+            ImGuiNET.ImGui.SetItemTooltip("Back to the default colour");
+        }
+        ImGuiNET.ImGui.PopID();
     }
 
     private void DrawNewTabPopup()

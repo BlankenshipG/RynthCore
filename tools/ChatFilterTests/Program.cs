@@ -48,6 +48,11 @@ internal static class Program
         WhenParsing();
         PresetsCatchAndSpare();
         PresetsWellFormed();
+        LineColorTags();
+        LineColorKinds();
+        LineColorDefaultsUnchanged();
+        LineColorPrecedence();
+        LineColorJson();
 
         Console.WriteLine();
         Console.WriteLine($"{_checks - _failed}/{_checks} checks passed.");
@@ -249,6 +254,162 @@ internal static class Program
         Check(ChatRuleMatching.Parse(imported.Rules![0].Mode) == ChatMatchMode.Contains, "export / import keeps the mode");
         RynthChatFilterDto[]? bare = JsonSerializer.Deserialize("[{\"pattern\":\"x\"}]", RynthChatJsonContext.Default.RynthChatFilterDtoArray);
         Check(bare != null && ChatRuleMatching.Parse(bare[0].Mode) == ChatMatchMode.Regex, "a bare old rule array imports as Regex");
+    }
+
+    // ── Line colours (ChatLineColors, 2026-10-08) ────────────────────────
+
+    private static void LineColorTags()
+    {
+        Case("line colours: the [Tag] a channel line starts with");
+        Check(ChatLineColors.TagOf("[General] Aja says, \"lol\"") == "General", "[General]");
+        Check(ChatLineColors.TagOf("[Trade] You say, \"wts\"") == "Trade", "[Trade], your own line");
+        Check(ChatLineColors.TagOf("[Celestial Hand] Bob says, \"x\"") == "Celestial Hand", "a spaced tag");
+        Check(ChatLineColors.TagOf("[RynthAi] Started") == null, "a Rynth plugin's prefix is no channel");
+        Check(ChatLineColors.TagOf("[General]Aja says") == null, "no space after the tag");
+        Check(ChatLineColors.TagOf("Bob says, \"[General] hi\"") == null, "a tag later in the line");
+        Check(ChatLineColors.TagOf("[] x") == null && ChatLineColors.TagOf("[ ] x") == null, "an empty tag");
+        Check(ChatLineColors.TagOf("[General") == null && ChatLineColors.TagOf("[General]") == null, "unclosed / nothing after it");
+        Check(ChatLineColors.TagOf("[" + new string('a', 40) + "] x") != null, "40 characters");
+        Check(ChatLineColors.TagOf("[" + new string('a', 41) + "] x") == null, "41 characters: too long");
+        Check(ChatLineColors.TagOf("[[x]] y") == null, "nested brackets");
+        Check(ChatLineColors.TagOf("") == null && ChatLineColors.TagOf(null) == null, "empty / null");
+    }
+
+    private static void LineColorKinds()
+    {
+        Case("line colours: which kind a line is");
+        static string? K(int type, string text, string chan = "Chat") => ChatLineColors.KindOf(type, chan, text);
+        Check(K(0x02, "Bob says, \"hi\"") == ChatLineColors.Say, "say (0x02)");
+        Check(K(0x03, "Bob tells you, \"hi\"") == ChatLineColors.Tell, "tell to you (0x03)");
+        Check(K(0x04, "You tell Bob, \"hi\"") == ChatLineColors.TellOut, "tell you send (0x04)");
+        Check(K(0x12, "Bob says to your allegiance, \"hi\"") == ChatLineColors.Allegiance, "allegiance (0x12)");
+        Check(K(0x12, "[Allegiance] Bob says, \"hi\"") == ChatLineColors.Allegiance, "[Allegiance] typed 0x12");
+        Check(K(0x08, "[Allegiance] Bob says, \"hi\"", "Channels") == ChatLineColors.Allegiance, "[Allegiance] typed 0x08");
+        Check(K(0x13, "Bob says to your fellowship, \"hi\"") == ChatLineColors.Fellowship, "fellowship (0x13)");
+        Check(K(0x0C, "Bob dances") == ChatLineColors.Emote && K(0x0A, "Bob bows") == ChatLineColors.Emote, "emotes (0x0C, 0x0A)");
+        Check(K(0x08, "[General] Aja says, \"lol\"", "Channels") == "chan:General", "/cg: [General]");
+        Check(K(0x09, "[General] You say, \"lol\"", "Channels") == "chan:General", "your own /cg line (0x09)");
+        Check(K(0x08, "[general] Aja says, \"lol\"", "Channels") == "chan:General", "the listed spelling whatever the case");
+        Check(K(0x08, "[Trade] x says", "Channels") == "chan:Trade", "[Trade]");
+        Check(K(0x08, "[LFG] x says", "Channels") == "chan:LFG", "[LFG]");
+        Check(K(0x08, "[Roleplay] x says", "Channels") == "chan:Roleplay", "[Roleplay]");
+        Check(K(0x08, "[Society] x says", "Channels") == "chan:Society", "[Society]");
+        Check(K(0x08, "[Radiant Blood] x says", "Channels") == "chan:Society", "a society's own room: Society");
+        Check(K(0x08, "[Olthoi] x says", "Channels") == "chan:Olthoi", "[Olthoi]");
+        Check(K(0x08, "[Wiki] x says", "Channels") == "chan:Wiki", "any other tag: its own channel");
+        Check(ChatLineColors.IsOtherChannel("chan:Wiki") && !ChatLineColors.IsOtherChannel("chan:General")
+            && !ChatLineColors.IsOtherChannel("say") && !ChatLineColors.IsOtherChannel(null), "IsOtherChannel");
+        Check(K(0x08, "Bob says on the General channel", "Channels") == null, "an untagged channel line: the tab's colour");
+        Check(K(0x05, "[General] looks like a tag", "System") == null, "a system line with a tag is no channel line");
+        Check(K(0x16, "You hit the drudge") == null && K(0x00, "Welcome", "System") == null, "combat / broadcast: no kind");
+        Check(K(-1, "[General] Aja says", "Channels") == "chan:General", "RynthChat before 0.2.0 (no type), Channels tab");
+        Check(K(-1, "[General] Aja says", "System") == null, "no type, not a chat tab");
+        Check(K(0x02, "[RynthAi] hi") == ChatLineColors.Say, "say keeps its kind whatever the text");
+
+        ChatLineColors.NoteKind("chan:Wiki");
+        ChatLineColors.NoteKind("chan:wiki");
+        ChatLineColors.NoteKind("chan:General");
+        ChatLineColors.NoteKind("say");
+        ChatLineColors.NoteKind(null);
+        Check(ChatLineColors.SeenTags.Length == 1 && ChatLineColors.SeenTags[0] == "Wiki", "only unlisted tags are remembered, once");
+    }
+
+    /// <summary>ChatModel.ChannelArgb before 2026-10-08, copied here.</summary>
+    private static uint OldChannelArgb(string chan) => chan switch
+    {
+        "Chat" => 0xFFE0E0E0, "Channels" => 0xFF7AB8F5, "System" => 0xFF8CA6BF,
+        "Combat" => 0xFFD93333, "Rynth" => 0xFFE6B450, _ => 0xFFAAAAAA,
+    };
+
+    private static readonly string[] AllTabsAndOdd = { "Chat", "Channels", "System", "Combat", "Rynth", "Other", "Junk", "" };
+
+    private static void LineColorDefaultsUnchanged()
+    {
+        Case("line colours: with nothing set every line looks as before");
+        ChatLineColors.ResetAll();
+        Check(!ChatLineColors.AnySet && ChatLineColors.ToJson() == null, "nothing set");
+        var kinds = ChatLineColors.ChatKinds.Concat(ChatLineColors.ChannelKinds).Select(k => k.Key)
+            .Append("chan:Wiki").Append(null).ToArray();
+        foreach (string tab in AllTabsAndOdd)
+        {
+            Check(ChatLineColors.TabArgb(tab) == OldChannelArgb(tab), $"tab '{tab}'");
+            foreach (string? kind in kinds)
+                Check(ChatLineColors.Resolve(null, kind, tab) == OldChannelArgb(tab), $"kind {kind ?? "none"} in '{tab}'");
+            Check(ChatLineColors.Resolve(0xFF123456, "say", tab) == 0xFF123456, $"a rule's colour in '{tab}'");
+        }
+        foreach (ChatColorKind k in ChatLineColors.ChatKinds.Concat(ChatLineColors.ChannelKinds))
+            Check(ChatLineColors.EffectiveArgb(k) == OldChannelArgb(k.Tab), $"{k.Label} shows its tab's colour");
+        foreach (ChatColorKind k in ChatLineColors.TabKinds)
+            Check(ChatLineColors.EffectiveArgb(k) == OldChannelArgb(k.Tab), $"tab {k.Label} shows its built-in colour");
+    }
+
+    private static void LineColorPrecedence()
+    {
+        Case("line colours: rule, then kind, then tab, then built-in");
+        ChatLineColors.ResetAll();
+        const uint Red = 0xFFFF0000, Green = 0xFF00FF00, Blue = 0xFF0000FF, Rule = 0xFFABCDEF;
+        ChatLineColors.Set("fellowship", Red);
+        ChatLineColors.Set("chan:General", Green);
+        Check(ChatLineColors.Resolve(null, "fellowship", "Chat") == Red, "fellowship set: red");
+        Check(ChatLineColors.Resolve(Rule, "fellowship", "Chat") == Rule, "a rule's colour still wins");
+        Check(ChatLineColors.Resolve(null, "say", "Chat") == OldChannelArgb("Chat"), "say not set: the Chat colour");
+        Check(ChatLineColors.Resolve(null, "chan:General", "Channels") == Green, "/cg lines: green");
+        Check(ChatLineColors.Resolve(null, "chan:Trade", "Channels") == OldChannelArgb("Channels"), "Trade not set: the Channels colour");
+        Check(ChatLineColors.Resolve(null, ChatLineColors.KindOf(0x08, "Channels", "[general] Aja says"), "Channels") == Green,
+            "a line's kind finds its colour (any case)");
+
+        ChatLineColors.Set("tab:Chat", Blue);
+        Check(ChatLineColors.Resolve(null, "say", "Chat") == Blue, "Chat tab set: unset kinds in it follow");
+        Check(ChatLineColors.Resolve(null, null, "Chat") == Blue, "a kindless Chat line follows");
+        Check(ChatLineColors.Resolve(null, "fellowship", "Chat") == Red, "a kind's own colour beats its tab's");
+        Check(ChatLineColors.TabArgb("Combat") == OldChannelArgb("Combat"), "other tabs untouched");
+        Check(ChatLineColors.EffectiveArgb(ChatLineColors.ChatKinds[0]) == Blue, "Say shows the Chat tab's colour");
+        Check(ChatLineColors.EffectiveArgb(ChatLineColors.TabKinds[0]) == Blue, "the Chat tab shows its colour");
+
+        ChatLineColors.Reset("fellowship");
+        Check(ChatLineColors.Resolve(null, "fellowship", "Chat") == Blue, "fellowship reset: the Chat tab's colour");
+        ChatLineColors.Set("FELLOWSHIP", 0x00112233);
+        Check(ChatLineColors.Get("fellowship") == 0xFF112233, "keys any case; colours made opaque");
+        ChatLineColors.ResetAll();
+        Check(!ChatLineColors.AnySet && ChatLineColors.Resolve(null, "fellowship", "Chat") == OldChannelArgb("Chat"), "reset all: as before");
+    }
+
+    private static void LineColorJson()
+    {
+        Case("line colours: lineColors in rynthchat_settings.json");
+        var opts = RynthChatJsonContext.Default.RynthChatSettingsDto;
+        RynthChatSettingsDto old = JsonSerializer.Deserialize(OldFile, opts)!;
+        Check(old.LineColors == null, "an older file has none");
+        ChatLineColors.Set("say", 0xFF010203);
+        ChatLineColors.Load(old.LineColors);
+        Check(!ChatLineColors.AnySet, "loading it leaves nothing set");
+        old.LineColors = ChatLineColors.ToJson();
+        Check(!JsonSerializer.Serialize(old, opts).Contains("lineColors", StringComparison.Ordinal), "and saving it writes no lineColors");
+
+        ChatLineColors.Load(new Dictionary<string, string>
+        {
+            ["say"] = "#FF0000", ["Chan:general"] = "#00FF00", ["tab:chat"] = "0000FF", ["chan:Wiki"] = "#FFFFFF",
+            ["bogus"] = "#123456", ["tab:All"] = "#111111", ["tab:Junk"] = "#111111", ["chan:[x]"] = "#222222",
+            ["chan:"] = "#333333", ["fellowship"] = "not a colour", ["emote"] = "",
+        });
+        Check(ChatLineColors.Get("say") == 0xFFFF0000, "say loads");
+        Check(ChatLineColors.Get("chan:General") == 0xFF00FF00, "a channel key in any case loads");
+        Check(ChatLineColors.Get("tab:Chat") == 0xFF0000FF, "a tab loads");
+        Check(ChatLineColors.Get("chan:Wiki") == 0xFFFFFFFF, "another channel loads");
+        Check(ChatLineColors.SetKeys.Count == 4, "bad keys and colours are skipped");
+
+        Dictionary<string, string> json = ChatLineColors.ToJson()!;
+        Check(json.ContainsKey("chan:General") && json.ContainsKey("tab:Chat") && json["say"] == "#FF0000", "saved in the listed spelling");
+        old.LineColors = json;
+        string saved = JsonSerializer.Serialize(old, opts);
+        Check(saved.Contains("\"lineColors\":{", StringComparison.Ordinal), "written as lineColors");
+        RynthChatSettingsDto back = JsonSerializer.Deserialize(saved, opts)!;
+        Check(JsonSerializer.Serialize(back, opts) == saved, "load + save is stable");
+        Check(back.Filters!.Length == 3 && back.CustomTabs![0] == "Junk", "the rest of the file is kept");
+        ChatLineColors.Load(back.LineColors);
+        Check(ChatLineColors.Resolve(null, "chan:General", "Channels") == 0xFF00FF00, "a colour survives the round trip");
+        ChatLineColors.Load(null);
+        Check(!ChatLineColors.AnySet, "loading a file without it clears them");
     }
 
     private static void WhenParsing()

@@ -560,7 +560,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
             if (route.Tabs != null) tabs.AddRange(route.Tabs);
             where = tabs.Count == 0 ? "Shown nowhere." : "Shows in: " + string.Join(", ", tabs) + ".";
         }
-        uint color = RynthTheme.Argb(route.LineArgb ?? ChatModel.ChannelArgb(channel));
+        uint color = RynthTheme.Argb(ChatLineColors.Resolve(route.LineArgb, ChatLineColors.KindOf(type, channel, text), channel));
         _testResult.Add((where + (route.LineArgb != null ? "  (this is its colour)" : ""), route.Hidden ? Faded(Mute) : color));
 
         // Not hidden: name a standard filter that would hide it (one not in the rules yet).

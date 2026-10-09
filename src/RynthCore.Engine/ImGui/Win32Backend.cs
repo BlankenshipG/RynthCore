@@ -695,8 +695,10 @@ internal static unsafe class Win32Backend
         // GetAsyncKeyState reads the physical key whatever window has focus: without
         // the focus test, Insert (or Shift/Ctrl+Insert paste/copy) pressed in another
         // client or app flipped this client's capture off unseen. Not while typing in
-        // RynthChat: there Shift/Ctrl+Insert are paste/copy.
-        if (insertDown && !_insertWasDown && _hasFocus && !ChatCaptureActive)
+        // RynthChat: there Shift/Ctrl+Insert are paste/copy. Opt-in (Settings > Display,
+        // EngineSettings.InsertReleasesUi): off, Insert does nothing.
+        if (insertDown && !_insertWasDown && _hasFocus && !ChatCaptureActive
+            && Plugins.EngineSettings.InsertReleasesUi)
         {
             _uiCaptureEnabled = !_uiCaptureEnabled;
             RynthLog.Render($"Win32Backend: ImGui capture {(_uiCaptureEnabled ? "ENABLED" : "DISABLED")} (Insert)");
@@ -1723,6 +1725,15 @@ internal static unsafe class Win32Backend
     public static bool IsUiCaptureEnabled()
     {
         return _uiCaptureEnabled;
+    }
+
+    /// <summary>The Insert toggle was switched off in the settings: a released UI comes back,
+    /// since Insert can no longer bring it back. AC thread.</summary>
+    public static void ReclaimUi()
+    {
+        if (_uiCaptureEnabled || !_initialized) return;
+        _uiCaptureEnabled = true;
+        RynthLog.Render("Win32Backend: ImGui capture ENABLED (the Insert toggle was switched off)");
     }
 
     private static OverlayPoint ClientToOverlayPoint(int clientX, int clientY)

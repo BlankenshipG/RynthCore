@@ -72,6 +72,8 @@ internal sealed class ChatLine
         ChatType = chatType;
         Sender = sender;
         Text = text;
+        ColorKind = ChatLineColors.KindOf(chatType, chan, text);
+        ChatLineColors.NoteKind(ColorKind);
         // The text already names the speaker ("Bob says, ..."); until 2026-09-29
         // the sender was printed in front of it as well ("Bob: Bob says, ...").
         FormattedText = $"{ts} {text}";
@@ -89,6 +91,9 @@ internal sealed class ChatLine
     public string? Sender { get; }
     /// <summary>The line as AC printed it. Rules match this.</summary>
     public string Text { get; }
+    /// <summary>Which line colour setting applies ("say", "chan:General", ...), or null:
+    /// its tab's colour (ChatLineColors.KindOf, worked out once here).</summary>
+    public string? ColorKind { get; }
     /// <summary>"HH:mm:ss text": copy, log and the Avalonia face.</summary>
     public string FormattedText { get; }
 
@@ -648,19 +653,13 @@ internal static class ChatModel
     /// <summary>Channel tabs; must match ChatClassifier in the plugin.</summary>
     public static readonly string[] BaseTabs = { "All", "Chat", "Channels", "System", "Combat", "Rynth", "Other" };
 
-    /// <summary>Channel colour as 0xAARRGGBB.</summary>
-    public static uint ChannelArgb(string chan) => chan switch
-    {
-        "Chat"     => 0xFFE0E0E0,
-        "Channels" => 0xFF7AB8F5,
-        "System"   => 0xFF8CA6BF,
-        "Combat"   => 0xFFD93333,
-        "Rynth"    => 0xFFE6B450,   // amber, distinct from the blue/grey channels
-        _          => 0xFFAAAAAA,
-    };
+    /// <summary>Channel tab colour as 0xAARRGGBB: the user's (Line colours in the chat
+    /// settings), else the built-in one (ChatLineColors.BuiltInTabArgb).</summary>
+    public static uint ChannelArgb(string chan) => ChatLineColors.TabArgb(chan);
 
-    /// <summary>The line's colour: a rule's line colour, else its channel's. 0xAARRGGBB.</summary>
-    public static uint LineArgb(ChatLine line) => line.Route.LineArgb ?? ChannelArgb(line.Channel);
+    /// <summary>The line's colour: a rule's line colour, else the colour set for its kind
+    /// (say, fellowship, [General]...), else its channel's. 0xAARRGGBB.</summary>
+    public static uint LineArgb(ChatLine line) => ChatLineColors.Resolve(line.Route.LineArgb, line.ColorKind, line.Channel);
 
     /// <summary>
     /// What a rule's "When" can be: (stored value, label). Channel tabs, then
@@ -1173,20 +1172,10 @@ internal static class ChatModel
     /// An alpha of 00 is taken as opaque: a colour that makes the text invisible
     /// is never what a rule wants (hiding is the Hide action).
     /// </summary>
-    public static uint? ParseColor(string? s)
-    {
-        if (string.IsNullOrWhiteSpace(s)) return null;
-        s = s.Trim().TrimStart('#');
-        if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) s = s[2..];
-        if (s.Length is not (6 or 8)) return null;
-        if (!uint.TryParse(s, System.Globalization.NumberStyles.AllowHexSpecifier, null, out uint v)) return null;
-        if (s.Length == 6 || (v >> 24) == 0) v |= 0xFF000000;
-        return v;
-    }
+    public static uint? ParseColor(string? s) => ChatLineColors.ParseColor(s);
 
     /// <summary>0xAARRGGBB as "#RRGGBB", or "#AARRGGBB" when it isn't opaque (an imported colour keeps its alpha).</summary>
-    public static string FormatColor(uint argb) =>
-        (argb >> 24) == 0xFF ? $"#{argb & 0xFFFFFF:X6}" : $"#{argb:X8}";
+    public static string FormatColor(uint argb) => ChatLineColors.FormatColor(argb);
 
     // ── Plugin binding (set by ChatSource on the pump) ───────────────────
 
@@ -1589,6 +1578,8 @@ internal static class ChatModel
     // "when", "colorMode" and "color". A version-1 file loads as before (see
     // FromDto for what its rules become); the first load copies it to
     // rynthchat_settings.v1.bak, and the next save writes version 2.
+    // "lineColors" (2026-10-08, ChatLineColors) is written only once a colour
+    // is set, so it needs no version bump: a file without it loads as before.
 
     public const int SettingsVersion = 2;
     private static readonly object SaveLock = new();
@@ -1635,6 +1626,7 @@ internal static class ChatModel
             MentionHighlight = dto.MentionHighlight;
             MentionSound = dto.MentionSound;
             MentionWords = dto.MentionWords ?? "";
+            ChatLineColors.Load(dto.LineColors);   // absent before 2026-10-08: nothing set
 
             var tabs = new List<string>();
             foreach (string t in dto.CustomTabs ?? Array.Empty<string>())
@@ -1700,6 +1692,7 @@ internal static class ChatModel
             MentionHighlight = MentionHighlight,
             MentionSound = MentionSound,
             MentionWords = MentionWords,
+            LineColors = ChatLineColors.ToJson(),   // null (left out) until a colour is set
             CustomTabs = Volatile.Read(ref _customTabs),
             Filters = Filters.Select(ToDto).ToArray(),
         };

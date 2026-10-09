@@ -6,6 +6,7 @@
 //  rules with the real serializer.
 // ============================================================================
 
+using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
 namespace RynthCore.Engine.UI.Data;
@@ -58,6 +59,9 @@ internal sealed class RynthChatSettingsDto
     [JsonPropertyName("mentionHighlight")] public bool  MentionHighlight { get; set; } = true;
     [JsonPropertyName("mentionSound")]    public bool   MentionSound    { get; set; }
     [JsonPropertyName("mentionWords")]    public string? MentionWords   { get; set; }
+    // 2026-10-08: per-kind line colours (ChatLineColors), { "say": "#RRGGBB", "chan:General": ..., "tab:Chat": ... };
+    // only the colours the user set, and absent while none is.
+    [JsonPropertyName("lineColors")]      public Dictionary<string, string>? LineColors { get; set; }
     [JsonPropertyName("customTabs")]      public string[]? CustomTabs   { get; set; }
     [JsonPropertyName("filters")]         public RynthChatFilterDto[]? Filters { get; set; }
 }

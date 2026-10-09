@@ -171,6 +171,9 @@ internal sealed class RynthAiSettings
     // Cast our own buff even when gear already gives it (servers with buff augments). Default
     // on; a RynthAi that predates it doesn't send it, and must not read as off.
     public bool CastBuffsOverItemBuffs { get; set; } = true;
+    // RynthAi's unticked prots and banes (buff base names). Null = never received from RynthAi:
+    // sent back as null, which RynthAi reads as "unchanged".
+    public System.Collections.Generic.List<string>? DisabledBuffs { get; set; }
     public int BuffMinSkillLevelTier1 { get; set; } = 35;
     public int BuffMinSkillLevelTier2 { get; set; } = 85;
     public int BuffMinSkillLevelTier3 { get; set; } = 135;
@@ -392,6 +395,48 @@ internal static class SettingsSchema
         return rows;
     }
 
+    // The prots and banes RynthAi lets you untick (its BuffManager.ToggleProtections/ToggleBanes):
+    // (buff base name, label). The names must match RynthAi's.
+    private static readonly (string Buff, string Label)[] ProtToggles =
+    {
+        ("Armor Self", "Armor"), ("Fire Protection Self", "Fire Protection"), ("Cold Protection Self", "Cold Protection"),
+        ("Acid Protection Self", "Acid Protection"), ("Lightning Protection Self", "Lightning Protection"),
+        ("Blade Protection Self", "Blade Protection"), ("Piercing Protection Self", "Piercing Protection"),
+        ("Bludgeoning Protection Self", "Bludgeoning Protection"),
+    };
+
+    private static readonly (string Buff, string Label)[] BaneToggles =
+    {
+        ("Impenetrability", "Impenetrability"), ("Flame Bane", "Flame Bane"), ("Frost Bane", "Frost Bane"),
+        ("Acid Bane", "Acid Bane"), ("Lightning Bane", "Lightning Bane"),
+        ("Blade Bane", "Blade Bane"), ("Piercing Bane", "Piercing Bane"),
+        ("Bludgeoning Bane", "Bludgeoning Bane"),
+    };
+
+    private static SettingRow[] BuffToggles((string Buff, string Label)[] toggles)
+    {
+        var rows = new SettingRow[toggles.Length];
+        for (int i = 0; i < toggles.Length; i++)
+        {
+            string buff = toggles[i].Buff;
+            rows[i] = Bool(toggles[i].Label, s => BuffOn(s, buff), (s, v) => SetBuffOn(s, buff, v),
+                "Ticked: RynthAi casts it in the buff cycle. Unticked: it is skipped and never waited on.");
+        }
+        return rows;
+    }
+
+    private static bool BuffOn(RynthAiSettings s, string buff)
+        => s.DisabledBuffs == null || !s.DisabledBuffs.Exists(b => string.Equals(b, buff, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>A new list each time (RynthAi replaces its list rather than editing it).</summary>
+    private static void SetBuffOn(RynthAiSettings s, string buff, bool on)
+    {
+        var list = s.DisabledBuffs == null ? new System.Collections.Generic.List<string>() : new System.Collections.Generic.List<string>(s.DisabledBuffs);
+        list.RemoveAll(b => string.Equals(b, buff, StringComparison.OrdinalIgnoreCase));
+        if (!on) list.Add(buff);
+        s.DisabledBuffs = list;
+    }
+
     private static SettingRow[] Concat(params object[] parts)
     {
         var list = new System.Collections.Generic.List<SettingRow>();
@@ -409,6 +454,10 @@ internal static class SettingsSchema
         {
             Bool("Show Target Stamina / Mana", s => s.ShowTargetStaminaMana, (s, v) => s.ShowTargetStaminaMana = v,
                 "When enabled, displays stamina and mana bars for the selected target (requires appraisal data)."),
+            // Stored in engine.json for every client (EngineSettings), not in the RynthAi profile.
+            Bool("Insert Key Releases the UI", _ => Plugins.EngineSettings.InsertReleasesUi,
+                (_, v) => { Plugins.EngineSettings.InsertReleasesUi = v; if (!v) ImGuiBackend.Win32Backend.ReclaimUi(); },
+                "On: Insert switches between UI and GAME (shown on the RynthCore bar). In GAME, clicks pass through\nRynth windows to the game and Rynth text boxes can't be typed in. Press Insert again to get the UI back.\nOff (default): Insert does nothing. Applies to all your clients; others pick it up when they start."),
             Spacer(),
             Section("Text Size (in-game panels)"),
             Combo("All Panels", PanelTextScale.SizeNames, _ => PanelTextScale.GetAll(), (_, v) => PanelTextScale.SetAll(v),
@@ -698,6 +747,12 @@ internal static class SettingsSchema
                 "When a buff is due, also recast every other buff with less than this much time left,\nso they land together. Buffs with more time are left alone. Default 1200 (20 minutes).\nAt or below 'Rebuff With', only the expiring buff is recast."),
             Bool("Cast buffs even when an item gives them", s => s.CastBuffsOverItemBuffs, (s, v) => s.CastBuffsOverItemBuffs = v,
                 "Cast your own buff even when worn gear already gives that buff.\nFor servers with buff augments, where your own cast is stronger or lasts longer.\nOn by default: on retail it costs a few extra casts."),
+            Spacer(),
+            Section("Protections (untick to skip)"),
+            BuffToggles(ProtToggles),
+            Spacer(),
+            Section("Banes (untick to skip)"),
+            BuffToggles(BaneToggles),
             Spacer(),
             Section("Buff Difficulty (Min Buffed Skill)"),
             Tiers(

@@ -8,7 +8,9 @@
     source-generated serializer), compiled in. A Regex rule must compile and match exactly as
     before, and a settings file without "mode" must load and save unchanged. Nothing native: no
     AC, no engine state. Reads the live %APPDATA%\RynthCore\rynthchat_settings.json if there is
-    one (never writes it).
+    one (never writes it). Since 2026-10-08 also the per-kind line colours (ChatLineColors.cs):
+    which kind a line is (its "[Tag]", its chat type), the colour order (rule, kind, tab,
+    built-in), defaults exactly as before, and "lineColors" in the settings file.
     Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
   -->
   <PropertyGroup>
@@ -24,6 +26,7 @@
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatRuleMatching.cs" Link="Engine\ChatRuleMatching.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatFilterPresets.cs" Link="Engine\ChatFilterPresets.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatSettingsDto.cs" Link="Engine\ChatSettingsDto.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatLineColors.cs" Link="Engine\ChatLineColors.cs" />
   </ItemGroup>
 
 </Project>

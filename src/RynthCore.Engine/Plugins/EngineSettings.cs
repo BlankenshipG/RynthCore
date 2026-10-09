@@ -35,6 +35,7 @@ internal static class EngineSettings
     private static readonly HashSet<string> _disabledUiHooks = new(StringComparer.OrdinalIgnoreCase);
     private static bool _serverMessageStream = true;
     private static bool _flightRecorder = true;
+    private static bool _insertReleasesUi;
     private static bool _loaded;
 
     public static IReadOnlyList<string> PluginPaths
@@ -302,6 +303,26 @@ internal static class EngineSettings
         }
     }
 
+    /// <summary>"InsertReleasesUi" in engine.json (default false, 2026-10-08): Insert hands the
+    /// mouse to the game (the UI/GAME toggle, Win32Backend), for clicking through a Rynth window.
+    /// Off, Insert does nothing: a stray press left every Rynth text box unable to keep the
+    /// keyboard, which read as "can't type in Rynth". Set in game in Settings > Display.</summary>
+    public static bool InsertReleasesUi
+    {
+        get
+        {
+            EnsureLoaded();
+            return _insertReleasesUi;
+        }
+        set
+        {
+            EnsureLoaded();   // populate _pluginPaths before Save() rewrites the file
+            if (_insertReleasesUi == value) return;
+            _insertReleasesUi = value;
+            Save();
+        }
+    }
+
     public static void AddPluginPath(string path)
     {
         EnsureLoaded();
@@ -432,6 +453,10 @@ internal static class EngineSettings
                 (frEl.ValueKind == JsonValueKind.True || frEl.ValueKind == JsonValueKind.False))
                 _flightRecorder = frEl.GetBoolean();
 
+            if (doc.RootElement.TryGetProperty("InsertReleasesUi", out var iruEl) &&
+                (iruEl.ValueKind == JsonValueKind.True || iruEl.ValueKind == JsonValueKind.False))
+                _insertReleasesUi = iruEl.GetBoolean();
+
             if (doc.RootElement.TryGetProperty("PreventIdleLogoff", out var pilEl) &&
                 (pilEl.ValueKind == JsonValueKind.True || pilEl.ValueKind == JsonValueKind.False))
             {
@@ -464,7 +489,7 @@ internal static class EngineSettings
         "EnableAvaloniaOverlay", "EnableD3D9Hook", "EnableEngine", "EngineHookCount",
         "EnableImGuiBackend", "EnableHangMinidump", "PreventIdleLogoff", "DecalBridge",
         "DecalInGameImGui", "DecalStandDown", "DisabledUiHooks", "ServerMessageStream",
-        "FlightRecorder",
+        "FlightRecorder", "InsertReleasesUi",
     };
 
     private static void Save()
@@ -509,6 +534,8 @@ internal static class EngineSettings
                     w.WriteBoolean("ServerMessageStream", false);
                 if (!_flightRecorder)      // default true: leave the file as it was
                     w.WriteBoolean("FlightRecorder", false);
+                if (_insertReleasesUi)     // default false: leave the file as it was
+                    w.WriteBoolean("InsertReleasesUi", true);
                 w.WriteEndObject();
             }
 
