@@ -32,7 +32,7 @@ namespace RynthCore.Engine.ImGuiBackend.Panels;
 
 internal sealed partial class RynthAiFace
 {
-    /// <summary>Meta state, bot activity and the four file pickers.</summary>
+    /// <summary>Meta state, bot activity and the five file pickers.</summary>
     private sealed class FilesDrawer : DashboardDrawer
     {
         private readonly RynthAiFace _face;
@@ -47,9 +47,10 @@ internal sealed partial class RynthAiFace
         public override string TabTooltip(bool right)
         {
             RynthAiView? v = _face._view;
-            return "Loaded files: the Profile, Nav, Loot and Meta pickers, meta state and bot activity.\n" +
+            return "Loaded files: the Profile, Nav, Loot, Meta and Buffs pickers, meta state and bot activity.\n" +
                    "Profile: " + (v?.ProfileText ?? "Default") + "\nNav: " + (v?.NavText ?? "None") +
                    "\nLoot: " + (v?.LootText ?? "None") + "\nMeta: " + (v?.MetaText ?? "None") +
+                   "\nBuffs: " + (v?.BuffText ?? "Built-in") +
                    (right ? "\n\nClick to slide them out (to the right: there's no room on the left)." : "\n\nClick to slide them out.");
         }
 
@@ -57,7 +58,7 @@ internal sealed partial class RynthAiFace
 
         public override float Width(float k) => 230 * k;
         public override float Height(float k) =>
-            (Pad + TitleH + 4 + 2 * LineH + 6) * k + 4 * SelRow + 3 * SelGap + Pad * k;
+            (Pad + TitleH + 4 + 2 * LineH + 6) * k + 5 * SelRow + 4 * SelGap + Pad * k;
 
         public override void DrawPanel(Vector2 origin, float panelW, float panelH, float k)
         {
@@ -83,6 +84,8 @@ internal sealed partial class RynthAiFace
             _face.Selector(2, "Loot:", view?.LootText ?? "None", raw.LootProfiles, raw.SelectedLootIdx, 1, x, y, w, raw);
             y += SelRow + SelGap;
             _face.Selector(3, "Meta:", view?.MetaText ?? "None", raw.MetaProfiles, raw.SelectedMetaIdx, 2, x, y, w, null);
+            y += SelRow + SelGap;
+            _face.Selector(4, "Buffs:", view?.BuffText ?? "Built-in", raw.BuffProfiles, raw.SelectedBuffIdx, 4, x, y, w, null, spellsButton: true);
         }
 
         private static void InfoLine(ImDrawListPtr dl, ImFontPtr f, float x, float y, float w, float lh, float labelW, string label, string value)
