@@ -145,33 +145,97 @@ static int IsManagedPe(const char* path)
     return nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].VirtualAddress != 0;
 }
 
-static void CleanStaleStagingFiles(const char* stagingDir)
+// 1 = the process with this id is running and started before `staged` (the time its file
+// was created), so the file may be that client's live engine; 0 = gone, or a newer
+// process that only reuses the id.
+static int ProcessOwnsStagedFile(DWORD pid, const FILETIME* staged)
+{
+    HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return GetLastError() == ERROR_ACCESS_DENIED;   // running, can't look: leave it
+    int owns = WaitForSingleObject(h, 0) != WAIT_OBJECT_0;
+    FILETIME created, exited, kernel, user;
+    if (owns && GetProcessTimes(h, &created, &exited, &kernel, &user) && CompareFileTime(&created, staged) > 0)
+        owns = 0;
+    CloseHandle(h);
+    return owns;
+}
+
+// Deletes the staged engines (.dll + .pdb) no client needs: this client's older
+// generations, and the files of clients that have closed. Never another live client's:
+// until 2026-10-09 every file went, and a client staging at the same moment (every
+// watcher fires within ~1.5 s of an engine publish) lost its file mid-load - a missing
+// file, or worse a "loaded" image with broken IL (ops/overnight/2026-10-08-gen4-corrupt-load.md).
+static void CleanStaleStagingFiles(const char* stagingDir, int generation)
 {
     char pattern[MAX_PATH];
-    _snprintf_s(pattern, sizeof pattern, _TRUNCATE, "%s\\RynthCore.Engine.p*.gen*.*", stagingDir);   // .dll + .pdb
+    _snprintf_s(pattern, sizeof pattern, _TRUNCATE, "%s\\RynthCore.Engine.p*.gen*.*", stagingDir);
     WIN32_FIND_DATAA fd;
     HANDLE f = FindFirstFileA(pattern, &fd);
     if (f == INVALID_HANDLE_VALUE) return;
+    DWORD self = GetCurrentProcessId();
     do {
+        unsigned long pid = 0;
+        int gen = 0;
+        if (sscanf_s(fd.cFileName, "RynthCore.Engine.p%lu.gen%d.", &pid, &gen) != 2) continue;
+        int stale = pid == self ? gen < generation : !ProcessOwnsStagedFile((DWORD)pid, &fd.ftCreationTime);
+        if (!stale) continue;
         char p[MAX_PATH];
         _snprintf_s(p, sizeof p, _TRUNCATE, "%s\\%s", stagingDir, fd.cFileName);
-        DeleteFileA(p);   // fails for files a live process still maps: fine
+        DeleteFileA(p);   // fails for files still mapped or guarded: fine
     } while (FindNextFileA(f, &fd));
     FindClose(f);
 }
 
+// Writes a copy of `src` to `dst` and returns a handle that keeps `dst` from being deleted
+// (no FILE_SHARE_DELETE) until it is closed; INVALID_HANDLE_VALUE on failure. Held through
+// the engine load, so nothing can pull the file out from under CoreCLR/LoadLibrary (a
+// guard like this took 100 of 100 racing deletes in the offline repro, every load clean).
+// The guard only reads, so the loader's own read-only opens of the file still succeed.
+static HANDLE CopyGuarded(const char* src, const char* dst)
+{
+    HANDLE in = CreateFileA(src, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (in == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
+    HANDLE out = CreateFileA(dst, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (out == INVALID_HANDLE_VALUE) {
+        DWORD e = GetLastError();
+        CloseHandle(in);
+        SetLastError(e);
+        return INVALID_HANDLE_VALUE;
+    }
+    static unsigned char buf[256 * 1024];
+    DWORD read = 0, written = 0;
+    BOOL ok = TRUE;
+    while (ok && (ok = ReadFile(in, buf, sizeof buf, &read, NULL)) && read > 0)
+        ok = WriteFile(out, buf, read, &written, NULL) && written == read;
+    DWORD e = GetLastError();
+    CloseHandle(in);
+    // The read-only guard opens before the writer closes, so there's no gap to delete in.
+    HANDLE guard = ok ? CreateFileA(dst, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL) : INVALID_HANDLE_VALUE;
+    if (guard == INVALID_HANDLE_VALUE && ok) e = GetLastError();
+    CloseHandle(out);
+    if (guard == INVALID_HANDLE_VALUE) {
+        DeleteFileA(dst);
+        SetLastError(e);
+    }
+    return guard;
+}
+
 // Copies the canonical engine to .engine_loads\RynthCore.Engine.p<pid>.gen<N>.dll so the
 // canonical file is never locked (a developer can copy over it) and every generation is
-// a distinct module/assembly path.
-static int StageEngine(int generation, char* stagedPath, size_t cap)
+// a distinct module/assembly path. *guard keeps the copy undeletable until the caller
+// closes it (after the load).
+static int StageEngine(int generation, char* stagedPath, size_t cap, HANDLE* guard)
 {
     char stagingDir[MAX_PATH];
     _snprintf_s(stagingDir, sizeof stagingDir, _TRUNCATE, "%s\\" STAGING_SUBDIR, g_loaderDir);
     CreateDirectoryA(stagingDir, NULL);
-    CleanStaleStagingFiles(stagingDir);
+    CleanStaleStagingFiles(stagingDir, generation);
     _snprintf_s(stagedPath, cap, _TRUNCATE, "%s\\RynthCore.Engine.p%lu.gen%d.dll",
         stagingDir, GetCurrentProcessId(), generation);
-    if (!CopyFileA(g_enginePath, stagedPath, FALSE)) {
+    *guard = CopyGuarded(g_enginePath, stagedPath);
+    if (*guard == INVALID_HANDLE_VALUE) {
         LoaderLog("ERR", "StageEngine: copy to %s failed (error %lu)", stagedPath, GetLastError());
         return 0;
     }
@@ -202,19 +266,24 @@ static unsigned int LoadAndInitEngine(void)
     HooksBeginGeneration(g_initCount);
 
     char staged[MAX_PATH];
-    if (!StageEngine(g_initCount, staged, sizeof staged)) return 11;
+    HANDLE guard;
+    if (!StageEngine(g_initCount, staged, sizeof staged, &guard)) return 11;
     if (!FileLastWrite(g_enginePath, &g_canonicalWrite)) GetSystemTimeAsFileTime(&g_canonicalWrite);
 
+    // The guard stays open until the load returns; after that the image mapping holds the file.
     if (g_engineIsManaged) {
         int rc = ClrLoadEngine(g_initCount, staged);
+        CloseHandle(guard);
         if (rc != 0) {
             LoaderLog("ERR", "Managed engine gen %d failed to load (rc=%d)", g_initCount, rc);
             return 4;
         }
     } else {
         HMODULE m = LoadLibraryA(staged);
+        DWORD e = GetLastError();
+        CloseHandle(guard);
         if (!m) {
-            LoaderLog("ERR", "LoadLibrary failed for engine (path=%s, error %lu)", staged, GetLastError());
+            LoaderLog("ERR", "LoadLibrary failed for engine (path=%s, error %lu)", staged, e);
             return 4;
         }
         g_engineModule = m;
