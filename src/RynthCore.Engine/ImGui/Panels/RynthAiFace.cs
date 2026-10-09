@@ -18,7 +18,7 @@
 //                 the buttons above it.
 //    drawers      tabs on the left edge (DashboardDrawers.cs), one open at a
 //                 time, a window of their own beside the dashboard: Ranges
-//                 (RangesSlideOut.cs), Loaded files and Patrol
+//                 (RangesSlideOut.cs), Loaded files, Patrol and Mini Remote
 //                 (RynthAiFace.Drawers.cs). Everything that slides out goes
 //                 left; only the bars stay at the bottom (Tom 2026-10-05).
 //  Minimized keeps the title row, the control row and the bars. The window's
@@ -76,6 +76,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     // The drawers on the dashboard's left edge (their own window, placed against this one).
     private readonly DashboardDrawers _drawers;
     private readonly PatrolDrawer _patrol = new();
+    private readonly RemoteDrawer _remote = new();
     // This frame's data, for the drawers.
     private RynthAiView? _view;
     private RynthAiSnapshot _raw = Empty;
@@ -92,7 +93,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     public RynthAiFace()
     {
         // Tab order top to bottom; the first one saved open wins at load.
-        _drawers = new DashboardDrawers(new RangesSlideOut(), new FilesDrawer(this), _patrol);
+        _drawers = new DashboardDrawers(new RangesSlideOut(), new FilesDrawer(this), _patrol, _remote);
     }
 
     public Vector2? MinSize => new Vector2(MinWidth, _contentHeight > 0 ? _contentHeight
@@ -531,11 +532,18 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             ImGuiNET.ImGui.OpenPopup("##charmenu");
         }
         x += bw + LauncherGap;
+        // Right-click is the Mini Remote drawer, as Patrol's is its drawer; popped out there are
+        // no drawers, so it shows the floating Mini Remote. Inventory HUDs setup is in the
+        // Mini Remote's Options menu.
         Launcher("##l_hub", PhosphorIcons.SquaresFour, "Hub",
-            "Hub. Left-click: Mini Remote (/ra remote).  Right-click: Inventory HUDs setup (/ra huds).",
+            popped ? "Hub. Left-click: floating Mini Remote (/ra remote).  Right-click: show the floating Mini Remote."
+                   : "Hub. Left-click: floating Mini Remote (/ra remote).  Right-click: the Mini Remote drawer (left), with its Options.",
             x, y, bw, labels, () => RynthAiCommands.ApplyRemoteCommand("remote", "toggle"));
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
-            RynthAiCommands.ApplyRemoteCommand("huds", "show");
+        {
+            if (popped) RynthAiCommands.ApplyRemoteCommand("remote", "show");
+            else _drawers.Toggle(_remote);
+        }
 
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y + LauncherH));
     }

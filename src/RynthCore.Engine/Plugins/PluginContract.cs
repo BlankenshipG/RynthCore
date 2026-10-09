@@ -15,6 +15,13 @@
 //                                              off (Avalonia mode): only windows that have no
 //                                              Avalonia panel. Gated by engine.json
 //                                              "EnablePluginOverlayWindows" (default true).
+//    int         RynthPluginRenderEmbed(const char* surface, float width, float height,
+//                                       float* wantWidth, float* wantHeight)
+//                                            — draws a named surface (UTF-8, e.g. RynthAi's
+//                                              "miniremote") into the engine's current ImGui
+//                                              window on AC's render thread, inside a
+//                                              width x height child; reports the size it wants.
+//                                              1 = drawn, 0 = not ready / unknown surface.
 //    void        RynthPluginOnServerMessage(uint opcode, byte* data, int length)
 //                                            — v78, reassembled server messages the plugin
 //                                              asked for with SetServerMessageInterestFn
