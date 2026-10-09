@@ -1,24 +1,24 @@
 {
     "schema":  1,
     "product":  "RynthCore + RynthSuite",
-    "version":  "2026.10.5.11",
-    "release":  2026100511,
-    "builtUtc":  "2026-10-05T17:09:44Z",
-    "previous":  "2026.10.5.10",
+    "version":  "2026.10.5.21",
+    "release":  2026100521,
+    "builtUtc":  "2026-10-09T01:50:55Z",
+    "previous":  "2026.10.5.11",
     "installer":  {
-                      "file":  "RynthCore-Setup-2026.10.5.11.exe",
-                      "size":  130761857,
-                      "sha256":  "9be7f21a15c0d175f5f00c252eea7bf4caadaf798676ea96b3673e47267c424e"
+                      "file":  "RynthCore-Setup-2026.10.5.21.exe",
+                      "size":  131448839,
+                      "sha256":  "9b5ca2a6f41d4615376281f8511a10c2ed614a1b8ec7282be3859a75c302e6cd"
                   },
     "source":  {
                    "rynthCore":  {
-                                     "branch":  "merge/aelrynth-2026.10.5.1",
-                                     "commit":  "1c75df5351ab20b05bbd0493f6a4097e72f0ddcf",
+                                     "branch":  "QOL-items",
+                                     "commit":  "d46cd9114bf2330df4ae1fe4fc82b9e864603038",
                                      "dirty":  false
                                  },
                    "rynthSuite":  {
-                                      "branch":  "fix/rynthai-launcher-remote-commands",
-                                      "commit":  "27f962fa89daac495fc5c92cd252225d1b237b45",
+                                      "branch":  "HEAD",
+                                      "commit":  "c60243cda397cc1b8fad4f3d51a13bd1ff7b98a8",
                                       "dirty":  false
                                   }
                },
@@ -26,12 +26,12 @@
                        {
                            "name":  "Launcher (RynthCore.exe)",
                            "file":  "core\\RynthCore.exe",
-                           "version":  "2026.10.5.11+1c75df5351ab20b05bbd0493f6a4097e72f0ddcf"
+                           "version":  "2026.10.5.21+d46cd9114bf2330df4ae1fe4fc82b9e864603038"
                        },
                        {
                            "name":  "Engine",
                            "file":  "core\\Runtime\\RynthCore.Engine.dll",
-                           "version":  "2026.10.5.11+1c75df5351ab20b05bbd0493f6a4097e72f0ddcf"
+                           "version":  "2026.10.5.21+d46cd9114bf2330df4ae1fe4fc82b9e864603038"
                        },
                        {
                            "name":  "Loader",
@@ -41,57 +41,77 @@
                        {
                            "name":  "Loot Editor",
                            "file":  "core\\Tools\\LootEditor\\RynthCore.LootEditor.exe",
-                           "version":  "2026.10.5.11+27f962fa89daac495fc5c92cd252225d1b237b45"
+                           "version":  "2026.10.5.21+c60243cda397cc1b8fad4f3d51a13bd1ff7b98a8"
                        },
                        {
                            "name":  "RynthAi plugin",
                            "file":  "suite\\RynthAi\\RynthCore.Plugin.RynthAi.dll",
-                           "version":  "1.0.0+27f962fa89daac495fc5c92cd252225d1b237b45"
+                           "version":  "1.0.0+c60243cda397cc1b8fad4f3d51a13bd1ff7b98a8"
                        },
                        {
                            "name":  "Monster Editor",
                            "file":  "suite\\RynthAi\\MonsterEditor\\RynthCore.MonsterEditor.exe",
-                           "version":  "2026.10.5.11+27f962fa89daac495fc5c92cd252225d1b237b45"
+                           "version":  "2026.10.5.21+c60243cda397cc1b8fad4f3d51a13bd1ff7b98a8"
                        },
                        {
                            "name":  "RynthChat (experimental)",
                            "file":  "suite\\RynthChat\\RynthCore.Plugin.RynthChat.dll",
-                           "version":  "1.0.0+27f962fa89daac495fc5c92cd252225d1b237b45"
+                           "version":  "1.0.0+c60243cda397cc1b8fad4f3d51a13bd1ff7b98a8"
                        },
                        {
                            "name":  "RynthJuice (experimental)",
                            "file":  "suite\\RynthJuice\\RynthCore.Plugin.RynthJuice.dll",
-                           "version":  "0.1.2-experimental+27f962fa89daac495fc5c92cd252225d1b237b45"
+                           "version":  "0.1.2-experimental+c60243cda397cc1b8fad4f3d51a13bd1ff7b98a8"
                        },
                        {
                            "name":  "RynthNav (experimental)",
                            "file":  "suite\\RynthNav\\RynthCore.Plugin.RynthNav.dll",
-                           "version":  "1.0.0+27f962fa89daac495fc5c92cd252225d1b237b45"
+                           "version":  "1.0.0+c60243cda397cc1b8fad4f3d51a13bd1ff7b98a8"
                        },
                        {
                            "name":  "RynthTracker (experimental)",
                            "file":  "suite\\RynthTracker\\RynthCore.Plugin.RynthTracker.dll",
-                           "version":  "1.0.0+27f962fa89daac495fc5c92cd252225d1b237b45"
+                           "version":  "1.0.0+c60243cda397cc1b8fad4f3d51a13bd1ff7b98a8"
                        },
                        {
                            "name":  "RynthVision (experimental)",
                            "file":  "suite\\RynthVision\\RynthCore.Plugin.RynthVision.dll",
-                           "version":  "1.0.0+27f962fa89daac495fc5c92cd252225d1b237b45"
+                           "version":  "1.0.0+c60243cda397cc1b8fad4f3d51a13bd1ff7b98a8"
                        },
                        {
                            "name":  "UbRythai (experimental)",
                            "file":  "suite\\UbRythai\\RynthCore.Plugin.UbRythai.dll",
-                           "version":  "3.1.10+27f962fa89daac495fc5c92cd252225d1b237b45"
+                           "version":  "3.1.10+c60243cda397cc1b8fad4f3d51a13bd1ff7b98a8"
                        }
                    ],
     "changelog":  [
-                      "RynthCore/Changelog/2026-10-05-guardian-vendor-and-item-lookup.md",
-                      "RynthCore/Changelog/2026-10-05-native-drag-real-item.md",
-                      "RynthCore/Changelog/2026-10-05-release-2026.10.5.10.md"
+                      "RynthCore/Changelog/2026-10-05-release-2026.10.5.11.md",
+                      "RynthCore/Changelog/2026-10-06-release-2026.10.5.14-heartbeat-always-logged.md",
+                      "RynthCore/Changelog/2026-10-06-upstream-snapshot-comparison.md",
+                      "RynthCore/Changelog/2026-10-07-merge-main-into-QOL-items.md",
+                      "RynthCore/Changelog/2026-10-07-release-2026.10.5.15-loot-add-t11-checkbox.md",
+                      "RynthCore/Changelog/2026-10-07-release-2026.10.5.16-main-integration.md",
+                      "RynthCore/Changelog/2026-10-07-release-2026.10.5.17-progression-ub-parity.md",
+                      "RynthCore/Changelog/2026-10-07-release-2026.10.5.18-aug-cost-settings.md",
+                      "RynthCore/Changelog/2026-10-08-release-2026.10.5.20-t11-item-state.md",
+                      "RynthCore/Changelog/2026-10-08-release-2026.10.5.21-mini-remote-drawer.md",
+                      "RynthSuite/Changelog/2026-10-05-release-0.5.17-item-info-format.md",
+                      "RynthSuite/Changelog/2026-10-05-t11-loot-support.md",
+                      "RynthSuite/Changelog/2026-10-06-release-0.5.18-item-info-click.md",
+                      "RynthSuite/Changelog/2026-10-06-release-0.5.19-corpse-killer-decay-line.md",
+                      "RynthSuite/Changelog/2026-10-06-release-0.5.20-vtank-unknown-node-length.md",
+                      "RynthSuite/Changelog/2026-10-06-upstream-snapshot-comparison.md",
+                      "RynthSuite/Changelog/2026-10-07-release-0.5.21-loot-add-t11-attributes.md",
+                      "RynthSuite/Changelog/2026-10-07-release-0.5.22-main-integration.md",
+                      "RynthSuite/Changelog/2026-10-07-release-0.5.23-progression-ub-parity.md",
+                      "RynthSuite/Changelog/2026-10-07-release-0.5.24-aug-cost-settings.md",
+                      "RynthSuite/Changelog/2026-10-08-release-0.5.26-t11-item-state.md",
+                      "RynthSuite/Changelog/2026-10-08-release-0.5.27-mini-remote-drawer.md",
+                      "RynthSuite/Changelog/RynthAi-0.5.14-attribute-raiser.md"
                   ],
     "changelogSince":  {
-                           "rynthCore":  "0bff4931842c0cc0bd67057fb4b670b204e6e1a8",
-                           "rynthSuite":  "e3982b4d5171cd1339745fa464bd86d0aab721dc",
+                           "rynthCore":  "1c75df5351ab20b05bbd0493f6a4097e72f0ddcf",
+                           "rynthSuite":  "27f962fa89daac495fc5c92cd252225d1b237b45",
                            "date":  ""
                        }
 }

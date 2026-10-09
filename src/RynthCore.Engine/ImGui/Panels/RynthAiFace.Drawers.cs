@@ -12,12 +12,19 @@
 //                  recorded hazards and the saved routes. Was the Patrol
 //                  launcher's right-click popup; right-click now opens this
 //                  drawer (popped out: still the popup).
+//    Mini Remote   RynthAi's Mini Remote (session rates, target, summon,
+//                  item slots, toggles, bank, rebuff, Translate, Guardian)
+//                  with its Options menu. The plugin draws it here through
+//                  RynthPluginRenderEmbed("miniremote") and says how big it
+//                  wants the panel; the Hub launcher's right-click opens it
+//                  (popped out: the floating Mini Remote instead).
 //  AC thread only (inside the dashboard's Draw).
 // ============================================================================
 
 using System;
 using System.Numerics;
 using ImGuiNET;
+using RynthCore.Engine.Plugins;
 using RynthCore.Engine.UI;
 using RynthCore.Engine.UI.Data;
 
@@ -25,7 +32,7 @@ namespace RynthCore.Engine.ImGuiBackend.Panels;
 
 internal sealed partial class RynthAiFace
 {
-    /// <summary>Meta state, bot activity and the four file pickers.</summary>
+    /// <summary>Meta state, bot activity and the five file pickers.</summary>
     private sealed class FilesDrawer : DashboardDrawer
     {
         private readonly RynthAiFace _face;
@@ -40,9 +47,10 @@ internal sealed partial class RynthAiFace
         public override string TabTooltip(bool right)
         {
             RynthAiView? v = _face._view;
-            return "Loaded files: the Profile, Nav, Loot and Meta pickers, meta state and bot activity.\n" +
+            return "Loaded files: the Profile, Nav, Loot, Meta and Buffs pickers, meta state and bot activity.\n" +
                    "Profile: " + (v?.ProfileText ?? "Default") + "\nNav: " + (v?.NavText ?? "None") +
                    "\nLoot: " + (v?.LootText ?? "None") + "\nMeta: " + (v?.MetaText ?? "None") +
+                   "\nBuffs: " + (v?.BuffText ?? "Built-in") +
                    (right ? "\n\nClick to slide them out (to the right: there's no room on the left)." : "\n\nClick to slide them out.");
         }
 
@@ -50,7 +58,7 @@ internal sealed partial class RynthAiFace
 
         public override float Width(float k) => 230 * k;
         public override float Height(float k) =>
-            (Pad + TitleH + 4 + 2 * LineH + 6) * k + 4 * SelRow + 3 * SelGap + Pad * k;
+            (Pad + TitleH + 4 + 2 * LineH + 6) * k + 5 * SelRow + 4 * SelGap + Pad * k;
 
         public override void DrawPanel(Vector2 origin, float panelW, float panelH, float k)
         {
@@ -76,6 +84,8 @@ internal sealed partial class RynthAiFace
             _face.Selector(2, "Loot:", view?.LootText ?? "None", raw.LootProfiles, raw.SelectedLootIdx, 1, x, y, w, raw);
             y += SelRow + SelGap;
             _face.Selector(3, "Meta:", view?.MetaText ?? "None", raw.MetaProfiles, raw.SelectedMetaIdx, 2, x, y, w, null);
+            y += SelRow + SelGap;
+            _face.Selector(4, "Buffs:", view?.BuffText ?? "Built-in", raw.BuffProfiles, raw.SelectedBuffIdx, 4, x, y, w, null, spellsButton: true);
         }
 
         private static void InfoLine(ImDrawListPtr dl, ImFontPtr f, float x, float y, float w, float lh, float labelW, string label, string value)
@@ -132,6 +142,83 @@ internal sealed partial class RynthAiFace
                     PatrolInfo info = UiSources.Patrol.Current?.Value ?? new PatrolInfo();
                     PatrolBody(info, withTitle: false);
                 }
+            }
+            finally { ImGuiNET.ImGui.EndChild(); }
+        }
+    }
+
+    /// <summary>RynthAi's Mini Remote, drawn by the plugin into this drawer (the Hub launcher's right-click).</summary>
+    private sealed class RemoteDrawer : DashboardDrawer
+    {
+        /// <summary>The plugin surface name, NUL-terminated for the export.</summary>
+        private static ReadOnlySpan<byte> Surface => "miniremote\0"u8;
+
+        // Content bounds in unscaled pixels; the plugin's wish is clamped to them.
+        private const float MinW = 200, MaxW = 760, MinH = 60, DefaultH = 120;
+
+        /// <summary>The content size the plugin last asked for (pixels); zero until it has drawn here.</summary>
+        private Vector2 _want;
+
+        public override string Key => "remote";
+        public override string Icon => PhosphorIcons.SquaresFour;
+        public override string Name => "Mini Remote drawer";
+        public override bool SavedOpen => RynthAiDashboardState.RemoteOpen;
+        public override void SaveOpen(bool open) => RynthAiDashboardState.SetRemoteOpen(open);
+
+        public override string TabTooltip(bool right) =>
+            "Mini Remote: session rates, attack target, summon, item slots, toggles, bank, rebuff, Translate.\n" +
+            "Its Options button picks the sections and opens the ILT Hub windows (also: right-click Hub).\n" +
+            (right ? "Click to slide it out (to the right: there's no room on the left)." : "Click to slide it out.");
+
+        public override float Width(float k) =>
+            Math.Clamp(_want.X > 0 ? _want.X : MinW * k, MinW * k, MaxW * k) + 2 * Pad * k;
+
+        public override float Height(float k)
+        {
+            float frame = (Pad + TitleH + 4 + Pad) * k;
+            // Never taller than the screen: the body scrolls instead.
+            float screen = ImGuiNET.ImGui.GetIO().DisplaySize.Y;
+            float maxBody = screen > 1 ? MathF.Max(MinH * k, screen - frame - 8 * k) : 900 * k;
+            return frame + Math.Clamp(_want.Y > 0 ? _want.Y : DefaultH * k, MinH * k, maxBody);
+        }
+
+        public override void DrawPanel(Vector2 origin, float panelW, float panelH, float k)
+        {
+            float y = PanelFrame(origin, panelW, panelH, k, PhosphorIcons.SquaresFour, "MINI REMOTE", null, "Hide the Mini Remote drawer");
+            float x = origin.X + Pad * k;
+            ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, y));
+            Vector2 size = new(panelW - 2 * Pad * k, MathF.Max(1, origin.Y + panelH - Pad * k - y));
+            ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
+            bool open = ImGuiNET.ImGui.BeginChild("##remote_body", size, ImGuiChildFlags.None, ImGuiWindowFlags.NoBackground);
+            ImGuiNET.ImGui.PopStyleVar();
+            try
+            {
+                if (!open) return;
+                // The plugin's widgets use the default UI font, as in its floating Mini Remote.
+                ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
+                try
+                {
+                    int result = PluginManager.RenderEmbed("RynthAi", Surface, size, out Vector2 want);
+                    if (result == PluginManager.EmbedDrawn)
+                    {
+                        if (want.X > 0 && want.Y > 0) _want = want;
+                    }
+                    else
+                    {
+                        _want = Vector2.Zero;
+                        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, DMute);
+                        ImGuiNET.ImGui.TextWrapped(result switch
+                        {
+                            PluginManager.EmbedNoPlugin =>
+                                "This RynthAi can't draw its Mini Remote here (it needs RynthAi 0.5.27 or later). Left-click Hub for the floating Mini Remote.",
+                            PluginManager.EmbedFailed =>
+                                "The Mini Remote failed to draw here (see the log). Left-click Hub for the floating Mini Remote.",
+                            _ => "The Mini Remote shows here once RynthAi is ready: in the world, with plugin windows on (engine.json EnablePluginOverlayWindows).",
+                        });
+                        ImGuiNET.ImGui.PopStyleColor();
+                    }
+                }
+                finally { ImGuiNET.ImGui.PopFont(); }
             }
             finally { ImGuiNET.ImGui.EndChild(); }
         }

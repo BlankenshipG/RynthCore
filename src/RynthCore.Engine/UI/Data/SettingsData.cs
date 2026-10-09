@@ -755,6 +755,8 @@ internal static class SettingsSchema
 
         new("Buffing", Concat(
             Bool("Enable Buffing", s => s.EnableBuffing, (s, v) => s.EnableBuffing = v),
+            Button("Buff Profiles", "Spells...", () => RynthAiCommands.ApplyRemoteCommand("spells", "show"),
+                "Open the RynthAi Spells window: browse the spell list by school, level and target,\nand build the buff profile buffing uses (pick it under Loaded Files > Buffs).\nAlso: /ra spells, /ra buffprofile <name>|none."),
             Bool("Rebuff When Idle", s => s.RebuffWhenIdle, (s, v) => s.RebuffWhenIdle = v),
             Int("Rebuff With (seconds left)", s => s.RebuffSecondsRemaining, (s, v) => s.RebuffSecondsRemaining = v, 30, 1800, 30,
                 "Recast a self buff when its remaining duration drops below this value.\nDefault 300 (5 minutes). Lower values rebuff more eagerly."),

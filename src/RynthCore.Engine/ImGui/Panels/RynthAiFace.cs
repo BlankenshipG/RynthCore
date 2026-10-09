@@ -18,7 +18,7 @@
 //                 the buttons above it.
 //    drawers      tabs on the left edge (DashboardDrawers.cs), one open at a
 //                 time, a window of their own beside the dashboard: Ranges
-//                 (RangesSlideOut.cs), Loaded files and Patrol
+//                 (RangesSlideOut.cs), Loaded files, Patrol and Mini Remote
 //                 (RynthAiFace.Drawers.cs). Everything that slides out goes
 //                 left; only the bars stay at the bottom (Tom 2026-10-05).
 //  Minimized keeps the title row, the control row and the bars. The window's
@@ -76,13 +76,14 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     // The drawers on the dashboard's left edge (their own window, placed against this one).
     private readonly DashboardDrawers _drawers;
     private readonly PatrolDrawer _patrol = new();
+    private readonly RemoteDrawer _remote = new();
     // This frame's data, for the drawers.
     private RynthAiView? _view;
     private RynthAiSnapshot _raw = Empty;
     // Picker toggle: ImGui closes a popup on the press outside it, so remember
     // whether it was showing when the selector press began (a second click closes).
-    private readonly int[] _pickerShownFrame = { -10, -10, -10, -10 };
-    private readonly bool[] _pressedWhileOpen = new bool[4];
+    private readonly int[] _pickerShownFrame = { -10, -10, -10, -10, -10 };
+    private readonly bool[] _pressedWhileOpen = new bool[5];
     // The content's height (logical units, body padding included), measured each
     // frame: the window's minimum height. _fit: resize the window to it once.
     private float _contentHeight;
@@ -92,7 +93,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     public RynthAiFace()
     {
         // Tab order top to bottom; the first one saved open wins at load.
-        _drawers = new DashboardDrawers(new RangesSlideOut(), new FilesDrawer(this), _patrol);
+        _drawers = new DashboardDrawers(new RangesSlideOut(), new FilesDrawer(this), _patrol, _remote);
     }
 
     public Vector2? MinSize => new Vector2(MinWidth, _contentHeight > 0 ? _contentHeight
@@ -249,7 +250,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y + rowH));
     }
 
-    // ── Header: macro + state (40%) | Profile/Nav/Loot/Meta pickers (60%) ──
+    // ── Header: macro + state (40%) | Profile/Nav/Loot/Meta/Buffs pickers (60%) ──
 
     private void HeaderGrid(RynthAiView? view, RynthAiSnapshot raw, float x0, float width)
     {
@@ -267,7 +268,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         dl.AddText(f10, f10.FontSize, new Vector2(x0, ly + f10.FontSize + 1), Amber, view?.BotActivityText ?? "Idle");
         float leftBottom = ly + 2 * (f10.FontSize + 1);
 
-        // Right: four selector rows (label 36 px, picker fills, spacing 3).
+        // Right: five selector rows (label 36 px, picker fills, spacing 3).
         float rx = x0 + leftW, rw = width - leftW, ry = y0;
         // The fold arrow sits at the end of the Profile row, where it always fits.
         const float foldW = 18f;
@@ -281,23 +282,39 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         Selector(2, "Loot:", view?.LootText ?? "None", raw.LootProfiles, raw.SelectedLootIdx, 1, rx, ry, rw, raw);
         ry += 16 + 3;
         Selector(3, "Meta:", view?.MetaText ?? "None", raw.MetaProfiles, raw.SelectedMetaIdx, 2, rx, ry, rw, null);
+        ry += 16 + 3;
+        Selector(4, "Buffs:", view?.BuffText ?? "Built-in", raw.BuffProfiles, raw.SelectedBuffIdx, 4, rx, ry, rw, null, spellsButton: true);
         ry += 16;
 
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, Math.Max(leftBottom, ry) + 4));
     }
 
-    private static readonly string[] SelectorIds = { "##sel_profile", "##sel_nav", "##sel_loot", "##sel_meta" };
-    private static readonly string[] PickerIds = { "##pick_profile", "##pick_nav", "##pick_loot", "##pick_meta" };
+    private static readonly string[] SelectorIds = { "##sel_profile", "##sel_nav", "##sel_loot", "##sel_meta", "##sel_buff" };
+    private static readonly string[] PickerIds = { "##pick_profile", "##pick_nav", "##pick_loot", "##pick_meta", "##pick_buff" };
     private static readonly string[] NoneItems = { "None" };
 
+    /// <summary>
+    /// One file picker row. <paramref name="kind"/> is RynthPluginSelectProfile's list (0 nav,
+    /// 1 loot, 2 meta, 3 settings profile, 4 buff profile). <paramref name="lootEdit"/> adds the
+    /// Loot Editor button, <paramref name="spellsButton"/> the RynthAi Spells window button.
+    /// </summary>
     private void Selector(int slot, string label, string text, string[] items, int selected, int kind,
-        float x, float y, float w, RynthAiSnapshot? lootEdit)
+        float x, float y, float w, RynthAiSnapshot? lootEdit, bool spellsButton = false)
     {
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         ImFontPtr f10 = ImGuiFonts.Get(UiFont.Dash10), f9 = ImGuiFonts.Get(UiFont.Dash9);
         dl.AddText(f10, f10.FontSize, new Vector2(x, y + (16 - f10.FontSize) * 0.5f), Mute, label);
 
         float editW = 0;
+        if (spellsButton)
+        {
+            editW = 18;
+            var ep = new Vector2(x + w - editW, y);
+            if (IconButton("##buff_spells", ep, new Vector2(editW, 16), PhosphorIcons.Sparkle, UiFont.Dash11, SelectorBg, Mute, 0, 2))
+                RynthAiCommands.ApplyRemoteCommand("spells", "toggle");
+            ImGuiNET.ImGui.SetItemTooltip("RynthAi Spells: browse the spell list and build buff profiles.");
+            editW += 3;
+        }
         if (lootEdit != null)
         {
             editW = 18;
@@ -432,7 +449,8 @@ internal sealed partial class RynthAiFace : IImGuiPanel
                 RynthAiDashboardState.SetFilesOpen(true);
             ImGuiNET.ImGui.SetItemTooltip("Profile: " + (view?.ProfileText ?? "Default") + "\nNav: " + (view?.NavText ?? "None") +
                 "\nLoot: " + (view?.LootText ?? "None") + "\nMeta: " + (view?.MetaText ?? "None") +
-                "\n\nClick to show the Profile, Nav, Loot and Meta pickers.");
+                "\nBuffs: " + (view?.BuffText ?? "Built-in") +
+                "\n\nClick to show the Profile, Nav, Loot, Meta and Buffs pickers.");
         }
 
         // What the bot is doing, always in view (every mode, minimized too): between the toggles and FR.
@@ -531,11 +549,18 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             ImGuiNET.ImGui.OpenPopup("##charmenu");
         }
         x += bw + LauncherGap;
+        // Right-click is the Mini Remote drawer, as Patrol's is its drawer; popped out there are
+        // no drawers, so it shows the floating Mini Remote. Inventory HUDs setup is in the
+        // Mini Remote's Options menu.
         Launcher("##l_hub", PhosphorIcons.SquaresFour, "Hub",
-            "Hub. Left-click: Mini Remote (/ra remote).  Right-click: Inventory HUDs setup (/ra huds).",
+            popped ? "Hub. Left-click: floating Mini Remote (/ra remote).  Right-click: show the floating Mini Remote."
+                   : "Hub. Left-click: floating Mini Remote (/ra remote).  Right-click: the Mini Remote drawer (left), with its Options.",
             x, y, bw, labels, () => RynthAiCommands.ApplyRemoteCommand("remote", "toggle"));
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
-            RynthAiCommands.ApplyRemoteCommand("huds", "show");
+        {
+            if (popped) RynthAiCommands.ApplyRemoteCommand("remote", "show");
+            else _drawers.Toggle(_remote);
+        }
 
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y + LauncherH));
     }

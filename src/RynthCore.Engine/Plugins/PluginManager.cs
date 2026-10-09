@@ -1242,6 +1242,51 @@ internal static partial class PluginManager
     internal static string DescribeOverlayState()
         => $"overlayCalls={_overlayCalls} loginSeen={_loginCompleteObserved} overlayPlugins={_overlayBound}";
 
+    /// <summary>RenderEmbed results.</summary>
+    internal const int EmbedDrawn = 1, EmbedNotReady = 0, EmbedNoPlugin = -1, EmbedFailed = -2;
+
+    /// <summary>
+    /// Lets the plugin named <paramref name="pluginName"/> (display name contains it) draw the
+    /// surface <paramref name="surfaceUtf8"/> (NUL-terminated) into the current ImGui window,
+    /// through its optional RynthPluginRenderEmbed export. The caller has begun a child of
+    /// <paramref name="size"/> in the main ImGui context; the plugin draws only inside it and
+    /// reports the content size it wants in <paramref name="want"/> (zero when it didn't say).
+    /// Render thread only. Returns <see cref="EmbedDrawn"/>, <see cref="EmbedNotReady"/> (the
+    /// plugin isn't ready: before login, no ImGui context), <see cref="EmbedNoPlugin"/> (not
+    /// loaded, or too old to have the export) or <see cref="EmbedFailed"/> (it threw: the export
+    /// is switched off for this session; the plugin keeps running).
+    /// </summary>
+    internal static unsafe int RenderEmbed(string pluginName, ReadOnlySpan<byte> surfaceUtf8, System.Numerics.Vector2 size, out System.Numerics.Vector2 want)
+    {
+        want = System.Numerics.Vector2.Zero;
+        if (!_loginCompleteObserved) return EmbedNotReady;   // same not-in-world guard as RenderAll
+        LoadedPlugin[] plugins = System.Threading.Volatile.Read(ref _pluginsRenderSnapshot);
+        for (int i = 0; i < plugins.Length; i++)
+        {
+            LoadedPlugin p = plugins[i];
+            if (!p.Initialized || p.Failed || !p.DisplayName.Contains(pluginName, StringComparison.OrdinalIgnoreCase))
+                continue;
+            IntPtr fn = p.RenderEmbedPtr;
+            if (fn == IntPtr.Zero) return EmbedNoPlugin;
+            float w = 0, h = 0;
+            try
+            {
+                int r;
+                fixed (byte* s = surfaceUtf8)
+                    r = ((delegate* unmanaged[Cdecl]<byte*, float, float, float*, float*, int>)fn)(s, size.X, size.Y, &w, &h);
+                want = new System.Numerics.Vector2(float.IsFinite(w) ? MathF.Max(0, w) : 0, float.IsFinite(h) ? MathF.Max(0, h) : 0);
+                return r == 1 ? EmbedDrawn : EmbedNotReady;
+            }
+            catch (Exception ex)
+            {
+                p.RenderEmbedPtr = IntPtr.Zero;
+                RynthLog.Error($"PluginManager: {p.DisplayName} RenderEmbed threw {ex.GetType().Name}: {ex.Message} - embedded surfaces off for this session (plugin keeps running).");
+                return EmbedFailed;
+            }
+        }
+        return EmbedNoPlugin;
+    }
+
     public static void ShutdownAll()
     {
         RynthLog.Plugin($"PluginManager: Shutting down {_plugins.Count} plugin(s)...");

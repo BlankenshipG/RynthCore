@@ -60,6 +60,13 @@ internal sealed class LoadedPlugin
     /// <summary>Set after the first RenderOverlay call has been logged (render thread only).</summary>
     public bool RenderOverlayLogged { get; set; }
 
+    /// <summary>
+    /// Optional <c>int RynthPluginRenderEmbed(const char* surface, float width, float height,
+    /// float* wantWidth, float* wantHeight)</c>, Cdecl: the plugin draws a named surface into the
+    /// engine's current ImGui window (PluginManager.RenderEmbed). Zeroed after it throws.
+    /// </summary>
+    public IntPtr RenderEmbedPtr { get; set; }
+
     // ─── v77 UI exports (resolved lazily by PluginManager.ResolveUiExports) ───
     public bool UiExportsResolved { get; set; }
     public IntPtr OnScreenChangedPtr { get; set; }
@@ -129,5 +136,6 @@ internal sealed class LoadedPlugin
         Tick = null;
         Render = null;
         RenderOverlay = null;
+        RenderEmbedPtr = IntPtr.Zero;
     }
 }

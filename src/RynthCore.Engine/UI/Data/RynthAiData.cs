@@ -41,6 +41,11 @@ internal sealed class RynthAiSnapshot
     [JsonPropertyName("selectedLootIdx")] public int SelectedLootIdx { get; set; }
     [JsonPropertyName("selectedMetaIdx")] public int SelectedMetaIdx { get; set; }
     [JsonPropertyName("selectedProfileIdx")] public int SelectedProfileIdx { get; set; }
+    // Buff profiles (RynthAi 0.5.31+): "Built-in" first, then BuffProfiles\*.json. Older plugins
+    // send none, and the Buffs picker then shows "Built-in" with nothing to pick.
+    [JsonPropertyName("buffProfiles")]    public string[] BuffProfiles { get; set; } = Array.Empty<string>();
+    [JsonPropertyName("currentBuffName")] public string CurrentBuffName { get; set; } = string.Empty;
+    [JsonPropertyName("selectedBuffIdx")] public int SelectedBuffIdx { get; set; }
     [JsonPropertyName("combatEnabled")]     public bool CombatEnabled { get; set; }
     [JsonPropertyName("buffingEnabled")]    public bool BuffingEnabled { get; set; }
     [JsonPropertyName("navigationEnabled")] public bool NavigationEnabled { get; set; }
@@ -85,6 +90,8 @@ internal sealed class RynthAiView
     public required string NavText { get; init; }
     public required string LootText { get; init; }
     public required string MetaText { get; init; }
+    /// <summary>Buff profile buffing uses ("Built-in" without one).</summary>
+    public required string BuffText { get; init; }
     public required string TargetHeadline { get; init; }
     public required int TargetSegmentsLit { get; init; }
     public required bool ShowTargetSubBars { get; init; }
@@ -164,6 +171,7 @@ internal sealed unsafe class RynthAiSource : UiSource<RynthAiView>
             NavText = Truncate(s.CurrentNavName, 16),
             LootText = Truncate(s.CurrentLootName, 16),
             MetaText = Truncate(s.CurrentMetaName, 16),
+            BuffText = Truncate(string.IsNullOrWhiteSpace(s.CurrentBuffName) ? "Built-in" : s.CurrentBuffName, 16),
             TargetHeadline = Truncate(label, 32),
             TargetSegmentsLit = lit,
             ShowTargetSubBars = showSub,
