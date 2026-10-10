@@ -45,6 +45,10 @@ internal static class RawPacketHooks
 
     public static void Initialize()
     {
+        // The engine's own readers of the server stream (the Inventory panel's item order) need the
+        // datagrams from here on, not from the first frame pump: see ServerMessageStream.EnableEarly.
+        Net.ServerMessageStream.EnableEarly();
+
         if (Plugins.EngineSettings.FlightRecorder)
         {
             try { InstallSendTo(); }

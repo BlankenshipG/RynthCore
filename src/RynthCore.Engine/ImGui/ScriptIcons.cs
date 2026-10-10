@@ -55,10 +55,11 @@ internal static class ScriptIcons
     private static readonly long FailedRetryTicks = Stopwatch.Frequency * 30;     // an icon that didn't decode
     private static readonly long BudgetRetryTicks = Stopwatch.Frequency * 2;      // no room in the byte budget
 
-    private const uint StypeIcon = 8, StypeIconOverlay = 50, StypeIconUnderlay = 52;
+    private const uint StypeIcon = 8, StypeIconOverlay = 50, StypeIconUnderlay = 52, StypeUiEffects = 18, StypeItemType = 1;
 
     /// <summary>What one picture is made of: icon, underlay and overlay texture ids (0 = none).</summary>
-    private readonly record struct Layers(uint Icon, uint Underlay, uint Overlay);
+    // Effects / ItemType (Object icons only) pick the plate the icon is drawn on when the server sent no underlay.
+    private readonly record struct Layers(uint Icon, uint Underlay, uint Overlay, uint Effects = 0, uint ItemType = 0);
 
     /// <summary>One asked-for (kind, id): the layers it resolved to.</summary>
     private sealed class Slot
@@ -194,6 +195,34 @@ internal static class ScriptIcons
         }
         if (!tex.Pending && (tex.FailedAt == 0 || now - tex.FailedAt >= tex.RetryTicks)
             && Enqueue(new Request(Work.Decode, kind, id, slot.Layers, _generation)))
+            tex.Pending = true;
+        return false;
+    }
+
+    /// <summary>
+    /// The texture for an item given as its layers rather than as a live object (the vault's items): the
+    /// icon on the plate its type / effects ask for, with underlay and overlay, as an object would be drawn.
+    /// False until it is ready (the work is queued). AC's render thread.
+    /// </summary>
+    public static bool TryGetItem(uint icon, uint underlay, uint overlay, uint effects, uint itemType, out IntPtr texture)
+    {
+        texture = IntPtr.Zero;
+        if (icon == 0) return false;
+        long now = Stopwatch.GetTimestamp();
+        var layers = new Layers(AcIconDecoder.NormalizeIconId(icon), underlay, overlay, effects, itemType);
+        if (!Textures.TryGetValue(layers, out Texture? tex))
+        {
+            tex = new Texture();
+            Textures[layers] = tex;
+        }
+        tex.LastUsed = _frame;
+        if (tex.Ptr != IntPtr.Zero)
+        {
+            texture = tex.Ptr;
+            return true;
+        }
+        if (!tex.Pending && (tex.FailedAt == 0 || now - tex.FailedAt >= tex.RetryTicks)
+            && Enqueue(new Request(Work.Decode, ScriptIconKind.Object, icon, layers, _generation)))
             tex.Pending = true;
         return false;
     }
@@ -419,7 +448,9 @@ internal static class ScriptIcons
                 return new Result(Work.Resolve, key, default, false, null, r.Generation);
             ClientObjectHooks.TryGetObjectDataIdProperty(r.Id, StypeIconUnderlay, out uint under);
             ClientObjectHooks.TryGetObjectDataIdProperty(r.Id, StypeIconOverlay, out uint over);
-            return new Result(Work.Resolve, key, new Layers(icon, under, over), true, null, r.Generation);
+            ClientObjectHooks.TryGetObjectIntProperty(r.Id, StypeUiEffects, out int effects);
+            ClientObjectHooks.TryGetObjectIntProperty(r.Id, StypeItemType, out int itemType);
+            return new Result(Work.Resolve, key, new Layers(icon, under, over, unchecked((uint)effects), unchecked((uint)itemType)), true, null, r.Generation);
         }
         if (r.Kind == ScriptIconKind.Spell)
         {
@@ -445,7 +476,9 @@ internal static class ScriptIcons
                 RynthLog.UI($"ScriptIcons: no icons ({why}); script windows draw placeholders.");
             }
         }
-        AcIconImage? image = dat == null ? null : AcIconDecoder.Compose(dat, r.Layers.Icon, r.Layers.Underlay, r.Layers.Overlay);
+        // An object's icon sits on its plate (the server's underlay, else the one its effects / type ask for).
+        uint under = dat != null && r.Kind == ScriptIconKind.Object ? AcIconPlates.For(dat, r.Layers.Underlay, r.Layers.Effects, r.Layers.ItemType) : r.Layers.Underlay;
+        AcIconImage? image = dat == null ? null : AcIconDecoder.Compose(dat, r.Layers.Icon, under, r.Layers.Overlay, dat != null && r.Kind == ScriptIconKind.Object ? AcIconPlates.RimFor(dat, r.Layers.Effects) : 0u);
         return new Result(Work.Decode, key, r.Layers, image != null, image, r.Generation);
     }
 }

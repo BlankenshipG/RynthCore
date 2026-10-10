@@ -39,7 +39,7 @@ internal static class ChatLineColors
     public const int MaxTagLength = 40;
 
     /// <summary>Channel tabs that have a colour (All has none); must match ChatModel.BaseTabs.</summary>
-    public static readonly string[] Tabs = { "Chat", "Channels", "System", "Combat", "Rynth", "Other" };
+    public static readonly string[] Tabs = { "Chat", "Channels", "System", "Combat", "Rynth", "Items", "Other" };
 
     /// <summary>The player-to-player kinds (ChatMessageType).</summary>
     public static readonly ChatColorKind[] ChatKinds =
@@ -79,6 +79,7 @@ internal static class ChatLineColors
         "System"   => 0xFF8CA6BF,
         "Combat"   => 0xFFD93333,
         "Rynth"    => 0xFFE6B450,   // amber, distinct from the blue/grey channels
+        "Items"    => 0xFF9FD8C8,   // pale teal: RynthAi's item info (2026-10-09)
         _          => 0xFFAAAAAA,
     };
 

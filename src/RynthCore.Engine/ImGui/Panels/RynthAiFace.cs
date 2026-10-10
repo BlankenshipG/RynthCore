@@ -3,7 +3,7 @@
 //  ImGui face of the RynthAi dashboard (docs/IMGUI_PARITY_PLAN.md §2.1),
 //  first laid out from the Avalonia face (UI/Panels/RynthAiPanel.cs), then
 //  made compact with Phosphor icons, after DrakBot's dashboard. Top to bottom:
-//    title row    RYNTHAI DASHBOARD | target, vitals, lock, opacity -/+,
+//    title row    RYNTH | target, vitals, lock, opacity -/+,
 //                 minimize, pop out
 //    header grid  popped out only: meta state, bot activity | pickers (docked,
 //                 they are the Loaded files drawer)
@@ -168,7 +168,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         }
     }
 
-    // ── Title row: "R" + "YNTHAI DASHBOARD" | chips (drag surface) ──────
+    // ── Title row: "R" + "YNTH" | chips (drag surface) ──────
 
     private void TitleRow(RynthAiSnapshot raw, float x0, float width, bool minimized)
     {
@@ -189,7 +189,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         dl.PushClipRect(new Vector2(x0, y), new Vector2(x0 + Math.Max(1, width - chipsW - 4), y + rowH), true);
         dl.AddText(title, title.FontSize, new Vector2(x0, ty), Teal, "R");
         float rw = CalcWidth(title, "R");
-        dl.AddText(title, title.FontSize, new Vector2(x0 + rw, ty), White, "YNTHAI DASHBOARD");
+        dl.AddText(title, title.FontSize, new Vector2(x0 + rw, ty), White, "YNTH");
         dl.PopClipRect();
 
         float cx = x0 + width - chipsW;

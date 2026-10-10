@@ -651,7 +651,8 @@ internal sealed class ChatRouter
 internal static class ChatModel
 {
     /// <summary>Channel tabs; must match ChatClassifier in the plugin.</summary>
-    public static readonly string[] BaseTabs = { "All", "Chat", "Channels", "System", "Combat", "Rynth", "Other" };
+    // Items (2026-10-09): RynthAi's item info, "[RynthAi Item] " (RynthChat's ChatClassifier.IsItemInfo).
+    public static readonly string[] BaseTabs = { "All", "Chat", "Channels", "System", "Combat", "Rynth", "Items", "Other" };
 
     /// <summary>Channel tab colour as 0xAARRGGBB: the user's (Line colours in the chat
     /// settings), else the built-in one (ChatLineColors.BuiltInTabArgb).</summary>
@@ -673,6 +674,7 @@ internal static class ChatModel
         ("chan:System", "System tab"),
         ("chan:Combat", "Combat tab (combat and magic)"),
         ("chan:Rynth", "Rynth tab (plugin output)"),
+        ("chan:Items", "Items tab (item info)"),
         ("chan:Other", "Other tab"),
         ("type:3", "Tells to you"),
         ("type:4", "Tells you send"),

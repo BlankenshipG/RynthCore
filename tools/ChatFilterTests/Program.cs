@@ -318,10 +318,12 @@ internal static class Program
     private static uint OldChannelArgb(string chan) => chan switch
     {
         "Chat" => 0xFFE0E0E0, "Channels" => 0xFF7AB8F5, "System" => 0xFF8CA6BF,
-        "Combat" => 0xFFD93333, "Rynth" => 0xFFE6B450, _ => 0xFFAAAAAA,
+        "Combat" => 0xFFD93333, "Rynth" => 0xFFE6B450,
+        "Items" => 0xFF9FD8C8,   // the Items tab, new 2026-10-09 (item info used to be in Rynth)
+        _ => 0xFFAAAAAA,
     };
 
-    private static readonly string[] AllTabsAndOdd = { "Chat", "Channels", "System", "Combat", "Rynth", "Other", "Junk", "" };
+    private static readonly string[] AllTabsAndOdd = { "Chat", "Channels", "System", "Combat", "Rynth", "Items", "Other", "Junk", "" };
 
     private static void LineColorDefaultsUnchanged()
     {

@@ -217,10 +217,14 @@ internal static class AcIconDecoder
     /// the last (alpha blended) at the icon's size. 0 = no underlay / overlay. Null when the icon
     /// itself can't be decoded; an underlay or overlay that can't be is left out.
     /// </summary>
-    public static AcIconImage? Compose(AcDatFile dat, uint icon, uint underlay, uint overlay)
+    public static AcIconImage? Compose(AcDatFile dat, uint icon, uint underlay, uint overlay, uint rimTexture = 0)
     {
         AcIconImage? baseImage = Decode(dat, icon);
         if (baseImage == null) return null;
+        RepaintOutline(baseImage, BandDepth, rimTexture != 0 ? RimImage(dat, rimTexture) : null);
+        // The server gives some items (foci) an overlay that IS the icon. Drawn over the repainted icon it
+        // would bring the dat's white outline back, and it adds nothing the icon has not already drawn.
+        if (overlay == icon) overlay = 0;
         AcIconImage? under = underlay != 0 ? Decode(dat, underlay) : null;
         AcIconImage? over = overlay != 0 ? Decode(dat, overlay) : null;
         if (under == null && over == null) return baseImage;
@@ -231,6 +235,97 @@ internal static class AcIconDecoder
         Over(outPx, w, h, baseImage);
         if (over != null) Over(outPx, w, h, over);
         return new AcIconImage { Width = w, Height = h, Pixels = outPx };
+    }
+
+    /// <summary>The outline colour retail paints over an icon's authored white band (measured in AcClientReborn's IconOutline).</summary>
+    private const byte OutlineR = 0x30, OutlineG = 0x2D, OutlineB = 0x7B;
+    // The outline of an item with effects (magical, an element...) is not one colour: retail lets the dat's
+    // effect texture (AcIconPlates.RimFor: a vertical gradient, pale at the top to deep at the bottom) show
+    // through the icon's outline band, texel for texel. Read off a retail robe, whose outline runs from pale
+    // cyan at the head to deep blue at the hem, which is the blue effect texture 0x060011CA.
+    private static readonly Dictionary<uint, AcIconImage?> RimCache = new();
+
+    private static AcIconImage? RimImage(AcDatFile dat, uint id)
+    {
+        lock (RimCache)
+        {
+            if (!RimCache.TryGetValue(id, out AcIconImage? img))
+                RimCache[id] = img = Decode(dat, id);
+            return img;
+        }
+    }
+    private const int BandDepth = 2;
+
+    /// <summary>
+    /// The dat authors every icon's outline as near-white (pure white, or red on a gem) and retail
+    /// repaints it, so drawing the dat as-is leaves a white halo. The band is the near-white texels
+    /// within <see cref="BandDepth"/> texels of the silhouette edge (a texel's distance is 1 when it
+    /// touches transparency, 2 when it touches one that does). It is a distance, not a chain from
+    /// the edge, because some art (the foci) has a one-texel dark shadow OUTSIDE its white band: the
+    /// white never touches transparency there, and an adjacency test left it white along that side.
+    /// The depth cap keeps a genuinely white item (a flame) from becoming a silhouette, and interior
+    /// highlights deeper than that survive. Measured over every 32x32 icon in 0x06000F00..0x06007000.
+    /// </summary>
+    internal static void RepaintOutline(AcIconImage img, int depth = BandDepth, AcIconImage? rim = null)
+    {
+        int w = img.Width, h = img.Height;
+        byte[] px = img.Pixels;
+        if (px.Length < w * h * 4) return;
+        bool Opaque(int x, int y) => x >= 0 && y >= 0 && x < w && y < h && px[(y * w + x) * 4 + 3] >= 128;
+        bool NearWhite(int x, int y)
+        {
+            int o = (y * w + x) * 4;
+            return px[o + 3] >= 128 && px[o] >= 226 && px[o + 1] >= 226 && px[o + 2] >= 226;
+        }
+        // Distance 1 = opaque and touching transparency (or the image edge); n = touching a distance n-1 texel.
+        var dist = new byte[w * h];
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                if (Opaque(x, y) && !(Opaque(x - 1, y) && Opaque(x + 1, y) && Opaque(x, y - 1) && Opaque(x, y + 1)))
+                    dist[y * w + x] = 1;
+        // One level past the band is taken only where it continues the band (a near-white texel
+        // touching a repainted one): art with a two-texel shadow outside its white leaves a straggler.
+        int reach = depth + 1;
+        for (int lvl = 2; lvl <= reach; lvl++)
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    if (dist[y * w + x] != 0 || !Opaque(x, y)) continue;
+                    int prev = lvl - 1;
+                    bool near = (x > 0 && dist[y * w + x - 1] == prev) || (x + 1 < w && dist[y * w + x + 1] == prev)
+                        || (y > 0 && dist[(y - 1) * w + x] == prev) || (y + 1 < h && dist[(y + 1) * w + x] == prev);
+                    if (near) dist[y * w + x] = (byte)lvl;
+                }
+        var band = new bool[w * h];
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                if (dist[y * w + x] != 0 && dist[y * w + x] <= depth && NearWhite(x, y)) band[y * w + x] = true;
+        var extra = new List<int>();
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+            {
+                if (dist[y * w + x] != reach || !NearWhite(x, y)) continue;
+                if ((x > 0 && band[y * w + x - 1]) || (x + 1 < w && band[y * w + x + 1])
+                    || (y > 0 && band[(y - 1) * w + x]) || (y + 1 < h && band[(y + 1) * w + x]))
+                    extra.Add(y * w + x);
+            }
+        foreach (int i in extra) band[i] = true;
+        for (int i = 0; i < w * h; i++)
+        {
+            if (!band[i]) continue;
+            int o = i * 4;
+            if (rim != null && rim.Width > 0 && rim.Height > 0)
+            {
+                int x = i % w, y = i / w;
+                int ro = ((y * rim.Height / h) * rim.Width + x * rim.Width / w) * 4;
+                if (ro + 2 < rim.Pixels.Length)
+                {
+                    px[o] = rim.Pixels[ro]; px[o + 1] = rim.Pixels[ro + 1]; px[o + 2] = rim.Pixels[ro + 2];
+                    continue;
+                }
+            }
+            px[o] = OutlineR; px[o + 1] = OutlineG; px[o + 2] = OutlineB;
+        }
     }
 
     /// <summary>Draws <paramref name="src"/> over <paramref name="dst"/> (w x h), scaled nearest-neighbour when sizes differ.</summary>

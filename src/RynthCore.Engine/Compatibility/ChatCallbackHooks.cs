@@ -351,7 +351,7 @@ internal static class ChatCallbackHooks
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static bool EatOwnReply(string line)
     {
-        try { return MasteryFeed.OnIncomingLine(line); }
+        try { return MasteryFeed.OnIncomingLine(line) || VaultFeed.OnIncomingLine(line); }
         catch { return false; }
     }
 

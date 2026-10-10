@@ -59,6 +59,7 @@ internal static class AcMainThreadQueue
         SplitStackInternal,
         MergeStackInternal,
         GiveObjectTo,
+        PutItemInContainer,
         // CommandInterpreter movement marshalled 2026-06-12: SetAutoRun /
         // TurnToHeading / StopCompletely were the last direct off-thread AC
         // mutators (dump-proven: a SetAutoRun executed 15s after a main thread
@@ -421,6 +422,9 @@ internal static class AcMainThreadQueue
     public static bool EnqueueGiveObjectTo(uint objectId, uint targetId, int amount) =>
         Enqueue(ActionKind.GiveObjectTo, objectId, targetId, unchecked((uint)amount));
 
+    public static bool EnqueuePutItemInContainer(uint objectId, uint containerId, int slot) =>
+        Enqueue(ActionKind.PutItemInContainer, objectId, containerId, unchecked((uint)slot));
+
     public static bool EnqueueWieldItem(uint objectId, uint equipMask) =>
         Enqueue(ActionKind.WieldItem, objectId, equipMask, 0);
 
@@ -641,6 +645,9 @@ internal static class AcMainThreadQueue
                         break;
                     case ActionKind.GiveObjectTo:
                         ClientHelperHooks.GiveObjectTo(e.A, e.B, unchecked((int)e.C));
+                        break;
+                    case ActionKind.PutItemInContainer:
+                        ClientHelperHooks.PutItemInContainerAt(e.A, e.B, unchecked((int)e.C));
                         break;
                     case ActionKind.WieldItem:
                         ClientHelperHooks.WieldItem(e.A, e.B);

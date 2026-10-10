@@ -138,7 +138,10 @@ internal static unsafe class DX9Backend
     private const uint D3DRS_WRAP0 = 128;
 
     // D3DTEXTUREFILTERTYPE
-    private const uint D3DTEXF_LINEAR = 2;
+    private const uint D3DTEXF_LINEAR = 2, D3DTEXF_POINT = 1;
+    // Draw-list callbacks this renderer understands besides ResetRenderState (see IconSampling): the sampler
+    // for the draw commands that follow, until the next one or the end of the list.
+
 
     // FVF: xyz (3 floats) + diffuse (uint) + 1 tex coord (2 floats)
     private const uint D3DFVF_XYZ = 0x002;
@@ -661,8 +664,15 @@ internal static unsafe class DX9Backend
 
                     if (cmd->UserCallback != IntPtr.Zero)
                     {
-                        if ((int)cmd->UserCallback == ResetRenderStateSentinel)
+                        int cb = (int)cmd->UserCallback;
+                        if (cb == ResetRenderStateSentinel)
                             SetupRenderStateNative(pDevice, displayPos, displaySize);
+                        else if (cb == IconSampling.PointSentinel || cb == IconSampling.LinearSentinel)
+                        {
+                            uint f = cb == IconSampling.PointSentinel ? D3DTEXF_POINT : D3DTEXF_LINEAR;
+                            _setSamplerState!(pDevice, 0, D3DSAMP_MINFILTER, f);
+                            _setSamplerState!(pDevice, 0, D3DSAMP_MAGFILTER, f);
+                        }
                         // Other callbacks are not supported (no managed callbacks
                         // from inside the render path); they carry no geometry.
                         continue;

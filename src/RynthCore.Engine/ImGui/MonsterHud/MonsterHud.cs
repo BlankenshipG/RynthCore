@@ -90,8 +90,7 @@ internal static class MonsterHud
 
     // Element colours, shared by the "weak to" pill and the vulnerability icons.
     private static readonly uint ElemSlash = C(0xFFC9D1DB), ElemPierce = C(0xFFD9C19A), ElemBludgeon = C(0xFFB59A7E),
-        ElemFire = C(0xFFFF7A3D), ElemCold = C(0xFF7FD3FF), ElemLightning = C(0xFFC89BFF), ElemAcid = C(0xFF8FE36A),
-        ElemNether = C(0xFFB06BE0);
+        ElemFire = C(0xFFFF7A3D), ElemCold = C(0xFF7FD3FF), ElemLightning = C(0xFFC89BFF), ElemAcid = C(0xFF8FE36A);
 
     // One glyph and tint per DebuffKind (index = kind).
     private static readonly string[] KindGlyph =
@@ -174,7 +173,8 @@ internal static class MonsterHud
         public int OverflowKey = -1;
     }
 
-    private sealed record WeakTag(string Label, uint Color);
+    // Icon: a Phosphor glyph drawn before the letters, so the element reads at a glance.
+    private sealed record WeakTag(string Label, uint Color, string Icon);
 
     private const float DefaultHeadHeight = 2.0f;
     private static readonly Dictionary<uint, Plate> Plates = new(64);
@@ -687,23 +687,34 @@ internal static class MonsterHud
         _weakByName = byName;
     }
 
-    /// <summary>"Bludgeon 1.0, Pierce 0.86" -> the first (most damage taken) element.</summary>
+    /// <summary>
+    /// "Bludgeon 1.0, Pierce 0.86" -> the first (most damage taken) element. Nether is
+    /// skipped: everything takes it, so the pill shows the next element instead.
+    /// </summary>
     private static WeakTag? ParseWeak(string weak)
     {
-        int comma = weak.IndexOf(',');
-        string first = (comma > 0 ? weak[..comma] : weak).Trim();
-        int sp = first.IndexOf(' ');
-        string elem = sp > 0 ? first[..sp] : first;
-        return elem.ToLowerInvariant() switch
+        foreach (string part in weak.Split(','))
         {
-            "slash" or "slashing" => new WeakTag("SL", ElemSlash),
-            "pierce" or "piercing" => new WeakTag("PI", ElemPierce),
-            "bludgeon" or "bludgeoning" => new WeakTag("BL", ElemBludgeon),
-            "fire" => new WeakTag("FI", ElemFire),
-            "cold" => new WeakTag("CO", ElemCold),
-            "lightning" or "electric" => new WeakTag("LI", ElemLightning),
-            "acid" => new WeakTag("AC", ElemAcid),
-            "nether" => new WeakTag("NE", ElemNether),
+            string first = part.Trim();
+            int sp = first.IndexOf(' ');
+            string elem = (sp > 0 ? first[..sp] : first).ToLowerInvariant();
+            if (elem.Length == 0 || elem == "nether") continue;
+            return ElementTag(elem);
+        }
+        return null;
+    }
+
+    private static WeakTag? ElementTag(string elem)
+    {
+        return elem switch
+        {
+            "slash" or "slashing" => new WeakTag("SL", ElemSlash, PhosphorIcons.Sword),
+            "pierce" or "piercing" => new WeakTag("PI", ElemPierce, PhosphorIcons.Knife),
+            "bludgeon" or "bludgeoning" => new WeakTag("BL", ElemBludgeon, PhosphorIcons.Hammer),
+            "fire" => new WeakTag("FI", ElemFire, PhosphorIcons.Fire),
+            "cold" => new WeakTag("CO", ElemCold, PhosphorIcons.Snowflake),
+            "lightning" or "electric" => new WeakTag("LI", ElemLightning, PhosphorIcons.Lightning),
+            "acid" => new WeakTag("AC", ElemAcid, PhosphorIcons.Flask),
             _ => null,
         };
     }
@@ -1244,17 +1255,19 @@ internal static class MonsterHud
             }
         }
 
-        // Left of the bar: the "weak to" element pill.
+        // Left of the bar: the "weak to" element pill, its icon then its letters.
         if (p.Weak != null)
         {
-            float pw = TextWidth(p.SmallFont, p.SmallSize, p.Weak.Label) + 6f * k;
+            float iw = TextWidth(p.SmallFont, p.SmallSize, p.Weak.Icon) + 2f * k;
+            float pw = iw + TextWidth(p.SmallFont, p.SmallSize, p.Weak.Label) + 6f * k;
             float ph = MathF.Max(p.BarH + 2f, p.SmallSize + 2f);
             var q0 = new Vector2(MathF.Round(barL - 4f * k - pw), MathF.Round(barTop + (p.BarH - ph) * 0.5f));
             var q1 = q0 + new Vector2(pw, ph);
             dl.AddRectFilled(q0, q1, Mul(BadgeBack, a), 3f * k);
             dl.AddRect(q0, q1, Mul(p.Weak.Color, a * 0.9f), 3f * k, ImDrawFlags.None, 1f);
             var tp = new Vector2(MathF.Round(q0.X + 3f * k), MathF.Round(q0.Y + (ph - p.SmallSize) * 0.5f));
-            dl.AddText(p.SmallFont, p.SmallSize, tp, Mul(p.Weak.Color, a), p.Weak.Label);
+            dl.AddText(p.SmallFont, p.SmallSize, tp, Mul(p.Weak.Color, a), p.Weak.Icon);
+            dl.AddText(p.SmallFont, p.SmallSize, tp + new Vector2(MathF.Round(iw), 0), Mul(p.Weak.Color, a), p.Weak.Label);
         }
 
         // Distance, right of the bar.

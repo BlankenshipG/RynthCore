@@ -75,6 +75,16 @@ internal static class ClientHelperHooks
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate byte EventGiveObjectRequestDelegate(uint targetId, uint objectId, int amount);
 
+    // CM_Inventory::Event_PutItemInContainer(item, container, placement) @0x006ACC80 - the 0x19
+    // PutItemInContainer game action, the packet only: item, container, then the SLOT in that
+    // container (what a drop on a cell of the pack grid asks for; retail and OpenAC both send it).
+    // MoveItemInternal (the native move) always lands an item in the first empty slot. Same
+    // template as Event_GiveObjectRequest (0x10 after the first inner call, arguments written in
+    // wire order) ending in the 0x19 opcode. Unique (1 match @0x006ACC80) in both acclient copies,
+    // checked 2026-10-09 by deriving the pattern from the give pattern.
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate byte EventPutItemInContainerDelegate(uint itemId, uint containerId, int placement);
+
     // CM_Inventory::Event_GetAndWieldItem(ulong itemId, ulong equipMask) — the 0x001A
     // GetAndWieldItem game action ("wield this item at these locations"). Same generated
     // shape as its two siblings above (cdecl, returns bool), opcode immediate 0x1A.
@@ -142,6 +152,7 @@ internal static class ClientHelperHooks
     private const int EventStackableMergeVa = 0x006ACDD0;
     // CM_Inventory::Event_GiveObjectRequest — public give-to-NPC API (FALLBACK only; pattern-scanned).
     private const int EventGiveObjectRequestVa = 0x006ACA60;
+    private const int EventPutItemInContainerVa = 0x006ACC80;
     // CM_Inventory::Event_GetAndWieldItem — wield into a chosen slot (FALLBACK only; pattern-scanned).
     private const int EventGetAndWieldItemVa = 0x006AC950;
     // CM_Inventory::Event_DropItem — drop an item on the ground (FALLBACK only; pattern-scanned).
@@ -169,6 +180,7 @@ internal static class ClientHelperHooks
     private static MoveItemInternalDelegate? _moveItemInternal;
     private static EventStackableMergeDelegate? _eventStackableMerge;
     private static EventGiveObjectRequestDelegate? _eventGiveObjectRequest;
+    private static EventPutItemInContainerDelegate? _eventPutItemInContainer;
     private static EventGetAndWieldItemDelegate? _eventGetAndWieldItem;
     private static EventDropItemDelegate? _eventDropItem;
     private static EventNoLongerViewingContentsDelegate? _eventNoLongerViewingContents;
@@ -197,6 +209,7 @@ internal static class ClientHelperHooks
     public static bool HasSplitStackInternal => _moveItemInternal != null;
     public static bool HasMergeStackInternal => _eventStackableMerge != null;
     public static bool HasGiveObjectTo => _eventGiveObjectRequest != null;
+    public static bool HasPutItemInContainer => _eventPutItemInContainer != null;
     public static bool HasWieldItem => _eventGetAndWieldItem != null;
     public static bool HasDropItem => _eventDropItem != null;
     public static bool HasCloseContainer => _eventNoLongerViewingContents != null;
@@ -227,6 +240,7 @@ internal static class ClientHelperHooks
     // so do NOT trim it. Generated + verified unique (1 match @0x006ACA60) via
     // pe_pattern.py GEN against both acclient copies.
     private static readonly byte?[] PatEventGiveObjectRequest = [ 0x83, 0xEC, 0x0C, 0x53, 0x56, 0x57, 0xE8, null, null, null, null, 0x89, 0x44, 0x24, 0x14, 0x6A, 0x00, 0x8D, 0x44, 0x24, 0x10, 0x50, 0x8D, 0x4C, 0x24, 0x18, 0xC7, 0x44, 0x24, 0x18, 0x2C, 0x2C, 0x80, 0x00, 0xC7, 0x44, 0x24, 0x14, 0x00, 0x00, 0x00, 0x00, 0xE8, null, null, null, null, 0x8B, 0xF0, 0x83, 0xC6, 0x10, 0x56, 0xE8, null, null, null, null, 0x83, 0xC4, 0x04, 0x56, 0x8D, 0x4C, 0x24, 0x10, 0x51, 0x8D, 0x4C, 0x24, 0x18, 0x89, 0x44, 0x24, 0x14, 0x8B, 0xF8, 0xE8, null, null, null, null, 0x8B, 0x54, 0x24, 0x0C, 0x8B, 0x4C, 0x24, 0x1C, 0xC7, 0x02, 0xCD ];
+    private static readonly byte?[] PatEventPutItemInContainer = [  0x83, 0xEC, 0x0C, 0x53, 0x56, 0x57, 0xE8, null, null, null, null, 0x89, 0x44, 0x24, 0x14, 0x6A, 0x00, 0x8D, 0x44, 0x24, 0x10, 0x50, 0x8D, 0x4C, 0x24, 0x18, 0xC7, 0x44, 0x24, 0x18, 0x2C, 0x2C, 0x80, 0x00, 0xC7, 0x44, 0x24, 0x14, 0x00, 0x00, 0x00, 0x00, 0xE8, null, null, null, null, 0x8B, 0xF0, 0x83, 0xC6, 0x10, 0x56, 0xE8, null, null, null, null, 0x83, 0xC4, 0x04, 0x56, 0x8D, 0x4C, 0x24, 0x10, 0x51, 0x8D, 0x4C, 0x24, 0x18, 0x89, 0x44, 0x24, 0x14, 0x8B, 0xF8, 0xE8, null, null, null, null, 0x8B, 0x54, 0x24, 0x0C, 0x8B, 0x4C, 0x24, 0x1C, 0xC7, 0x02, 0x19 ];
     // CM_Inventory::Event_GetAndWieldItem @0x006AC950. Same template as the two above but with
     // one fewer argument (so +0x0C, not +0x10, after the first inner call) and the 0x1A opcode
     // as the last byte. Generated + verified unique (1 match @0x006AC950) via pe_pattern.py GEN
@@ -302,6 +316,7 @@ internal static class ClientHelperHooks
             _moveItemInternal = Bind<MoveItemInternalDelegate>(text, "ClientHelper.MoveItemInternal", PatMoveItemInternal, MoveItemInternalVa);
             _eventStackableMerge = Bind<EventStackableMergeDelegate>(text, "ClientHelper.Event_StackableMerge", PatEventStackableMerge, EventStackableMergeVa);
             _eventGiveObjectRequest = Bind<EventGiveObjectRequestDelegate>(text, "ClientHelper.Event_GiveObjectRequest", PatEventGiveObjectRequest, EventGiveObjectRequestVa);
+            _eventPutItemInContainer = Bind<EventPutItemInContainerDelegate>(text, "ClientHelper.Event_PutItemInContainer", PatEventPutItemInContainer, EventPutItemInContainerVa);
             _eventGetAndWieldItem = Bind<EventGetAndWieldItemDelegate>(text, "ClientHelper.Event_GetAndWieldItem", PatEventGetAndWieldItem, EventGetAndWieldItemVa);
             _eventDropItem = Bind<EventDropItemDelegate>(text, "ClientHelper.Event_DropItem", PatEventDropItem, EventDropItemVa);
             _eventNoLongerViewingContents = Bind<EventNoLongerViewingContentsDelegate>(text, "ClientHelper.Event_NoLongerViewingContents", PatEventNoLongerViewingContents, EventNoLongerViewingContentsVa);
@@ -686,6 +701,36 @@ internal static class ClientHelperHooks
         catch (Exception ex)
         {
             RynthLog.Compat($"Compat: Event_StackableMerge threw - {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Put an item into a container at a given slot (CM_Inventory::Event_PutItemInContainer, the
+    /// 0x19 game action): the drop on a cell of the pack grid, or a reorder inside one pack. The
+    /// server decides (full pack, wrong kind of item) and answers as for any move; this is the
+    /// packet only, so unlike <see cref="MoveItemInternal"/> it never walks the client's slot
+    /// table. <paramref name="slot"/> is the index in the container (the server clamps it).
+    /// </summary>
+    public static bool PutItemInContainerAt(uint objectId, uint containerId, int slot)
+    {
+        if (!MainThreadGuard.IsOnMainThread())
+            return AcMainThreadQueue.EnqueuePutItemInContainer(objectId, containerId, slot);
+
+        if (_eventPutItemInContainer == null) return false;
+        if (!IsValidObjectId(objectId)) return false;
+        if (!IsValidContainerId(containerId)) return false;
+        if (slot < 0) return false;
+
+        try
+        {
+            byte rv = _eventPutItemInContainer(objectId, containerId, slot);
+            RynthLog.Verbose($"Compat: Event_PutItemInContainer item=0x{objectId:X8} -> container=0x{containerId:X8} slot={slot} rv={rv}");
+            return rv != 0;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"Compat: Event_PutItemInContainer threw - {ex.Message}");
             return false;
         }
     }
@@ -1228,6 +1273,7 @@ internal static class ClientHelperHooks
         _moveItemInternal = null;
         _eventStackableMerge = null;
         _eventGiveObjectRequest = null;
+        _eventPutItemInContainer = null;
         _eventGetAndWieldItem = null;
         _eventDropItem = null;
         _eventNoLongerViewingContents = null;
