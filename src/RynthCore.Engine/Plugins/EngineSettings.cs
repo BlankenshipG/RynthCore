@@ -21,6 +21,8 @@ internal static class EngineSettings
     private static bool _enableImGuiShell = true;
     private static bool _enablePlugins = true;
     private static bool _enableDatShareHook = true;
+    // Read-only: Save() leaves it to CopyUnownedFields, so a hand-set false survives launcher saves.
+    private static bool _enableLargeAddressAlignmentFix = true;
     private static bool _enableAvaloniaOverlay = true;
     private static bool _enableD3D9Hook = true;
     private static bool _enableEngine = true;
@@ -79,6 +81,19 @@ internal static class EngineSettings
         {
             EnsureLoaded();
             return _enableDatShareHook;
+        }
+    }
+
+    /// <summary>When false, LargeAddressAlignmentPatch leaves acclient's signed "pointer % 4"
+    /// padding code alone (stock AC behaviour, which corrupts unpacks of buffers above 2 GB).
+    /// Default true. Diagnostic kill-switch only: set "EnableLargeAddressAlignmentFix": false
+    /// in engine.json by hand.</summary>
+    public static bool EnableLargeAddressAlignmentFix
+    {
+        get
+        {
+            EnsureLoaded();
+            return _enableLargeAddressAlignmentFix;
         }
     }
 
@@ -380,6 +395,12 @@ internal static class EngineSettings
                 (datEl.ValueKind == JsonValueKind.True || datEl.ValueKind == JsonValueKind.False))
             {
                 _enableDatShareHook = datEl.GetBoolean();
+            }
+
+            if (doc.RootElement.TryGetProperty("EnableLargeAddressAlignmentFix", out var laaEl) &&
+                (laaEl.ValueKind == JsonValueKind.True || laaEl.ValueKind == JsonValueKind.False))
+            {
+                _enableLargeAddressAlignmentFix = laaEl.GetBoolean();
             }
 
             if (doc.RootElement.TryGetProperty("EnableAvaloniaOverlay", out var avEl) &&

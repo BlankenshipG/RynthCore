@@ -216,6 +216,9 @@ public static class EntryPoint
             TryPreloadMinHookForEarlyInit();
 
             RunInitStep("early multi-client hooks", MultiClientHooks.Initialize);
+            // Before AC's main thread resumes, so no dat or network unpack runs the stock
+            // signed padding; a hot reload finds every site already patched.
+            RunInitStep("large-address alignment fix", LargeAddressAlignmentPatch.Initialize);
             // DatFileShareHooks force-shares AC's data files at the CreateFile
             // layer so we can coexist with Decal-injected clients that other
             // launchers (Thwargle etc.) have already opened against the same
