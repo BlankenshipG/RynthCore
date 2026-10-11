@@ -581,12 +581,13 @@ internal sealed partial class InventoryFace
         dl.AddLine(p, p + new Vector2(w, 0), Faded(Gold));
         InventoryTarget? target = InventoryModel.Target;
         InventoryItem? sel = SelectedItem(view);
+        RefreshSelectionLabels(target);
         float zh = h - 4, giveW = Math.Min(128 * s, w * 0.42f), dropW = 62 * s;
         var give = new Vector2(p.X + w - giveW - 2, p.Y + 2);
         var drop = new Vector2(give.X - dropW - 3, p.Y + 2);
-        Zone("##z_drop", DropKind.Drop, PhosphorIcons.ArrowFatDown, "Drop", drop, new Vector2(dropW, zh), 0, "",
-            InventoryModel.DropAvailable, sel, "Drop on the ground: drag an item here, or click to drop the selected item.");
-        Zone("##z_give", DropKind.Give, PhosphorIcons.Gift, target?.ZoneLabel ?? "Give", give, new Vector2(giveW, zh),
+        Zone("##z_drop", DropKind.Drop, PhosphorIcons.ArrowFatDown, _dropLabel, drop, new Vector2(dropW, zh), 0, "",
+            InventoryModel.DropAvailable, sel, DropTip);
+        Zone("##z_give", DropKind.Give, PhosphorIcons.Gift, _giveLabel, give, new Vector2(giveW, zh),
             target?.Id ?? 0, target?.Name ?? "", InventoryModel.GiveAvailable && target != null, sel,
             target?.ZoneTip ?? "Select a creature, NPC or player in the game to give to.");
         StatusLine(new Vector2(p.X + 3, p.Y), Math.Max(10, drop.X - p.X - 6), h, view);
@@ -610,7 +611,7 @@ internal sealed partial class InventoryFace
             dl.AddText(tp, StackCol, it.StackText);
         }
         if (it.Id == pendingId) Overlay(dl, Art.Waiting, min, cell, Amber);
-        if (it.Id == _selected) Overlay(dl, Art.Selected, min, cell, SelYellow);
+        if (IsPicked(it)) Overlay(dl, Art.Selected, min, cell, SelYellow);
     }
 
     /// <summary>Hover, click (select, and a press that may become a drag), double-click (use), right-click (menu).</summary>
@@ -620,7 +621,7 @@ internal sealed partial class InventoryFace
         _hover = it;
         if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Left))
         {
-            SelectItem(it);
+            ClickItem(it);
             _pressItem = it;
             _pressAt = ImGuiNET.ImGui.GetMousePos();
         }
@@ -630,11 +631,7 @@ internal sealed partial class InventoryFace
             Act(InventoryActionKind.Use, it, 0, "", 0);
         }
         if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Right))
-        {
-            _selected = it.Id;
-            _ctxItem = it;
-            _openCtx = true;
-        }
+            RightClickItem(it);
     }
 
     /// <summary>
