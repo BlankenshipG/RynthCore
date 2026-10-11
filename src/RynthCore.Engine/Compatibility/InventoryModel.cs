@@ -17,6 +17,9 @@
 //  One item action at a time: AC keeps one pending inventory request and refuses
 //  a second ("You can only move or use one item at a time"; ClientActionGates).
 //  Request() refuses while an action is waiting; nothing is ever queued behind it.
+//  Several items (the panel's multi-selection) go through RequestBatch
+//  (InventoryModel.Batch.cs), which feeds them to this same path one at a time,
+//  each only after the one before it has ended.
 //
 //  The client's own gate (ClientActionGates, read on the main thread here):
 //    Before the send  while AC's pending-request slot holds anyone's request (the
@@ -212,7 +215,7 @@ internal sealed class InventoryResult
     public long AtTicks;
 }
 
-internal static class InventoryModel
+internal static partial class InventoryModel
 {
     // ── Cadence ─────────────────────────────────────────────────────────
     private static readonly long Freq = Stopwatch.Frequency;
@@ -295,6 +298,11 @@ internal static class InventoryModel
     /// </summary>
     public static bool Request(InventoryRequest request, out string why)
     {
+        if (BatchRunning)
+        {
+            why = "Several items are being sent; wait, or press Stop.";
+            return false;
+        }
         InventoryPending? busy = Pending;
         if (busy != null)
         {
@@ -357,7 +365,8 @@ internal static class InventoryModel
     public static void MainThreadTick()
     {
         bool open = Volatile.Read(ref _subscribers) > 0;
-        if (!open && _inFlight == null && _held == null && Volatile.Read(ref _requested) == null)
+        if (!open && _inFlight == null && _held == null && Volatile.Read(ref _requested) == null
+            && Volatile.Read(ref _batchActive) == 0)
             return;
         if (!MainThreadGuard.IsOnMainThread())
             return;
@@ -375,6 +384,8 @@ internal static class InventoryModel
                 _lastWatch = now;
                 Watch(now);
             }
+            // After the watch, so an item that just ended is counted before the next is sent.
+            if (Volatile.Read(ref _batchActive) != 0) BatchTick(now);
             if (!open) return;
 
             bool dirty = Volatile.Read(ref _dirty) != 0;
