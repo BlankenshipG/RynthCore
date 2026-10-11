@@ -549,16 +549,17 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             ImGuiNET.ImGui.OpenPopup("##charmenu");
         }
         x += bw + LauncherGap;
-        // Right-click is the Mini Remote drawer, as Patrol's is its drawer; popped out there are
-        // no drawers, so it shows the floating Mini Remote. Inventory HUDs setup is in the
-        // Mini Remote's Options menu.
+        // Left-click is the Mini Remote window (MiniRemoteFace, which hosts RynthAi's remote, the
+        // same window as the bar button). Right-click is the Mini Remote drawer, as Patrol's is
+        // its drawer; popped out there are no drawers, so it opens the window. Inventory HUDs
+        // setup is in the Mini Remote's Options menu.
         Launcher("##l_hub", PhosphorIcons.SquaresFour, "Hub",
-            popped ? "Hub. Left-click: floating Mini Remote (/ra remote).  Right-click: show the floating Mini Remote."
-                   : "Hub. Left-click: floating Mini Remote (/ra remote).  Right-click: the Mini Remote drawer (left), with its Options.",
-            x, y, bw, labels, () => RynthAiCommands.ApplyRemoteCommand("remote", "toggle"));
+            popped ? "Hub. Left-click: the Mini Remote window (/rc miniremote).  Right-click: open the Mini Remote window."
+                   : "Hub. Left-click: the Mini Remote window (/rc miniremote).  Right-click: the Mini Remote drawer (left), with its Options.",
+            x, y, bw, labels, () => PanelRouter.Toggle(MiniRemoteFace.Title));
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
         {
-            if (popped) RynthAiCommands.ApplyRemoteCommand("remote", "show");
+            if (popped) ImGuiPanelHost.Open(MiniRemoteFace.Title);
             else _drawers.Toggle(_remote);
         }
 

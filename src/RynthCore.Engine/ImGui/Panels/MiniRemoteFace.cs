@@ -1,14 +1,25 @@
 // ============================================================================
 //  RynthCore.Engine - ImGui/Panels/MiniRemoteFace.cs
-//  The Mini Remote: a small grid of slots the player fills with items; a click
-//  uses that item. Engine only, ImGui only. (An idea from Silentkelpie's rynth
-//  PR #1, done as an engine face.)
+//  The Mini Remote: one window for the quick-use item slots, whoever draws them.
 //
+//  With RynthAi loaded it hosts RynthAi's Mini Remote (session rates, target,
+//  summon, item slots, toggles, bank, rebuff, Translate, Guardian and its
+//  Options menu), drawn by the plugin through RynthPluginRenderEmbed
+//  ("miniremote-window"). The window fits itself to what the plugin asks for
+//  whenever that changes (a section shown or hidden, bigger or smaller boxes);
+//  a resize by hand holds until then. While this window shows it, RynthAi keeps
+//  its own floating copy hidden, so there is one Mini Remote, not two.
+//
+//  Without RynthAi (not loaded, too old for the surface, not logged in yet, or
+//  its embed failed) it is the engine's own grid (an idea from Silentkelpie's
+//  rynth PR #1, done as an engine face):
 //    slots     the item's icon and carried count; an empty slot shows +
 //    click     uses the slot's item (the same object if still carried, else a
 //              stack with its name); on an empty slot, puts the selected
 //              inventory item there
-//    right     Set to the selected item, Clear, More / Fewer slots
+//    right     Set to the selected item, Clear, More / Fewer slots,
+//              Bigger / Smaller boxes
+//    ctrl+wheel over the slots: bigger / smaller boxes
 //    drop      drag an item from the game's inventory (or the Inventory panel)
 //              onto a slot to put it there (UiDropTargets, one target a slot)
 //    status    the use waiting for the server, or how the last one ended
@@ -16,7 +27,8 @@
 //  A click never calls AC from the render thread: it posts an InventoryModel
 //  Use request, which AC's main thread sends at its next tick behind the
 //  client's own item gate (one item action at a time; a click while one waits
-//  is refused, not queued). Slots are saved per character (ItemHudStore).
+//  is refused, not queued). Slots and box size are saved per character
+//  (ItemHudStore).
 // ============================================================================
 
 using System;
@@ -24,6 +36,7 @@ using System.Globalization;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Engine.Compatibility;
+using RynthCore.Engine.Plugins;
 using RynthCore.Engine.UI.Data;
 using RynthCore.Engine.UI.ScriptWindows;
 using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
@@ -42,7 +55,12 @@ internal sealed class MiniRemoteFace : IImGuiPanel
         ItemHudStore.EnsureLoadQueued();
     }
 
-    private const float Slot = 36f, Gap = 4f, IconSize = 32f, StatusH = 18f;
+    /// <summary>The RynthAi surface for this window (NUL-terminated for the export).</summary>
+    private static ReadOnlySpan<byte> Surface => "miniremote-window\0"u8;
+
+    private const float Gap = 4f, StatusH = 18f;
+    /// <summary>Pixels a Ctrl+wheel notch or a Bigger / Smaller menu click changes the box edge by.</summary>
+    private const int SlotSizeStep = 4;
     private const string MenuId = "##miniremote_menu";
     private static readonly string[] DropKeys = BuildDropKeys();
 
@@ -66,33 +84,143 @@ internal sealed class MiniRemoteFace : IImGuiPanel
     private uint[] _slotItem = Array.Empty<uint>();
     private string[] _slotCount = Array.Empty<string>();
 
+    // RynthAi hosting: it drew last frame; its export failed this session; the size it last asked for.
+    private bool _hosted;
+    private bool _embedOff;
+    private Vector2 _lastWant;
+    // The engine grid: the box size it last fitted the window to (0 = fit on the next frame).
+    private int _fittedSlotSize;
+    // The window size last requested (logical units), so the same request isn't repeated.
+    private Vector2 _requested;
+
     public void OnShown()
     {
         ItemHudStore.EnsureLoadQueued();
         InventoryModel.Subscribe();
+        _lastWant = Vector2.Zero;
+        _fittedSlotSize = 0;
+        _requested = Vector2.Zero;
     }
 
     public void OnHidden()
     {
         InventoryModel.Unsubscribe();
         _menuSlot = -1;
+        _hosted = false;
     }
 
     public void Draw()
     {
         float w = Begin(out Vector2 origin, out Vector2 size);
+        if (DrawRynthAi(w, origin, size))
+        {
+            End(origin, size);
+            return;
+        }
+
         InventoryView view = InventoryModel.Current;
         HudItem[] items = _items.Get(view);
         ItemHudCharacter data = ItemHudStore.Current;
         bool ready = ItemHudStore.Loaded && ItemHudStore.HasCharacter && view.PlayerId != 0;
         Resolve(data, items);
 
-        float gridH = Math.Max(Slot, Remaining(origin, size) - StatusH - GripOverlap());
+        float haveH = Remaining(origin, size);
+        float gridH = Math.Max(data.SlotSize, haveH - StatusH - GripOverlap());
         DrawGrid(data, items, w, gridH, ready);
         DrawStatus(ready);
+        FitGrid(data, w, haveH);
         End(origin, size);
         DrawMenu(data, items);
     }
+
+    // ── RynthAi's Mini Remote ───────────────────────────────────────────
+
+    /// <summary>
+    /// Lets RynthAi draw its Mini Remote here. True when it did (or is mid-layout after
+    /// drawing last frame); false means the engine grid draws instead. The plugin draws
+    /// nothing when it declines, and the auto-height child it would have filled stays
+    /// empty, so the grid can take the space the same frame.
+    /// </summary>
+    private bool DrawRynthAi(float w, Vector2 origin, Vector2 size)
+    {
+        if (_embedOff) return false;
+        float haveH = Remaining(origin, size);
+
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
+        bool open = ImGuiNET.ImGui.BeginChild("##mr_rynthai", new Vector2(w, 0), ImGuiChildFlags.AutoResizeY,
+            ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.NoScrollbar);
+        ImGuiNET.ImGui.PopStyleVar();
+        int result = PluginManager.EmbedNotReady;
+        Vector2 want = Vector2.Zero;
+        try
+        {
+            if (open)
+            {
+                // The plugin's widgets use the default UI font, as in its floating Mini Remote.
+                ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
+                try { result = PluginManager.RenderEmbed("RynthAi", Surface, new Vector2(w, Math.Max(1f, haveH)), out want); }
+                finally { ImGuiNET.ImGui.PopFont(); }
+            }
+        }
+        finally { ImGuiNET.ImGui.EndChild(); }
+
+        if (result == PluginManager.EmbedFailed) _embedOff = true;
+        // A clipped child (open == false) draws nothing; keep the last frame's answer so the
+        // window doesn't flick to the engine grid for that frame.
+        _hosted = open ? result == PluginManager.EmbedDrawn : _hosted && !_embedOff;
+        if (!_hosted) { _lastWant = Vector2.Zero; return false; }
+
+        if (result == PluginManager.EmbedDrawn && want.X > 0 && want.Y > 0
+            && Vector2.DistanceSquared(want, _lastWant) > 1f)
+        {
+            _lastWant = want;
+            // + the grip's reach, so the plugin's last row isn't under the resize grip.
+            FitWindow(new Vector2(want.X, want.Y + GripOverlap()), w, haveH);
+        }
+        return true;
+    }
+
+    // ── Window fit ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Sizes the window so the body area (<paramref name="haveW"/> × <paramref name="haveH"/>
+    /// now) becomes <paramref name="wantPx"/>; never taller than the screen. Docked only:
+    /// popped out the OS window keeps its size, as other faces do (RynthNavArrowFace).
+    /// </summary>
+    private void FitWindow(Vector2 wantPx, float haveW, float haveH)
+    {
+        if (ImGuiPopOuts.InPopOutFrame) return;
+        float place = ImGuiPanelHost.PlacementScale();
+        float extraW = ImGuiNET.ImGui.GetWindowWidth() - haveW;    // anything around the body
+        float extraH = ImGuiNET.ImGui.GetWindowHeight() - haveH;
+        var want = new Vector2(MathF.Ceiling((wantPx.X + extraW) / place), MathF.Ceiling((wantPx.Y + extraH) / place));
+        float screenH = ImGuiNET.ImGui.GetIO().DisplaySize.Y / place;
+        if (screenH > 1) want.Y = MathF.Min(want.Y, screenH - 8);
+        if (Vector2.DistanceSquared(want, _requested) < 1f) return;
+        _requested = want;
+        ImGuiPanelHost.RequestSize(Title, want);
+    }
+
+    /// <summary>
+    /// The engine grid: after the box size changes (and on the first frame shown), fits the
+    /// window to the slots at the same number of columns, plus the status line.
+    /// </summary>
+    private void FitGrid(ItemHudCharacter data, float w, float haveH)
+    {
+        if (_fittedSlotSize == data.SlotSize || !ItemHudStore.Loaded) return;
+        bool first = _fittedSlotSize == 0;
+        int oldSlot = first ? data.SlotSize : _fittedSlotSize;
+        _fittedSlotSize = data.SlotSize;
+        // First show: keep the window the player left (only a box-size change refits it).
+        if (first) return;
+        int cols = Math.Max(1, (int)((w + Gap) / (oldSlot + Gap)));
+        int rows = (data.Slots.Length + cols - 1) / cols;
+        float slot = data.SlotSize;
+        var body = new Vector2(cols * (slot + Gap) - Gap, rows * (slot + Gap) - Gap + StatusH + GripOverlap());
+        FitWindow(body, w, haveH);
+    }
+
+    // ── Engine grid ─────────────────────────────────────────────────────
 
     private void Resolve(ItemHudCharacter data, HudItem[] items)
     {
@@ -112,20 +240,20 @@ internal sealed class MiniRemoteFace : IImGuiPanel
         }
     }
 
-    // ── Grid ────────────────────────────────────────────────────────────
-
     private void DrawGrid(ItemHudCharacter data, HudItem[] items, float w, float h, bool ready)
     {
         Vector2 start = ImGuiNET.ImGui.GetCursorScreenPos();
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
-        int cols = Math.Max(1, (int)((w + Gap) / (Slot + Gap)));
+        float slot = data.SlotSize;
+        float iconSize = slot - 4f;
+        int cols = Math.Max(1, (int)((w + Gap) / (slot + Gap)));
         bool dragging = ready && UiDropTargets.AnyDragInProgress;
         int clicked = -1;
 
         for (int i = 0; i < data.Slots.Length; i++)
         {
-            var p = new Vector2(start.X + (i % cols) * (Slot + Gap), start.Y + (i / cols) * (Slot + Gap));
-            var max = p + new Vector2(Slot, Slot);
+            var p = new Vector2(start.X + (i % cols) * (slot + Gap), start.Y + (i / cols) * (slot + Gap));
+            var max = p + new Vector2(slot, slot);
             RemoteSlot? s = data.Slots[i];
 
             // One drop target a slot, so the item lands where it was let go.
@@ -135,7 +263,7 @@ internal sealed class MiniRemoteFace : IImGuiPanel
 
             ImGuiNET.ImGui.SetCursorScreenPos(p);
             ImGuiNET.ImGui.PushID(i);
-            if (ImGuiNET.ImGui.InvisibleButton("##slot", new Vector2(Slot, Slot))) clicked = i;
+            if (ImGuiNET.ImGui.InvisibleButton("##slot", new Vector2(slot, slot))) clicked = i;
             bool hot = ImGuiNET.ImGui.IsItemHovered();
             if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right)) { _menuSlot = i; _openMenu = true; }
             ImGuiNET.ImGui.PopID();
@@ -145,20 +273,20 @@ internal sealed class MiniRemoteFace : IImGuiPanel
             dl.AddRect(p, max, dropHot || dragging ? Teal : BtnBord, 3);
 
             uint id = s != null && i < _slotItem.Length ? _slotItem[i] : 0;
-            Vector2 ip = p + new Vector2((Slot - IconSize) * 0.5f, (Slot - IconSize) * 0.5f);
+            Vector2 ip = p + new Vector2((slot - iconSize) * 0.5f, (slot - iconSize) * 0.5f);
             if (s == null)
             {
-                PhosphorIcons.DrawCentered(dl, ImGuiFonts.Get(UiFont.Ui14), PhosphorIcons.Plus, p, new Vector2(Slot, Slot), Faded(Mute));
-                if (hot) ImGuiNET.ImGui.SetItemTooltip("Empty slot: click to put the selected inventory item here, or drag an item onto it.");
+                PhosphorIcons.DrawCentered(dl, ImGuiFonts.Get(UiFont.Ui14), PhosphorIcons.Plus, p, new Vector2(slot, slot), Faded(Mute));
+                if (hot) ImGuiNET.ImGui.SetItemTooltip("Empty slot: click to put the selected inventory item here, or drag an item onto it.\nCtrl+wheel: bigger / smaller boxes.");
                 continue;
             }
             if (id != 0 && ScriptIcons.TryGet(ScriptIconKind.Object, id, out IntPtr tex))
-                dl.AddImage(tex, ip, ip + new Vector2(IconSize, IconSize));
+                dl.AddImage(tex, ip, ip + new Vector2(iconSize, iconSize));
             else
             {
                 string initial = s.Name.Length > 0 ? s.Name[..1].ToUpperInvariant() : "?";
                 Vector2 ts = ImGuiNET.ImGui.CalcTextSize(initial);
-                dl.AddText(p + (new Vector2(Slot, Slot) - ts) * 0.5f, Faded(Text), initial);
+                dl.AddText(p + (new Vector2(slot, slot) - ts) * 0.5f, Faded(Text), initial);
             }
             string count = _slotCount[i];
             if (count.Length > 0)
@@ -174,11 +302,28 @@ internal sealed class MiniRemoteFace : IImGuiPanel
                     : $"{s.Name} ({count switch { "" => "1", _ => count }} carried)\nClick to use. Right-click for options.");
         }
         int rows = (data.Slots.Length + cols - 1) / cols;
+        float shownH = Math.Min(h, rows * (slot + Gap));
         ImGuiNET.ImGui.SetCursorScreenPos(start);
-        ImGuiNET.ImGui.Dummy(new Vector2(w, Math.Min(h, rows * (Slot + Gap))));
+        ImGuiNET.ImGui.Dummy(new Vector2(w, shownH));
+
+        // Ctrl+wheel over the slots: bigger / smaller boxes (saved per character).
+        ImGuiIOPtr io = ImGuiNET.ImGui.GetIO();
+        if (ready && io.KeyCtrl && io.MouseWheel != 0
+            && ImGuiNET.ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows)
+            && ImGuiNET.ImGui.IsMouseHoveringRect(start, start + new Vector2(w, shownH)))
+            ResizeSlots(io.MouseWheel > 0 ? SlotSizeStep : -SlotSizeStep);
 
         if (clicked >= 0 && ready) Click(data, items, clicked);
         else if (clicked >= 0) ShowMessage(ItemHudStore.Loaded ? "Waiting for your character..." : "Loading...", Amber);
+    }
+
+    /// <summary>Grows (+) or shrinks (-) the boxes by <paramref name="delta"/> pixels, within the saved range.</summary>
+    private void ResizeSlots(int delta)
+    {
+        if (!ItemHudStore.Update(d => d.WithSlotSize(d.SlotSize + delta), out string why))
+            ShowMessage(why, Amber);
+        else
+            ShowMessage($"Box size {ItemHudStore.Current.SlotSize} px.", Mute);
     }
 
     private void Click(ItemHudCharacter data, HudItem[] items, int i)
@@ -228,7 +373,7 @@ internal sealed class MiniRemoteFace : IImGuiPanel
         else if (pending != null) { text = pending.WaitingForGame ? "Waiting for the game: " + pending.Label : pending.Label + "..."; color = Teal; }
         else if (last != null && nowTicks - last.AtTicks < System.Diagnostics.Stopwatch.Frequency * 4) { text = last.Text; color = last.Ok ? Green : Amber; }
         else if (!ready) { text = ItemHudStore.Loaded ? "Waiting for your character..." : "Loading..."; color = Mute; }
-        else { text = "Click: use. Right-click: options."; color = Faded(Mute); }
+        else { text = "Click: use. Right-click: options. Ctrl+wheel: box size."; color = Faded(Mute); }
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         float w = ImGuiNET.ImGui.GetContentRegionAvail().X - BodyGripRoom();
@@ -273,6 +418,14 @@ internal sealed class MiniRemoteFace : IImGuiPanel
             ItemHudStore.Update(d => d.WithSlotCount(d.Slots.Length + 4), out _);
         if (ImGuiNET.ImGui.MenuItem("Fewer slots (drops the last 4)", "", false, n > ItemHudCharacter.MinSlots))
             ItemHudStore.Update(d => d.WithSlotCount(d.Slots.Length - 4), out _);
+        ImGuiNET.ImGui.Separator();
+        int px = data.SlotSize;
+        if (ImGuiNET.ImGui.MenuItem($"Bigger boxes ({px} px now)", "Ctrl+wheel up", false, px < ItemHudCharacter.MaxSlotSize))
+            ResizeSlots(SlotSizeStep);
+        if (ImGuiNET.ImGui.MenuItem("Smaller boxes", "Ctrl+wheel down", false, px > ItemHudCharacter.MinSlotSize))
+            ResizeSlots(-SlotSizeStep);
+        if (ImGuiNET.ImGui.MenuItem("Default box size", "", false, px != ItemHudCharacter.DefaultSlotSize))
+            ResizeSlots(ItemHudCharacter.DefaultSlotSize - px);
         ImGuiNET.ImGui.EndPopup();
     }
 }
