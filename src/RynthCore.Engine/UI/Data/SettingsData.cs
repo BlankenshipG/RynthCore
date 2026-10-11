@@ -42,6 +42,9 @@ internal sealed class RynthAiSettings
     public bool PeaceModeWhenIdle { get; set; }
     public bool StartMacroOnLogin { get; set; }
     public bool PatrolOnLogin { get; set; }
+    // RynthAi's Escape Acid and Lava. Default on; an older RynthAi doesn't send it, and a missing
+    // field must not read as "off".
+    public bool EscapeHazards { get; set; } = true;
     // Decal bridge: stop RynthAi's macro when VTank's starts (one bot per client). Default on;
     // an older RynthAi doesn't send it, and a missing field must not read as "off".
     public bool YieldToVTank { get; set; } = true;
@@ -81,6 +84,8 @@ internal sealed class RynthAiSettings
     // Recharge
     public int HealAt { get; set; } = 60;
     public int RestamAt { get; set; } = 30;
+    // Once a recharge starts under Re-stam At, recharge to this % (0 = one recharge; an older RynthAi doesn't send it).
+    public int RestamTo { get; set; } = 0;
     public int GetManaAt { get; set; } = 40;
     public int TopOffHP { get; set; } = 95;
     public int TopOffStam { get; set; } = 95;
@@ -118,6 +123,10 @@ internal sealed class RynthAiSettings
     public int MinRingTargets { get; set; } = 4;
     public int BlastRange { get; set; }
     public int MinBlastTargets { get; set; } = 3;
+    // RynthAi's wall override (2026-10-08). Nullable in RynthAi's payload: an engine without these
+    // rows leaves its values alone.
+    public int WallRange { get; set; }
+    public int MinWallTargets { get; set; } = 3;
     public int MinSkillLevelTier1 { get; set; } = 35;
     public int MinSkillLevelTier2 { get; set; } = 85;
     public int MinSkillLevelTier3 { get; set; } = 135;
@@ -140,6 +149,9 @@ internal sealed class RynthAiSettings
     public float NavHeightOffset { get; set; } = 0.05f;
     public float NavSlopeSink { get; set; } = 1.5f;
     public bool ShowTerrainPassability { get; set; } = true;
+    // Nav3D extras (RynthAi NavOverlay), both off by default: 0 off, 1 numbers, 2 numbers and names.
+    public int NavLabelMode { get; set; }
+    public bool NavGuideLine { get; set; }
     public bool OpenDoors { get; set; }
     public float OpenDoorRange { get; set; } = 5f;
     public bool AutoUnlockDoors { get; set; }
@@ -167,6 +179,9 @@ internal sealed class RynthAiSettings
     // Cast our own buff even when gear already gives it (servers with buff augments). Default
     // on; a RynthAi that predates it doesn't send it, and must not read as off.
     public bool CastBuffsOverItemBuffs { get; set; } = true;
+    // RynthAi's unticked prots and banes (buff base names). Null = never received from RynthAi:
+    // sent back as null, which RynthAi reads as "unchanged".
+    public System.Collections.Generic.List<string>? DisabledBuffs { get; set; }
     public int BuffMinSkillLevelTier1 { get; set; } = 35;
     public int BuffMinSkillLevelTier2 { get; set; } = 85;
     public int BuffMinSkillLevelTier3 { get; set; } = 135;
@@ -191,6 +206,8 @@ internal sealed class RynthAiSettings
     // (default off). A RynthAi that predates them doesn't send them; on must not read as off.
     public bool LootOwnCorpse { get; set; } = true;
     public bool TravelToOwnCorpse { get; set; }
+    // Selecting an item prints /ra iteminfo (default on; an older RynthAi doesn't send it).
+    public bool ItemInfoOnSelect { get; set; } = true;
     public bool EnableAutostack { get; set; } = true;
     public bool ReadUnknownScrolls { get; set; } = true;   // VTank's default
     public bool EnableCombineSalvage { get; set; } = true;
@@ -212,7 +229,6 @@ internal sealed class RynthAiSettings
     public int SalvageResultDelayFastMs { get; set; } = 250;
     // Ground loot and item info
     public bool EnableGroundLoot { get; set; }
-    public bool ItemInfoOnSelect { get; set; }
     // Diagnostics (RynthAi's RynthLog: per PC in Logs\Diagnostics\diagnostics.json, not the profile)
     public bool DiagDebugToChat { get; set; }
     public bool DiagFileLogAll { get; set; } = true;
@@ -383,7 +399,8 @@ internal static class SettingsSchema
     public const string NavPointReachTip =
         "How close to get to each nav point before moving on to the next, in yards. VTank calls it " +
         "Follow/Nav Min Distance (metas: FollowNavMin, or VTank's NavCloseStopRange). Follow stops this " +
-        "close to its leader, and the nav marker ring shows it. Dungeon doorways use at most 1 yd.";
+        "close to its leader, and the nav marker ring shows it. Dungeon doorways use at most 1 yd. Up to 2 yd, " +
+        "nav walks right up to each point before turning (tight dungeons); bigger values round corners.";
 
     // Also shown by the dashboard's Ranges slide-out (ImGui/Panels/RangesSlideOut.cs), which
     // edits these same rows (found by label with Find).
@@ -410,6 +427,7 @@ internal static class SettingsSchema
 
     public static readonly string[] AttackHeights = { "Low", "Medium", "High" };
     public static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
+    public static readonly string[] NavLabelModes = { "Off", "Numbers", "Numbers and names" };
 
     private static SettingRow Bool(string label, Func<RynthAiSettings, bool> get, Action<RynthAiSettings, bool> set,
         string? tip = null, Func<RynthAiSettings, bool>? when = null, bool gates = false) =>
@@ -466,6 +484,48 @@ internal static class SettingsSchema
         return rows;
     }
 
+    // The prots and banes RynthAi lets you untick (its BuffManager.ToggleProtections/ToggleBanes):
+    // (buff base name, label). The names must match RynthAi's.
+    private static readonly (string Buff, string Label)[] ProtToggles =
+    {
+        ("Armor Self", "Armor"), ("Fire Protection Self", "Fire Protection"), ("Cold Protection Self", "Cold Protection"),
+        ("Acid Protection Self", "Acid Protection"), ("Lightning Protection Self", "Lightning Protection"),
+        ("Blade Protection Self", "Blade Protection"), ("Piercing Protection Self", "Piercing Protection"),
+        ("Bludgeoning Protection Self", "Bludgeoning Protection"),
+    };
+
+    private static readonly (string Buff, string Label)[] BaneToggles =
+    {
+        ("Impenetrability", "Impenetrability"), ("Flame Bane", "Flame Bane"), ("Frost Bane", "Frost Bane"),
+        ("Acid Bane", "Acid Bane"), ("Lightning Bane", "Lightning Bane"),
+        ("Blade Bane", "Blade Bane"), ("Piercing Bane", "Piercing Bane"),
+        ("Bludgeoning Bane", "Bludgeoning Bane"),
+    };
+
+    private static SettingRow[] BuffToggles((string Buff, string Label)[] toggles)
+    {
+        var rows = new SettingRow[toggles.Length];
+        for (int i = 0; i < toggles.Length; i++)
+        {
+            string buff = toggles[i].Buff;
+            rows[i] = Bool(toggles[i].Label, s => BuffOn(s, buff), (s, v) => SetBuffOn(s, buff, v),
+                "Ticked: RynthAi casts it in the buff cycle. Unticked: it is skipped and never waited on.");
+        }
+        return rows;
+    }
+
+    private static bool BuffOn(RynthAiSettings s, string buff)
+        => s.DisabledBuffs == null || !s.DisabledBuffs.Exists(b => string.Equals(b, buff, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>A new list each time (RynthAi replaces its list rather than editing it).</summary>
+    private static void SetBuffOn(RynthAiSettings s, string buff, bool on)
+    {
+        var list = s.DisabledBuffs == null ? new System.Collections.Generic.List<string>() : new System.Collections.Generic.List<string>(s.DisabledBuffs);
+        list.RemoveAll(b => string.Equals(b, buff, StringComparison.OrdinalIgnoreCase));
+        if (!on) list.Add(buff);
+        s.DisabledBuffs = list;
+    }
+
     private static SettingRow[] Concat(params object[] parts)
     {
         var list = new System.Collections.Generic.List<SettingRow>();
@@ -483,10 +543,16 @@ internal static class SettingsSchema
         {
             Bool("Show Target Stamina / Mana", s => s.ShowTargetStaminaMana, (s, v) => s.ShowTargetStaminaMana = v,
                 "When enabled, displays stamina and mana bars for the selected target (requires appraisal data)."),
+            // Stored in engine.json for every client (EngineSettings), not in the RynthAi profile.
+            Bool("Insert Key Releases the UI", _ => Plugins.EngineSettings.InsertReleasesUi,
+                (_, v) => { Plugins.EngineSettings.InsertReleasesUi = v; if (!v) ImGuiBackend.Win32Backend.ReclaimUi(); },
+                "On: Insert switches between UI and GAME (shown on the RynthCore bar). In GAME, clicks pass through\nRynth windows to the game and Rynth text boxes can't be typed in. Press Insert again to get the UI back.\nOff (default): Insert does nothing. Applies to all your clients; others pick it up when they start."),
             Spacer(),
             Section("Text Size (in-game panels)"),
             Combo("All Panels", PanelTextScale.SizeNames, _ => PanelTextScale.GetAll(), (_, v) => PanelTextScale.SetAll(v),
                 "Text size for every in-game panel: 0 = normal, each step 10% bigger, yourjokin = 2.5x."),
+            Combo("Toolbar", PanelTextScale.SizeNames, _ => PanelTextScale.GetChrome(), (_, v) => PanelTextScale.SetChrome(v),
+                "Size of the RynthCore icon bar (its icons and tooltips), separate from the panels: 0 = normal, each step 10% bigger.\nAlso: right-click the bar's grip, Ctrl+wheel over the bar, or /rc ui barsize."),
             Bool("Size Each Panel Separately", _ => PanelTextScale.PerPanel, (_, v) => PanelTextScale.PerPanel = v,
                 "Off: every panel uses All Panels. On: set each panel's text size below.", gates: true),
             TextSize("RynthAi Dashboard", "RynthAi"),
@@ -542,6 +608,19 @@ internal static class SettingsSchema
             Bool("Enable FPS Limit", s => s.EnableFPSLimit, (s, v) => s.EnableFPSLimit = v, gates: true),
             Int("Focused FPS", s => s.TargetFPSFocused, (s, v) => s.TargetFPSFocused = v, 10, 240, 1, when: s => s.EnableFPSLimit),
             Int("Background FPS", s => s.TargetFPSBackground, (s, v) => s.TargetFPSBackground = v, 5, 60, 1, when: s => s.EnableFPSLimit),
+            // Stored by the engine (D3D9/VideoPatch, %LOCALAPPDATA%\RynthCore\video_patch.txt, per
+            // character), not in the RynthAi profile, so the settings object is ignored here.
+            Combo("Video patch", D3D9.VideoPatchPolicy.ComboItems, _ => (int)D3D9.VideoPatch.Mode,
+                (_, v) => D3D9.VideoPatch.SetMode((D3D9.VideoPatchMode)Math.Clamp(v, 0, 3), save: true, "Settings"),
+                "Stop drawing the game to save CPU and GPU (game logic, the bot and the plugins keep running).\n" +
+                "World when unfocused: the 3D world isn't drawn while another window has the focus.\n" +
+                "World: the 3D world is never drawn; AC's windows and these panels still are.\n" +
+                "All: AC's windows aren't drawn either (this session only; /rc video off restores).\n" +
+                "Saved for this character. The phone live view shows what the client draws. Also: /rc video."),
+            Int("   Frame cap while patched", _ => D3D9.VideoPatch.FrameCapFps, (_, v) => D3D9.VideoPatch.SetFrameCap(v), 0, 60, 1,
+                "While the 3D world isn't drawn the client runs at most this many frames a second, so the\n" +
+                "saved time is slept (0 = no extra cap). Saved for this PC. Also: /rc video fps <n>.",
+                when: _ => D3D9.VideoPatch.Mode != D3D9.VideoPatchMode.Off),
             Spacer(),
             Bool("Auto Cram", s => s.EnableAutocram, (s, v) => s.EnableAutocram = v,
                 "Automatically moves items from your main pack into side packs.\nNote: recently used weapons stay in the main pack."),
@@ -550,6 +629,8 @@ internal static class SettingsSchema
                 "Automatically starts the macro when RynthAi loads."),
             Bool("Patrol On Login", s => s.PatrolOnLogin, (s, v) => s.PatrolOnLogin = v,
                 "Automatically starts dungeon patrol when RynthAi loads."),
+            Bool("Escape Acid and Lava", s => s.EscapeHazards, (s, v) => s.EscapeHazards = v,
+                "When acid or lava hurts you, stop everything (combat, buffs, healing, looting)\nand walk back out the way you came. The spot is remembered so the patrol avoids it.\nTurn off for a character that walks through acid on purpose."),
             Bool("Yield to VTank", s => s.YieldToVTank, (s, v) => s.YieldToVTank = v,
                 "With Decal: when VTank's macro starts (/vt start), RynthAi's macro stops, and it won't start while VTank runs.\nOne bot per client. Without Decal this does nothing. Also: /ra vtankyield on|off."),
             Bool("Enable Raycasting", s => s.EnableRaycasting, (s, v) => s.EnableRaycasting = v),
@@ -599,6 +680,8 @@ internal static class SettingsSchema
                 "While a target is within Monster Range, cast Heal Self when HP < this %."),
             Int("Re-stam At", s => s.RestamAt, (s, v) => s.RestamAt = v, 0, 100, 1,
                 "While a target is within Monster Range, cast Revitalize Self when Stamina < this %."),
+            Int("Re-stam To", s => s.RestamTo, (s, v) => s.RestamTo = v, 0, 100, 1,
+                "Once a recharge starts under Re-stam At, keep recharging until Stamina reaches this %\n(one Revitalize often doesn't get far). 0 = one recharge, as before."),
             Int("Get Mana At", s => s.GetManaAt, (s, v) => s.GetManaAt = v, 0, 100, 1,
                 "While a target is within Monster Range, cast Stamina to Mana Self when Mana < this % (needs stam > 15%)."),
             Spacer(),
@@ -672,8 +755,8 @@ internal static class SettingsSchema
             Section("War/Void Casting Settings"),
             Int("Buff Spell Interval (ms)", s => s.SpellCastIntervalMs, (s, v) => s.SpellCastIntervalMs = v, 100, 1500, 50,
                 "Delay between BUFF / utility spell casts (not combat).\nLower = faster buff chains. 400ms is a good balance.\nBelow 200ms may cause fizzles or dropped casts on laggy servers."),
-            Int("Attack Spell Delay (ms)", s => s.AttackSpellIntervalMs, (s, v) => s.AttackSpellIntervalMs = v, 250, 5000, 50,
-                "Delay between offensive (war/void) COMBAT casts only.\nSpacing casts ~1-2s (1500ms default) stops back-to-back\n\"You're too busy!\" refusals that drop casts and cost kills.\nDoes NOT affect buffing speed."),
+            Int("Attack Spell Delay (ms)", s => s.AttackSpellIntervalMs, (s, v) => s.AttackSpellIntervalMs = v, 0, 5000, 50,
+                "Least time between offensive (war/void) COMBAT casts at one target.\nThe next cast also waits until the last one is finished (the server's\nanswer and the casting animation), so 0 = cast again as soon as it is.\nDoes NOT affect buffing speed."),
             Bool("Cast Dispel Self", s => s.CastDispelSelf, (s, v) => s.CastDispelSelf = v),
             Spacer(),
             Section("Ring Spell Override"),
@@ -685,6 +768,12 @@ internal static class SettingsSchema
                 "0 = off: monsters with Blast on always cast blasts.\nAbove 0: a blast is cast only when Min Blast Targets monsters are\nwithin this range in the blast's fan toward the target (it fires 3\nprojectiles over 90 degrees); otherwise the monster's other shape, or a bolt."),
             Int("Min Blast Targets", s => s.MinBlastTargets, (s, v) => s.MinBlastTargets = v, 1, 20, 1,
                 "How many monsters (the target included) must be in the blast's fan, within Blast Range."),
+            Spacer(),
+            Section("Wall Spell Override"),
+            Int("Wall Range (yd)", s => s.WallRange, (s, v) => s.WallRange = v, 0, 100, 1,
+                "0 = off: walls are never cast.\nAbove 0: monsters with Wall on cast a wall when Min Wall Targets monsters stand in its\npath toward the target, within this range. RynthAi turns to face the target first\n(a wall flies straight ahead of the caster)."),
+            Int("Min Wall Targets", s => s.MinWallTargets, (s, v) => s.MinWallTargets = v, 1, 20, 1,
+                "How many monsters (the target included) must be in the wall's path, within Wall Range."),
             Spacer(),
             Section("Spell Difficulty (Min Buffed Skill)"),
             Tiers(
@@ -720,6 +809,10 @@ internal static class SettingsSchema
                 "Extra downward offset on slopes only, per unit of terrain steepness. 0 = off; flat ground is unaffected. ~1.5 cancels the float for a default-radius ring."),
             Bool("Show Terrain Passability", s => s.ShowTerrainPassability, (s, v) => s.ShowTerrainPassability = v,
                 "Highlight impassable terrain triangles in red."),
+            Combo("Waypoint Labels", NavLabelModes, s => Math.Clamp(s.NavLabelMode, 0, NavLabelModes.Length - 1), (s, v) => s.NavLabelMode = v,
+                "Text over the route's waypoints within 60 yd. Numbers: each point's number (as in the Nav panel).\nNumbers and names: also checkpoints and jumps, and what happens at a point\n(recall, chat, pause, portal, NPC, vendor) above it."),
+            Bool("Guide Line", s => s.NavGuideLine, (s, v) => s.NavGuideLine = v,
+                "A line from your character to the waypoint nav is heading for."),
             Spacer(),
             Section("Doors"),
             Bool("Open Doors While Navigating", s => s.OpenDoors, (s, v) => s.OpenDoors = v,
@@ -738,7 +831,7 @@ internal static class SettingsSchema
             Float("Sweep Detect Mult", s => s.NavSweepMult, (s, v) => s.NavSweepMult = v, 0.5f, 10f, 0.1f,
                 "Closest-approach detection radius multiplier."),
             Float("Lookahead (yd)", s => s.NavLookaheadYards, (s, v) => s.NavLookaheadYards = MathF.Max(0f, v), 0f, 30f, 0.5f,
-                "Within this distance of a waypoint, blend the aim point toward the next one to cut corners smoothly. 0 = off."),
+                "Within this distance of a waypoint, blend the aim point toward the next one to round corners. The nav point reach limits it: 2 yd per yard of reach over 1 yd (none up to a 2 yd reach). 0 = off."),
             Float("Turn Rate (deg/s)", s => s.NavTurnRateDegPerSec, (s, v) => s.NavTurnRateDegPerSec = v, 30f, 720f, 15f,
                 "Max turn speed while navigating. Higher = snappier turns, lower = gentler."),
             Float("Post-Portal Delay (s)", s => s.PostPortalDelaySec, (s, v) => s.PostPortalDelaySec = MathF.Max(0f, v), 0f, 30f, 0.25f,
@@ -764,6 +857,12 @@ internal static class SettingsSchema
                 "When a buff is due, also recast every other buff with less than this much time left,\nso they land together. Buffs with more time are left alone. Default 1200 (20 minutes).\nAt or below 'Rebuff With', only the expiring buff is recast."),
             Bool("Cast buffs even when an item gives them", s => s.CastBuffsOverItemBuffs, (s, v) => s.CastBuffsOverItemBuffs = v,
                 "Cast your own buff even when worn gear already gives that buff.\nFor servers with buff augments, where your own cast is stronger or lasts longer.\nOn by default: on retail it costs a few extra casts."),
+            Spacer(),
+            Section("Protections (untick to skip)"),
+            BuffToggles(ProtToggles),
+            Spacer(),
+            Section("Banes (untick to skip)"),
+            BuffToggles(BaneToggles),
             Spacer(),
             Section("Buff Difficulty (Min Buffed Skill)"),
             Tiers(
@@ -804,6 +903,8 @@ internal static class SettingsSchema
                 "After a death, walk back to where you died with RynthNav (outdoor deaths only),\nfighting on the way as usual, recover the corpse, then carry on. Needs the macro\nrunning and RynthNav loaded. /ra owncorpse stop cancels."),
             Spacer(),
             Section("Inventory Management"),
+            Bool("Item Info On Select", s => s.ItemInfoOnSelect, (s, v) => s.ItemInfoOnSelect = v,
+                "Selecting an item prints its details to chat, Mag-Tools style (/ra iteminfo),\nidentifying it first when needed. Items the bot selects while looting are skipped."),
             Bool("Enable Autostack", s => s.EnableAutostack, (s, v) => s.EnableAutostack = v),
             Bool("Enable Autocram", s => s.EnableAutocram, (s, v) => s.EnableAutocram = v,
                 "Automatically moves items from your main pack into side packs.\nNote: recently used weapons stay in the main pack."),

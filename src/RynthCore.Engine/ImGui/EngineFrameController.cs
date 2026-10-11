@@ -153,8 +153,8 @@ internal static class EngineFrameController
             // between launches. Allocated once, kept alive for the process lifetime.
             try
             {
-                string iniPath = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, "imgui.ini");
-                System.IO.Directory.CreateDirectory(RynthInstallPaths.RynthAiDir);
+                string iniPath = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "imgui.ini");
+                System.IO.Directory.CreateDirectory(RynthCore.Install.RynthInstallPaths.RynthAiDir);
                 IntPtr iniPtr = System.Runtime.InteropServices.Marshal.StringToHGlobalAnsi(iniPath);
                 unsafe { io.NativePtr->IniFilename = (byte*)iniPtr; }
                 RynthLog.Info($"EngineFrameController: imgui.ini pinned to {iniPath}");
@@ -563,7 +563,7 @@ internal static class EngineFrameController
         if (!PanelsLive) return false;
         ImGuiPanelHost.RestoreOnce();
         return ImGuiPanelHost.NeedsFrame || ImGuiBar.Visible || ImGuiBar.PoppedOut || Hud.MonsterHud.WantsFrame
-            || PluginOverlayWindowsLive;
+            || D3D9.VideoPatch.WantsBanner || PluginOverlayWindowsLive;
     }
 
     /// <summary>
@@ -613,7 +613,7 @@ internal static class EngineFrameController
     }
 
     private static bool HasImGuiContentNoRestore() =>
-        Plugins.EngineSettings.EnableImGuiShell || ImGuiFontTest.Enabled || (PanelsLive && (ImGuiPanelHost.NeedsFrame || ImGuiBar.Visible || ImGuiBar.PoppedOut || Hud.MonsterHud.WantsFrame))
+        Plugins.EngineSettings.EnableImGuiShell || ImGuiFontTest.Enabled || (PanelsLive && (ImGuiPanelHost.NeedsFrame || ImGuiBar.Visible || ImGuiBar.PoppedOut || Hud.MonsterHud.WantsFrame || D3D9.VideoPatch.WantsBanner))
         || PluginOverlayWindowsLive;
 
     // Keyboard owner between the stacks (plan §3.2 d): whichever side started
@@ -753,7 +753,10 @@ internal static class EngineFrameController
             {
                 // World overlays: built into UnderUiLayer's list, drawn next frame at
                 // AC's 3D->UI transition (under AC's UI and every panel), no input.
-                Hud.MonsterHud.Draw(_uiScale);
+                // Video patch: with no 3D scene only the screen-fixed player plate draws.
+                Hud.MonsterHud.Draw(_uiScale, worldVisible: !D3D9.VideoPatch.SkipWorldThisFrame);
+                // Video patch "all": the "rendering paused" banner (background list, under the panels).
+                VideoPatchBanner.Draw();
                 if (ImGuiBar.Visible)
                     ImGuiBar.Draw(_uiScale);
                 ImGuiPanelHost.DrawAll(_uiScale);
@@ -778,7 +781,11 @@ internal static class EngineFrameController
             // too (ImGuiTextFocus): the keys typed right after the click stay out of AC.
             ImGuiTextFocus.EndMainFrame(io.WantTextInput);
             bool typing = io.WantTextInput || ImGuiTextFocus.MainBoxActive;
-            Win32Backend.UpdateCaptureFlags(io.WantCaptureMouse || Hud.MonsterHud.WantsMouse, typing);
+            // A plate that is only hovered lets the mouse moves through, so AC's own
+            // mouse-over stays current (MonsterHud.MouseMovesToGame, Compatibility/AcMouseOver).
+            Win32Backend.UpdateCaptureFlags(io.WantCaptureMouse || Hud.MonsterHud.WantsMouse, typing,
+                mouseMovesToGame: !io.WantCaptureMouse && Hud.MonsterHud.MouseMovesToGame);
+            Compatibility.AcMouseOver.Tick();   // /rc acmouse watch, when on
             // The UI is released (Insert): no text box keeps the keyboard. Keys are not
             // gated by the toggle any more (Win32Backend.UpdateCaptureFlags), so the edit
             // ends instead and the next keys go to the game.

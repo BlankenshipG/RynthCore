@@ -3,8 +3,8 @@
   <!--
     Offline checks for RynthChat's Discord relay (src\RynthCore.Engine\UI\Data\Discord\, the
     engine-free parts compiled in): speech parsing, which routes take a line and under which
-    label, the Discord text, scrollback detection, settings save / load and the RynthAi 0.5.33
-    import, the request body and 429 handling, and DPAPI round trips. Nothing is sent.
+    label, the Discord text, scrollback detection, settings save / load, the request body and
+    429 handling, a route's send queue, and DPAPI round trips. Nothing is sent.
     Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
   -->
   <PropertyGroup>
@@ -25,7 +25,7 @@
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\Discord\DiscordFormat.cs" Link="Engine\DiscordFormat.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\Discord\DiscordClient.cs" Link="Engine\DiscordClient.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\Discord\DiscordSecrets.cs" Link="Engine\DiscordSecrets.cs" />
-    <Compile Include="..\..\src\RynthCore.App\RynthInstallPaths.cs" Link="Engine\RynthInstallPaths.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Data\Discord\DiscordRouteQueue.cs" Link="Engine\DiscordRouteQueue.cs" />
   </ItemGroup>
 
 </Project>

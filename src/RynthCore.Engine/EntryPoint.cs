@@ -99,6 +99,42 @@ public static class EntryPoint
         return 0;
     }
 
+    /// <summary>
+    /// The reload cap (ReloadCapNotice): the loader asks this before every hot reload, and
+    /// refuses the reload once this client has done that many. engine.json MaxHotReloads,
+    /// default 3; negative = no cap. Loader thread.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthCoreMaxHotReloads")]
+    public static int MaxHotReloads()
+    {
+        try { return EngineSettings.MaxHotReloads; }
+        catch { return ReloadCapNotice.DefaultMaxHotReloads; }
+    }
+
+    private static readonly ReloadCapNotice s_reloadCapNotice = new();
+
+    /// <summary>
+    /// The loader refused a hot reload because this client has done <paramref name="reloads"/>
+    /// of them (the cap is <paramref name="cap"/>). The client stays on this engine. Logs it,
+    /// and says so in chat once, and again when the player asked for the reload by hand.
+    /// Loader thread.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthCoreReloadCapped")]
+    public static uint ReloadCapped(int reloads, int cap)
+    {
+        try
+        {
+            bool byHand = ReloadCapNotice.IsRecentManualSignal(EngineLifecycle.LastSignalReloadMs, Environment.TickCount64);
+            RynthLog.Warn(ReloadCapNotice.LogText(reloads, cap, byHand));
+            bool chat;
+            lock (s_reloadCapNotice) chat = s_reloadCapNotice.ShouldChat(byHand);
+            if (chat)
+                Compatibility.AcMainThreadQueue.EnqueueWriteToChat(ReloadCapNotice.ChatText(reloads), 2);
+        }
+        catch { }
+        return 0;
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthCoreShutdown")]
     public static uint Shutdown(IntPtr lpParam)
     {
@@ -751,8 +787,13 @@ public static class EntryPoint
             // RenderUI::RenderObjects: the world overlays (nameplates, Nav3D markers) draw at
             // the start of AC's 2D UI pass, after all 3D incl. foliage (2026-10-04).
             Step("UI-pass overlay hook", AcUiPassHook.Initialize);
+            // SmartBox::RenderNormalMode: the video patch (/rc video) skips AC's 3D scene on
+            // request; off until asked. Kill switch: engine.json DisabledUiHooks ["VideoPatch"].
+            Step("video patch hook", VideoPatch.Initialize);
             Step("vendor hooks", VendorHooks.Initialize);
             Step("chat callback hooks", ChatCallbackHooks.Initialize);
+            // Flight recorder (Net/FlightRecorder.cs): before the packet hooks that feed it.
+            Step("flight recorder", Net.FlightRecorder.Initialize);
             Step("raw packet hooks", RawPacketHooks.Initialize);
             Step("property-update hooks", PropertyUpdateHooks.Initialize);
             Step("auto-id service", AutoIdService.Start);
@@ -1002,6 +1043,10 @@ public static class EntryPoint
                     ImGuiBackend.Panels.VisionFace.Register();
                 if (HasPluginDll("RynthCore.Plugin.RynthNav.dll"))
                     ImGuiBackend.Panels.RynthNavFace.Register();
+                // The ILT section (Infinite Leaftide): its faces exist only with RynthILT
+                // installed, and the bar's ILT button shows them only on ILT (IltInfo).
+                if (HasPluginDll("RynthCore.Plugin.RynthILT.dll"))
+                    ImGuiBackend.Panels.BountiesFace.Register();
                 if (HasPluginDll("RynthCore.Plugin.RynthChat.dll"))
                 {
                     ImGuiBackend.Panels.ChatFace.Register();

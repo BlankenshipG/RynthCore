@@ -59,6 +59,7 @@ internal static class AcMainThreadQueue
         SplitStackInternal,
         MergeStackInternal,
         GiveObjectTo,
+        PutItemInContainer,
         // CommandInterpreter movement marshalled 2026-06-12: SetAutoRun /
         // TurnToHeading / StopCompletely were the last direct off-thread AC
         // mutators (dump-proven: a SetAutoRun executed 15s after a main thread
@@ -156,14 +157,104 @@ internal static class AcMainThreadQueue
     // Four payload slots cover every routed action (the 4th was added for
     // MoveItemInternal/SplitStackInternal: id, container, slot, amount). Floats are
     // carried as their IEEE bit pattern in a uint slot (BitConverter round-trip).
-    private readonly struct Entry(AcMainThreadQueue.ActionKind kind, uint a, uint b, uint c, uint d)
+    private readonly struct Entry(AcMainThreadQueue.ActionKind kind, uint a, uint b, uint c, uint d, long at, int epoch)
     {
         public readonly ActionKind Kind = kind;
         public readonly uint A = a;
         public readonly uint B = b;
         public readonly uint C = c;
         public readonly uint D = d;
+        /// <summary>Environment.TickCount64 when it was queued (2026-10-06).</summary>
+        public readonly long At = at;
+        /// <summary>The login it was queued in (<see cref="NewLoginEpoch"/>).</summary>
+        public readonly int Epoch = epoch;
     }
+
+    // ── Age and login epoch of queued work (2026-10-06) ──────────────────────────
+    // Analysis by Silentkelpie; re-implemented here. Nothing queued here carried a time: the
+    // ring's gesture defer and the cast slot counted Drain()/tick CALLS (250 of them: about 2 s
+    // in front, over 10 s in a 30 fps background client), and past the cap everything queued
+    // ran however old - an attack on a mob that died meanwhile, a stance change or a turn from
+    // seconds ago, landing on top of whatever the bot had sent since (on ACE a stale mode change
+    // cancels a pending use's walk and fails a cast). The side queues (appraisals, health
+    // queries, chat) were bounded by count only and could run after a logout and a new login.
+    // Now every entry has its time and login; the defers are in milliseconds; at run time an
+    // attack, a stance change or a movement START older than StaleActionMs is dropped (the bot
+    // re-sends what it still wants), while stops always run and item actions run late (logged);
+    // side-queue entries from an earlier login, or older than their limit, are dropped.
+    private static int _loginEpoch;
+
+    /// <summary>A new login begins (the logout pipeline): queued work from the old one is stale.</summary>
+    public static void NewLoginEpoch() => Interlocked.Increment(ref _loginEpoch);
+
+    private static long NowMs => Environment.TickCount64;
+
+    private const long DrainDeferMaxMs = 2_500;
+    private const long StaleActionMs = 1_500;
+    private const long LateActionLogMs = 1_000;
+    private const long CastDeferMaxMs = 3_000;
+    private const long RequestIdMaxAgeMs = 15_000;
+    private const long QueryHealthMaxAgeMs = 5_000;
+    private const long ChatMaxAgeMs = 30_000;
+    private const long ChatCommandMaxAgeMs = 15_000;
+
+    private static long _staleDropped;
+    private static long _lateRun;
+    public static long StaleDroppedCount => Interlocked.Read(ref _staleDropped);
+    public static long LateRunCount => Interlocked.Read(ref _lateRun);
+
+    // One summary line at most every StaleLogEveryMs (main thread only).
+    private const long StaleLogEveryMs = 5_000;
+    private static long _staleLogAt;
+    private static readonly System.Text.StringBuilder _staleNote = new();
+    private static int _staleNoteCount;
+
+    private static void NoteStale(string what, long ageMs, bool dropped)
+    {
+        if (dropped) Interlocked.Increment(ref _staleDropped);
+        else Interlocked.Increment(ref _lateRun);
+        if (_staleNoteCount < 8)
+        {
+            if (_staleNote.Length > 0) _staleNote.Append(", ");
+            _staleNote.Append(dropped ? "dropped " : "ran late ").Append(what).Append(' ').Append(ageMs).Append(" ms");
+        }
+        _staleNoteCount++;
+        long now = NowMs;
+        if (now - _staleLogAt < StaleLogEveryMs) return;
+        _staleLogAt = now;
+        string line = $"AcMainThreadQueue: {_staleNoteCount} stale queued item(s): {_staleNote}{(_staleNoteCount > 8 ? ", ..." : "")}";
+        _staleNote.Clear();
+        _staleNoteCount = 0;
+        try { RynthLog.Compat(line); } catch { }
+        try { Net.FlightRecorder.Mark(Net.FlightMark.Note, text: line); } catch { }
+    }
+
+    /// <summary>
+    /// An attack, a stance change or a movement start: dropped when older than StaleActionMs at
+    /// run time. Stops (autorun off, a motion off, StopMovement, StopCompletely, CancelAttack) and
+    /// item actions are never dropped.
+    /// </summary>
+    private static bool DropsWhenStale(in Entry e) => e.Kind switch
+    {
+        ActionKind.MeleeAttack or ActionKind.MissileAttack or ActionKind.NativeAttack => true,
+        ActionKind.ChangeCombatMode => true,
+        ActionKind.SetAutoRun => e.A != 0,
+        ActionKind.SetMotion => e.B != 0,
+        ActionKind.DoMovement or ActionKind.TurnToHeading or ActionKind.Jump
+            or ActionKind.CommenceJump or ActionKind.TapJump or ActionKind.DoJumpAutonomous
+            or ActionKind.LaunchJumpWithMotion => true,
+        _ => false,
+    };
+
+    private static string Describe(in Entry e) => e.Kind switch
+    {
+        ActionKind.SetAutoRun => e.A != 0 ? "SetAutoRun(on)" : "SetAutoRun(off)",
+        ActionKind.SetMotion => e.B != 0 ? $"SetMotion(0x{e.A:X8}, on)" : $"SetMotion(0x{e.A:X8}, off)",
+        ActionKind.ChangeCombatMode => $"ChangeCombatMode({e.A})",
+        ActionKind.UseObject => $"UseObject(0x{e.A:X8})",
+        ActionKind.MeleeAttack or ActionKind.MissileAttack => $"{e.Kind}(0x{e.A:X8})",
+        _ => e.Kind.ToString(),
+    };
 
     private const int Capacity = 256; // power of two
     private const int Mask = Capacity - 1;
@@ -193,7 +284,7 @@ internal static class AcMainThreadQueue
                 return false;
             }
 
-            _slots[tail & Mask] = new Entry(kind, a, b, c, d);
+            _slots[tail & Mask] = new Entry(kind, a, b, c, d, NowMs, Volatile.Read(ref _loginEpoch));
             Volatile.Write(ref _tail, tail + 1);
             return true;
         }
@@ -331,6 +422,9 @@ internal static class AcMainThreadQueue
     public static bool EnqueueGiveObjectTo(uint objectId, uint targetId, int amount) =>
         Enqueue(ActionKind.GiveObjectTo, objectId, targetId, unchecked((uint)amount));
 
+    public static bool EnqueuePutItemInContainer(uint objectId, uint containerId, int slot) =>
+        Enqueue(ActionKind.PutItemInContainer, objectId, containerId, unchecked((uint)slot));
+
     public static bool EnqueueWieldItem(uint objectId, uint equipMask) =>
         Enqueue(ActionKind.WieldItem, objectId, equipMask, 0);
 
@@ -394,8 +488,7 @@ internal static class AcMainThreadQueue
     // Gesture-phase defer state for the action ring (mirrors the cast slot's
     // 56e6946 guard; see DrainDeferTickCap note below for why we PROCEED
     // rather than drop after the cap).
-    private static int _drainDeferTicks;
-    private const int DrainDeferTickCap = 250;
+    private static long _drainDeferSinceMs;
 
     public static void Drain()
     {
@@ -471,15 +564,32 @@ internal static class AcMainThreadQueue
         // "always inject" anyway, so proceeding past the cap is never worse).
         if (head != tail)
         {
-            if (PlayerPhysicsHooks.TryGetCastGestureInProgress(out bool gestureInFlight) && gestureInFlight
-                && ++_drainDeferTicks <= DrainDeferTickCap)
-                return;
-            _drainDeferTicks = 0;
+            // In milliseconds (was 250 Drain calls: 2 s to over 10 s depending on the frame rate).
+            if (PlayerPhysicsHooks.TryGetCastGestureInProgress(out bool gestureInFlight) && gestureInFlight)
+            {
+                long nowDefer = NowMs;
+                if (_drainDeferSinceMs == 0) _drainDeferSinceMs = nowDefer;
+                if (nowDefer - _drainDeferSinceMs <= DrainDeferMaxMs)
+                    return;
+            }
+            _drainDeferSinceMs = 0;
         }
+        long runAt = NowMs;
+        int epochNow = Volatile.Read(ref _loginEpoch);
         while (head != tail)
         {
             Entry e = _slots[head & Mask];
             Volatile.Write(ref _head, ++head);
+
+            long age = runAt - e.At;
+            if (e.Epoch != epochNow || (age > StaleActionMs && DropsWhenStale(e)))
+            {
+                NoteStale(Describe(e) + (e.Epoch != epochNow ? " (queued before this login)" : ""), age, dropped: true);
+                tail = Volatile.Read(ref _tail);
+                continue;
+            }
+            if (age > LateActionLogMs)
+                NoteStale(Describe(e), age, dropped: false);
 
             try
             {
@@ -535,6 +645,9 @@ internal static class AcMainThreadQueue
                         break;
                     case ActionKind.GiveObjectTo:
                         ClientHelperHooks.GiveObjectTo(e.A, e.B, unchecked((int)e.C));
+                        break;
+                    case ActionKind.PutItemInContainer:
+                        ClientHelperHooks.PutItemInContainerAt(e.A, e.B, unchecked((int)e.C));
                         break;
                     case ActionKind.WieldItem:
                         ClientHelperHooks.WieldItem(e.A, e.B);
@@ -620,7 +733,7 @@ internal static class AcMainThreadQueue
     // Kept in its OWN queue — NOT the gesture-deferred action ring above — so a backlog
     // of appraisals can never crowd out combat/movement actions or get gesture-deferred:
     // an appraisal is just a packet send and doesn't perturb AC's motion/UI state.
-    private static readonly System.Collections.Generic.Queue<uint> _requestIdQueue = new();
+    private static readonly System.Collections.Generic.Queue<(uint Id, long At, int Epoch)> _requestIdQueue = new();
     private static readonly object _requestIdLock = new();
     private const int MaxRequestIdQueue = 256;
 
@@ -635,7 +748,7 @@ internal static class AcMainThreadQueue
                 Interlocked.Increment(ref _dropped);
                 return false;
             }
-            _requestIdQueue.Enqueue(objectId);
+            _requestIdQueue.Enqueue((objectId, NowMs, Volatile.Read(ref _loginEpoch)));
             return true;
         }
     }
@@ -647,15 +760,22 @@ internal static class AcMainThreadQueue
         // Bounded like DrainChatCommands: a re-queue never spins the main thread.
         int budget;
         lock (_requestIdLock) budget = _requestIdQueue.Count;
+        long now = NowMs;
+        int epoch = Volatile.Read(ref _loginEpoch);
         while (budget-- > 0)
         {
-            uint id;
+            (uint Id, long At, int Epoch) item;
             lock (_requestIdLock)
             {
                 if (_requestIdQueue.Count == 0) return;
-                id = _requestIdQueue.Dequeue();
+                item = _requestIdQueue.Dequeue();
             }
-            try { CombatActionHooks.RequestId(id); } catch { }
+            if (item.Epoch != epoch || now - item.At > RequestIdMaxAgeMs)
+            {
+                NoteStale($"RequestId(0x{item.Id:X8})", now - item.At, dropped: true);
+                continue;
+            }
+            try { CombatActionHooks.RequestId(item.Id); } catch { }
         }
     }
 
@@ -668,7 +788,7 @@ internal static class AcMainThreadQueue
     // result and only want the async 0x01C0 reply, so a target already waiting here is
     // not queued twice. Pre-sized, so enqueue does not allocate.
     private const int MaxQueryHealthQueue = 64;
-    private static readonly System.Collections.Generic.Queue<uint> _queryHealthQueue = new(MaxQueryHealthQueue);
+    private static readonly System.Collections.Generic.Queue<(uint Id, long At, int Epoch)> _queryHealthQueue = new(MaxQueryHealthQueue);
     private static readonly object _queryHealthLock = new();
     private static int _queryHealthPending; // lock-free "anything queued?" for the per-frame drain
 
@@ -678,14 +798,14 @@ internal static class AcMainThreadQueue
         if (targetId == 0) return false;
         lock (_queryHealthLock)
         {
-            if (_queryHealthQueue.Contains(targetId))
-                return true; // already pending; one reply answers both
+            foreach (var q in _queryHealthQueue)
+                if (q.Id == targetId) return true; // already pending; one reply answers both
             if (_queryHealthQueue.Count >= MaxQueryHealthQueue)
             {
                 Interlocked.Increment(ref _dropped);
                 return false;
             }
-            _queryHealthQueue.Enqueue(targetId);
+            _queryHealthQueue.Enqueue((targetId, NowMs, Volatile.Read(ref _loginEpoch)));
             Volatile.Write(ref _queryHealthPending, _queryHealthQueue.Count);
             return true;
         }
@@ -698,16 +818,23 @@ internal static class AcMainThreadQueue
         if (Volatile.Read(ref _queryHealthPending) == 0) return;
         int budget;
         lock (_queryHealthLock) budget = _queryHealthQueue.Count;
+        long now = NowMs;
+        int epoch = Volatile.Read(ref _loginEpoch);
         while (budget-- > 0)
         {
-            uint id;
+            (uint Id, long At, int Epoch) item;
             lock (_queryHealthLock)
             {
                 if (_queryHealthQueue.Count == 0) { Volatile.Write(ref _queryHealthPending, 0); return; }
-                id = _queryHealthQueue.Dequeue();
+                item = _queryHealthQueue.Dequeue();
                 Volatile.Write(ref _queryHealthPending, _queryHealthQueue.Count);
             }
-            try { CombatActionHooks.QueryHealth(id); } catch { }
+            if (item.Epoch != epoch || now - item.At > QueryHealthMaxAgeMs)
+            {
+                NoteStale($"QueryHealth(0x{item.Id:X8})", now - item.At, dropped: true);
+                continue;
+            }
+            try { CombatActionHooks.QueryHealth(item.Id); } catch { }
         }
     }
 
@@ -718,7 +845,7 @@ internal static class AcMainThreadQueue
     // here and drain on the main thread from Drain(), alongside the item/movement
     // actions. WriteToChat's 100 ms rate-limit runs BEFORE the enqueue, so a bot retry
     // burst is dropped on the pump thread and this queue never fills with spam.
-    private static readonly System.Collections.Generic.Queue<(string Text, int ChatType)> _chatQueue = new();
+    private static readonly System.Collections.Generic.Queue<(string Text, int ChatType, long At, int Epoch)> _chatQueue = new();
     private static readonly object _chatLock = new();
     private const int MaxChatQueue = 64;
 
@@ -732,7 +859,7 @@ internal static class AcMainThreadQueue
                 Interlocked.Increment(ref _dropped);
                 return false;
             }
-            _chatQueue.Enqueue((text, chatType));
+            _chatQueue.Enqueue((text, chatType, NowMs, Volatile.Read(ref _loginEpoch)));
             return true;
         }
     }
@@ -744,13 +871,20 @@ internal static class AcMainThreadQueue
         // Bounded like DrainChatCommands: a re-queue never spins the main thread.
         int budget;
         lock (_chatLock) budget = _chatQueue.Count;
+        long now = NowMs;
+        int epoch = Volatile.Read(ref _loginEpoch);
         while (budget-- > 0)
         {
-            (string Text, int ChatType) item;
+            (string Text, int ChatType, long At, int Epoch) item;
             lock (_chatLock)
             {
                 if (_chatQueue.Count == 0) return;
                 item = _chatQueue.Dequeue();
+            }
+            if (item.Epoch != epoch || now - item.At > ChatMaxAgeMs)
+            {
+                NoteStale("a chat line", now - item.At, dropped: true);
+                continue;
             }
             try { ClientHelperHooks.WriteToChat(item.Text, item.ChatType); }
             catch { }
@@ -769,7 +903,7 @@ internal static class AcMainThreadQueue
     // Dispatch() itself (rather than at each caller) covers all three at once.
     // A full command line can't ride the uint Entry ring, so it gets its own
     // string queue, same shape as the WriteToChat slot above.
-    private static readonly System.Collections.Generic.Queue<string> _chatCommandQueue = new();
+    private static readonly System.Collections.Generic.Queue<(string Text, long At, int Epoch)> _chatCommandQueue = new();
     private static readonly object _chatCommandLock = new();
     private const int MaxChatCommandQueue = 64;
 
@@ -783,7 +917,7 @@ internal static class AcMainThreadQueue
                 Interlocked.Increment(ref _dropped);
                 return false;
             }
-            _chatCommandQueue.Enqueue(text);
+            _chatCommandQueue.Enqueue((text, NowMs, Volatile.Read(ref _loginEpoch)));
             return true;
         }
     }
@@ -797,15 +931,22 @@ internal static class AcMainThreadQueue
         // waits for the next frame instead of spinning here.
         int budget;
         lock (_chatCommandLock) budget = _chatCommandQueue.Count;
+        long now = NowMs;
+        int epoch = Volatile.Read(ref _loginEpoch);
         while (budget-- > 0)
         {
-            string text;
+            (string Text, long At, int Epoch) item;
             lock (_chatCommandLock)
             {
                 if (_chatCommandQueue.Count == 0) return;
-                text = _chatCommandQueue.Dequeue();
+                item = _chatCommandQueue.Dequeue();
             }
-            try { ChatCommandDispatcher.Dispatch(text); }
+            if (item.Epoch != epoch || now - item.At > ChatCommandMaxAgeMs)
+            {
+                NoteStale("a chat command", now - item.At, dropped: true);
+                continue;
+            }
+            try { ChatCommandDispatcher.Dispatch(item.Text); }
             catch { }
         }
     }
@@ -827,9 +968,8 @@ internal static class AcMainThreadQueue
     // variant) can't park a cast forever: past the cap the cast is DROPPED — the
     // plugin's no-chat-resolve machinery already retries casts that produce no
     // chat, so a drop degrades to one retry cycle, never a wedge.
-    private static int _castDeferTicks;
     private static long _castDeferDrops;
-    private const int CastDeferTickCap = 250;   // ~4-8 s at the 30-63 Hz UseTime rate
+    private static long _castQueuedAt;   // TickCount64 when the pending cast was queued (2026-10-06)
 
     /// <summary>Casts dropped after deferring CastDeferTickCap ticks (stuck gesture).</summary>
     public static long CastDeferDropCount => Interlocked.Read(ref _castDeferDrops);
@@ -843,6 +983,7 @@ internal static class AcMainThreadQueue
             if (_castPending != 0) return false;
             _castTargetId = targetId;
             _castSpellId = spellId;
+            _castQueuedAt = NowMs;
             _castPending = 1;
             return true;
         }
@@ -869,18 +1010,23 @@ internal static class AcMainThreadQueue
         // Defer while the pending-motion list is non-empty (the exact structure
         // the tick walks); main-thread read, alloc-free, fail-open: if the read
         // itself fails we cast (pre-fix behavior) rather than park.
+        // In milliseconds from the queueing (was 250 game ticks, about 4-8 s): past
+        // CastDeferMaxMs the cast is dropped and logged with its age. RynthAi waits up to 7 s
+        // for a cast's answer before it sends another (ActionPacer), so a drop here can't
+        // leave two casts in flight.
+        long castAge = NowMs - Volatile.Read(ref _castQueuedAt);
         if (PlayerPhysicsHooks.TryGetCastGestureInProgress(out bool gestureInFlight) && gestureInFlight)
         {
-            if (++_castDeferTicks <= CastDeferTickCap)
+            if (castAge <= CastDeferMaxMs)
                 return;                                      // retry next tick
-            // Gesture stuck past the cap — drop the cast instead of injecting
+            // Gesture stuck past the deadline — drop the cast instead of injecting
             // into a wedged motion graph; the plugin retries via no-chat-resolve.
-            lock (_castLock) { _castPending = 0; }
-            _castDeferTicks = 0;
+            uint dropped;
+            lock (_castLock) { dropped = _castSpellId; _castPending = 0; }
             Interlocked.Increment(ref _castDeferDrops);
+            NoteStale($"CastSpell({dropped}) behind a gesture", castAge, dropped: true);
             return;
         }
-        _castDeferTicks = 0;
 
         uint target, spell;
         lock (_castLock)
@@ -890,6 +1036,8 @@ internal static class AcMainThreadQueue
             spell = _castSpellId;
             _castPending = 0;
         }
+        if (castAge > LateActionLogMs)
+            NoteStale($"CastSpell({spell})", castAge, dropped: false);
         CombatActionHooks.CastSpell(target, unchecked((int)spell));
     }
 }

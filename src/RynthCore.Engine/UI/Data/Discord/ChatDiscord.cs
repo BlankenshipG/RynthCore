@@ -6,7 +6,7 @@
 //  panel (ImGui/Panels/ChatDiscordFace.cs); /rc discord for quick control.
 //
 //  Threads
-//    • ChatSource.Poll (the pump) hands every new chat line to PumpLines and
+//    • ChatSource.Poll (the pump) hands every scrollback read to PumpRead and
 //      calls PumpTick each poll: routing, batching, at most one HTTP post per
 //      route in flight, applying results. The relay keeps the chat feed
 //      subscribed while it is on (or its panel is open), so it runs with the
@@ -21,14 +21,17 @@
 //  Discord's rate limit asks for. Network / 5xx failures retry with backoff;
 //  400 / 401 / 403 / 404 pause the route until it's resumed or its
 //  credential changes. Scrollback read when the relay starts (engine start,
-//  hot reload, switching it on) is not sent.
+//  hot reload, switching it on) is not sent: the first read after it comes
+//  on is a baseline, judged by RynthChat's line seq (DiscordBacklogGate).
 // ============================================================================
 
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using RynthCore.Engine.Compatibility;
 
 namespace RynthCore.Engine.UI.Data.Discord;
 
@@ -39,60 +42,49 @@ internal sealed record DiscordLogEntry(DateTime Time, DiscordLogKind Kind, strin
 
 internal static class ChatDiscord
 {
-    private const int DedupWindowMs = 3000;
-    private const int MaxTransientRetries = 5;
-    private const int MaxBackoffMs = 60000;
-
-    /// <summary>A packed message waiting for, or in, an HTTP post.</summary>
-    private sealed class Batch
-    {
-        public required List<string> Lines;
-        public required string Content;
-        public bool IsTest;
-        public int Attempts;
-    }
-
-    /// <summary>Pump-thread state for one route.</summary>
-    private sealed class RouteState
-    {
-        public readonly List<string> Pending = new();
-        public long FirstPendingMs;
-        public long NextAllowedMs;
-        public Batch? InFlight;
-        public Batch? Retry;
-        public int BackoffMs;
-        public bool Paused;
-        public string LastError = string.Empty;
-        public int MessagesSent, LinesSent, Dropped;
-        public DateTime LastSent;
-        public readonly Dictionary<string, long> Recent = new(StringComparer.Ordinal);
-    }
-
     private static ChatDiscordSettings _settings = new();
     private static int _loaded;
     private static readonly string FilePath = ChatDiscordStore.DefaultPath;
 
     // Any thread -> pump.
-    private static readonly ConcurrentQueue<(DiscordRoute Route, Batch Batch, DiscordSendResult Result)> Done = new();
+    private static readonly ConcurrentQueue<(DiscordRoute Route, DiscordBatch Batch, DiscordSendResult Result)> Done = new();
     private static readonly ConcurrentQueue<DiscordRoute> ResumeQueue = new();
     private static readonly ConcurrentQueue<DiscordRoute> TestQueue = new();
     private static volatile bool _clearLog;
     private static volatile bool _shutdown;
     private static readonly CancellationTokenSource Cts = new();
+    private static int _postsRunning;
 
     // Pump only.
-    private static readonly Dictionary<DiscordRoute, RouteState> States = new(ReferenceEqualityComparer.Instance);
+    private static readonly Dictionary<DiscordRoute, DiscordRouteQueue> States = new(ReferenceEqualityComparer.Instance);
     private static readonly List<DiscordLogEntry> Log = new();
 
     // Pump writes, panel reads.
     private static DiscordLogEntry[] _logSnapshot = Array.Empty<DiscordLogEntry>();
 
-    // The chat feed (UiSources.Chat) is held while the relay is on or its panel is open.
+    // The chat feed (UiSources.Chat) is held while some character has the relay on, or its panel is open.
     private static int _feedHeld, _panelsOpen;
-    private static long _activeSinceTicks = DateTime.Now.Ticks;
+
+    // Pump only: keeps the scrollback read when the relay comes on out of Discord.
+    private static readonly DiscordBacklogGate Backlog = new();
 
     // The character playing, as the pump last saw it (the panel can't ask: the lookup may read a file).
     private static string _characterName = string.Empty;
+
+    // Per-character switch. A switch is applied to the in-memory list at once and queued as an
+    // op; the next save (background writer) merges the queued ops into the file's list. Until
+    // that save lands, _pending says what this client's character asked for, so an older
+    // merge or refresh can't switch it back on (or off) meanwhile.
+    private sealed record SelfPending(DiscordCharacter Character, bool On);
+    private static readonly ConcurrentQueue<(DiscordCharacterOp Op, SelfPending? Pending)> CharacterOps = new();
+    private static SelfPending? _pending;
+
+    // Another client may switch characters in the file: the pump looks at its time every few
+    // seconds and re-reads the list (only the list) when it changed.
+    private const int FileCheckMs = 3000;
+    private static long _nextFileCheckMs;
+    private static long _fileStampTicks;
+    private static int _refreshQueued;
 
     /// <summary>The live settings. Any thread; fields are edited in place (see ChatDiscordSettings).</summary>
     public static ChatDiscordSettings Settings => Volatile.Read(ref _settings);
@@ -100,29 +92,64 @@ internal static class ChatDiscord
     /// <summary>The character this client relays as ("" before login). Any thread.</summary>
     public static string CharacterName => Volatile.Read(ref _characterName);
 
+    /// <summary>The character logged in on this client (server + name), or null before login. Any thread.</summary>
+    public static DiscordCharacter? CurrentCharacter()
+        => DiscordCharacter.Of(SessionStateRegistry.LastServerName, SessionStateRegistry.LastCharacterName);
+
+    /// <summary>True when the relay is on for <paramref name="character"/>. Any thread.</summary>
+    public static bool IsOn(DiscordCharacter? character)
+    {
+        if (character == null) return false;
+        SelfPending? p = Volatile.Read(ref _pending);
+        if (p != null && p.Character.Same(character)) return p.On;
+        return Settings.IsOnFor(character);
+    }
+
+    /// <summary>True when the relay is on for the character logged in here. Any thread.</summary>
+    public static bool IsOnHere => IsOn(CurrentCharacter());
+
     // ── Setup (InitWorker / panel) ───────────────────────────────────────
 
     /// <summary>Loads the settings once (file I/O: InitWorker or a background thread) and opens the feed if on.</summary>
     public static void EnsureLoaded()
     {
         if (Interlocked.Exchange(ref _loaded, 1) != 0) return;
-        ChatDiscordSettings s = ChatDiscordStore.Load(FilePath, ChatDiscordStore.LegacyRynthAiPath, out string note);
+        ChatDiscordSettings s = ChatDiscordStore.Load(FilePath, out string note);
         Volatile.Write(ref _settings, s);
+        Interlocked.Exchange(ref _fileStampTicks, FileStampTicks());
         if (note.Length > 0) RynthLog.UI($"ChatDiscord: {note}.");
-        if (note.StartsWith("imported", StringComparison.Ordinal)) Save();
-        Interlocked.Exchange(ref _activeSinceTicks, DateTime.Now.Ticks);
         // Subscribing touches UiSources; done on the pump, like every other hub change.
         UiDataHub.Post("chat discord feed", SyncFeed);
     }
 
-    /// <summary>Turns the relay on or off (and saves). Any thread.</summary>
-    public static void SetEnabled(bool on)
+    /// <summary>
+    /// Turns the relay on or off for the character logged in here (and saves). False before
+    /// login: there is no character to switch. Any thread.
+    /// </summary>
+    public static bool SetEnabled(bool on)
+    {
+        DiscordCharacter? me = CurrentCharacter();
+        if (me == null) return false;
+        if (IsOn(me) == on) return true;
+        var pending = new SelfPending(me, on);
+        Volatile.Write(ref _pending, pending);
+        SwitchCharacter(new DiscordCharacterOp(me, on), pending);
+        return true;
+    }
+
+    /// <summary>Turns the relay off for another character (the panel's list). Any thread.</summary>
+    public static void TurnOffFor(DiscordCharacter character)
+    {
+        DiscordCharacter? me = CurrentCharacter();
+        if (character.Same(me)) { SetEnabled(false); return; }
+        SwitchCharacter(new DiscordCharacterOp(character, false), null);
+    }
+
+    private static void SwitchCharacter(DiscordCharacterOp op, SelfPending? pending)
     {
         var s = Settings;
-        if (s.Enabled == on) return;
-        // Lines already in the chat when it's switched on are history, not news.
-        if (on) Interlocked.Exchange(ref _activeSinceTicks, DateTime.Now.Ticks);
-        s.Enabled = on;
+        s.Characters = ChatDiscordStore.ApplyCharacterOps(s.Characters, new[] { op });
+        CharacterOps.Enqueue((op, pending));
         Save();
         SyncFeed();
     }
@@ -135,9 +162,15 @@ internal static class ChatDiscord
         SyncFeed();
     }
 
+    /// <summary>
+    /// Holds the chat feed while any character on this PC has the relay on (the pump then decides
+    /// for the one logged in, who may only be known after login or a hot reload) or the panel is open.
+    /// </summary>
     private static void SyncFeed()
     {
-        bool want = !_shutdown && (Settings.Enabled || Volatile.Read(ref _panelsOpen) > 0);
+        bool want = !_shutdown
+                    && (Settings.Characters.Length > 0 || Volatile.Read(ref _pending) is { On: true }
+                        || Volatile.Read(ref _panelsOpen) > 0);
         if (want)
         {
             if (Interlocked.CompareExchange(ref _feedHeld, 1, 0) == 0)
@@ -150,7 +183,7 @@ internal static class ChatDiscord
             UiSources.Chat.Unsubscribe();
     }
 
-    /// <summary>Saves in the background (the JSON is taken now). Any thread.</summary>
+    /// <summary>Saves in the background (the JSON is taken now; the character list is merged then). Any thread.</summary>
     public static void Save()
     {
         string json;
@@ -160,16 +193,94 @@ internal static class ChatDiscord
             RynthLog.UI($"ChatDiscord: settings not saved ({ex.GetType().Name}: {ex.Message}).");
             return;
         }
-        UiBackgroundWriter.Enqueue("persist chat discord", () => ChatDiscordStore.Write(FilePath, json));
+        UiBackgroundWriter.Enqueue("persist chat discord", () => WriteMerged(json));
     }
 
-    /// <summary>Engine shutdown, after the pump stopped: cancels posts in flight.</summary>
+    /// <summary>
+    /// Background writer: re-reads the file, applies this client's queued character switches to
+    /// its list, writes our settings with that list, and takes the list back. Other clients'
+    /// switches survive; ours win for our own character.
+    /// </summary>
+    private static void WriteMerged(string ours)
+    {
+        var ops = new List<(DiscordCharacterOp Op, SelfPending? Pending)>();
+        while (CharacterOps.TryDequeue(out var o)) ops.Add(o);
+        var plain = new List<DiscordCharacterOp>(ops.Count);
+        foreach (var o in ops) plain.Add(o.Op);
+        try
+        {
+            string? disk = null;
+            try { if (File.Exists(FilePath)) disk = File.ReadAllText(FilePath); }
+            catch (IOException) { }
+            string json = ChatDiscordStore.MergeForSave(ours, disk, plain, out DiscordCharacter[] merged);
+            ChatDiscordStore.Write(FilePath, json);
+            Interlocked.Exchange(ref _fileStampTicks, FileStampTicks());
+            Settings.Characters = merged;
+        }
+        catch
+        {
+            // Not written: keep the switches for the next save.
+            foreach (var o in ops) CharacterOps.Enqueue(o);
+            throw;
+        }
+        // Saved: the file now says what our character asked for (unless it asked again since).
+        foreach (var o in ops)
+            if (o.Pending != null) Interlocked.CompareExchange(ref _pending, null, o.Pending);
+        SyncFeed();
+    }
+
+    /// <summary>Pump: every few seconds, re-reads the character list if another client changed the file.</summary>
+    private static void CheckFile(long now)
+    {
+        if (now < Volatile.Read(ref _nextFileCheckMs)) return;
+        Volatile.Write(ref _nextFileCheckMs, now + FileCheckMs);
+        if (FileStampTicks() == Interlocked.Read(ref _fileStampTicks)) return;
+        if (Interlocked.Exchange(ref _refreshQueued, 1) != 0) return;
+        // On the writer, so it can't land between a save's read and write.
+        UiBackgroundWriter.Enqueue("refresh chat discord characters", () =>
+        {
+            try
+            {
+                long stamp = FileStampTicks();
+                string? disk = File.Exists(FilePath) ? File.ReadAllText(FilePath) : null;
+                DiscordCharacter[]? list = ChatDiscordStore.ReadCharacters(disk);
+                Interlocked.Exchange(ref _fileStampTicks, stamp);
+                // Switches still queued here go in with the next save; keep them in view.
+                if (list != null)
+                {
+                    var queued = new List<DiscordCharacterOp>();
+                    foreach (var o in CharacterOps) queued.Add(o.Op);
+                    Settings.Characters = ChatDiscordStore.ApplyCharacterOps(list, queued);
+                }
+            }
+            finally { Interlocked.Exchange(ref _refreshQueued, 0); }
+            SyncFeed();
+        });
+    }
+
+    private static long FileStampTicks()
+    {
+        try { return File.Exists(FilePath) ? File.GetLastWriteTimeUtc(FilePath).Ticks : 0; }
+        catch (Exception) { return 0; }
+    }
+
+    /// <summary>
+    /// Engine shutdown, after the pump stopped: cancels posts in flight, gives them a moment to
+    /// unwind (they'd otherwise finish in this dying generation's code), then disposes the HTTP
+    /// client so nothing of it keeps the generation from unloading.
+    /// </summary>
     public static void Shutdown()
     {
         _shutdown = true;
         try { Cts.Cancel(); } catch { }
+        var wait = System.Diagnostics.Stopwatch.StartNew();
+        while (Volatile.Read(ref _postsRunning) > 0 && wait.ElapsedMilliseconds < 1000) Thread.Sleep(10);
+        int left = Volatile.Read(ref _postsRunning);
+        if (left > 0) RynthLog.UI($"ChatDiscord: {left} post(s) still running at shutdown; closing the HTTP client under them.");
+        DiscordClient.Shutdown();
+        while (Done.TryDequeue(out _)) { }
+        try { Cts.Dispose(); } catch { }
     }
-
     // ── Panel / command requests (any thread) ────────────────────────────
 
     /// <summary>Clears a pause on <paramref name="route"/> (the Resume button, or a credential change).</summary>
@@ -220,29 +331,40 @@ internal static class ChatDiscord
 
     // ── Pump ─────────────────────────────────────────────────────────────
 
-    /// <summary>New chat lines (already routed by the chat rules). ChatSource.Poll, pump thread.</summary>
-    internal static void PumpLines(IReadOnlyList<ChatLine> added)
+    /// <summary>
+    /// One read of RynthChat's scrollback (the new lines, already routed by the chat rules; empty
+    /// when nothing was new). ChatSource.Poll, pump thread, after every read, so the first read
+    /// after the relay comes on can be taken as the baseline (DiscordBacklogGate).
+    /// </summary>
+    internal static void PumpRead(IReadOnlyList<ChatLine> added)
     {
+        if (_shutdown) return;
+        var seqs = new ulong[added.Count];
+        for (int i = 0; i < seqs.Length; i++) seqs[i] = added[i].Seq;
+        bool baseline = !Backlog.Live;
+        bool[] post = Backlog.Admit(RelayOn(), seqs);
+        if (baseline && Backlog.Live && added.Count > 0)
+            RynthLog.UI($"ChatDiscord: {added.Count} line(s) of scrollback not relayed (relay started).");
+        if (Array.IndexOf(post, true) < 0) return;
+
         var s = Settings;
-        if (_shutdown || !s.Enabled || added.Count == 0) return;
         DiscordRoute[] routes = s.Routes;
         if (routes.Length == 0) return;
         string me = SafeName(ChatModel.PumpCharacterName());
-        if (!DiscordFormat.CharacterAllowed(s.OnlyCharacters, me)) return;
 
-        DateTime now = DateTime.Now;
+        // Lines reach here within a poll (100 ms) of being printed: now is their time.
+        DateTime time = DateTime.Now;
         long nowMs = Environment.TickCount64;
-        var since = new DateTime(Interlocked.Read(ref _activeSinceTicks));
         // Keyword lists parsed once per batch of lines (the panel may edit them between polls).
         var keywords = new List<string>[routes.Length];
         for (int i = 0; i < routes.Length; i++) keywords[i] = DiscordFormat.SplitList(routes[i].Keywords);
 
-        foreach (ChatLine line in added)
+        for (int n = 0; n < added.Count; n++)
         {
+            if (!post[n]) continue;
+            ChatLine line = added[n];
             ChatRoute chatRoute = line.Route;
             if (s.SkipHidden && chatRoute.Hidden) continue;
-            DateTime time = DiscordFormat.LineTime(line.Timestamp, now);
-            if (ChatDiscordLogic.IsBacklog(time, since)) continue;
             if (!ChatDiscordLogic.TryClassify(line.Text, line.ChatType, me, out DiscordLineParts parts)) continue;
             if (parts.Own && s.SkipOwn) continue;
 
@@ -255,17 +377,17 @@ internal static class ChatDiscord
                 if (!ChatDiscordLogic.Wants(route, parts.Speech, ShowsIn, out string label)) continue;
                 if (!DiscordFormat.MatchesKeywords(parts.Haystack, keywords[i])) continue;
 
-                RouteState st = State(route);
-                if (st.Paused) continue;
-                string key = ChatDiscordLogic.DedupKey(parts, label);
-                if (st.Recent.TryGetValue(key, out long seen) && nowMs - seen < DedupWindowMs) continue;
-                st.Recent[key] = nowMs;
-                if (st.Recent.Count > 256) ChatDiscordLogic.PruneRecent(st.Recent, nowMs, DedupWindowMs);
-
-                Enqueue(s, st, ChatDiscordLogic.Format(s, time, parts, label, me), nowMs);
+                DiscordRouteQueue q = State(route);
+                NoteRetargeted(route, Retarget(q, route));
+                if (q.Paused) continue;
+                if (!q.NoteFresh(ChatDiscordLogic.DedupKey(parts, label), nowMs)) continue;
+                q.Add(ChatDiscordLogic.Format(s, time, parts, label, me), nowMs, s.MaxQueue);
             }
         }
     }
+
+    /// <summary>RynthChat's scrollback numbering restarted (ChatSource.Reset, its plugin reloaded). Pump thread.</summary>
+    internal static void PumpSourceReset() => Backlog.SourceReset();
 
     /// <summary>Applies requests and results, starts due posts, publishes status. ChatSource.Poll, pump thread.</summary>
     internal static void PumpTick()
@@ -275,16 +397,13 @@ internal static class ChatDiscord
         var s = Settings;
         DiscordRoute[] routes = s.Routes;
         Volatile.Write(ref _characterName, SafeName(ChatModel.PumpCharacterName()));
+        CheckFile(now);
+        bool relayOn = RelayOn();
+        if (!relayOn) Backlog.Off();
 
         PruneStates(routes);
         while (ResumeQueue.TryDequeue(out var r))
-        {
-            if (!States.TryGetValue(r, out var st)) continue;
-            st.Paused = false;
-            st.LastError = string.Empty;
-            st.BackoffMs = 0;
-            st.NextAllowedMs = 0;
-        }
+            if (States.TryGetValue(r, out var q)) q.Resume();
         while (Done.TryDequeue(out var d)) ApplyResult(d.Route, d.Batch, d.Result, now);
         while (TestQueue.TryDequeue(out var t)) QueueTest(t);
         if (_clearLog)
@@ -294,14 +413,26 @@ internal static class ChatDiscord
             Volatile.Write(ref _logSnapshot, Array.Empty<DiscordLogEntry>());
         }
 
-        foreach (var route in routes) StartNextPost(s, route, now);
+        foreach (var route in routes)
+        {
+            // Off means off: the relay or the route switched off drops what the route had
+            // queued, the batch waiting to retry and the post in flight. Only a test goes.
+            if (!States.TryGetValue(route, out var q)) continue;
+            if (!(relayOn && route.Enabled)) NoteStopped(route, q.Stop());
+            // A new webhook / token / channel: what was queued for the old one isn't sent to it.
+            NoteRetargeted(route, Retarget(q, route));
+            StartNextPost(s, route, relayOn, now);
+        }
         PublishStatus(routes);
     }
 
-    private static RouteState State(DiscordRoute route)
+    /// <summary>Whether this client relays at all right now: the relay is on for the character logged in.</summary>
+    private static bool RelayOn() => IsOnHere;
+
+    private static DiscordRouteQueue State(DiscordRoute route)
     {
-        if (!States.TryGetValue(route, out var st)) States[route] = st = new RouteState();
-        return st;
+        if (!States.TryGetValue(route, out var q)) States[route] = q = new DiscordRouteQueue();
+        return q;
     }
 
     private static void PruneStates(DiscordRoute[] routes)
@@ -310,19 +441,36 @@ internal static class ChatDiscord
         var live = new HashSet<DiscordRoute>(routes, ReferenceEqualityComparer.Instance);
         var gone = new List<DiscordRoute>();
         foreach (var r in States.Keys) if (!live.Contains(r)) gone.Add(r);
-        foreach (var r in gone) States.Remove(r);
+        foreach (var r in gone)
+        {
+            // A removed route's post in flight (test or not) is cancelled; its result then finds
+            // no queue and is dropped.
+            DiscordRouteQueue q = States[r];
+            q.Stop();
+            if (q.InFlight is { } flying)
+            {
+                try { flying.Cancel?.Cancel(); } catch (ObjectDisposedException) { }
+            }
+            States.Remove(r);
+        }
     }
 
-    private static void Enqueue(ChatDiscordSettings s, RouteState st, string line, long now)
+    /// <summary>
+    /// Tells <paramref name="q"/> where <paramref name="route"/> sends now (its mode, channel and
+    /// saved, encrypted credential); a change drops what was queued for the old destination.
+    /// </summary>
+    private static int Retarget(DiscordRouteQueue q, DiscordRoute route)
+        => q.Retarget(route.Mode, route.ChannelId,
+            route.Mode == DiscordRoute.ModeBot ? route.BotTokenProtected : route.WebhookProtected);
+
+    private static void NoteRetargeted(DiscordRoute route, int dropped)
     {
-        if (st.Pending.Count == 0) st.FirstPendingMs = now;
-        st.Pending.Add(line);
-        int over = st.Pending.Count - s.MaxQueue;
-        if (over > 0)
-        {
-            st.Pending.RemoveRange(0, over);
-            st.Dropped += over;
-        }
+        if (dropped > 0) AddLog(Settings, DiscordLogKind.Info, route.Name, $"Destination changed: {dropped} line(s) queued for the old one dropped.");
+    }
+
+    private static void NoteStopped(DiscordRoute route, int dropped)
+    {
+        if (dropped > 0) AddLog(Settings, DiscordLogKind.Info, route.Name, $"Off: {dropped} queued line(s) dropped.");
     }
 
     private static void QueueTest(DiscordRoute route)
@@ -331,32 +479,14 @@ internal static class ChatDiscord
         string line = DiscordFormat.FormatLine(DateTime.Now, null, null,
             $"RynthChat Discord relay test from {(me.Length > 0 ? me : "RynthCore")} (route \"{route.Name}\").",
             Settings.IncludeTimestamp, null);
-        var st = State(route);
-        st.Retry = new Batch { Lines = new List<string> { line }, Content = line, IsTest = true };
-        st.NextAllowedMs = 0;
+        State(route).QueueTest(line);
     }
 
-    private static void StartNextPost(ChatDiscordSettings s, DiscordRoute route, long now)
+    private static void StartNextPost(ChatDiscordSettings s, DiscordRoute route, bool relayOn, long now)
     {
-        if (!States.TryGetValue(route, out var st) || st.InFlight != null || st.Paused) return;
-        if (now < st.NextAllowedMs) return;
-
-        Batch? batch = st.Retry;
-        if (batch == null)
-        {
-            if (!route.Enabled || !s.Enabled) { st.Pending.Clear(); return; }
-            if (st.Pending.Count == 0) return;
-            // Wait out the batch window unless the pending text already fills a message.
-            int chars = 0;
-            foreach (string l in st.Pending) chars += l.Length + 1;
-            if (now - st.FirstPendingMs < s.BatchFor(route) && chars < DiscordFormat.MaxContent) return;
-
-            string content = DiscordFormat.Pack(st.Pending, out int taken);
-            batch = new Batch { Lines = st.Pending.GetRange(0, taken), Content = content };
-            st.Pending.RemoveRange(0, taken);
-            st.FirstPendingMs = now;
-        }
-        st.Retry = null;
+        if (!States.TryGetValue(route, out var q)) return;
+        DiscordBatch? batch = q.Next(now, relayOn && route.Enabled, s.BatchFor(route), s.IntervalFor(route));
+        if (batch == null) return;
 
         // Decrypt only now, on the way out; the plain text lives in the request task alone.
         string mode = route.Mode, channelId = route.ChannelId;
@@ -375,87 +505,73 @@ internal static class ChatDiscord
         }
         string displayName = route.DisplayName.Length > 0 ? route.DisplayName : SafeName(ChatModel.PumpCharacterName());
 
-        st.InFlight = batch;
-        st.NextAllowedMs = now + s.IntervalFor(route);
-        CancellationToken ct = Cts.Token;
+        // Each post can be cancelled on its own (Stop, a removed route) or with the engine.
+        CancellationTokenSource cts;
+        try { cts = CancellationTokenSource.CreateLinkedTokenSource(Cts.Token); }
+        catch (ObjectDisposedException) { return; }   // shutting down
+        batch.Cancel = cts;
+        Interlocked.Increment(ref _postsRunning);
         _ = Task.Run(async () =>
         {
             DiscordSendResult r;
             try
             {
                 r = mode == DiscordRoute.ModeBot
-                    ? await DiscordClient.PostBotAsync(secret, channelId, batch.Content, ct).ConfigureAwait(false)
-                    : await DiscordClient.PostWebhookAsync(secret, batch.Content, displayName, ct).ConfigureAwait(false);
+                    ? await DiscordClient.PostBotAsync(secret, channelId, batch.Content, cts.Token).ConfigureAwait(false)
+                    : await DiscordClient.PostWebhookAsync(secret, batch.Content, displayName, cts.Token).ConfigureAwait(false);
             }
             catch (Exception ex) { r = DiscordSendResult.Fail(DiscordFormat.Redact(ex.Message, secret)); }
+            finally
+            {
+                batch.Cancel = null;
+                cts.Dispose();
+                Interlocked.Decrement(ref _postsRunning);
+            }
             Done.Enqueue((route, batch, r));
         });
     }
 
-    private static void ApplyResult(DiscordRoute route, Batch batch, DiscordSendResult r, long now)
+    private static void ApplyResult(DiscordRoute route, DiscordBatch batch, DiscordSendResult r, long now)
     {
-        var st = State(route);
-        st.InFlight = null;
+        // A route removed meanwhile has no queue: nothing to retry, nothing to report.
+        if (!States.TryGetValue(route, out var q)) return;
         var s = Settings;
-
-        if (r.Ok)
+        switch (q.Apply(batch, r, now, s.IntervalFor(route)))
         {
-            st.LastError = string.Empty;
-            st.BackoffMs = 0;
-            st.MessagesSent++;
-            st.LinesSent += batch.Lines.Count;
-            st.LastSent = DateTime.Now;
-            st.NextAllowedMs = Math.Max(st.NextAllowedMs, now + Math.Max(s.IntervalFor(route), r.RetryAfterMs));
-            AddLog(s, DiscordLogKind.Sent, route.Name, batch.IsTest ? "Test message sent." : $"{batch.Lines.Count} line(s): {batch.Content}");
-            return;
+            case DiscordOutcome.Sent:
+                AddLog(s, DiscordLogKind.Sent, route.Name, batch.IsTest ? "Test message sent." : $"{batch.Lines.Count} line(s): {batch.Content}");
+                break;
+            case DiscordOutcome.Paused:
+                AddLog(s, DiscordLogKind.Error, route.Name, $"Paused: {r.Error}");
+                RynthLog.UI($"ChatDiscord: route '{route.Name}' paused: {r.Error}");
+                break;
+            case DiscordOutcome.RateLimited:
+                AddLog(s, DiscordLogKind.Info, route.Name, r.Error);
+                break;
+            case DiscordOutcome.GaveUp:
+                AddLog(s, DiscordLogKind.Error, route.Name, $"Gave up after {batch.Attempts} tries ({r.Error}); {batch.Lines.Count} line(s) dropped.");
+                RynthLog.UI($"ChatDiscord: route '{route.Name}' dropped a batch: {r.Error}");
+                break;
+            case DiscordOutcome.Retrying:
+                AddLog(s, DiscordLogKind.Error, route.Name, $"{r.Error}; retrying in {q.BackoffMs / 1000}s.");
+                break;
+            case DiscordOutcome.Retargeted:
+                AddLog(s, DiscordLogKind.Info, route.Name, $"{r.Error}; the destination changed meanwhile, so {batch.Lines.Count} line(s) dropped.");
+                break;
         }
-
-        st.LastError = r.Error;
-        if (r.Permanent)
-        {
-            st.Paused = true;
-            st.Dropped += batch.Lines.Count + st.Pending.Count;
-            st.Pending.Clear();
-            AddLog(s, DiscordLogKind.Error, route.Name, $"Paused: {r.Error}");
-            RynthLog.UI($"ChatDiscord: route '{route.Name}' paused: {r.Error}");
-            return;
-        }
-
-        if (r.Status == 429)
-        {
-            // Rate limits don't count as a failed attempt; Discord says exactly when to come back.
-            st.Retry = batch;
-            st.NextAllowedMs = now + Math.Max(r.RetryAfterMs, s.IntervalFor(route));
-            AddLog(s, DiscordLogKind.Info, route.Name, r.Error);
-            return;
-        }
-
-        batch.Attempts++;
-        if (batch.Attempts >= MaxTransientRetries)
-        {
-            st.Dropped += batch.Lines.Count;
-            AddLog(s, DiscordLogKind.Error, route.Name, $"Gave up after {batch.Attempts} tries ({r.Error}); {batch.Lines.Count} line(s) dropped.");
-            RynthLog.UI($"ChatDiscord: route '{route.Name}' dropped a batch: {r.Error}");
-            st.BackoffMs = 0;
-            return;
-        }
-        st.BackoffMs = st.BackoffMs == 0 ? 2000 : Math.Min(st.BackoffMs * 2, MaxBackoffMs);
-        st.Retry = batch;
-        st.NextAllowedMs = now + Math.Max(st.BackoffMs, r.RetryAfterMs);
-        AddLog(s, DiscordLogKind.Error, route.Name, $"{r.Error}; retrying in {st.BackoffMs / 1000}s.");
     }
 
     private static void PublishStatus(DiscordRoute[] routes)
     {
         foreach (var route in routes)
         {
-            if (!States.TryGetValue(route, out var st)) continue;
-            int queued = st.Pending.Count + (st.InFlight?.Lines.Count ?? 0) + (st.Retry?.Lines.Count ?? 0);
+            if (!States.TryGetValue(route, out var q)) continue;
+            int queued = q.Queued;
             DiscordRouteStatus? old = route.Status;
-            if (old != null && old.Queued == queued && old.MessagesSent == st.MessagesSent && old.Dropped == st.Dropped
-                && old.Paused == st.Paused && ReferenceEquals(old.LastError, st.LastError) && old.LastSent == st.LastSent)
+            if (old != null && old.Queued == queued && old.MessagesSent == q.MessagesSent && old.Dropped == q.Dropped
+                && old.Paused == q.Paused && ReferenceEquals(old.LastError, q.LastError) && old.LastSent == q.LastSent)
                 continue;
-            route.Status = new DiscordRouteStatus(queued, st.MessagesSent, st.LinesSent, st.Dropped, st.Paused, st.LastError, st.LastSent);
+            route.Status = new DiscordRouteStatus(queued, q.MessagesSent, q.LinesSent, q.Dropped, q.Paused, q.LastError, q.LastSent);
         }
     }
 
@@ -470,14 +586,21 @@ internal static class ChatDiscord
 
     // ── Status and /rc discord ───────────────────────────────────────────
 
-    /// <summary>"2 of 3 route(s) ready, only Bob." Any thread.</summary>
+    /// <summary>"2 of 3 route(s) ready." Any thread.</summary>
     public static string StatusLine()
     {
         var s = Settings;
         int ready = 0;
         foreach (var r in s.Routes) if (r.Enabled && r.HasSecret) ready++;
-        string only = s.OnlyCharacters.Trim().Length > 0 ? $", only {s.OnlyCharacters.Trim()}" : string.Empty;
-        return $"{ready} of {s.Routes.Length} route(s) ready{only}.";
+        return $"{ready} of {s.Routes.Length} route(s) ready.";
+    }
+
+    /// <summary>"On for Bob (Aelrynth)." / "Off for Bob (Aelrynth)." / "Log in to switch it on." Any thread.</summary>
+    public static string SwitchLine()
+    {
+        DiscordCharacter? me = CurrentCharacter();
+        if (me == null) return "Log in to switch it on for a character.";
+        return $"{(IsOn(me) ? "On" : "Off")} for {me}.";
     }
 
     /// <summary>
@@ -494,16 +617,18 @@ internal static class ChatDiscord
         switch (verb)
         {
             case "on":
-                SetEnabled(true);
-                reply.Add($"Discord relay on. {StatusLine()}");
-                break;
             case "off":
-                SetEnabled(false);
-                reply.Add("Discord relay off.");
+                if (!SetEnabled(verb == "on"))
+                {
+                    reply.Add("Log in first: the relay is switched on or off for the character you're playing.");
+                    break;
+                }
+                reply.Add($"Discord relay {verb} for {CurrentCharacter()}. {StatusLine()}");
                 break;
             case "test":
             case "resume":
-                if (verb == "test" && !s.Enabled && Volatile.Read(ref _panelsOpen) == 0)
+                // The relay's tick runs while the chat feed is held (a character on, or the panel open).
+                if (verb == "test" && Volatile.Read(ref _feedHeld) == 0)
                 {
                     reply.Add("The relay is off: /rc discord on, or use Send test in the Discord panel (/rc discord window).");
                     break;
@@ -520,7 +645,9 @@ internal static class ChatDiscord
                     : $"{(verb == "test" ? "Test sent to" : "Resumed")} {n} route(s).");
                 break;
             default:
-                reply.Add($"Discord relay {(s.Enabled ? "on" : "off")}. {StatusLine()}");
+                reply.Add($"Discord relay: {SwitchLine()} {StatusLine()}");
+                if (s.Characters.Length > 0)
+                    reply.Add("  On for: " + string.Join(", ", Array.ConvertAll(s.Characters, c => c.ToString())));
                 foreach (var r in s.Routes)
                 {
                     var st = r.Status;
@@ -529,7 +656,7 @@ internal static class ChatDiscord
                                   : $", {st.MessagesSent} sent, {st.Queued} queued, {st.Dropped} dropped{(st.Paused ? ", PAUSED" : string.Empty)}"
                                     + (st.LastError.Length > 0 ? $" - {st.LastError}" : string.Empty)));
                 }
-                reply.Add("/rc discord on|off | window | test [route] | resume [route] | status");
+                reply.Add("/rc discord on|off (this character) | window | test [route] | resume [route] | status");
                 break;
         }
         return reply;

@@ -27,7 +27,7 @@ namespace RynthCore.Engine.Net;
 
 internal static unsafe class ServerMessageStream
 {
-    private const int RingBytes = 512 * 1024;
+    private const int RingBytes = 2 * 1024 * 1024;
     private const int MaxPacketsPerPump = 8192;
     private const long MaxCaptureBytes = 32L * 1024 * 1024;
     private const int MaxLogLinesPerKind = 5;
@@ -39,6 +39,12 @@ internal static unsafe class ServerMessageStream
     private static volatile bool _capturing;
     private static bool _sessionOff;
     private static bool _pluginsWant;
+
+    /// <summary>
+    /// The engine itself wants the stream (the Inventory panel's server-order tracker, Net/InventoryOrder),
+    /// whether or not a plugin does. engine.json / /rc netmsg off still turn the stream off.
+    /// </summary>
+    public static volatile bool EngineWants = true;
 
     // Delivery counters (pump thread).
     private static long _delivered, _dispatchedToPlugins;
@@ -68,6 +74,23 @@ internal static unsafe class ServerMessageStream
 
     // ── receive hook side ───────────────────────────────────────────────────
 
+    /// <summary>
+    /// Starts copying datagrams as soon as the receive hook is installed (RawPacketHooks.Initialize), when the
+    /// engine itself wants the stream. The pump only runs once the world is up, and the server sends the
+    /// player's inventory order (PlayerDescription) while entering it: the ring holds that until the first pump.
+    /// </summary>
+    public static void EnableEarly()
+    {
+        try
+        {
+            if (!EngineWants || _sessionOff || !EngineSettings.ServerMessageStream || _capturing) return;
+            _ring ??= new PacketRing(RingBytes);
+            _capturing = true;
+            RynthLog.Compat("ServerMessageStream: capture on from the receive hook (the engine's own readers).");
+        }
+        catch (Exception ex) { RynthLog.Compat($"ServerMessageStream: early capture failed - {ex.GetType().Name}: {ex.Message}"); }
+    }
+
     /// <summary>Called by the RecvFrom detour after the real recvfrom, with the bytes it returned.</summary>
     public static void OnDatagram(byte* data, int length)
     {
@@ -88,15 +111,50 @@ internal static unsafe class ServerMessageStream
     /// Once per ProcessPendingActions (the single TickAll driver). <paramref name="pluginsWant"/>:
     /// some initialized plugin has a non-empty interest.
     /// </summary>
+    // The server's item order survives an engine reload (Net/InventoryOrder): saved per client process.
+    private static bool _orderRestored;
+    private static int _orderSavedVersion = -1;
+    private static long _orderSavedMs;
+    private static string OrderFile => Path.Combine(Path.GetTempPath(), $"RynthCore.invorder.{Environment.ProcessId}.bin");
+
+    private static void KeepInventoryOrder(long nowMs)
+    {
+        try
+        {
+            if (!_orderRestored)
+            {
+                _orderRestored = true;
+                string f = OrderFile;
+                // Only this client's own file, and not a stale one (a recycled process id).
+                if (File.Exists(f) && DateTime.UtcNow - File.GetLastWriteTimeUtc(f) < TimeSpan.FromHours(24)
+                    && InventoryOrder.Restore(File.ReadAllBytes(f)))
+                    RynthLog.Compat("ServerMessageStream: restored the server's item order saved before this engine loaded.");
+                _orderSavedVersion = InventoryOrder.Version;
+                return;
+            }
+            int v = InventoryOrder.Version;
+            if (v == _orderSavedVersion || nowMs - _orderSavedMs < 1500) return;
+            File.WriteAllBytes(OrderFile, InventoryOrder.Serialize());
+            _orderSavedVersion = v;
+            _orderSavedMs = nowMs;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"ServerMessageStream: item order file failed - {ex.GetType().Name}: {ex.Message}");
+            _orderSavedVersion = InventoryOrder.Version;   // do not retry every pump
+        }
+    }
+
     public static void Pump(bool pluginsWant)
     {
+        KeepInventoryOrder(Environment.TickCount64);
         _pluginsWant = pluginsWant;
         if (_captureStopRequested)
         {
             _captureStopRequested = false;
             StopCapture("stopped");
         }
-        bool want = EngineSettings.ServerMessageStream && !_sessionOff && (pluginsWant || _logOn || _capture != null);
+        bool want = EngineSettings.ServerMessageStream && !_sessionOff && (pluginsWant || EngineWants || _logOn || _capture != null);
         if (want != _capturing)
         {
             if (want)
@@ -155,6 +213,11 @@ internal static unsafe class ServerMessageStream
             {
                 try { LogTap(opcode, eventType, message, length); }
                 catch (Exception ex) { RynthLog.Compat($"ServerMessageStream: log tap failed - {ex.GetType().Name}: {ex.Message}"); }
+            }
+            if (EngineWants)
+            {
+                try { InventoryOrder.Observe(new ReadOnlySpan<byte>(message, length)); }
+                catch (Exception ex) { RynthLog.Compat($"ServerMessageStream: inventory order failed - {ex.GetType().Name}: {ex.Message}"); }
             }
             if (_pluginsWant)
                 _dispatchedToPlugins += PluginManager.DispatchServerMessage(opcode, eventType, message + 4, length - 4);

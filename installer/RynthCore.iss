@@ -163,12 +163,17 @@ Filename: "{app}\RynthCore.exe"; WorkingDir: "{app}"; Flags: nowait runasorigina
 
 [UninstallRun]
 ; Decal + RynthCore (experimental): remove the Decal bridge's registration, only
-; what the launcher added (see docs/DECAL_BRIDGE_PLAN.md). Builds made with Decal installed ship
-; the bridge ({app}\DecalBridge, staged by Build-Installer.ps1); this always runs; with nothing
-; registered it changes nothing. Runs before the files are removed. It removes both entries
-; the installer writes (see RegisterDecalBridge in [Code]): the per-user one, and the
-; machine-wide one - directly when the uninstaller is elevated, otherwise after Windows'
-; administrator prompt, which appears only when a machine-wide entry exists.
+; what RynthCore added (see docs/DECAL_BRIDGE_PLAN.md). Every release ships the bridge
+; ({app}\DecalBridge, staged by Build-Installer.ps1), so this always runs; with nothing
+; registered it changes nothing. Runs before the files are removed. It removes:
+;   - our entry from any per-user (VirtualStore) copy of Decal's filter list;
+;   - a per-user copy an earlier RynthCore created (decal-bridge-registration.json says so),
+;     whatever is in it now: our entries and the HKLM filters it mirrored (HKLM keeps the
+;     originals). It is exported first to %APPDATA%\RynthCore\decal-backup-<date>.reg. If the
+;     copy holds entries that are neither ours nor in HKLM, they belong to someone else: the
+;     copy stays and the uninstall log (launcher.log) says why;
+;   - this install's machine-wide entry - directly when the uninstaller is elevated, otherwise
+;     after Windows' administrator prompt, which appears only when that entry exists.
 Filename: "{app}\RynthCore.exe"; Parameters: "--decal-bridge-unregister"; Flags: runhidden waituntilterminated; RunOnceId: "RynthCoreDecalBridgeUnregister"
 
 [Code]
@@ -499,33 +504,40 @@ begin
 end;
 
 (* -------------------------------------------------------------------------------------
-  Decal + RynthCore (experimental): register the RynthCore Decal bridge on every install
-  AND every update (the launcher's updater runs this installer with /SILENT), in BOTH
-  places a Decal client can read its filter list from:
+  Decal + RynthCore (experimental), strictly opt-in (since 2026-10-10): on install and on
+  every update (the launcher's updater runs this installer with /SILENT), the RynthCore
+  Decal bridge is registered ONLY when the installing user has a Decal + RynthCore account
+  (%APPDATA%\RynthCore\decal-accounts.json, which the launcher deletes when no account uses
+  the mode). Otherwise nothing Decal-related is touched; the launcher cleans up after
+  itself when no account uses the mode any more.
 
-    1. Machine-wide: HKLM\SOFTWARE\WOW6432Node\Decal\NetworkFilters\{5B3E0D57-...}
-       (32-bit view). An elevated AC (RynthCore or AC run as administrator), or any AC when
-       UAC or its registry virtualization is off, reads ONLY this key - the per-user entry
-       is invisible to it (a player's Decal + RynthCore client never loaded the bridge,
-       2026-10-03). A non-elevated AC without a per-user copy reads it too.
-    2. Per-user: this user's VirtualStore copy of that key, ONLY if the copy already exists.
-       A non-elevated AC is virtualized and, once a copy exists, reads nothing but the copy.
-       A missing copy is never created: it would hide every HKLM filter added later from
-       this user's non-elevated clients.
+  Where it goes:
+    1. Machine-wide, always: HKLM\SOFTWARE\WOW6432Node\Decal\NetworkFilters\{5B3E0D57-...}
+       (32-bit view), Decal's own list. Every client reads it unless a per-user copy hides it.
+    2. Per-user: NEVER a new per-user (VirtualStore) copy of that key. acclient.exe is a
+       legacy 32-bit program; when HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\
+       WOW6432Node\Decal\NetworkFilters exists, a non-elevated AC reads nothing but that copy,
+       so every filter installed for all users afterwards is hidden from Decal (a player's
+       new plugins and UtilityBelt's newer service vanished, 2026-10). Launchers before
+       2026-10-10 created such a copy; --decal-bridge-install-user now removes a copy an
+       earlier RynthCore created (backed up first to %APPDATA%\RynthCore\decal-backup-<date>.reg;
+       kept when it holds someone else's entries), and only adds our entry to a copy that
+       exists anyway (Decal can make one itself). The launcher's Recovery Actions > Repair
+       Decal removes any such copy after a backup.
 
-  Both entries are harmless while no account uses Decal + RynthCore: every Decal client
-  loads the bridge, which stays idle (no hooks, no threads) unless the RynthCore loader is
-  in the same client. Uninstall removes both ([UninstallRun] --decal-bridge-unregister).
+  The machine-wide entry is harmless: Decal clients load the bridge, which stays idle (no
+  hooks, no threads) unless the RynthCore loader is in the same client. Uninstall removes
+  what RynthCore added ([UninstallRun] --decal-bridge-unregister, see above).
 
   Rights. This installer runs with the lowest privileges (PrivilegesRequired=lowest; the
-  updater starts it without elevation). Writing HKLM needs administrator rights, so:
+  updater starts it without elevation). Writing HKLM needs administrator rights, so, for a
+  user with a Decal + RynthCore account and only when the machine-wide entry is missing or
+  points at another folder:
     - Setup already elevated (installed "for all users", or started by an elevated
       launcher): written directly, no prompt.
-    - Not elevated: Windows' administrator prompt is shown ONCE - only when Decal is
-      installed, the machine-wide entry is missing or points at another folder, and this
-      user has a Decal + RynthCore account (decal-accounts.json). Saying no is harmless:
-      the launcher checks before every Decal + RynthCore launch and repairs it (writing it
-      directly when it runs elevated, the case that needs it).
+    - Not elevated: Windows' administrator prompt is shown once. Saying no is harmless for
+      Decal: the launcher asks again before the next Decal + RynthCore launch (interactive
+      launches only), and Decal + RynthCore can't be used until it is registered.
   The commands are RynthCore.exe's own (Program.cs): --decal-bridge-register-machine and
   --decal-bridge-install-user, so the installer and the launcher write identical entries.
   ------------------------------------------------------------------------------------- *)
@@ -565,6 +577,11 @@ var
   Code: Integer;
 begin
   if not DecalInstalled then Exit;
+  if not UsesDecalBridge then
+  begin
+    Log('Decal bridge: no Decal + RynthCore account for this user - nothing registered (opt-in only).');
+    Exit;
+  end;
   if not FileExists(BridgeDir + '\RynthCore.DecalBridge.dll') then Exit;
   Exe := ExpandConstant('{app}\RynthCore.exe');
   Params := '--decal-bridge-register-machine "' + BridgeDir + '"';
@@ -577,18 +594,24 @@ begin
       else
         Log('Decal bridge: machine-wide registration exit code ' + IntToStr(Code));
     end
-    else if UsesDecalBridge then
+    else
     begin
       if not ShellExec('runas', Exe, Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then
         Log('Decal bridge: elevated machine-wide registration not done (declined or failed): ' + SysErrorMessage(Code))
       else
         Log('Decal bridge: elevated machine-wide registration exit code ' + IntToStr(Code));
-    end
-    else
-      Log('Decal bridge: machine-wide entry missing; not elevated and no Decal + RynthCore account - left to the launcher.');
+    end;
+  end;
+  if not MachineBridgeEntryCurrent then
+  begin
+    { No per-user fallback: Decal + RynthCore waits for the machine-wide entry (the launcher
+      asks again before the next interactive Decal + RynthCore launch). }
+    Log('Decal bridge: not registered machine-wide - per-user step skipped.');
+    Exit;
   end;
   { Per-user half, as the user who started Setup (the same user unless Setup was elevated
-    with other credentials). }
+    with other credentials): removes an earlier RynthCore's per-user copy (backed up first),
+    adds our entry to a per-user copy that exists anyway. Never creates one. }
   if not ExecAsOriginalUser(Exe, '--decal-bridge-install-user "' + BridgeDir + '"', ExpandConstant('{app}'),
                             SW_HIDE, ewWaitUntilTerminated, Code) then
     Log('Decal bridge: per-user step did not start: ' + SysErrorMessage(Code));

@@ -648,6 +648,8 @@ internal static partial class PluginManager
     {
         // RynthVision overlays (debuffs, combat text, gains) read chat engine-side, plugins or not.
         ImGuiBackend.Hud.HudFeed.OnChat(text);
+        // Who to /reply and /retell to (ChatCommandDispatcher rewrites those to a /tell).
+        Compatibility.TellMemory.Shared.OnChatLine(text);
 
         if (!_initialized || _plugins.Count == 0)
             return false;
@@ -1556,6 +1558,7 @@ internal static partial class PluginManager
         }
 
         RynthLog.Plugin("PluginManager: Rescanning plugins...");
+        Net.FlightRecorder.Mark(Net.FlightMark.PluginReload, text: "all plugins unloaded and loaded again (rescan)");
 
         UnloadAllPlugins();
         PluginLoader.CleanupShadowCopies(_shadowRootDir);
@@ -2491,7 +2494,7 @@ internal static partial class PluginManager
         var loadedCanonicalPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         var extraPaths = EngineSettings.PluginPaths;
-        var candidates = new List<string>(extraPaths.Count);
+        var present = new List<string>(extraPaths.Count);
         for (int i = 0; i < extraPaths.Count; i++)
         {
             string dllPath = extraPaths[i];
@@ -2500,23 +2503,25 @@ internal static partial class PluginManager
                 RynthLog.Plugin($"PluginManager: Extra plugin not found: {dllPath}");
                 continue;
             }
-
-            string baseName = Path.GetFileName(dllPath);
-            if (loadedBasenames.Contains(baseName))
-            {
-                RynthLog.Plugin($"PluginManager: Skipping extra plugin (same file name already loaded from plugins directory or earlier extra path): {dllPath}");
-                continue;
-            }
-
-            if (TryGetCanonicalPath(dllPath, out string extraCanon) && loadedCanonicalPaths.Contains(extraCanon))
-            {
-                RynthLog.Plugin($"PluginManager: Skipping extra plugin (same resolved path already loaded): {dllPath}");
-                continue;
-            }
-            candidates.Add(dllPath);
-            loadedBasenames.Add(baseName);
-            TryAddCanonicalPath(loadedCanonicalPaths, dllPath);
+            present.Add(dllPath);
         }
+
+        // One plugin per file name, before any shadow copy: every shadow copy shares the session
+        // folder, so a second DLL of the same name would overwrite a mapped copy. The same file
+        // listed twice loads once; the same name from two folders is a conflict - the first wins
+        // (PluginPathDedupe).
+        var loadedSources = new List<string>(_plugins.Count);
+        for (int j = 0; j < _plugins.Count; j++)
+            loadedSources.Add(_plugins[j].SourceFilePath);
+        PluginPathDedupe.Result deduped = PluginPathDedupe.Dedupe(present, loadedSources);
+        foreach (PluginPathDedupe.Skipped skipped in deduped.Skipped)
+        {
+            if (skipped.SameFile)
+                RynthLog.Plugin($"PluginManager: {skipped.Message}");
+            else
+                RynthLog.Warn($"PluginManager: {skipped.Message}");
+        }
+        List<string> candidates = deduped.Load;
 
         // Manifests (embedded in the DLLs, read without loading them): refuse a plugin that needs
         // a newer engine API or a missing plugin, and put required plugins first. Without
@@ -3228,6 +3233,7 @@ internal static partial class PluginManager
 
     private static int CancelAttack()
     {
+        Compatibility.AcActionTrace.Record("CancelAttack");
         return ToAbiBool(ClientActionHooks.CancelAttack());
     }
 
@@ -3756,6 +3762,7 @@ internal static partial class PluginManager
 
     private static int UseObjectOn(uint sourceObjectId, uint targetObjectId)
     {
+        Compatibility.AcActionTrace.Record("UseObjectOn", sourceObjectId, targetObjectId);
         LogPluginUse("UseObjectOn", sourceObjectId, targetObjectId);
         return ToAbiBool(ClientHelperHooks.UseObjectOn(sourceObjectId, targetObjectId));
     }
@@ -3805,26 +3812,31 @@ internal static partial class PluginManager
 
     private static int UseEquippedItem(uint sourceObjectId, uint targetObjectId)
     {
+        Compatibility.AcActionTrace.Record("UseEquippedItem", sourceObjectId, targetObjectId);
         return ToAbiBool(ClientHelperHooks.UseEquippedItem(sourceObjectId, targetObjectId));
     }
 
     private static int MoveItemExternal(uint objectId, uint targetContainerId, int amount)
     {
+        Compatibility.AcActionTrace.Record("MoveItemExternal", objectId, targetContainerId);
         return ToAbiBool(ClientHelperHooks.MoveItemExternal(objectId, targetContainerId, amount));
     }
 
     private static int MoveItemInternal(uint objectId, uint targetContainerId, int slot, int amount)
     {
+        Compatibility.AcActionTrace.Record("MoveItemInternal", objectId, targetContainerId);
         return ToAbiBool(ClientHelperHooks.MoveItemInternal(objectId, targetContainerId, slot, amount));
     }
 
     private static int SplitStackInternal(uint objectId, uint targetContainerId, int slot, int amount)
     {
+        Compatibility.AcActionTrace.Record("SplitStackInternal", objectId, targetContainerId);
         return ToAbiBool(ClientHelperHooks.SplitStackInternal(objectId, targetContainerId, slot, amount));
     }
 
     private static int MergeStackInternal(uint sourceObjectId, uint targetObjectId)
     {
+        Compatibility.AcActionTrace.Record("MergeStackInternal", sourceObjectId, targetObjectId);
         return ToAbiBool(ClientHelperHooks.MergeStackInternal(sourceObjectId, targetObjectId));
     }
 
@@ -3846,6 +3858,7 @@ internal static partial class PluginManager
 
     private static int GiveObjectTo(uint objectId, uint targetId, int amount)
     {
+        Compatibility.AcActionTrace.Record("GiveObjectTo", objectId, targetId);
         return ToAbiBool(ClientHelperHooks.GiveObjectTo(objectId, targetId, amount));
     }
 
@@ -4317,6 +4330,7 @@ internal static partial class PluginManager
     /// <summary>v70: wield into a chosen slot (see PluginContract.WieldItemFn).</summary>
     private static int WieldItemAction(uint objectId, uint equipMask)
     {
+        Compatibility.AcActionTrace.Record("WieldItem", objectId, equipMask);
         return ToAbiBool(ClientHelperHooks.WieldItem(objectId, equipMask));
     }
 
@@ -4327,6 +4341,16 @@ internal static partial class PluginManager
             string? name = pluginNameAnsi != IntPtr.Zero ? Marshal.PtrToStringAnsi(pluginNameAnsi) : null;
             if (string.IsNullOrEmpty(name))
                 return 0;
+
+            // The flight recorder answers to a reserved name (no plugin export, no API bump):
+            // an engine without it finds no such plugin and returns 0, so a plugin can call it
+            // on any engine.
+            if (name == Net.FlightRecorder.PluginCommandTarget)
+            {
+                string? action = actionAnsi != IntPtr.Zero ? Marshal.PtrToStringAnsi(actionAnsi) : null;
+                string? value = valueAnsi != IntPtr.Zero ? Marshal.PtrToStringAnsi(valueAnsi) : null;
+                return Net.FlightRecorder.HandlePluginCommand(action, value) ? 1 : 0;
+            }
 
             IntPtr export = ResolvePluginExport(name, "RynthPluginApplyRemoteCommand");
             if (export == IntPtr.Zero)
@@ -4433,7 +4457,11 @@ internal static partial class PluginManager
         catch { return 0; }
     }
 
-    private static void ForceResetBusyCountAction() => BusyCountHooks.ForceResetBusyCount();
+    private static void ForceResetBusyCountAction()
+    {
+        Net.FlightRecorder.Mark(Net.FlightMark.BusyForceClearAsk, text: "a plugin (host ForceResetBusyCount)");
+        BusyCountHooks.ForceResetBusyCount();
+    }
 
     private static unsafe int GetObjectSpellIdsAction(uint guid, uint* spellIds, int maxCount)
     {

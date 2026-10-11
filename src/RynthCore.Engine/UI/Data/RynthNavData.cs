@@ -106,6 +106,11 @@ internal sealed class RynthNavStatus
     // The Town Network (RynthNav 0.6.2+): townnet.json loaded or not, and why.
     public bool HasTownNet, TownNetLoaded;
     public string TownNetStatus = "";
+    // Path markers and "save as nav route" (RynthNav 0.6.6+; HasMarkers / HasSave false on older plugins).
+    public bool HasMarkers, MarkersOn, MarkerLabels, MarkerGuide, MarkersShown;
+    public string MarkerStatus = "";
+    public bool HasSave, CanSave, SaveBusy;
+    public string SaveFor = "", SaveName = "", SaveConflict = "", SaveLast = "";
     public bool HasTies;
     public int Tie1Known = -1, Tie2Known = -1;
     public string TiePending = "";
@@ -273,6 +278,25 @@ internal sealed class RynthNavStatus
             s.HasTownNet = info.TryGetProperty("townNet", out _);
             s.TownNetLoaded = Int(info, "townNet") != 0;
             s.TownNetStatus = Str(info, "townNetStatus");
+        }
+        if (r.TryGetProperty("markers", out var mk) && mk.ValueKind == JsonValueKind.Object)
+        {
+            s.HasMarkers = true;
+            s.MarkersOn = Int(mk, "on") != 0;
+            s.MarkerLabels = Int(mk, "labels") != 0;
+            s.MarkerGuide = Int(mk, "guide") != 0;
+            s.MarkersShown = Int(mk, "shown") != 0;
+            s.MarkerStatus = Str(mk, "status");
+        }
+        if (r.TryGetProperty("save", out var sv) && sv.ValueKind == JsonValueKind.Object)
+        {
+            s.HasSave = true;
+            s.CanSave = Int(sv, "can") != 0;
+            s.SaveBusy = Int(sv, "busy") != 0;
+            s.SaveFor = Str(sv, "for");
+            s.SaveName = Str(sv, "name");
+            s.SaveConflict = Str(sv, "conflict");
+            s.SaveLast = Str(sv, "last");
         }
         string meshHere = !s.HasInfo ? (s.TileLoaded ? "loaded" : "not loaded")
             : s.TileHere == 1 ? "yes" : s.TileHere == 0 ? "no (no tile for this landblock)" : "not checked yet";

@@ -93,6 +93,7 @@ ENQUEUE = "AcMainThreadQueue.Enqueue"
 ENQUEUE_PRODUCER_ALLOW = {
     ("AutoIdService.cs", "DrainTick"),   # appraisal: enqueues 0xC8, sent on main thread in DrainRequestIds
     ("RynthCoreChatCommands.cs", "Reply"),   # /rc and /rv plates replies: only EnqueueWriteToChat
+    ("AcMouseOver.cs", "Say"),   # /rc acmouse watch lines: only EnqueueWriteToChat (and the log)
 }
 
 # CHECK C sinks: raw stores into memory. Comments are stripped before matching.

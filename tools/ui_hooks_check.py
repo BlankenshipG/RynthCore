@@ -17,7 +17,12 @@ fails here instead of in game:
     client has CatchDroppedItem there (directly, or UIElement_Field's, which calls it);
   * every UIElement vtable has GetUIElementType at +0x98 (mov eax,imm32 / ret, or xor/ret),
     UIElement_ItemList's returns 0x10000031, GetParent is the vtable +0xA0 call that
-    GetAncestorByID walks, and the element id is at +0x2E4.
+    GetAncestorByID walks, and the element id is at +0x2E4;
+  * AC's mouse-over (Compatibility/AcMouseOver.cs): SwitchMouseOver stores the element under
+    the mouse at +0x244, every hit test that feeds it skips +0x2D4 (cursor left) and starts
+    at the root (+0x9C), DeletingElement clears it, UseTime calls CheckTooltip with the
+    manager every frame, and exactly one UIElement class (SmartBoxWrapper, the 3D view)
+    has type 0x10000030.
 
 Usage:  python tools/ui_hooks_check.py ["<path-to-acclient.exe>"]
 Exit 0 = every check passed.
@@ -165,6 +170,57 @@ def main():
         check(not bad_type, f"every UIElement vtable's +0x98 is GetUIElementType ({len(tables) - len(bad_type)}/{len(tables)})")
         itemlist = [t for t in tables if at(u32(t + 0x98), 6) == bytes([0xB8, 0x31, 0x00, 0x00, 0x10, 0xC3])]
         check(len(itemlist) >= 1, f"UIElement_ItemList's GetUIElementType returns 0x10000031 ({len(itemlist)} vtable(s))")
+        # 8a. the 3D view's element class (Compatibility/AcMouseOver.cs)
+        smartbox = [t for t in tables if at(u32(t + 0x98), 6) == bytes([0xB8, 0x30, 0x00, 0x00, 0x10, 0xC3])]
+        check(len(smartbox) == 1, f"UIElement_SmartBoxWrapper: one UIElement vtable whose GetUIElementType returns 0x10000030 ({len(smartbox)})")
+        # gmSmartBoxUI: what AC actually reports over open ground (element 0x1000049A)
+        gmsbox = [t for t in tables if at(u32(t + 0x98), 6) == bytes([0xB8, 0x14, 0x00, 0x00, 0x10, 0xC3])]
+        check(len(gmsbox) == 1, f"gmSmartBoxUI: one UIElement vtable whose GetUIElementType returns 0x10000014 ({len(gmsbox)})")
+
+    # 8. AC's mouse-over element (Compatibility/AcMouseOver.cs): UIElementManager +0x244
+    switch = find([0x53, 0x8B, 0x5C, 0x24, 0x08, 0x56, 0x8B, 0xF1, 0x8B, 0x86, 0x44, 0x02, 0x00, 0x00, 0x57, 0x33, 0xFF,
+                   0x3B, 0xD8, 0x74, 0x06, 0x89, 0x9E, 0x44, 0x02, 0x00, 0x00])
+    check(switch is not None, f"SwitchMouseOver found: stores its argument at +0x244 (0x{(switch or 0):08X})")
+    if switch:
+        check(body_has(switch, [0x8A, 0x83, 0x45, 0x05, 0x00, 0x00], 0x40), "SwitchMouseOver: the hover element needs the element's +0x545 byte")
+        hit_tests, recurse = 0, set()
+        for c in rel_callers(switch):
+            pre = W[c - BASE - 0x40:c - BASE]
+            calls = [c - 0x40 + k + 5 + struct.unpack_from("<i", pre, k + 1)[0] for k in range(len(pre) - 5) if pre[k] == 0xE8]
+            if b"\xD4\x02\x00\x00" in pre and b"\x9C\x00\x00\x00" in pre and calls:
+                hit_tests += 1
+                recurse.add(calls[-1])
+        check(hit_tests >= 4 and len(recurse) == 1,
+              f"{hit_tests} SwitchMouseOver calls follow a +0x2D4 test and a hit test from the root (+0x9C) "
+              f"through one function (MouseMoveHandler, MouseDownEvent, UpdateMouseOver, DoMouseUpdate)")
+        if len(recurse) == 1:
+            r = recurse.pop()
+            check(body_has(r, [0x8B, 0x85, 0xA4, 0x00, 0x00, 0x00], 0x20) and body_has(r, [0x8A, 0x85, 0x45, 0x05, 0x00, 0x00], 0xA0)
+                  and body_has(r, [0xC1, 0xE9, 0x06], 0xA0),
+                  f"MouseOverCriteria::Recurse (0x{r:08X}): visible elements only (+0xA4), returns one with +0x545 or +0xA4 bit 6")
+        leave = find([0x6A, 0x00, 0xC6, 0x81, 0xD4, 0x02, 0x00, 0x00, 0x01, 0xE8])
+        tgt = leave + 9 + 5 + struct.unpack_from("<i", W, leave - BASE + 10)[0] if leave else 0
+        check(tgt == switch, "MouseLeaveEvent: sets +0x2D4 (cursor left) and SwitchMouseOver(0)")
+        dele = find([0x39, 0xAE, 0x44, 0x02, 0x00, 0x00, 0x75, 0x21, 0x53, 0x8B, 0xCE, 0xE8, N, N, N, N,
+                     0x89, 0x9E, 0x48, 0x02, 0x00, 0x00, 0x89, 0x9E, 0x44, 0x02, 0x00, 0x00])
+        check(dele is not None, "DeletingElement: clears +0x244 (and +0x248) when that element goes")
+    usetime = find([0x56, 0x8B, 0xF1, 0xE8, N, N, N, N, 0x8B, 0xCE, 0xE8, N, N, N, N, 0x8A, 0x86, 0x40, 0x02, 0x00, 0x00,
+                    0x84, 0xC0, 0x74, 0x05, 0xE8, N, N, N, N, 0x8B, 0xCE, 0xE8])
+    tgt = usetime + 32 + 5 + struct.unpack_from("<i", W, usetime - BASE + 33)[0] if usetime else 0
+    check(tgt == va["UiElement.CheckTooltip"], "UIElementManager::UseTime calls CheckTooltip with ecx = the manager, every frame")
+    check(len(matches(W, [0x68, 0x30, 0x00, 0x00, 0x10], limit=8)) >= 1,
+          "push 10000030h present (SmartBoxWrapper::Register registers the type)")
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "RynthCore.Engine", "Compatibility")
+    with open(os.path.join(src, "AcMouseOver.cs"), encoding="utf-8") as f:
+        mo = f.read()
+    with open(os.path.join(src, "AcMouseOverRules.cs"), encoding="utf-8") as f:
+        rules = f.read()
+    check("MgrMouseOver = 0x244" in mo and "MgrMouseOutside = 0x2D4" in mo and "VtGetUIElementType = 0x98" in mo,
+          "AcMouseOver.cs reads +0x244, +0x2D4 and vtable +0x98")
+    check("UIElementTypeSmartBoxWrapper = 0x10000030" in rules, "AcMouseOverRules.cs: the 3D view is type 0x10000030")
+    check("UIElementTypeGmSmartBoxUI = 0x10000014" in rules, "AcMouseOverRules.cs: gmSmartBoxUI (0x10000014) is the 3D view too")
+    check(len(matches(W, [0x68, 0x14, 0x00, 0x00, 0x10], limit=8)) >= 1,
+          "push 10000014h present (gmSmartBoxUI::Register registers the type)")
 
     print("=" * 60)
     print("PASS - the UI hooks' facts hold on this client." if fails == 0 else f"FAIL - {fails} check(s) failed.")

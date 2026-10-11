@@ -19,8 +19,7 @@ namespace RynthCore.App.Avalonia;
 /// </summary>
 internal static class LauncherDiag
 {
-    // Installer-chosen RynthCore folder (falls back to C:\Games\RynthCore).
-    private static readonly string UnifiedLogDirectory = RynthInstallPaths.CoreLogsDir;
+    private static readonly string UnifiedLogDirectory = RynthCore.Install.RynthInstallPaths.CoreLogsDir; // C:\Games\RynthCore\Logs by default
     private const string UnifiedLogFileName = "RynthCore.log";
 
     private static readonly object LogLock = new();

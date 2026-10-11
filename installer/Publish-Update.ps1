@@ -138,7 +138,7 @@ Copy-Item (Join-Path $ScriptDir "Output\RynthCore-Setup-$Version.exe") "$rel\Ryn
 # Build-Installer.ps1 stages RynthSuite files under staging\suite\ (RynthAi -> staging\suite\RynthAi\).
 Copy-Item (Join-Path $ScriptDir "staging\suite\RynthAi\RynthCore.Plugin.RynthAi.dll") "$rel\plugins\"
 
-$suitePlugins = "RynthChat", "RynthTracker", "RynthNav", "RynthVision", "RynthLua", "RynthOracle", "RynthInventory"
+$suitePlugins = "RynthChat", "RynthTracker", "RynthNav", "RynthVision", "RynthLua", "RynthOracle", "RynthInventory", "RynthSort", "RynthILT"
 foreach ($name in $suitePlugins) {
     Step "Building $name"
     $proj = Join-Path $RynthSuiteRoot "Plugins\RynthCore.Plugin.$name\RynthCore.Plugin.$name.csproj"
@@ -184,6 +184,8 @@ Extract this zip into C:\Games - it creates:
   C:\Games\RynthSuite\RynthLua\      RynthLua plugin (Lua scripting; was part of RynthAi)
   C:\Games\RynthSuite\RynthOracle\   RynthOracle plugin (quests, character, titles; based on Oracle of Dereth by Advis Eveldan)
   C:\Games\RynthSuite\RynthInventory\ RynthInventory plugin (search every character's items)
+  C:\Games\RynthSuite\RynthSort\     RynthSort plugin (keeps your packs sorted; replaces the RynthSort Lua script)
+  C:\Games\RynthSuite\RynthILT\      RynthILT plugin (Infinite Leaftide only: the Bounties window's tracker)
   C:\Games\RynthCore\NavData\        RynthNav's portals and Atlas
 
 Then, in the RynthCore launcher's Plugins tab, add the full path of each
@@ -270,6 +272,8 @@ $pluginDescriptions = @{
     RynthLua       = "Lua scripting for metas and your own scripts."
     RynthOracle    = "Quests, character, titles and leaderboards."
     RynthInventory = "Search every character's items."
+    RynthSort      = "Keeps your packs sorted: new loot goes to the pack its rule names."
+    RynthILT       = "Infinite Leaftide only: tracks your ACECustom bounties for the Bounties window."
 }
 # Plugin manifests (embedded in each DLL by the SDK's build targets): each plugin's minEngineApi
 # goes into its feed entry, and the core entry says its engine's API ("engineApi"), so launchers

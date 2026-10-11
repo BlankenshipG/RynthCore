@@ -8,7 +8,7 @@ namespace DecalBridgeCheckTests;
 /// (2026-10-03, release 2026.10.3.1) is "elevated client, per-user registration only":
 /// Decal reads HKLM, the per-user entry is invisible, the bridge never loads.
 /// </summary>
-internal static class Program
+internal static partial class Program
 {
     private static int _checks, _failed;
 
@@ -286,6 +286,8 @@ internal static class Program
             Check(RealDecalCheckHost.LevelIn("<requestedExecutionLevel uiAccess='false' level='requireAdministrator' />") == "requireAdministrator", "single quotes, other order");
             Check(RealDecalCheckHost.LevelIn("<assembly><description>x</description></assembly>") == null, "no element");
         });
+
+        RegistrationScenarios();
 
         Console.WriteLine();
         Console.WriteLine(_failed == 0 ? $"PASS: {_checks} checks" : $"FAIL: {_failed} of {_checks} checks failed");

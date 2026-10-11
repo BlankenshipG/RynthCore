@@ -7,7 +7,7 @@
 //    Routes    one tab per destination: webhook URL, or bot token + channel ID;
 //              which speech channels and which chat tabs it gets, keywords,
 //              and optionally its own pacing; Send test / Resume
-//    Settings  who relays (character filter, your own lines, hidden lines),
+//    Settings  who relays (the characters it's on for, your own lines, hidden lines),
 //              the message format, and the default pacing and limits
 //    Log       messages sent, rate limits and errors
 //
@@ -34,13 +34,14 @@ internal sealed class ChatDiscordFace : IImGuiPanel
     public const string Title = "Discord";
 
     public static void Register() => ImGuiPanelHost.Register(Title,
-        new PanelSpec(new Vector2(560, 520), new Vector2(420, 300), OpenCentered: true),
+        new PanelSpec(new Vector2(560, 520), new Vector2(420, 300)),
         () => new ChatDiscordFace());
 
     private string _secretInput = string.Empty;
     private string _secretMessage = string.Empty;
     private bool _secretMessageIsError;
     private DiscordRoute? _secretFor;
+    private DiscordRoute? _confirmRemove;
     private int _lastLogCount;
 
     public void OnShown()
@@ -50,19 +51,18 @@ internal sealed class ChatDiscordFace : IImGuiPanel
         ChatDiscord.PanelShown(true);
     }
 
-    public void OnHidden() => ChatDiscord.PanelShown(false);
+    public void OnHidden()
+    {
+        _confirmRemove = null;
+        ChatDiscord.PanelShown(false);
+    }
 
     public void Draw()
     {
         var s = ChatDiscord.Settings;
-        bool on = s.Enabled;
-        if (ImGuiNET.ImGui.Checkbox("Copy chat to Discord##dc_on", ref on)) ChatDiscord.SetEnabled(on);
-        ImGuiNET.ImGui.SetItemTooltip("Master switch. Off: nothing is queued or sent (Send test still works while this panel is open).");
+        DrawSwitch();
         ImGuiNET.ImGui.SameLine();
         Label("| " + ChatDiscord.StatusLine(), Mute);
-        string me = ChatDiscord.CharacterName;
-        if (me.Length > 0 && !DiscordFormat.CharacterAllowed(s.OnlyCharacters, me))
-            Wrapped($"{me} isn't in \"Only these characters\" (Settings tab), so this client relays nothing.", Amber);
         ImGuiNET.ImGui.Separator();
 
         if (ImGuiNET.ImGui.BeginTabBar("##dc_tabs"))
@@ -72,6 +72,24 @@ internal sealed class ChatDiscordFace : IImGuiPanel
             if (ImGuiNET.ImGui.BeginTabItem("Log")) { DrawLog(); ImGuiNET.ImGui.EndTabItem(); }
             ImGuiNET.ImGui.EndTabBar();
         }
+    }
+
+    /// <summary>
+    /// This character's switch (the relay is off for every character until each is switched on).
+    /// Shared by the Chat panel's gear menu.
+    /// </summary>
+    internal static void DrawSwitch()
+    {
+        DiscordCharacter? me = ChatDiscord.CurrentCharacter();
+        bool on = ChatDiscord.IsOn(me);
+        ImGuiNET.ImGui.BeginDisabled(me == null);
+        if (ImGuiNET.ImGui.Checkbox("Copy this character's chat to Discord##dc_on", ref on)) ChatDiscord.SetEnabled(on);
+        ImGuiNET.ImGui.EndDisabled();
+        if (me == null)
+            ImGuiNET.ImGui.SetItemTooltip("Log in first: the relay is switched on for one character at a time.");
+        else
+            ImGuiNET.ImGui.SetItemTooltip("On for this character only; every other character stays off until it's switched on too.\n" +
+                                          "Off: nothing from this character is queued or sent (Send test still works).");
     }
 
     // ── Routes ───────────────────────────────────────────────────────────
@@ -235,8 +253,25 @@ internal sealed class ChatDiscordFace : IImGuiPanel
 
         ImGuiNET.ImGui.Spacing();
         ImGuiNET.ImGui.Separator();
-        bool remove = ImGuiNET.ImGui.SmallButton("Remove route##r_remove");
-        ImGuiNET.ImGui.SetItemTooltip("Deletes this route and its saved credential.");
+        bool remove = false;
+        if (ReferenceEquals(_confirmRemove, r))
+        {
+            // The saved webhook URL / bot token goes with the route; there's no undo.
+            Label("Delete this route and its saved credential?", Amber);
+            ImGuiNET.ImGui.SameLine();
+            if (ImGuiNET.ImGui.SmallButton("Delete##r_remove_yes"))
+            {
+                remove = true;
+                _confirmRemove = null;
+            }
+            ImGuiNET.ImGui.SameLine();
+            if (ImGuiNET.ImGui.SmallButton("Cancel##r_remove_no")) _confirmRemove = null;
+        }
+        else
+        {
+            if (ImGuiNET.ImGui.SmallButton("Remove route##r_remove")) _confirmRemove = r;
+            ImGuiNET.ImGui.SetItemTooltip("Deletes this route and its saved credential (asks first).");
+        }
         return remove;
     }
 
@@ -312,11 +347,26 @@ internal sealed class ChatDiscordFace : IImGuiPanel
     private static void DrawSettings(ChatDiscordSettings s)
     {
         Heading("Who relays");
-        ImGuiNET.ImGui.SetNextItemWidth(300f);
-        Input("Only these characters##s_only", "blank = every character", ref s.OnlyCharacters, 400);
-        if (ImGuiNET.ImGui.IsItemDeactivatedAfterEdit()) ChatDiscord.Save();
-        ImGuiNET.ImGui.SetItemTooltip("Comma-separated character names. With several clients in one allegiance or fellowship,\n"
-                                      + "list just one of them so each line is posted once.");
+        Label(ChatDiscord.SwitchLine(), Text);
+        DiscordCharacter[] on = s.Characters;
+        if (on.Length == 0)
+            Label("Off for every character.", Mute);
+        else
+        {
+            Label("On for:", Mute);
+            DiscordCharacter? me = ChatDiscord.CurrentCharacter();
+            for (int i = 0; i < on.Length; i++)
+            {
+                DiscordCharacter c = on[i];
+                ImGuiNET.ImGui.PushID(i);
+                if (ImGuiNET.ImGui.SmallButton("Turn off##s_char_off")) ChatDiscord.TurnOffFor(c);
+                ImGuiNET.ImGui.SameLine();
+                Label(c.ToString() + (c.Same(me) ? " (this client)" : string.Empty), c.Same(me) ? Green : Text);
+                ImGuiNET.ImGui.PopID();
+            }
+        }
+        Wrapped("Each character is switched on by itself (the checkbox at the top while you play it, or /rc discord on). "
+                + "With several clients in one allegiance or fellowship, switch on just one of them so each line is posted once.", Mute);
         if (ImGuiNET.ImGui.Checkbox("Skip lines I type##s_own", ref s.SkipOwn)) ChatDiscord.Save();
         if (ImGuiNET.ImGui.Checkbox("Skip lines my chat rules hide##s_hidden", ref s.SkipHidden)) ChatDiscord.Save();
         ImGuiNET.ImGui.SetItemTooltip("Lines a Hide rule or standard filter hides in the chat aren't sent either.");
@@ -341,7 +391,8 @@ internal sealed class ChatDiscordFace : IImGuiPanel
         if (ImGuiNET.ImGui.IsItemDeactivatedAfterEdit()) ChatDiscord.Save();
 
         ImGuiNET.ImGui.Spacing();
-        Wrapped("Shared by every client and character (%AppData%\\RynthCore\\rynthchat_discord.json). Webhook URLs and bot tokens "
+        Wrapped("Routes and settings are shared by every client and character (%AppData%\\RynthCore\\rynthchat_discord.json); "
+                + "the on / off switch is per character. Webhook URLs and bot tokens "
                 + "are encrypted for this Windows user; on another PC or user they must be pasted again.", Mute);
         Wrapped("Relayed text never pings: @everyone, @here and user mentions are sent as plain text, and links don't unfurl.", Mute);
     }
@@ -386,7 +437,8 @@ internal sealed class ChatDiscordFace : IImGuiPanel
             ImGuiNET.ImGui.SameLine();
             Label(e.Route, col);
             ImGuiNET.ImGui.SameLine();
-            ImGuiNET.ImGui.TextWrapped(e.Text);
+            // Relayed chat and Discord's replies: never a format string (see Wrapped).
+            WrappedUnformatted(e.Text);
         }
         // Follow new lines unless the player scrolled up.
         if (log.Length != _lastLogCount && ImGuiNET.ImGui.GetScrollY() >= ImGuiNET.ImGui.GetScrollMaxY() - 20f)
@@ -403,11 +455,23 @@ internal sealed class ChatDiscordFace : IImGuiPanel
         Label(text, Teal);
     }
 
+    /// <summary>
+    /// Wrapped text in <paramref name="color"/>. ImGui.NET's TextWrapped / Text / TextColored pass
+    /// their string to ImGui as a printf format, so chat or an error Discord sent back holding
+    /// "%s" would crash the client. Everything here goes through TextUnformatted.
+    /// </summary>
     private static void Wrapped(string text, uint color)
     {
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, color);
-        ImGuiNET.ImGui.TextWrapped(text);
+        WrappedUnformatted(text);
         ImGuiNET.ImGui.PopStyleColor();
+    }
+
+    private static void WrappedUnformatted(string text)
+    {
+        ImGuiNET.ImGui.PushTextWrapPos(0f);
+        ImGuiNET.ImGui.TextUnformatted(text);
+        ImGuiNET.ImGui.PopTextWrapPos();
     }
 
     /// <summary>A text box that keeps the keyboard from AC while it's being typed in.</summary>

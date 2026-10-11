@@ -70,7 +70,10 @@ internal sealed record PanelSpec(
     // With nothing saved and no DefaultPos: open centred in the game view rather
     // than in the top-left cascade, where popped-out panels (separate windows
     // above the game frame) usually sit and would hide it.
-    bool OpenCentered = false);
+    bool OpenCentered = false,
+    // No resize grip, docked or popped out: the face sizes itself (the RynthNav arrow
+    // fits its height to what it shows). Chromeless and GripInBody panels only.
+    bool NoResize = false);
 
 /// <summary>An ImGui panel face. One instance per open; dropped on close.</summary>
 internal interface IImGuiPanel
@@ -632,7 +635,7 @@ internal static class ImGuiPanelHost
         bool standard = entry.Spec.Chrome == PanelChrome.Standard;
         int caption = standard ? (int)(RynthTheme.HeaderHeight * s) : 0;
         int buttons = standard ? (int)HeaderButtonsWidth(entry, s, popped: true) : 0;
-        ImGuiPopOuts.Open(entry.Title, left, top, (int)size.X, (int)size.Y, caption, buttons, s);
+        ImGuiPopOuts.Open(entry.Title, left, top, (int)size.X, (int)size.Y, caption, buttons, s, resizable: !entry.Spec.NoResize);
         entry.Popped = true;
         PersistPopped(entry, open: true, left, top, (int)size.X, (int)size.Y, placeScale);
     }
@@ -895,7 +898,8 @@ internal static class ImGuiPanelHost
             // A GripInBody face (standard chrome, no strip under the body) is handled
             // the same way, over the corner the face leaves free.
             bool inlineGrip = standard && spec.GripInBody;
-            bool manualGrip = (!standard || inlineGrip) && !clickThrough && !popped;   // popped: the window resizes itself
+            bool manualGrip = (!standard || inlineGrip) && !clickThrough && !popped   // popped: the window resizes itself
+                && !spec.NoResize;
             Vector2 outerPos = ImGuiNET.ImGui.GetWindowPos(), outerSize = ImGuiNET.ImGui.GetWindowSize();
             float gSize = GripSize(entry, uiScale);
             Vector2 gMin = GripMin(entry, uiScale, outerPos + outerSize);

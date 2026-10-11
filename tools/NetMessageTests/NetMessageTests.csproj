@@ -34,6 +34,8 @@
     <Compile Include="..\..\src\RynthCore.Engine\Net\PacketRing.cs" Link="Engine\PacketRing.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Net\FragmentReassembler.cs" Link="Engine\FragmentReassembler.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Net\ServerMessageInterest.cs" Link="Engine\ServerMessageInterest.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\Net\InventoryOrder.cs" Link="Engine\InventoryOrder.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\Net\AelrynthVaultWire.cs" Link="Engine\AelrynthVaultWire.cs" />
   </ItemGroup>
 
 </Project>

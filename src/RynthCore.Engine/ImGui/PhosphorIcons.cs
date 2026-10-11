@@ -92,6 +92,7 @@ internal static unsafe class PhosphorIcons
     public const string Info = "\uE2CE";
     public const string Knife = "\uE636";
     public const string Lightning = "\uE2DE";
+    public const string Leaf = "\uE2DA";
     public const string ListChecks = "\uEADC";
     public const string Lock = "\uE2FA";
     public const string LockOpen = "\uE306";
@@ -167,7 +168,7 @@ internal static unsafe class PhosphorIcons
         + ArrowCircleUp + Barbell + Brain + GraduationCap + Hourglass + SortDescending + Package
         + Binoculars + Crown + Sun
         + CastleTurret + ClockCounterClockwise + GlobeHemisphereWest + Path + Star + Target + User
-        + TextAa;
+        + TextAa + Leaf;
 
     /// <summary>
     /// Draws <paramref name="glyph"/> (one icon) centred in the box at

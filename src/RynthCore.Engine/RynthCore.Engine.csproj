@@ -72,6 +72,8 @@
     <!-- Overrides Avalonia.FreeDesktop transitive Tmds.DBus.Protocol (NU1903 / GHSA-xrw6-gwf8-vvr9). -->
     <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
     <PackageReference Include="Avalonia.AvaloniaEdit" Version="11.2.0" />
+    <!-- Avalonia pulls Tmds.DBus.Protocol 0.20.0 (GHSA-xrw6-gwf8-vvr9; D-Bus is Linux-only, but pin the fixed version). -->
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
   </ItemGroup>
 
   <ItemGroup>
@@ -165,8 +167,8 @@
   </Target>
 
   <ItemGroup>
-    <!-- Install-location resolver (installer-chosen RynthCore / RynthSuite folders). -->
-    <Compile Include="..\RynthCore.App\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <!-- Install-folder resolver (env, HKCU, HKLM, default C:\Games). Read only; same file in RynthSuite Plugins\Shared. -->
+    <Compile Include="..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
   </ItemGroup>
 
 </Project>

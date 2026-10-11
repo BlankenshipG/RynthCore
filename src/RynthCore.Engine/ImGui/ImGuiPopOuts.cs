@@ -148,7 +148,7 @@ internal static unsafe class ImGuiPopOuts
     /// current (its font atlas is shared). AC thread.
     /// </summary>
     public static void Open(string title, int left, int top, int width, int height, int captionHeight, int captionRightInset, float uiScale,
-        Action<float, Vector2>? draw = null, Action<int, int>? onMoved = null, bool sizeToContent = false)
+        Action<float, Vector2>? draw = null, Action<int, int>? onMoved = null, bool sizeToContent = false, bool resizable = true)
     {
         if (Pops.ContainsKey(title)) return;
         IntPtr main = ImGuiNET.ImGui.GetCurrentContext();
@@ -173,7 +173,7 @@ internal static unsafe class ImGuiPopOuts
             Title = title, Context = ctx,
             Left = left, Top = top, Width = Math.Max(80, width), Height = Math.Max(40, height),
             CaptionHeight = captionHeight, CaptionRightInset = captionRightInset,
-            Draw = draw, OnMoved = onMoved, SizeToContent = sizeToContent, ResizeGrip = !sizeToContent,
+            Draw = draw, OnMoved = onMoved, SizeToContent = sizeToContent, ResizeGrip = resizable && !sizeToContent,
         };
         Pops[title] = pop;
         Order.Add(pop);
@@ -676,7 +676,7 @@ internal static unsafe class ImGuiPopOuts
     public static string? RequestSnapshot(string title)
     {
         if (!Pops.TryGetValue(title, out PopOut? pop)) return null;
-        string path = System.IO.Path.Combine(@"C:\Games\RynthCore\Logs", $"popout_{title.Replace(' ', '_')}.bmp");
+        string path = System.IO.Path.Combine(LogPaths.LogDirectory, $"popout_{title.Replace(' ', '_')}.bmp");
         pop.Surface.SnapshotPath = path;
         pop.HotFrames = Math.Max(pop.HotFrames, 2);
         return path;

@@ -3,7 +3,7 @@
 //  ImGui face of the RynthAi dashboard (docs/IMGUI_PARITY_PLAN.md §2.1),
 //  first laid out from the Avalonia face (UI/Panels/RynthAiPanel.cs), then
 //  made compact with Phosphor icons, after DrakBot's dashboard. Top to bottom:
-//    title row    RYNTHAI DASHBOARD | target, vitals, lock, opacity -/+,
+//    title row    RYNTH | target, vitals, lock, opacity -/+,
 //                 minimize, pop out
 //    header grid  popped out only: meta state, bot activity | pickers (docked,
 //                 they are the Loaded files drawer)
@@ -170,7 +170,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         }
     }
 
-    // ── Title row: "R" + "YNTHAI DASHBOARD" | chips (drag surface) ──────
+    // ── Title row: "R" + "YNTH" | chips (drag surface) ──────
 
     private void TitleRow(RynthAiSnapshot raw, float x0, float width, bool minimized)
     {
@@ -191,7 +191,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         dl.PushClipRect(new Vector2(x0, y), new Vector2(x0 + Math.Max(1, width - chipsW - 4), y + rowH), true);
         dl.AddText(title, title.FontSize, new Vector2(x0, ty), Teal, "R");
         float rw = CalcWidth(title, "R");
-        dl.AddText(title, title.FontSize, new Vector2(x0 + rw, ty), White, "YNTHAI DASHBOARD");
+        dl.AddText(title, title.FontSize, new Vector2(x0 + rw, ty), White, "YNTH");
         dl.PopClipRect();
 
         float cx = x0 + width - chipsW;
@@ -599,19 +599,45 @@ internal sealed partial class RynthAiFace : IImGuiPanel
 
     // ── Footer: FPS | version | uptime ─────────────────────────────────────
 
+    private static string Clock(TimeSpan t) =>
+        t.TotalHours >= 1 ? $"{(int)t.TotalHours}:{t.Minutes:D2}:{t.Seconds:D2}" : $"{t.Minutes}:{t.Seconds:D2}";
+
+    private static DateTime _clientStartedUtc = DateTime.MinValue;
+    private static bool _clientStartRead;
+
+    /// <summary>When acclient.exe started (read once; MinValue if Windows won't say).</summary>
+    private static DateTime ClientStartedUtc()
+    {
+        if (_clientStartRead) return _clientStartedUtc;
+        _clientStartRead = true;
+        try
+        {
+            using var p = System.Diagnostics.Process.GetCurrentProcess();
+            _clientStartedUtc = p.StartTime.ToUniversalTime();
+        }
+        catch { _clientStartedUtc = DateTime.MinValue; }
+        return _clientStartedUtc;
+    }
+
     private void Footer(RynthAiView? view, float x0, float width)
     {
         int fps = (int)MathF.Round(D3D9.EndSceneHook.MeasuredFps);
         if (fps != _fpsShown) { _fpsShown = fps; _fpsText = fps > 0 ? $"FPS {fps}" : "FPS —"; }
+        // Bot: since this engine loaded (a hot reload restarts it). Client: since the game client
+        // started (2026-10-08), which a reload doesn't touch.
         DateTime started = EntryPoint.InitStartedUtc;
         if (started != DateTime.MinValue)
         {
-            TimeSpan up = DateTime.UtcNow - started;
+            DateTime now = DateTime.UtcNow;
+            TimeSpan up = now - started;
             long secs = (long)up.TotalSeconds;
             if (secs != _upShown)
             {
                 _upShown = secs;
-                _upText = up.TotalHours >= 1 ? $"Up {(int)up.TotalHours}:{up.Minutes:D2}:{up.Seconds:D2}" : $"Up {up.Minutes}:{up.Seconds:D2}";
+                DateTime client = ClientStartedUtc();
+                _upText = client != DateTime.MinValue
+                    ? $"Bot {Clock(up)}  Client {Clock(now - client)}"
+                    : $"Up {Clock(up)}";
             }
         }
         var dl = ImGuiNET.ImGui.GetWindowDrawList();

@@ -185,6 +185,8 @@ internal sealed class InventoryRequest
     public uint TargetId;
     /// <summary>Split: how many to split off. Give: 0 = the whole stack.</summary>
     public int Amount;
+    /// <summary>Move: the slot in the target pack the item should end at (the server's order), or -1 for the first empty one.</summary>
+    public int Slot = -1;
     public string ItemName = string.Empty;
     public string TargetName = string.Empty;
 }
@@ -249,6 +251,9 @@ internal static class InventoryModel
     public static InventoryPending? Pending => Volatile.Read(ref _pending);
     public static InventoryResult? LastResult => Volatile.Read(ref _result);
     public static InventoryTarget? Target => Volatile.Read(ref _target);
+    /// <summary>The object selected in the game when it is one of the character's items, else 0 (4 Hz while subscribed).</summary>
+    public static uint SelectedItem => Volatile.Read(ref _selectedItem);
+    private static uint _selectedItem;
     public static bool DropAvailable => ClientHelperHooks.HasDropItem;
     public static bool GiveAvailable => ClientHelperHooks.HasGiveObjectTo;
     public static bool WieldAvailable => ClientHelperHooks.HasWieldItem;
@@ -571,7 +576,12 @@ internal static class InventoryModel
         if (burden < 0) { view.BurdenText = "?"; view.BurdenTip = "Burden not known yet."; }
         else if (capacity > 0)
         {
-            int pct = (int)Math.Round(100.0 * burden / capacity);
+            // Retail's own arithmetic (OpenAC BurdenMath.LoadToPercent, checked against the retail panel): the
+            // load ratio in single precision, the meter's fill (0-300%), and the percent shown is that rounded
+            // DOWN. Rounding to nearest showed 36 where retail showed 35.
+            float load = (float)burden / capacity;
+            float fill = Math.Clamp(load / 3f, 0f, 1f);
+            int pct = (int)MathF.Floor(fill * 300f);
             view.BurdenText = pct.ToString(CultureInfo.InvariantCulture) + "%";
             view.BurdenTip = $"Burden {burden:N0} of {capacity:N0} ({pct}%). Over 100% you move slower; 300% is the limit.";
         }
@@ -662,6 +672,7 @@ internal static class InventoryModel
     {
         uint sel = ClientHelperHooks.GetSelectedItemId();
         uint player = ClientHelperHooks.GetPlayerId();
+        Volatile.Write(ref _selectedItem, sel != 0 && _items.ContainsKey(sel) ? sel : 0u);
         InventoryTarget? cur = _target;
         if (sel == 0 || sel == player || _items.ContainsKey(sel)
             || !ClientObjectHooks.TryGetItemType(sel, out uint type) || (type & 0x10u) == 0)   // creatures and players only
@@ -817,10 +828,14 @@ internal static class InventoryModel
                     Finish("That pack is gone.", false, now);
                     return;
                 }
-                if (f.Container == r.TargetId && !worn) { Finish($"{r.ItemName} is already there.", true, now); return; }
+                if (f.Container == r.TargetId && !worn && r.Slot < 0) { Finish($"{r.ItemName} is already there.", true, now); return; }
                 int amount = Math.Max(1, (int)f.StackSize);
-                // The helper refuses (false) a full pack of the player's own before sending.
-                ok = ClientHelperHooks.MoveItemInternal(r.ItemId, r.TargetId, 0, amount);
+                // A slot (a drop on a cell of the grid, or a reorder) goes out as the packet itself; the
+                // server answers a full pack or a wrong kind of item. Without one the helper picks the
+                // first empty slot, and refuses (false) a full pack of the player's own before sending.
+                ok = r.Slot >= 0 && ClientHelperHooks.HasPutItemInContainer
+                    ? ClientHelperHooks.PutItemInContainerAt(r.ItemId, r.TargetId, r.Slot)
+                    : ClientHelperHooks.MoveItemInternal(r.ItemId, r.TargetId, 0, amount);
                 if (!ok) { Finish($"{r.TargetName} is full, or the move isn't possible.", false, now); return; }
                 break;
             }

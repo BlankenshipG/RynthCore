@@ -83,12 +83,12 @@ internal sealed partial class MetaFace
 
         Separator(w);
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
-        const float newW = 80;
+        float newW = BtnW(PhosphorIcons.Plus + " New Rule", 80);
         if (Button(PhosphorIcons.Plus + " New Rule##sched_new", new Vector2(p.X, p.Y), new Vector2(newW, 24), TextDim, NewFill, Green))
             OpenScheduleEditor(-1, new ScheduleRuleDto { Meta = FirstMetaFile() });
         if (sc.Rules.Count > 0)
         {
-            if (Button(PhosphorIcons.ArrowCounterClockwise + " Re-arm all##sched_reset", new Vector2(p.X + newW + 4, p.Y), new Vector2(86, 24),
+            if (Button(PhosphorIcons.ArrowCounterClockwise + " Re-arm all##sched_reset", new Vector2(p.X + newW + 4, p.Y), new Vector2(BtnW(PhosphorIcons.ArrowCounterClockwise + " Re-arm all", 86), 24),
                     Mute, BtnFill, BtnBord))
                 MetaCommands.Simple("mm_reset", -1);
             ImGuiNET.ImGui.SetItemTooltip("Clear every rule's fired / error / holding state");

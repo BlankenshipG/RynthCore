@@ -26,7 +26,7 @@ internal sealed unsafe class CountOnly : IServerMessageSink
     }
 }
 
-internal static unsafe class Program
+internal static unsafe partial class Program
 {
     private static int _checks, _failed;
     private static string _case = "";
@@ -68,6 +68,8 @@ internal static unsafe class Program
         SystemTextAndConfirmation();
         TruncationNeverThrows();
         EndToEndGameEvents();
+        InventoryOrderTests();
+        VaultWireTests();
 
         // Captures given on the command line
         foreach (string path in args)

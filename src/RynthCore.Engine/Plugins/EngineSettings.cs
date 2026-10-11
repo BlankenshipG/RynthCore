@@ -21,7 +21,7 @@ internal static class EngineSettings
     private static bool _enableImGuiShell = true;
     private static bool _enablePlugins = true;
     private static bool _enableDatShareHook = true;
-    // Read-only: Save() leaves it to CopyUnownedFields, so a hand-set false survives launcher saves.
+    // Owned since f81fc8d: Save() writes it only when false (a hand-set false survives saves).
     private static bool _enableLargeAddressAlignmentFix = true;
     private static bool _enableAvaloniaOverlay = true;
     private static bool _enableD3D9Hook = true;
@@ -38,6 +38,17 @@ internal static class EngineSettings
     // "DisabledUiHooks": the UI hooks (Compatibility/UiHookRegistry) switched off by name.
     private static readonly HashSet<string> _disabledUiHooks = new(StringComparer.OrdinalIgnoreCase);
     private static bool _serverMessageStream = true;
+    private static bool _flightRecorder = true;
+    private static bool _insertReleasesUi;
+    // Read-only, like EnableLargeAddressAlignmentFix: only a hand-set value is written back.
+    private static int _maxHotReloads = ReloadCapNotice.DefaultMaxHotReloads;
+    // "IltServerNames" / "IltHosts": what counts as Infinite Leaftide (Compatibility/IltInfo.cs).
+    // null = not in the file: IltDetect's defaults.
+    private static List<string>? _iltServerNames;
+    private static List<string>? _iltHosts;
+    // "ReportEndpoint": where "Report a problem" posts (Report/ProblemReport.cs); null = the built-in URL.
+    // For testing only (https, or http to this PC); read only, like MaxHotReloads.
+    private static string? _reportEndpoint;
     private static bool _loaded;
 
     public static IReadOnlyList<string> PluginPaths
@@ -330,6 +341,88 @@ internal static class EngineSettings
         }
     }
 
+    /// <summary>"FlightRecorder" in engine.json (default true): the always-on flight recorder
+    /// (Net/FlightRecorder.cs, /rc flightdump): a sendto hook plus a ring of the last minutes of
+    /// client/server traffic and engine markers. false = no sendto hook and nothing recorded,
+    /// from the next client start.</summary>
+    public static bool FlightRecorder
+    {
+        get
+        {
+            EnsureLoaded();
+            return _flightRecorder;
+        }
+    }
+
+    /// <summary>"InsertReleasesUi" in engine.json (default false, 2026-10-08): Insert hands the
+    /// mouse to the game (the UI/GAME toggle, Win32Backend), for clicking through a Rynth window.
+    /// Off, Insert does nothing: a stray press left every Rynth text box unable to keep the
+    /// keyboard, which read as "can't type in Rynth". Set in game in Settings > Display.</summary>
+    public static bool InsertReleasesUi
+    {
+        get
+        {
+            EnsureLoaded();
+            return _insertReleasesUi;
+        }
+        set
+        {
+            EnsureLoaded();   // populate _pluginPaths before Save() rewrites the file
+            if (_insertReleasesUi == value) return;
+            _insertReleasesUi = value;
+            Save();
+        }
+    }
+
+    /// <summary>"MaxHotReloads" in engine.json (default 3, 2026-10-11): how many engine hot reloads
+    /// one client takes; the loader asks before each one (RynthCoreMaxHotReloads) and refuses the
+    /// rest, so a newer engine then needs a client restart. Clients died with CoreCLR fatal error
+    /// 0x80131506 after 4+ reloads in one process. Negative = no cap (test clients soaking
+    /// reloads), 0 = no hot reloads at all. Read at each engine init; edited in the file.</summary>
+    public static int MaxHotReloads
+    {
+        get
+        {
+            EnsureLoaded();
+            return _maxHotReloads;
+        }
+    }
+
+    /// <summary>"ReportEndpoint" in engine.json: a test URL for "Report a problem" instead of the
+    /// built-in https://aelrynth.com/rynth/report (ProblemReportCore.ResolveEndpoint accepts https,
+    /// or http to this PC; anything else is ignored). Null when the file has none. Edited in the file.</summary>
+    public static string? ReportEndpoint
+    {
+        get
+        {
+            EnsureLoaded();
+            return _reportEndpoint;
+        }
+    }
+
+    /// <summary>"IltServerNames" in engine.json: world-name patterns ('*' wildcard, case-insensitive)
+    /// treated as Infinite Leaftide; null when the file has none (IltDetect.DefaultServerNames).
+    /// An empty array turns the world-name signal off. Read only: edited in the file.</summary>
+    public static IReadOnlyList<string>? IltServerNames
+    {
+        get
+        {
+            EnsureLoaded();
+            return _iltServerNames;
+        }
+    }
+
+    /// <summary>"IltHosts" in engine.json: launch hosts (a domain covers its subdomains, '*' allowed)
+    /// treated as Infinite Leaftide; null when the file has none (IltDetect.DefaultHosts).</summary>
+    public static IReadOnlyList<string>? IltHosts
+    {
+        get
+        {
+            EnsureLoaded();
+            return _iltHosts;
+        }
+    }
+
     public static void AddPluginPath(string path)
     {
         EnsureLoaded();
@@ -468,11 +561,37 @@ internal static class EngineSettings
                 (smsEl.ValueKind == JsonValueKind.True || smsEl.ValueKind == JsonValueKind.False))
                 _serverMessageStream = smsEl.GetBoolean();
 
+            if (doc.RootElement.TryGetProperty("FlightRecorder", out var frEl) &&
+                (frEl.ValueKind == JsonValueKind.True || frEl.ValueKind == JsonValueKind.False))
+                _flightRecorder = frEl.GetBoolean();
+
+            if (doc.RootElement.TryGetProperty("InsertReleasesUi", out var iruEl) &&
+                (iruEl.ValueKind == JsonValueKind.True || iruEl.ValueKind == JsonValueKind.False))
+                _insertReleasesUi = iruEl.GetBoolean();
+
+            if (doc.RootElement.TryGetProperty("MaxHotReloads", out var mhrEl) &&
+                mhrEl.ValueKind == JsonValueKind.Number &&
+                mhrEl.TryGetInt32(out int mhr))
+                _maxHotReloads = mhr;
+
+            if (doc.RootElement.TryGetProperty("ReportEndpoint", out var repEl) &&
+                repEl.ValueKind == JsonValueKind.String &&
+                repEl.GetString() is { Length: > 0 } rep)
+                _reportEndpoint = rep.Trim();
+
             if (doc.RootElement.TryGetProperty("PreventIdleLogoff", out var pilEl) &&
                 (pilEl.ValueKind == JsonValueKind.True || pilEl.ValueKind == JsonValueKind.False))
             {
                 _preventIdleLogoff = pilEl.GetBoolean();
             }
+
+            if (doc.RootElement.TryGetProperty("IltServerNames", out var ilnEl) &&
+                ilnEl.ValueKind == JsonValueKind.Array)
+                _iltServerNames = ReadStringList(ilnEl);
+
+            if (doc.RootElement.TryGetProperty("IltHosts", out var ilhEl) &&
+                ilhEl.ValueKind == JsonValueKind.Array)
+                _iltHosts = ReadStringList(ilhEl);
 
             if (doc.RootElement.TryGetProperty("DisabledUiHooks", out var duhEl) &&
                 duhEl.ValueKind == JsonValueKind.Array)
@@ -497,6 +616,34 @@ internal static class EngineSettings
             RynthLog.Plugin($"EngineSettings: Failed to load {SettingsPath}: {ex.Message}");
         }
     }
+
+    private static List<string> ReadStringList(JsonElement arr)
+    {
+        // Trimmed, blanks dropped, case-insensitive duplicates dropped (the file stays as the player wrote it).
+        var list = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var el in arr.EnumerateArray())
+        {
+            if (el.ValueKind != JsonValueKind.String) continue;
+            string v = (el.GetString() ?? "").Trim();
+            if (v.Length > 0 && seen.Add(v)) list.Add(v);
+        }
+        return list;
+    }
+
+    /// <summary>Every engine.json key EnsureLoaded reads or Save writes. Save rewrites these from
+    /// memory (one written only when not the default is left out, as before) and keeps every
+    /// other key as the file had it. A new engine.json setting goes here too
+    /// (tools/EngineSettingsTests checks this list against this file).</summary>
+    internal static readonly HashSet<string> OwnedKeys = new(StringComparer.Ordinal)
+    {
+        "PluginPaths", "EnableImGuiShell", "EnablePlugins", "EnableDatShareHook",
+        "EnableAvaloniaOverlay", "EnableD3D9Hook", "EnableEngine", "EngineHookCount",
+        "EnableImGuiBackend", "EnableHangMinidump", "PreventIdleLogoff", "DecalBridge",
+        "DecalInGameImGui", "DecalStandDown", "DisabledUiHooks", "ServerMessageStream",
+        "FlightRecorder", "InsertReleasesUi", "IltServerNames", "IltHosts", "EnableLargeAddressAlignmentFix",
+        "MaxHotReloads", "ReportEndpoint", "EnablePluginOverlayWindows", "LoggingLevel",
+    };
 
     private static void Save()
     {
@@ -526,7 +673,6 @@ internal static class EngineSettings
                 w.WriteBoolean("PreventIdleLogoff", _preventIdleLogoff);
                 // Preserve the launcher-chosen level; dropping it here would reset logging to Info.
                 w.WriteString("LoggingLevel", _loggingLevel);
-                CopyUnownedFields(w);
                 if (_decalBridgeMode != DecalBridgeMode.Auto)   // default: leave the file as it was
                     w.WriteString("DecalBridge", _decalBridgeMode.ToString());
                 if (!_decalInGameImGui)   // default true: leave the file as it was
@@ -542,9 +688,30 @@ internal static class EngineSettings
                 }
                 if (!_serverMessageStream) // default true: leave the file as it was
                     w.WriteBoolean("ServerMessageStream", false);
+                if (!_flightRecorder)      // default true: leave the file as it was
+                    w.WriteBoolean("FlightRecorder", false);
+                if (!_enableLargeAddressAlignmentFix)   // default true: only a hand-set false is written
+                    w.WriteBoolean("EnableLargeAddressAlignmentFix", false);
+                if (_insertReleasesUi)     // default false: leave the file as it was
+                    w.WriteBoolean("InsertReleasesUi", true);
+                if (_maxHotReloads != ReloadCapNotice.DefaultMaxHotReloads)   // only a hand-set value is written
+                    w.WriteNumber("MaxHotReloads", _maxHotReloads);
+                if (_reportEndpoint != null)   // only a hand-set value is written
+                    w.WriteString("ReportEndpoint", _reportEndpoint);
+                WriteStringList(w, "IltServerNames", _iltServerNames);   // null (not in the file): left out
+                WriteStringList(w, "IltHosts", _iltHosts);
                 w.WriteEndObject();
             }
-            File.WriteAllBytes(SettingsPath, ms.ToArray());
+
+            // Keep the keys others write (the launcher's), and swap the file in atomically.
+            string? existing = File.Exists(SettingsPath) ? File.ReadAllText(SettingsPath) : null;
+            byte[]? merged = EngineSettingsFile.Merge(existing, ms.ToArray(), OwnedKeys, out string? readError);
+            if (merged == null)
+            {
+                RynthLog.Warn($"EngineSettings: not saving - {SettingsPath} can't be read ({readError}), and rewriting it would lose what it holds. The change holds until the client closes; fix or delete the file to save again.");
+                return;
+            }
+            EngineSettingsFile.WriteAtomic(SettingsPath, merged);
         }
         catch (Exception ex)
         {
@@ -552,35 +719,13 @@ internal static class EngineSettings
         }
     }
 
-    // Fields Save() writes itself; everything else in engine.json belongs to the launcher
-    // (LogCategories, EnableDcompOverlay, ...) and is copied through untouched.
-    private static readonly string[] OwnedFields =
+    private static void WriteStringList(Utf8JsonWriter w, string name, List<string>? list)
     {
-        "PluginPaths", "EnableImGuiShell", "EnablePlugins", "EnableDatShareHook", "EnableAvaloniaOverlay",
-        "EnableD3D9Hook", "EnableEngine", "EngineHookCount", "EnableImGuiBackend", "EnablePluginOverlayWindows",
-        "EnableHangMinidump", "DrawCustomVitalBars", "PreventIdleLogoff", "LoggingLevel",
-        // Save() writes these only when non-default, so copying them through would duplicate keys.
-        "DecalBridge", "DecalInGameImGui", "DecalStandDown",
-    };
-
-    /// <summary>Writes every top-level engine.json field not in <see cref="OwnedFields"/> as-is.</summary>
-    private static void CopyUnownedFields(Utf8JsonWriter w)
-    {
-        try
-        {
-            if (!File.Exists(SettingsPath)) return;
-            using var doc = JsonDocument.Parse(File.ReadAllText(SettingsPath));
-            if (doc.RootElement.ValueKind != JsonValueKind.Object) return;
-            foreach (JsonProperty p in doc.RootElement.EnumerateObject())
-            {
-                if (Array.IndexOf(OwnedFields, p.Name) >= 0) continue;
-                p.WriteTo(w);
-            }
-        }
-        catch
-        {
-            // Unreadable file: write only the owned fields (previous behaviour).
-        }
+        if (list == null) return;
+        w.WriteStartArray(name);
+        foreach (string v in list)
+            w.WriteStringValue(v);
+        w.WriteEndArray();
     }
 }
 

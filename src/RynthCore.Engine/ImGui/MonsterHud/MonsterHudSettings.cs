@@ -56,6 +56,8 @@ internal static class MonsterHudSettings
     public static float NpcMaxDistance = 30f;    // yards; short so a town isn't a wall of text
     public static int MaxNpcLabels = 15;
     public static bool PlayerNames = false;
+    /// <summary>A health bar under other players' names, for those whose health the client has been told (selected, fellowship).</summary>
+    public static bool PlayerBars = false;
 
     // Debuff icons on the monster plates (PlateDebuffs).
     public static bool ShowDebuffs = true;
@@ -196,6 +198,7 @@ internal static class MonsterHudSettings
                         MaxNpcLabels = Math.Clamp(nm, MinNpcLabels, MaxNpcLabelsLimit);
                     break;
                 case "playerNames": PlayerNames = val == "1"; break;
+                case "playerBars": PlayerBars = val == "1"; break;
                 case "showDebuffs": ShowDebuffs = val == "1"; break;
                 case "showOthersDebuff": ShowOthersDebuff = val == "1"; break;
                 case "selfPlate": SelfPlate = val == "1"; break;
@@ -277,6 +280,7 @@ internal static class MonsterHudSettings
         sw.WriteLine(FormattableString.Invariant($"npcDistance={NpcMaxDistance:0.#}"));
         sw.WriteLine(FormattableString.Invariant($"npcMax={MaxNpcLabels}"));
         sw.WriteLine($"playerNames={B(PlayerNames)}");
+        sw.WriteLine($"playerBars={B(PlayerBars)}");
         sw.WriteLine($"showDebuffs={B(ShowDebuffs)}");
         sw.WriteLine($"showOthersDebuff={B(ShowOthersDebuff)}");
         sw.WriteLine($"selfPlate={B(SelfPlate)}");
@@ -322,7 +326,7 @@ internal static class MonsterHudSettings
         ShowNames = true; ShowHpNumbers = true; ShowDistance = false; ShowLevel = true; ShowWeakness = true;
         FadeWithDistance = true; Scale = 1.0f; Opacity = 0.9f; HeightLift = 0f; ClickToSelect = true;
         ShowDebuffs = true; ShowOthersDebuff = true;
-        NpcNames = true; NpcMaxDistance = 30f; MaxNpcLabels = 15; PlayerNames = false;
+        NpcNames = true; NpcMaxDistance = 30f; MaxNpcLabels = 15; PlayerNames = false; PlayerBars = false;
         SelfPlate = true; SelfNumbers = false; SelfName = false; SelfHideFirstPerson = true;
         SelfPlacement = SelfPlacement.Fixed; SelfLocked = true; SelfFixedX = DefaultSelfFixedX; SelfFixedY = DefaultSelfFixedY;
         Numbers = true; NumDealt = true; NumTaken = true; NumHeals = true; NumKills = true;
@@ -359,7 +363,7 @@ internal static class MonsterHudSettings
     public static void SetAll(bool on)
     {
         Enabled = on; ShowDebuffs = on; SelfPlate = on; Numbers = on; Gains = on; NpcNames = on;
-        if (!on) PlayerNames = false;   // "all on" leaves player names as chosen (off by default)
+        if (!on) { PlayerNames = false; PlayerBars = false; }   // "all on" leaves player names and bars as chosen (off by default)
     }
 
     /// <summary>One line for chat: the current state.</summary>
@@ -368,7 +372,7 @@ internal static class MonsterHudSettings
         $"{MaxDistance:0}yd, max {MaxPlates}, scale {Scale:0.##}, opacity {Opacity:0.##}, lift {HeightLift:0.#}m; " +
         $"names {OnOff(ShowNames)}, hp {OnOff(ShowHpNumbers)}, level {OnOff(ShowLevel)}, weak {OnOff(ShowWeakness)}, " +
         $"distance {OnOff(ShowDistance)}, fade {OnOff(FadeWithDistance)}, click to select {OnOff(ClickToSelect)}), debuffs {OnOff(ShowDebuffs)} (others {OnOff(ShowOthersDebuff)}); " +
-        $"NPC names {OnOff(NpcNames)} ({NpcMaxDistance:0}yd, max {MaxNpcLabels}), player names {OnOff(PlayerNames)}; " +
+        $"NPC names {OnOff(NpcNames)} ({NpcMaxDistance:0}yd, max {MaxNpcLabels}), player names {OnOff(PlayerNames)} (bars {OnOff(PlayerBars)}); " +
         $"self {OnOff(SelfPlate)} ({(SelfPlacement == SelfPlacement.Fixed ? "fixed on screen, " + (SelfLocked ? "locked" : "unlocked") : "follows you, " + SelfPosition.ToString().ToLowerInvariant())}, " +
         $"numbers {OnOff(SelfNumbers)}, name {OnOff(SelfName)}, hide in first person {OnOff(SelfHideFirstPerson)}); " +
         $"combat text {OnOff(Numbers)} (dealt {OnOff(NumDealt)}, taken {OnOff(NumTaken)}, heals {OnOff(NumHeals)}, kills {OnOff(NumKills)}); " +

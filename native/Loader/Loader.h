@@ -2,7 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-#define LOADER_VERSION "2.0"
+#define LOADER_VERSION "2.1"
 
 // Loader.c
 void LoaderLog(const char* level, const char* fmt, ...);

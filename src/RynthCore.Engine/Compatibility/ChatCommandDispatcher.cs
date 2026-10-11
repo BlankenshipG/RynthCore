@@ -57,6 +57,8 @@ internal static unsafe class ChatCommandDispatcher
     private const uint WM_KEYUP = 0x0101;
     private const uint WM_CHAR = 0x0102;
     private const int VK_RETURN = 0x0D;
+    /// <summary>ChatMessageType AC prints its own command notices in ("Someone must @tell you first!").</summary>
+    private const int ChatTypeNotice = 0x1A;
 
     /// <summary>
     /// When true, all commands are dispatched via keyboard simulation
@@ -169,6 +171,18 @@ internal static unsafe class ChatCommandDispatcher
                 finally { _inPluginPreDispatch = false; }
             }
 
+            // /reply (/r) and /retell (/rt) become a /tell to the last person who told you
+            // something / you told something (TellMemory.cs says why AC can't do them here).
+            if (TellMemory.Shared.TryRewrite(trimmed, out string? tellLine, out string? tellError))
+            {
+                if (tellLine == null)
+                {
+                    AcMainThreadQueue.EnqueueWriteToChat(tellError!, ChatTypeNotice);
+                    return false;
+                }
+                trimmed = tellLine;
+            }
+
             // Direct Chat Input mode — everything goes through keyboard sim
             if (UseDirectChatInput)
                 return SimulateChatInput(trimmed);
@@ -189,9 +203,11 @@ internal static unsafe class ChatCommandDispatcher
             if (StartsWithCmd(trimmed, "/tell "))
                 return DispatchTell(trimmed.Substring(6));
 
-            // /a message (allegiance channel broadcast)
+            // /a message (allegiance): AC's own chat command, like /f. Event_ChannelBroadcast(1)
+            // got "You do not have permission to talk in that channel" (2026-10-11): the server
+            // gives each allegiance its own Turbine chat room, which only AC's /a knows.
             if (StartsWithCmd(trimmed, "/a "))
-                return DispatchChannelBroadcast(1, trimmed.Substring(3));
+                return DispatchRaw(trimmed);
 
             // /f message (fellowship — no direct Event_*; use the raw chat path)
             if (StartsWithCmd(trimmed, "/f "))
@@ -298,6 +314,8 @@ internal static unsafe class ChatCommandDispatcher
         if (targetName.Length == 0 || message.Length == 0)
             return false;
 
+        // AC's /tell would remember this name for its /retell; this call skips AC's parser.
+        TellMemory.Shared.NoteTellSent(targetName);
         var psMsg = LegacyPString.Create(message);
         var psTarget = LegacyPString.Create(targetName);
         try

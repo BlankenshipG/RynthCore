@@ -42,8 +42,12 @@ internal sealed partial class InventoryFace : IImGuiPanel
     public const string Title = "Inventory";
 
     // Default: the Classic view at its retail size (300 x 362 body, plus the status strip).
+    // Chromeless: the Classic look has the retail title bar (drag, close) and the Modern look
+    // draws its own background, drag area and close button, so the engine's DRAG header would
+    // be a second title bar.
     public static void Register() => ImGuiPanelHost.Register(Title,
-        new PanelSpec(new Vector2(302, 426), new Vector2(240, 300), EdgeToEdge: true),
+        new PanelSpec(new Vector2(302, 426), new Vector2(140, 300), PanelChrome.None,
+            Background: 0, Rounding: 0, EdgeToEdge: true),
         () => new InventoryFace());
 
     // ── Layout (px, like the other faces) ───────────────────────────────
@@ -78,6 +82,10 @@ internal sealed partial class InventoryFace : IImGuiPanel
     private int _builtSort = -1, _builtCategory = -1;
     private string _builtSearch = "\0";
     private bool _builtClassic;
+    private int _builtOrderVersion = -1;
+    // The shown list follows the server's slot order for this pack (so a cell is a slot).
+    private bool _orderKnown;
+    private readonly Dictionary<uint, int> _rank = new();
     // Leave pack-slot items (foci) out of this list: the Classic main pack grid (they're in the side column).
     private bool _skipSlotItems;
     private string _countText = string.Empty;
@@ -93,7 +101,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
     // PackSlots: the Classic side column's pack slots (Id = the main pack): only a
     // pack-slot item (a focus) goes there, which moves it to the main pack.
     private enum DropKind : byte { None, Pack, Equip, Drop, Give, Slot, PackSlots }
-    private struct Target { public Vector2 Min, Max; public DropKind Kind; public uint Id; public string Name; }
+    private struct Target { public Vector2 Min, Max; public DropKind Kind; public uint Id; public string Name; public int Slot; }
     private readonly List<Target> _targets = new(16);
 
     // Context menu and split dialog (opened at the end of Draw, outside any child).
@@ -123,6 +131,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         InventoryModel.Unsubscribe();
         _dragItem = _pressItem = null;
         ItemDragBridge.EndPopOutDrag();
+        UiDropTargets.EngineDragObject = 0;
         _lootAdd.Cancel();
     }
 
@@ -153,6 +162,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
 
         InventoryModel.Hover(_dragItem == null ? _hover?.Id ?? 0 : 0);
         FinishDrag();
+        UiDropTargets.EngineDragObject = _dragItem?.Id ?? 0;
         End(origin, size);
 
         Tooltip();
@@ -167,6 +177,8 @@ internal sealed partial class InventoryFace : IImGuiPanel
     private void ModernBody(InventoryView view, Vector2 origin, Vector2 size, float w)
     {
         if (_pack != AllPacks && _pack != WornPacks && view.PackOf(_pack) == null) _pack = AllPacks;
+        ImGuiNET.ImGui.GetWindowDrawList().AddRectFilled(origin, origin + size, RynthTheme.PanelGlass, 6);
+        ImGuiNET.ImGui.GetWindowDrawList().AddRect(origin, origin + size, RynthTheme.PanelBorder, 6);
         RebuildIfNeeded(view, _pack);   // the header shows the count
         Header(view, w);
         Tools(w);
@@ -206,14 +218,28 @@ internal sealed partial class InventoryFace : IImGuiPanel
         PhosphorIcons.DrawCentered(dl, icons, PhosphorIcons.Coins, new Vector2(x, p.Y), new Vector2(18, RowH), Amber);
         dl.AddText(new Vector2(x + 20, ty), Text, view.PyrealText);
 
+        // Close (the engine's header is off for this panel).
+        if (IconButton("##inv_close", PhosphorIcons.X, new Vector2(p.X + w - 22, p.Y + 1), new Vector2(22, 22), Amber, BtnFill, font: UiFont.Ui11))
+            ImGuiPanelHost.Close(Title);
+        ImGuiNET.ImGui.SetItemTooltip("Close");
+
         // Switch to the Classic (retail) look.
-        var tb = new Vector2(p.X + w - 22, p.Y + 1);
+        var tb = new Vector2(p.X + w - 46, p.Y + 1);
         if (IconButton("##inv_classic", PhosphorIcons.AppWindow, tb, new Vector2(22, 22), Amber, BtnFill, font: UiFont.Ui11))
             InventorySettingsStore.SetClassic(true);
         ImGuiNET.ImGui.SetItemTooltip("Classic look (the retail inventory window)");
 
         float cw = ImGuiNET.ImGui.CalcTextSize(_countText).X;
         dl.AddText(new Vector2(tb.X - cw - 6, ty), Mute, _countText);
+
+        // Drag surface: the empty part of the header, between the pyreals and the count.
+        float dragFrom = x + 20 + ImGuiNET.ImGui.CalcTextSize(view.PyrealText).X + 6, dragTo = tb.X - cw - 10;
+        if (dragTo > dragFrom)
+        {
+            ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(dragFrom, p.Y));
+            ImGuiNET.ImGui.InvisibleButton("##inv_drag", new Vector2(dragTo - dragFrom, RowH));
+            ImGuiPanelHost.DragWindowWithLastItem();
+        }
         NextLine(p, RowH + 2);
     }
 
@@ -292,7 +318,8 @@ internal sealed partial class InventoryFace : IImGuiPanel
     {
         bool classic = InventorySettingsStore.Classic;
         if (ReferenceEquals(view, _builtFor) && _builtPack == pack && _builtSort == _sort
-            && _builtCategory == _category && ReferenceEquals(_builtSearch, _searchText) && _builtClassic == classic)
+            && _builtCategory == _category && ReferenceEquals(_builtSearch, _searchText) && _builtClassic == classic
+            && _builtOrderVersion == Net.InventoryOrder.Version)
             return;
         if (_builtPack != pack || !ReferenceEquals(_builtSearch, _searchText) || _builtCategory != _category)
             _gridFirstRow = 0;   // another pack or filter: back to the top (Classic grid)
@@ -302,6 +329,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         _builtCategory = _category;
         _builtSearch = _searchText;
         _builtClassic = classic;
+        _builtOrderVersion = Net.InventoryOrder.Version;
 
         _shown.Clear();
         InventoryPack? one = pack == WornPacks || pack == AllPacks ? null : view.PackOf(pack);
@@ -322,6 +350,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
             _ => null,   // pack order: as captured (packs in order, ascending id inside each)
         };
         if (cmp != null) _shown.Sort(cmp);
+        else ApplyServerOrder(one);
 
         int total = pack == WornPacks ? view.Worn.Length : one == null ? view.ItemCount
             : _skipSlotItems ? one.Used : one.Items.Length;
@@ -333,6 +362,40 @@ internal sealed partial class InventoryFace : IImGuiPanel
             : one == null ? (_shown.Count == total ? "All packs" : "Matches in all packs: " + _countText)
             : one.IsMain ? "Contents of Backpack"
             : "Contents of " + one.Name;
+    }
+
+
+    /// <summary>
+    /// Pack order = the server's: the list ACE sent for this pack (Net/InventoryOrder), so cell k is
+    /// slot k. A pack whose list was never seen (a side pack not opened yet, or an engine that
+    /// reloaded after login) stays in id order and <see cref="_orderKnown"/> says so: drops there
+    /// take the first empty slot, as before.
+    /// </summary>
+    private void ApplyServerOrder(InventoryPack? pack)
+    {
+        _orderKnown = false;
+        if (pack == null || !Net.InventoryOrder.TryGetOrder(pack.Id, false, out uint[] items)) return;
+        Net.InventoryOrder.TryGetOrder(pack.Id, true, out uint[] slots);
+        _rank.Clear();
+        for (int i = 0; i < items.Length; i++) _rank[items[i]] = i;
+        for (int i = 0; i < slots.Length; i++) _rank[slots[i]] = 1_000_000 + i;
+        _shown.Sort((a, b) =>
+        {
+            int ra = _rank.TryGetValue(a.Id, out int x) ? x : int.MaxValue, rb = _rank.TryGetValue(b.Id, out int y) ? y : int.MaxValue;
+            return ra != rb ? ra.CompareTo(rb) : a.Id.CompareTo(b.Id);
+        });
+        _orderKnown = true;
+    }
+
+    /// <summary>A grid cell is a slot only while the list is the server's, whole and in pack order, and the item is an ordinary one.</summary>
+    private bool CellsAreSlots(InventoryItem item) =>
+        _orderKnown && _sort == 0 && _category == 0 && _searchText.Length == 0 && !item.RequiresPackSlot && !item.IsPack;
+
+    /// <summary>The slot an item holds now among its pack's ordinary items, or -1 when unknown.</summary>
+    private static int SlotOf(InventoryItem item)
+    {
+        if (!Net.InventoryOrder.TryGetOrder(item.Container, false, out uint[] ids)) return -1;
+        return Array.IndexOf(ids, item.Id);
     }
 
     private static int ByName(InventoryItem a, InventoryItem b)
@@ -534,7 +597,11 @@ internal sealed partial class InventoryFace : IImGuiPanel
     private static void DrawItemIcon(ImDrawListPtr dl, uint objectId, Vector2 min, float size, uint tint = 0xFFFFFFFF)
     {
         if (ScriptIcons.TryGet(ScriptIconKind.Object, objectId, out IntPtr tex))
+        {
+            IconSampling.Begin(dl);   // retail draws icons crisp
             dl.AddImage(tex, min, min + new Vector2(size, size), Vector2.Zero, Vector2.One, tint);
+            IconSampling.End(dl);
+        }
         else
             dl.AddRectFilled(min, min + new Vector2(size, size), Placeholder, 2);
     }
@@ -660,11 +727,11 @@ internal sealed partial class InventoryFace : IImGuiPanel
 
     // ── Actions ─────────────────────────────────────────────────────────
 
-    private void Act(InventoryActionKind kind, InventoryItem item, uint target, string targetName, int amount)
+    private void Act(InventoryActionKind kind, InventoryItem item, uint target, string targetName, int amount, int slot = -1)
     {
         var req = new InventoryRequest
         {
-            Kind = kind, ItemId = item.Id, TargetId = target, TargetName = targetName, Amount = amount, ItemName = item.Name,
+            Kind = kind, ItemId = item.Id, TargetId = target, TargetName = targetName, Amount = amount, ItemName = item.Name, Slot = slot,
         };
         if (!InventoryModel.Request(req, out string why))
         {
@@ -677,11 +744,25 @@ internal sealed partial class InventoryFace : IImGuiPanel
         }
     }
 
-    private void DropOn(DropKind kind, uint targetId, string targetName, InventoryItem item)
+    private void DropOn(DropKind kind, uint targetId, string targetName, InventoryItem item, int slot = -1)
     {
         switch (kind)
         {
             case DropKind.Pack:
+                if (slot == -2)
+                {
+                    Refuse(_sort != 0 || _category != 0 || _searchText.Length > 0
+                        ? "To reorder, set Sort to Pack order and clear the search and filter."
+                        : "The pack's order isn't known yet: log in again so the panel can learn it.");
+                    return;
+                }
+                if (slot >= 0)
+                {
+                    // Dropped on a cell of the grid: that slot in the pack, which is also a reorder inside it.
+                    if (item.Container == targetId && item.Wielder == 0 && SlotOf(item) == slot) return;   // already there
+                    Act(InventoryActionKind.Move, item, targetId, targetName, 0, slot);
+                    break;
+                }
                 if (item.Container == targetId && item.Wielder == 0) return;   // same pack: nothing to do
                 if (item.RequiresPackSlot && targetId != InventoryModel.Current.PlayerId)
                 {
@@ -722,6 +803,14 @@ internal sealed partial class InventoryFace : IImGuiPanel
         }
     }
 
+    /// <summary>Back to everything: no search text, no category.</summary>
+    private void ClearFilters()
+    {
+        Array.Clear(_search);
+        _searchText = string.Empty;
+        _category = 0;
+    }
+
     private void Refuse(string why)
     {
         _refusal = why;
@@ -755,9 +844,13 @@ internal sealed partial class InventoryFace : IImGuiPanel
             foreach (Target t in _targets)
             {
                 if (m.X < t.Min.X || m.Y < t.Min.Y || m.X >= t.Max.X || m.Y >= t.Max.Y) continue;
-                DropOn(t.Kind, t.Id, t.Name, item);
+                DropOn(t.Kind, t.Id, t.Name, item, t.Slot);
                 return;
             }
+            // Let go outside this panel: another engine panel that takes items (Item Count,
+            // Mini Remote, the Loot Editor) gets it, as with a drag out of AC's own inventory.
+            if (!ImGuiNET.ImGui.IsWindowHovered(ImGuiHoveredFlags.RootAndChildWindows | ImGuiHoveredFlags.AllowWhenBlockedByActiveItem))
+                UiDropTargets.TryClaim(item.Id, 0, out _);
         }
     }
 

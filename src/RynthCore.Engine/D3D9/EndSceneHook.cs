@@ -24,6 +24,8 @@ internal static class EndSceneHook
     internal static int FpsTargetFocused = 60;
     internal static int FpsTargetBackground = 30;
     private static readonly Stopwatch _fpsTimer = Stopwatch.StartNew();
+    // Video patch: the cap while AC's 3D scene isn't drawn (VideoPatch.FrameCapThisFrame).
+    private static readonly Stopwatch _videoPatchTimer = Stopwatch.StartNew();
     private static bool _fpsLimiterLoggedOnce;
     private static int _fpsDebugCounter;
     private static long _fpsCounterStart;
@@ -520,6 +522,23 @@ internal static class EndSceneHook
                 _fpsCounterStart = now;
             }
         }
+
+        // ── Video patch frame cap ───────────────────────────────────
+        // While the video patch skips AC's 3D scene, the loop would just spin faster on
+        // an empty frame: cap it (default 15 fps) so the time is slept. Stacks with the
+        // governor above (the lower rate wins); 0 = no cap (off, focused in "unfocused",
+        // outside the world, or /rc video fps 0). Game logic still runs every frame.
+        try
+        {
+            int vpCap = VideoPatch.FrameCapThisFrame();
+            if (vpCap > 0)
+            {
+                double leftMs = 1000.0 / vpCap - _videoPatchTimer.Elapsed.TotalMilliseconds;
+                if (leftMs > 0) WaitFrame(Math.Min(leftMs, 1000.0 / VideoPatchPolicy.MinFrameCapFps));
+            }
+        }
+        catch { /* never let the cap take EndScene down */ }
+        _videoPatchTimer.Restart();
 
         return _originalEndScene!(pDevice);
     }

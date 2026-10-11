@@ -84,6 +84,16 @@ internal static class ServerInfo
         }
     }
 
+    /// <summary>The connect host from the command line, lower case ("" when none). Any thread (IltInfo).</summary>
+    public static string LaunchHost
+    {
+        get
+        {
+            ReadHostOnce();
+            return _host;
+        }
+    }
+
     private static void Refresh()
     {
         try

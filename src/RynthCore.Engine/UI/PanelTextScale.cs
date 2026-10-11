@@ -6,7 +6,9 @@
 //  as "Title=size" lines; set from Settings > Display or from a window's own
 //  title bar (the text size button, Ctrl+wheel; ImGuiPanelHost). One size
 //  ("All Panels") applies to every panel unless "Size each panel separately"
-//  is on.
+//  is on. The toolbar (the icon bar, ImGuiBar) has its own size, the "chrome"
+//  row (Settings > Display > Toolbar, the bar's right-click menu, Ctrl+wheel on
+//  the bar, /rc ui barsize); it is independent of All Panels and per-panel sizes.
 // ============================================================================
 
 using System;
@@ -27,11 +29,16 @@ internal static class PanelTextScale
     private static readonly Dictionary<string, int> Sizes = new(StringComparer.OrdinalIgnoreCase);
     private static bool _loaded;
 
-    private static string FilePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RynthCore", "panel_text_size.txt");
+    // RYNTHCORE_PANEL_TEXT_SIZE points a test at its own file instead of the real one.
+    private static readonly string FilePath =
+        Environment.GetEnvironmentVariable("RYNTHCORE_PANEL_TEXT_SIZE") is { Length: > 0 } overridePath
+            ? overridePath
+            : Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RynthCore", "panel_text_size.txt");
 
     private const string AllKey = "__all";
     private const string PerPanelKey = "__perPanel";
+    private const string ChromeKey = "__chrome";
 
     /// <summary>The size (0-10) a panel is drawn at: its own when sizing per panel, else All Panels.</summary>
     public static int Get(string title)
@@ -58,6 +65,18 @@ internal static class PanelTextScale
 
     public static int GetAll() => GetOwn(AllKey);
     public static void SetAll(int size) => Set(AllKey, size);
+
+    /// <summary>The toolbar's size (0-10): its own row, 0 unless set; never All Panels.</summary>
+    public static int GetChrome()
+    {
+        lock (Sync)
+        {
+            Load();
+            return Sizes.TryGetValue(ChromeKey, out int c) ? c : 0;
+        }
+    }
+
+    public static void SetChrome(int size) => Set(ChromeKey, size);
 
     /// <summary>Off: every panel uses All Panels. On: each panel has its own size.</summary>
     public static bool PerPanel
@@ -108,7 +127,7 @@ internal static class PanelTextScale
                 // effect: start them from what every panel shows now.
                 var keys = new List<string>(Sizes.Keys);
                 foreach (string k in keys)
-                    if (k != AllKey && k != PerPanelKey) Sizes[k] = all;
+                    if (k != AllKey && k != PerPanelKey && k != ChromeKey) Sizes[k] = all;
                 Sizes[PerPanelKey] = 1;
             }
             Sizes[title] = size;
@@ -145,7 +164,7 @@ internal static class PanelTextScale
     /// <summary>Font size factor for a size step.</summary>
     public static float Factor(int step) => Scales[Math.Clamp(step, 0, Scales.Length - 1)];
 
-    /// <summary>The distinct non-zero sizes any panel uses (fonts are baked for these).</summary>
+    /// <summary>The distinct non-zero sizes any panel or the toolbar uses (fonts are baked for these).</summary>
     public static List<int> StepsInUse()
     {
         lock (Sync)
@@ -156,7 +175,7 @@ internal static class PanelTextScale
             foreach (var kv in Sizes)
             {
                 if (kv.Key == PerPanelKey) continue;
-                if (!perPanel && kv.Key != AllKey) continue;   // only All Panels is in use
+                if (!perPanel && kv.Key != AllKey && kv.Key != ChromeKey) continue;   // All Panels and the toolbar are in use
                 if (kv.Value > 0 && !steps.Contains(kv.Value)) steps.Add(kv.Value);
             }
             return steps;

@@ -34,4 +34,8 @@
     <Compile Include="..\..\src\RynthCore.StatusAgent\StatusFileCache.cs" Link="Agent\StatusFileCache.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\..\src\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+  </ItemGroup>
+
 </Project>

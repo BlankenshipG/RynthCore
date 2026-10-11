@@ -115,5 +115,7 @@ internal static class MainThreadSnapshots
         // Aelrynth skill mastery: the /mastery-data request after login, on panel open
         // and after a raise (only on Aelrynth; a few compares when nothing is wanted).
         try { MasteryFeed.MainThreadTick(playerLive); } catch { }
+        // Aelrynth account vault (the Inventory panel's Vault view): reads on request only.
+        try { VaultFeed.MainThreadTick(playerLive); } catch { }
     }
 }

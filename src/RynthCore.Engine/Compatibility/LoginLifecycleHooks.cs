@@ -100,6 +100,9 @@ internal static class LoginLifecycleHooks
     public static void ResetObservation()
     {
         HasObservedLoginComplete = false;
+        // Queued engine work (appraisals, health queries, chat, actions) from this login is stale
+        // for the next one (2026-10-06, AcMainThreadQueue).
+        try { AcMainThreadQueue.NewLoginEpoch(); } catch { }
         _statusMessage = "Awaiting next SendLoginCompleteNotification.";
         _waitingLogged = false;
     }

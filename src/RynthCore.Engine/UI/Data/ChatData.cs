@@ -13,7 +13,8 @@
 //
 //  Rules (2026-09-29 overhaul). Each rule is a case-insensitive regex matched
 //  against the line's text as AC printed it (no timestamp, so ^ and $ work),
-//  optionally only for one channel or chat type. It can
+//  or plain text (Contains / Starts with / Ends with, 2026-10-05; see
+//  ChatRuleMatching.cs), optionally only for one channel or chat type. It can
 //    Move  the line to a tab (it leaves All and its channel tab),
 //    Copy  it to a tab as well (it stays where it was),
 //    Hide  it everywhere, or
@@ -73,6 +74,8 @@ internal sealed class ChatLine
         ChatType = chatType;
         Sender = sender;
         Text = text;
+        ColorKind = ChatLineColors.KindOf(chatType, chan, text);
+        ChatLineColors.NoteKind(ColorKind);
         // The text already names the speaker ("Bob says, ..."); until 2026-09-29
         // the sender was printed in front of it as well ("Bob: Bob says, ...").
         FormattedText = $"{ts} {text}";
@@ -81,6 +84,9 @@ internal sealed class ChatLine
     /// <summary>Engine-assigned, increasing for the whole session (the plugin's own
     /// seq restarts after RL).</summary>
     public long Id { get; }
+    /// <summary>RynthChat's own number for the line (restarts when its plugin reloads); 0 when not
+    /// from RynthChat. The Discord relay tells news from scrollback by it.</summary>
+    public ulong Seq { get; init; }
     public string Timestamp { get; }
     /// <summary>The channel tab it belongs to (ChatClassifier in the plugin).</summary>
     public string Channel { get; }
@@ -90,6 +96,9 @@ internal sealed class ChatLine
     public string? Sender { get; }
     /// <summary>The line as AC printed it. Rules match this.</summary>
     public string Text { get; }
+    /// <summary>Which line colour setting applies ("say", "chan:General", ...), or null:
+    /// its tab's colour (ChatLineColors.KindOf, worked out once here).</summary>
+    public string? ColorKind { get; }
     /// <summary>"HH:mm:ss text": copy, log and the Avalonia face.</summary>
     public string FormattedText { get; }
 
@@ -160,19 +169,6 @@ internal enum ChatRuleAction
 
 internal enum ChatColorMode { None, Line, Match }
 
-/// <summary>How a rule's Pattern is matched against the raw message text.</summary>
-internal enum ChatMatchMode
-{
-    /// <summary>The pattern is a regex (case-insensitive).</summary>
-    Regex,
-    /// <summary>Plain text anywhere in the message.</summary>
-    Contains,
-    /// <summary>Plain text at the start of the message.</summary>
-    StartsWith,
-    /// <summary>Plain text at the end of the message (trailing spaces ignored).</summary>
-    EndsWith,
-}
-
 /// <summary>
 /// One rule. Its fields are edited in place by a rule editor (then
 /// ChatModel.FiltersChanged); the pump reads each field once per line, and a
@@ -188,7 +184,8 @@ internal sealed class ChatFilterRule
     public volatile string Tab = "";
     public volatile ChatRuleAction Action = ChatRuleAction.Move;
     public volatile ChatColorMode ColorMode = ChatColorMode.None;
-    /// <summary>Regex, or a plain-text mode (escaped into a regex by <see cref="Recompile"/>).</summary>
+    /// <summary>How Pattern is read: a regex (the default, and every rule saved before
+    /// 2026-10-05) or plain text. Recompile after changing it.</summary>
     public volatile ChatMatchMode Mode = ChatMatchMode.Regex;
     /// <summary>A new rule's colour (amber).</summary>
     public const uint DefaultColor = 0xFFFFD27A;
@@ -219,28 +216,11 @@ internal sealed class ChatFilterRule
     public void Recompile()
     {
         Slow = false;
-        string pattern = Pattern;
-        if (pattern.Length == 0) { Compiled = null; Error = null; Invalid = true; return; }
-        string expr = Mode switch
-        {
-            ChatMatchMode.Contains   => Regex.Escape(pattern),
-            ChatMatchMode.StartsWith => "^" + Regex.Escape(pattern),
-            ChatMatchMode.EndsWith   => Regex.Escape(pattern.TrimEnd()) + @"\s*$",
-            _                        => pattern,
-        };
-        try
-        {
-            Compiled = new Regex(expr, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
-                TimeSpan.FromMilliseconds(TimeoutMs));
-            Error = null;
-            Invalid = false;
-        }
-        catch (ArgumentException ex)
-        {
-            Compiled = null;
-            Error = ex.Message;
-            Invalid = true;
-        }
+        // A Regex rule compiles exactly as before; plain text is escaped (ChatRuleMatching).
+        Regex? rx = ChatRuleMatching.Compile(Mode, Pattern, TimeoutMs, out string? error);
+        Compiled = rx;
+        Error = error;
+        Invalid = rx == null;
     }
 
     /// <summary>Does the rule route (Move / Copy with a tab, or Hide)?</summary>
@@ -266,11 +246,8 @@ internal sealed class ChatFilterRule
         public static WhenSpec Parse(string? raw)
         {
             raw = (raw ?? "").Trim();
-            if (raw.StartsWith("chan:", StringComparison.OrdinalIgnoreCase) && raw.Length > 5)
-                return new WhenSpec(raw, raw[5..], -1);
-            if (raw.StartsWith("type:", StringComparison.OrdinalIgnoreCase) && int.TryParse(raw[5..], out int t) && t >= 0)
-                return new WhenSpec(raw, null, t);
-            return Any;
+            (string? channel, int type) = ChatRuleMatching.ParseWhen(raw);
+            return channel == null && type < 0 ? Any : new WhenSpec(raw, channel, type);
         }
     }
 }
@@ -339,12 +316,20 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
         IntPtr ptr = _get(_sinceSeq);
         if (ptr == IntPtr.Zero) return;
         string? json = Marshal.PtrToStringAnsi(ptr);
-        if (string.IsNullOrEmpty(json) || json == "[]") return;
+        if (string.IsNullOrEmpty(json) || json == "[]")
+        {
+            RelayRead(Array.Empty<ChatLine>());
+            return;
+        }
 
         RynthChatLineDto[]? dtos = ParseLines(json, out ulong skippedSeq);
         // Lines that couldn't be read still move the mark past them, or they'd come back every poll.
         if (skippedSeq > _sinceSeq) _sinceSeq = skippedSeq;
-        if (dtos == null || dtos.Length == 0) return;
+        if (dtos == null || dtos.Length == 0)
+        {
+            RelayRead(Array.Empty<ChatLine>());
+            return;
+        }
 
         var added = new List<ChatLine>(dtos.Length);
         foreach (RynthChatLineDto dto in dtos)
@@ -353,12 +338,19 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
             _sinceSeq = dto.Seq;
             string text = StripAcLinks(dto.Text ?? "", out string? linkedName);
             var line = new ChatLine(_nextId++, dto.Ts ?? "", dto.Chan ?? "Other", dto.Type,
-                                    dto.Sender is { Length: > 0 } s ? StripAcLinks(s, out _) : linkedName, text);
+                                    dto.Sender is { Length: > 0 } s ? StripAcLinks(s, out _) : linkedName, text)
+            {
+                Seq = dto.Seq,
+            };
             line.Route = router.Evaluate(line, null);
             if (line.Route.Mention) ChatModel.PumpMentionSound();
             added.Add(line);
         }
-        if (added.Count == 0) return;
+        if (added.Count == 0)
+        {
+            RelayRead(added);
+            return;
+        }
 
         ChatLine[] old = Current?.Value ?? Array.Empty<ChatLine>();
         int keepOld = Math.Max(0, Math.Min(old.Length, MaxLines - added.Count));
@@ -368,7 +360,13 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
         added.CopyTo(skipAdded, lines, keepOld, added.Count - skipAdded);
         Publish(lines);
         ChatModel.PumpLog(added);
-        try { Discord.ChatDiscord.PumpLines(added); }
+        RelayRead(added);
+    }
+
+    /// <summary>Every scrollback read goes to the Discord relay, empty or not (its first read is a baseline).</summary>
+    private static void RelayRead(IReadOnlyList<ChatLine> added)
+    {
+        try { Discord.ChatDiscord.PumpRead(added); }
         catch (Exception ex) { RynthLog.UI($"ChatSource: Discord relay skipped {added.Count} line(s) ({ex.GetType().Name}: {ex.Message})."); }
     }
 
@@ -454,6 +452,7 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
         // The lines already shown stay.
         _get = null;
         _sinceSeq = 0;
+        Discord.ChatDiscord.PumpSourceReset();
         ChatModel.SendLinePtr = IntPtr.Zero;
         ChatModel.PluginBound = false;
     }
@@ -717,21 +716,16 @@ internal sealed class ChatRouter
 internal static class ChatModel
 {
     /// <summary>Channel tabs; must match ChatClassifier in the plugin.</summary>
-    public static readonly string[] BaseTabs = { "All", "Chat", "Channels", "System", "Combat", "Rynth", "Other" };
+    // Items (2026-10-09): RynthAi's item info, "[RynthAi Item] " (RynthChat's ChatClassifier.IsItemInfo).
+    public static readonly string[] BaseTabs = { "All", "Chat", "Channels", "System", "Combat", "Rynth", "Items", "Other" };
 
-    /// <summary>Channel colour as 0xAARRGGBB.</summary>
-    public static uint ChannelArgb(string chan) => chan switch
-    {
-        "Chat"     => 0xFFE0E0E0,
-        "Channels" => 0xFF7AB8F5,
-        "System"   => 0xFF8CA6BF,
-        "Combat"   => 0xFFD93333,
-        "Rynth"    => 0xFFE6B450,   // amber, distinct from the blue/grey channels
-        _          => 0xFFAAAAAA,
-    };
+    /// <summary>Channel tab colour as 0xAARRGGBB: the user's (Line colours in the chat
+    /// settings), else the built-in one (ChatLineColors.BuiltInTabArgb).</summary>
+    public static uint ChannelArgb(string chan) => ChatLineColors.TabArgb(chan);
 
-    /// <summary>The line's colour: a rule's line colour, else its channel's. 0xAARRGGBB.</summary>
-    public static uint LineArgb(ChatLine line) => line.Route.LineArgb ?? ChannelArgb(line.Channel);
+    /// <summary>The line's colour: a rule's line colour, else the colour set for its kind
+    /// (say, fellowship, [General]...), else its channel's. 0xAARRGGBB.</summary>
+    public static uint LineArgb(ChatLine line) => ChatLineColors.Resolve(line.Route.LineArgb, line.ColorKind, line.Channel);
 
     /// <summary>
     /// What a rule's "When" can be: (stored value, label). Channel tabs, then
@@ -745,6 +739,7 @@ internal static class ChatModel
         ("chan:System", "System tab"),
         ("chan:Combat", "Combat tab (combat and magic)"),
         ("chan:Rynth", "Rynth tab (plugin output)"),
+        ("chan:Items", "Items tab (item info)"),
         ("chan:Other", "Other tab"),
         ("type:3", "Tells to you"),
         ("type:4", "Tells you send"),
@@ -764,6 +759,7 @@ internal static class ChatModel
         ("type:25", "Salvaging"),
         ("type:23", "Recall"),
         ("type:5", "System messages"),
+        ("type:26", "Notices (too busy, missing components)"),
     };
 
     /// <summary>The channel tab a ChatMessageType lands in; mirrors ChatClassifier.ChannelFor in the plugin.</summary>
@@ -873,6 +869,39 @@ internal static class ChatModel
         if (rule.Tab.Length > 0) EnsureCustomTab(rule.Tab);
         FocusRule = rule;
         EditFilters(list => list.Add(rule));
+    }
+
+    /// <summary>The rule a standard filter adds, if the list has it (any action, on or off).</summary>
+    public static ChatFilterRule? FindPresetRule(ChatFilterPreset preset)
+    {
+        foreach (ChatFilterRule r in Filters)
+            if (preset.SameAs(r.Mode, r.Pattern, r.When)) return r;
+        return null;
+    }
+
+    /// <summary>
+    /// Adds a standard filter as an ordinary Hide rule at the end (or turns on and shows the one
+    /// already there). Returns a message for the user.
+    /// </summary>
+    public static string AddPresetRule(ChatFilterPreset preset)
+    {
+        ChatFilterRule? have = FindPresetRule(preset);
+        if (have != null)
+        {
+            FocusRule = have;
+            if (have.Enabled) return $"\"{preset.Label}\" is already in your rules.";
+            have.Enabled = true;
+            FiltersChanged();
+            return $"\"{preset.Label}\" was off; it is on again.";
+        }
+        AddRule(new ChatFilterRule
+        {
+            Mode = preset.Mode,
+            Pattern = preset.Pattern,
+            When = preset.When,
+            Action = ChatRuleAction.Hide,
+        });
+        return $"Added \"{preset.Label}\": it hides those lines (edit or delete it like any rule).";
     }
 
     /// <summary>
@@ -1172,7 +1201,8 @@ internal static class ChatModel
         // Kept while the rule is set to "No colour" too, so switching colour back on
         // after a relaunch finds the colour that was picked.
         Color = f.ColorMode != ChatColorMode.None || f.ColorArgb != ChatFilterRule.DefaultColor ? FormatColor(f.ColorArgb) : null,
-        Mode = f.Mode == ChatMatchMode.Regex ? null : f.Mode.ToString(),
+        // Absent for a Regex rule, so a file without plain-text rules is written as before.
+        Mode = ChatRuleMatching.ToJson(f.Mode),
     };
 
     /// <summary>
@@ -1205,8 +1235,8 @@ internal static class ChatModel
                 _ => ChatColorMode.None,
             },
             ColorArgb = ParseColor(f.Color) ?? ChatFilterRule.DefaultColor,
-            // Absent (settings saved before match modes existed): Regex.
-            Mode = Enum.TryParse(f.Mode, ignoreCase: true, out ChatMatchMode mode) ? mode : ChatMatchMode.Regex,
+            // Absent (every file before 2026-10-05): Regex, as those rules always were.
+            Mode = ChatRuleMatching.Parse(f.Mode),
         };
         rule.Recompile();
         return rule;
@@ -1217,20 +1247,10 @@ internal static class ChatModel
     /// An alpha of 00 is taken as opaque: a colour that makes the text invisible
     /// is never what a rule wants (hiding is the Hide action).
     /// </summary>
-    public static uint? ParseColor(string? s)
-    {
-        if (string.IsNullOrWhiteSpace(s)) return null;
-        s = s.Trim().TrimStart('#');
-        if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) s = s[2..];
-        if (s.Length is not (6 or 8)) return null;
-        if (!uint.TryParse(s, System.Globalization.NumberStyles.AllowHexSpecifier, null, out uint v)) return null;
-        if (s.Length == 6 || (v >> 24) == 0) v |= 0xFF000000;
-        return v;
-    }
+    public static uint? ParseColor(string? s) => ChatLineColors.ParseColor(s);
 
     /// <summary>0xAARRGGBB as "#RRGGBB", or "#AARRGGBB" when it isn't opaque (an imported colour keeps its alpha).</summary>
-    public static string FormatColor(uint argb) =>
-        (argb >> 24) == 0xFF ? $"#{argb & 0xFFFFFF:X6}" : $"#{argb:X8}";
+    public static string FormatColor(uint argb) => ChatLineColors.FormatColor(argb);
 
     // ── Plugin binding (set by ChatSource on the pump) ───────────────────
 
@@ -1344,6 +1364,27 @@ internal static class ChatModel
             else { _historyIndex = -1; text = ""; }
             SetInput(text, text.Length, null);
         };
+        // The line has no selection: copy and cut take all of it, paste goes in at the caret.
+        Win32Backend.OnChatPaste = () =>
+        {
+            InputState s = _input;
+            string text = ChatInputPaste.Insert(s.Text, s.Cursor, GetClipboardText(), out int cursor);
+            if (ReferenceEquals(text, s.Text)) return;
+            _historyIndex = -1;
+            SetInput(text, cursor, null);
+        };
+        Win32Backend.OnChatCopy = () =>
+        {
+            string text = _input.Text;
+            if (text.Length > 0) SetClipboardText(text);
+        };
+        Win32Backend.OnChatCut = () =>
+        {
+            string text = _input.Text;
+            if (text.Length == 0 || !SetClipboardText(text)) return;
+            _historyIndex = -1;
+            SetInput("", 0, null);
+        };
         Win32Backend.OnChatSend = OnSend;
         Win32Backend.OnChatCancel = () =>
         {
@@ -1370,11 +1411,24 @@ internal static class ChatModel
             SetInput("", 0, "Select an NPC or player in the game first, then Tell.");
             return false;
         }
+        BeginTellTo(name);
+        return true;
+    }
+
+    /// <summary>Starts "/tell &lt;name&gt;, " and keeps typing. AC's main thread.</summary>
+    private static void BeginTellTo(string name)
+    {
         string text = $"/tell {name}, ";
         _historyIndex = -1;
         Win32Backend.ChatCaptureActive = true;   // keys now go to this line
         SetInput(text, text.Length, null);
-        return true;
+    }
+
+    private static void AddHistory(string text)
+    {
+        if (text.Length == 0 || (History.Count > 0 && History[^1] == text)) return;
+        History.Add(text);
+        if (History.Count > 100) History.RemoveAt(0);
     }
 
     // Win32Backend has already cleared ChatCaptureActive. RynthChatSendLine runs
@@ -1390,11 +1444,26 @@ internal static class ChatModel
             return;
         }
         _historyIndex = -1;
-        if (text.Length > 0 && (History.Count == 0 || History[^1] != text))
+        // /reply and /retell (TellMemory.cs; the dispatcher turns them into a /tell). Alone they
+        // start "/tell <name>, " the way "/tell" alone does; with no one to address, the box
+        // says so and the line stays in history (Up brings it back).
+        TellShortcut shortcut = TellMemory.Parse(text, out string tellMessage);
+        if (shortcut != TellShortcut.None)
         {
-            History.Add(text);
-            if (History.Count > 100) History.RemoveAt(0);
+            string? name = TellMemory.Shared.TargetFor(shortcut);
+            if (name == null)
+            {
+                AddHistory(text);
+                SetInput("", 0, shortcut == TellShortcut.Reply ? TellMemory.NoTellerMessage : TellMemory.NoTelleeMessage);
+                return;
+            }
+            if (tellMessage.Length == 0)
+            {
+                BeginTellTo(name);
+                return;
+            }
         }
+        AddHistory(text);
         SetInput("", 0, null);
         IntPtr send = SendLinePtr;
         if (text.Length == 0 || send == IntPtr.Zero) return;
@@ -1584,6 +1653,8 @@ internal static class ChatModel
     // "when", "colorMode" and "color". A version-1 file loads as before (see
     // FromDto for what its rules become); the first load copies it to
     // rynthchat_settings.v1.bak, and the next save writes version 2.
+    // "lineColors" (2026-10-08, ChatLineColors) is written only once a colour
+    // is set, so it needs no version bump: a file without it loads as before.
 
     public const int SettingsVersion = 2;
     private static readonly object SaveLock = new();
@@ -1630,6 +1701,7 @@ internal static class ChatModel
             MentionHighlight = dto.MentionHighlight;
             MentionSound = dto.MentionSound;
             MentionWords = dto.MentionWords ?? "";
+            ChatLineColors.Load(dto.LineColors);   // absent before 2026-10-08: nothing set
 
             var tabs = new List<string>();
             foreach (string t in dto.CustomTabs ?? Array.Empty<string>())
@@ -1705,6 +1777,7 @@ internal static class ChatModel
             MentionHighlight = MentionHighlight,
             MentionSound = MentionSound,
             MentionWords = MentionWords,
+            LineColors = ChatLineColors.ToJson(),   // null (left out) until a colour is set
             CustomTabs = Volatile.Read(ref _customTabs),
             Filters = Filters.Select(ToDto).ToArray(),
             // Only presets the user touched: new presets in later builds start off.
@@ -1737,80 +1810,3 @@ internal static class ChatModel
         });
     }
 }
-
-// JsonSerializerContext must be at namespace scope (not nested) for source generation.
-internal sealed class RynthChatLineDto
-{
-    [JsonPropertyName("seq")]    public ulong Seq      { get; set; }
-    [JsonPropertyName("ts")]     public string Ts      { get; set; } = "";
-    [JsonPropertyName("chan")]   public string Chan    { get; set; } = "";
-    /// <summary>ChatMessageType; RynthChat before 0.2.0 doesn't send it.</summary>
-    [JsonPropertyName("type")]   public int Type       { get; set; } = -1;
-    [JsonPropertyName("sender")] public string? Sender { get; set; }
-    [JsonPropertyName("text")]   public string Text    { get; set; } = "";
-}
-
-// Property names match the legacy hand-written JSON so existing settings load.
-internal sealed class RynthChatFilterDto
-{
-    [JsonPropertyName("pattern")] public string? Pattern { get; set; }
-    [JsonPropertyName("tab")]     public string? Tab     { get; set; }
-    [JsonPropertyName("enabled")] public bool    Enabled { get; set; } = true;
-    // Version 2:
-    /// <summary>"move" | "copy" | "hide" | "color"; absent in version 1 (see ChatModel.FromDto).</summary>
-    [JsonPropertyName("action")]    public string? Action    { get; set; }
-    /// <summary>"" / absent: any line; "chan:Combat"; "type:3".</summary>
-    [JsonPropertyName("when")]      public string? When      { get; set; }
-    /// <summary>"line" | "match"; absent: no colour.</summary>
-    [JsonPropertyName("colorMode")] public string? ColorMode { get; set; }
-    /// <summary>"#RRGGBB".</summary>
-    [JsonPropertyName("color")]     public string? Color     { get; set; }
-    /// <summary>ChatMatchMode name; absent = Regex.</summary>
-    [JsonPropertyName("mode")]      public string? Mode      { get; set; }
-}
-
-/// <summary>A standard filter's user state (RynthChatPresets), by preset id.</summary>
-internal sealed class RynthChatPresetDto
-{
-    [JsonPropertyName("id")]      public string? Id      { get; set; }
-    [JsonPropertyName("enabled")] public bool    Enabled { get; set; }
-    [JsonPropertyName("tab")]     public string? Tab     { get; set; }
-}
-
-internal sealed class RynthChatSettingsDto
-{
-    /// <summary>Absent (0) in version-1 files.</summary>
-    [JsonPropertyName("version")]         public int    Version         { get; set; }
-    [JsonPropertyName("fontSize")]        public double FontSize        { get; set; } = 10;
-    [JsonPropertyName("backgroundAlpha")] public int    BackgroundAlpha { get; set; } = 0xF2;
-    [JsonPropertyName("autoScroll")]      public bool   AutoScroll      { get; set; } = true;
-    [JsonPropertyName("suppressChat")]    public bool   SuppressChat    { get; set; }
-    [JsonPropertyName("logEnabled")]      public bool   LogEnabled      { get; set; }
-    // Chat's own Ctrl-gated click-through, like RadarPanel's (2026-09-02).
-    [JsonPropertyName("ctrlGatedClickThrough")] public bool CtrlGatedClickThrough { get; set; }
-    [JsonPropertyName("activeChannel")]   public string? ActiveChannel  { get; set; }
-    [JsonPropertyName("showTimestamps")]  public bool   ShowTimestamps  { get; set; } = true;
-    [JsonPropertyName("mentionHighlight")] public bool  MentionHighlight { get; set; } = true;
-    [JsonPropertyName("mentionSound")]    public bool   MentionSound    { get; set; }
-    [JsonPropertyName("mentionWords")]    public string? MentionWords   { get; set; }
-    [JsonPropertyName("customTabs")]      public string[]? CustomTabs   { get; set; }
-    [JsonPropertyName("filters")]         public RynthChatFilterDto[]? Filters { get; set; }
-    [JsonPropertyName("presets")]         public RynthChatPresetDto[]? Presets { get; set; }
-}
-
-/// <summary>Export / import on the clipboard (the rule editor's Export and Import).</summary>
-internal sealed class RynthChatRuleSetDto
-{
-    public const string FormatName = "rynthchat-rules/2";
-    [JsonPropertyName("format")] public string? Format { get; set; }
-    [JsonPropertyName("tabs")]   public string[]? Tabs { get; set; }
-    [JsonPropertyName("rules")]  public RynthChatFilterDto[]? Rules { get; set; }
-}
-
-[JsonSerializable(typeof(RynthChatLineDto[]))]
-[JsonSerializable(typeof(RynthChatLineDto))]
-[JsonSerializable(typeof(RynthChatSettingsDto))]
-[JsonSerializable(typeof(RynthChatRuleSetDto))]
-[JsonSerializable(typeof(RynthChatFilterDto[]))]
-[JsonSourceGenerationOptions(PropertyNameCaseInsensitive = false, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
-internal partial class RynthChatJsonContext : JsonSerializerContext { }

@@ -45,8 +45,35 @@ internal static class DiscordClient
     /// <summary>MessageFlags.SUPPRESS_EMBEDS: chat links don't unfurl into previews.</summary>
     private const int FlagSuppressEmbeds = 1 << 2;
 
-    // Built on first post, so an engine that never relays never opens a socket.
-    private static readonly Lazy<HttpClient> Http = new(CreateHttp, LazyThreadSafetyMode.ExecutionAndPublication);
+    // Built on first post, so an engine that never relays never opens a socket. Disposed by
+    // Shutdown (engine shutdown / hot reload): the engine loads into a collectible context, and a
+    // live client (its handler's pool timer, open connections, pending callbacks) must not
+    // outlive the generation that made it. After Shutdown no new client is built.
+    private static readonly object HttpLock = new();
+    private static HttpClient? _http;
+    private static bool _closed;
+
+    private static HttpClient Http()
+    {
+        lock (HttpLock)
+        {
+            if (_closed) throw new ObjectDisposedException(nameof(DiscordClient), "the relay is shutting down");
+            return _http ??= CreateHttp();
+        }
+    }
+
+    /// <summary>Disposes the HTTP client (cancelling anything still using it) and refuses new posts. Engine shutdown.</summary>
+    public static void Shutdown()
+    {
+        HttpClient? http;
+        lock (HttpLock)
+        {
+            _closed = true;
+            http = _http;
+            _http = null;
+        }
+        try { http?.Dispose(); } catch (Exception) { }
+    }
 
     private static HttpClient CreateHttp()
     {
@@ -119,7 +146,7 @@ internal static class DiscordClient
         try
         {
             using (req)
-            using (var resp = await Http.Value.SendAsync(req, ct).ConfigureAwait(false))
+            using (var resp = await Http().SendAsync(req, ct).ConfigureAwait(false))
             {
                 int status = (int)resp.StatusCode;
                 string json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);

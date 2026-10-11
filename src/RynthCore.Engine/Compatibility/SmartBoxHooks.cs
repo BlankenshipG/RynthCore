@@ -347,6 +347,9 @@ internal static class SmartBoxHooks
                 // v70: the sequence and its error code as one 64-bit value, so a reader
                 // on the plugin pump never pairs one UseDone's number with another's code.
                 System.Threading.Interlocked.Exchange(ref _useDoneLast, ((long)(uint)seq << 32) | err);
+                // AC is about to take one off m_cBusy inline (Handle_Item::UseDone): the engine's
+                // shadow and the plugins' mirrors take it too (2026-10-06, BusyCountHooks.OnUseDone).
+                try { BusyCountHooks.OnUseDone(); } catch { }
                 // Every one while RynthLog.ActionDoneTraceEnabled (the default; 2026-10-05: the
                 // first 25 of a session couldn't show which completion a held cast was waiting on).
                 if (RynthLog.ActionDoneTraceEnabled || _useDoneLogCount < 25)

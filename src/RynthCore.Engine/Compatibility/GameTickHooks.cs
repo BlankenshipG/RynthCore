@@ -200,6 +200,9 @@ internal static class GameTickHooks
         // keeping all engine-issued mutations after AC's pass is the invariant.
         try { BusyCountHooks.CheckWatchdog(); }
         catch { }
+        // Flight recorder: per-second summary, stall detectors, scheduled automatic dump.
+        try { Net.FlightRecorder.MainTick(); }
+        catch { }
 
         // MUST return Client::UseTime's own bool — AC loops do/while on it.
         return result;

@@ -32,6 +32,7 @@ internal static class Program
         RaiseCommand();
         StatusFileReads();
         MoveProtocol();
+        LogRollover();
         if (Arg(args, "--atlas") is { } atlas) RealAtlas(atlas);
         if (portal != null) RealSpellTable(portal);
         if (cell != null) RealWorldMap(cell, outFile);
@@ -39,6 +40,33 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine(_failed == 0 ? $"PASS ({_checks} checks)" : $"FAIL ({_failed} of {_checks} checks failed)");
         return _failed == 0 ? 0 : 1;
+    }
+
+    // ── log rollover ────────────────────────────────────────────────────────
+
+    private static void LogRollover()
+    {
+        Section("StatusAgent.log rolls over past its cap");
+        string dir = Path.Combine(Path.GetTempPath(), "sa-logroll-" + Environment.ProcessId);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string f = Path.Combine(dir, "StatusAgent.log");
+            File.WriteAllText(f, new string('x', 2000));
+            File.WriteAllText(f + ".old", "older");
+            AgentLog.RollIfBig(f, maxBytes: 1000);
+            Check(!File.Exists(f), "the first write checks at once (a big log from before starts over)");
+            Check(File.Exists(f + ".old") && new FileInfo(f + ".old").Length == 2000, "to .old, replacing the older copy");
+            File.WriteAllText(f, new string('y', 3000));
+            for (int i = 0; i < 199; i++) AgentLog.RollIfBig(f, maxBytes: 1000);
+            Check(File.Exists(f), "then only every 200th write checks the size");
+            AgentLog.RollIfBig(f, maxBytes: 1000);
+            Check(!File.Exists(f) && new FileInfo(f + ".old").Length == 3000, "the 200th rolls it over");
+            File.WriteAllText(f, "small");
+            for (int i = 0; i < 400; i++) AgentLog.RollIfBig(f, maxBytes: 1000);
+            Check(File.Exists(f), "under the cap it stays");
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
     }
 
     // ── landblocks ──────────────────────────────────────────────────────────

@@ -128,7 +128,28 @@ internal sealed class SettingsFace : IImGuiPanel
             float ty = p.Y + (26 - ImGuiNET.ImGui.GetFontSize()) * 0.5f;
             dl.AddText(new Vector2(p.X + 8, ty), sel ? Teal : Mute, TabLabel(tabName));
         }
+        ReportButton(w);
         ImGuiNET.ImGui.EndChild();
+    }
+
+    // At the sidebar's foot (below the tabs when they fill it): opens Report a problem.
+    private static void ReportButton(float w)
+    {
+        if (!ImGuiPanelHost.HasFace(ReportFace.Title)) return;
+        const float h = 26;
+        float bottom = ImGuiNET.ImGui.GetWindowHeight() - ImGuiNET.ImGui.GetStyle().WindowPadding.Y - h;
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
+        if (ImGuiNET.ImGui.GetCursorPosY() < bottom) ImGuiNET.ImGui.SetCursorPosY(bottom);
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        if (ImGuiNET.ImGui.InvisibleButton("##report", new Vector2(w, h)))
+            Report.ProblemReport.OpenPanel();
+        bool hot = ImGuiNET.ImGui.IsItemHovered();
+        ImGuiNET.ImGui.SetItemTooltip("Tell the staff what went wrong (also /rc report).");
+        dl.AddRectFilled(p, p + new Vector2(w, h), hot ? Lighten(BtnFill) : BtnFill);
+        dl.AddRect(p, p + new Vector2(w, h), BtnBord);
+        dl.AddText(new Vector2(p.X + 8, p.Y + (h - ImGuiNET.ImGui.GetFontSize()) * 0.5f), hot ? Amber : Mute,
+            PhosphorIcons.Warning + "  Report a problem");
     }
 
     // ── Content: header + the tab's rows ───────────────────────────────────

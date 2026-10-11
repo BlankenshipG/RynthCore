@@ -3,7 +3,8 @@
 //  ImGui face of RynthChat (docked or popped out; the old Avalonia face is
 //  UI/Panels/RynthChatPanel.cs): channel and custom tabs with unread counts
 //  (right-click a tab: mark read, rename, delete), Filters (the ChatFilters
-//  rule editor), the settings gear, search, the coloured scrollback, and the
+//  rule editor), the settings gear (with a colour per kind of line under
+//  "Line colours", ChatLineColors), search, the coloured scrollback, and the
 //  input line with Tell and the panel's resize grip beside it.
 //
 //  Scrollback: wrapped lines, heights cached per wrap width and font; only
@@ -20,7 +21,9 @@
 //
 //  The input line belongs to ChatModel (UI/Data/ChatData.cs): Win32Backend
 //  turns the chat keys into ChatModel edits on AC's thread, which is also
-//  this face's thread. Clicking the box starts typing, like Enter.
+//  this face's thread. Clicking the box starts typing, like Enter. While
+//  typing, Ctrl+V pastes and Ctrl+C / Ctrl+X copy / cut the whole line;
+//  /r and /rt reply and retell (TellMemory).
 //
 //  The panel has no strip under the body for the resize grip (PanelSpec.
 //  GripInBody): the input row stops short of the bottom-right corner by
@@ -41,6 +44,18 @@ namespace RynthCore.Engine.ImGuiBackend.Panels;
 internal sealed class ChatFace : IImGuiPanel
 {
     public const string Title = "Chat";
+
+    // The channel tabs live in a drawer on the window's left edge (Tom 2026-10-09: the
+    // wrapped tab rows took too much room), the way the dashboard's ranges do.
+    private readonly ChannelsDrawer _channels;
+    private readonly DashboardDrawers _drawers;
+    private bool _openTabsPopup;
+
+    public ChatFace()
+    {
+        _channels = new ChannelsDrawer(this);
+        _drawers = new DashboardDrawers("##chat_drawers", _channels);
+    }
 
     public static void Register() => ImGuiPanelHost.Register(Title,
         new PanelSpec(new Vector2(460, 300), new Vector2(260, 140), Background: 0, EdgeToEdge: true, GripInBody: true),
@@ -89,6 +104,8 @@ internal sealed class ChatFace : IImGuiPanel
     private string _unreadTab = "";
 
     private bool _openSettings, _openNewTab, _focusNewTab, _openTabMenu, _openLineMenu, _openRename;
+    /// <summary>A line colour changed and isn't saved yet (saved once the picker is let go).</summary>
+    private bool _coloursDirty;
     private string? _ctxTab, _renameFrom;
     private ChatLine? _ctxLine;
     private string _ctxPattern = "";
@@ -137,10 +154,7 @@ internal sealed class ChatFace : IImGuiPanel
         string tab = ChatModel.CurrentTab();
         UpdateUnread(lines, snap?.Version ?? -1, tab);
 
-        float y = DrawTabStrip(new Vector2(x0, origin.Y + 4), w);
-
-        DrawSearch(new Vector2(x0, y), w);
-        y += 26;
+        float y = DrawHeader(new Vector2(x0, origin.Y + 4), w);
 
         SyncLines(snap, lines, tab);
 
@@ -158,77 +172,174 @@ internal sealed class ChatFace : IImGuiPanel
         ImGuiNET.ImGui.PopStyleVar();
         DrawPopups();
         ImGuiNET.ImGui.PopFont();
+        _drawers.Draw();   // last: its own window, placed against this one
     }
 
     // ── Tabs ─────────────────────────────────────────────────────────────
 
     private const string SearchHint = PhosphorIcons.MagnifyingGlass + " Search…";
-    private const string FiltersLabel = PhosphorIcons.Funnel + " Filters";
 
-    /// <summary>Tabs wrap left of Filters and the settings gear. Returns the y below the strip.</summary>
-    private float DrawTabStrip(Vector2 start, float w)
+    /// <summary>
+    /// One row: the channel button (current tab, unread elsewhere; it opens the channels
+    /// drawer, or a list when popped out), search, Filters and the gear. Returns the y below it.
+    /// </summary>
+    private float DrawHeader(Vector2 start, float w)
     {
-        const float h = 20;
-        float gearW = 22, filtW = ButtonWidth(FiltersLabel) - 4;
-        float right = start.X + w;
+        const float h = 22;
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
+        float gearW = 22, filtW = 22, right = start.X + w;
         if (IconButton("##chat_gear", PhosphorIcons.Gear, new Vector2(right - gearW, start.Y), new Vector2(gearW, h), Text, BtnFill))
             _openSettings = true;
         ImGuiNET.ImGui.SetItemTooltip("Chat settings");
-        if (Button("##chat_filters", FiltersLabel, new Vector2(right - gearW - 3 - filtW, start.Y), new Vector2(filtW, h), Text, BtnFill))
+        if (IconButton("##chat_filters", PhosphorIcons.Funnel, new Vector2(right - gearW - 3 - filtW, start.Y), new Vector2(filtW, h), Text, BtnFill))
             PanelRouter.Toggle("ChatFilters");
-        ImGuiNET.ImGui.SetItemTooltip("Rules: move, copy or hide lines by regex, and colour them");
+        ImGuiNET.ImGui.SetItemTooltip("Filters: move, copy or hide lines by regex, and colour them");
 
-        var dl = ImGuiNET.ImGui.GetWindowDrawList();
-        float stripRight = right - gearW - filtW - 8;
-        float x = start.X, y = start.Y;
+        // The channel button: icon, current tab, and the unread count of every other tab.
         string current = ChatModel.CurrentTab();
+        int others = 0;
+        bool mention = false;
+        foreach (var kv in _unread)
+        {
+            if (string.Equals(kv.Key, current, StringComparison.OrdinalIgnoreCase)) continue;
+            others += kv.Value.Count;
+            mention |= kv.Value.Mention && kv.Value.Count > 0;
+        }
+        string? badge = others > 0 ? (others > 99 ? "99+" : others.ToString()) : null;
+        float badgeW = badge != null ? BadgeWidth(badge) : 0;
+        string label = PhosphorIcons.ChatCircleText + " " + current;
+        float labelW = ImGuiNET.ImGui.CalcTextSize(label).X;
+        float caretW = ImGuiNET.ImGui.CalcTextSize(PhosphorIcons.CaretDown).X;
+        float bw = MathF.Min(labelW + 16 + caretW + (badge != null ? badgeW + 4 : 0), w * 0.45f);
+        bool drawerOpen = _drawers.IsOpen(_channels);
+        if (Button("##chat_channel", "", start, new Vector2(bw, h), Text, drawerOpen ? TabActive : BtnFill))
+        {
+            if (ImGuiPopOuts.InPopOutFrame) _openTabsPopup = true;   // no drawer beside a popped-out window
+            else _drawers.Toggle(_channels);
+        }
+        if (ImGuiNET.ImGui.IsItemHovered(ImGuiHoveredFlags.ForTooltip))
+            ImGuiNET.ImGui.SetTooltip(mention ? "Channels (someone mentioned you)" : "Channels: pick a tab, see what's unread");
+        float ty = start.Y + (h - ImGuiNET.ImGui.GetFontSize()) * 0.5f;
+        dl.PushClipRect(start, start + new Vector2(bw - caretW - 6 - (badge != null ? badgeW + 4 : 0), h), true);
+        dl.AddText(new Vector2(start.X + 6, ty), Text, label);
+        dl.PopClipRect();
+        float bx = start.X + bw - caretW - 6;
+        if (badge != null)
+        {
+            bx -= badgeW + 4;
+            DrawBadge(dl, new Vector2(bx, start.Y + 4), badgeW, h - 8, badge, mention);
+            bx += badgeW + 4;
+        }
+        dl.AddText(new Vector2(start.X + bw - caretW - 5, ty), Mute, PhosphorIcons.CaretDown);
+
+        // Search fills the rest.
+        float sx = start.X + bw + 4, sw = right - gearW - filtW - 7 - sx;
+        if (sw > 40) DrawSearch(new Vector2(sx, start.Y), sw);
+        return start.Y + h + 4;
+    }
+
+    private static float BadgeWidth(string badge)
+    {
+        ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
+        float w = ImGuiNET.ImGui.CalcTextSize(badge).X + 8;
+        ImGuiNET.ImGui.PopFont();
+        return w;
+    }
+
+    private static void DrawBadge(ImDrawListPtr dl, Vector2 p, float w, float h, string badge, bool mention)
+    {
+        dl.AddRectFilled(p, p + new Vector2(w, h), mention ? BadgeMention : BadgeBg, h * 0.5f);
+        ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
+        dl.AddText(p + new Vector2(4, (h - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Text, badge);
+        ImGuiNET.ImGui.PopFont();
+    }
+
+    /// <summary>
+    /// The channel rows (the drawer's panel; the popped-out list draws its own): each tab with
+    /// its unread count, the current one highlighted; click picks it, right-click renames or
+    /// deletes a created tab; "+ New tab" at the end.
+    /// </summary>
+    private void DrawChannelRows(Vector2 start, float w, float rowH)
+    {
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
+        string current = ChatModel.CurrentTab();
+        float y = start.Y;
         foreach (string tab in ChatModel.AllTabs())
         {
-            bool custom = !ChatModel.IsBaseTab(tab);
             bool active = string.Equals(tab, current, StringComparison.OrdinalIgnoreCase);
             _unread.TryGetValue(tab, out var unread);
             string? badge = !active && unread.Count > 0 ? (unread.Count > 99 ? "99+" : unread.Count.ToString()) : null;
-            float badgeW = 0;
-            if (badge != null)
-            {
-                ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-                badgeW = ImGuiNET.ImGui.CalcTextSize(badge).X + 8;
-                ImGuiNET.ImGui.PopFont();
-            }
-            float textW = ImGuiNET.ImGui.CalcTextSize(tab).X;
-            // No inline delete button on custom tabs: right-click → Delete tab does it and
-            // the red X cost a tab's worth of strip width (2026-09-30).
-            float bw = textW + 12 + (badge != null ? badgeW + 3 : 0), extra = 0;
-            if (x > start.X && x + bw + extra > stripRight) { x = start.X; y += h + 2; }
             ImGuiNET.ImGui.PushID(tab);
-            var p = new Vector2(x, y);
-            if (Button("##tab", "", p, new Vector2(bw, h), Text, active ? TabActive : BtnFill))
+            var p = new Vector2(start.X, y);
+            if (Button("##row", "", p, new Vector2(w, rowH), Text, active ? TabActive : BtnFill))
                 ChatModel.SelectTab(tab);
             if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right)) { _ctxTab = tab; _openTabMenu = true; }
             if (unread.Mention && !active) ImGuiNET.ImGui.SetItemTooltip("Someone mentioned you here");
-            else if (custom) ImGuiNET.ImGui.SetItemTooltip("Right-click to rename or delete this tab");
-            float ty = y + (h - ImGuiNET.ImGui.GetFontSize()) * 0.5f;
-            dl.AddText(new Vector2(x + 6, ty), Text, tab);
-            if (badge != null)
-            {
-                var b0 = new Vector2(x + 6 + textW + 3, y + 4);
-                dl.AddRectFilled(b0, b0 + new Vector2(badgeW, h - 8), unread.Mention ? BadgeMention : BadgeBg, (h - 8) * 0.5f);
-                ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-                dl.AddText(b0 + new Vector2(4, (h - 8 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Text, badge);
-                ImGuiNET.ImGui.PopFont();
-            }
+            else if (!ChatModel.IsBaseTab(tab)) ImGuiNET.ImGui.SetItemTooltip("Right-click to rename or delete this tab");
+            float badgeW = badge != null ? BadgeWidth(badge) : 0;
+            float ty = y + (rowH - ImGuiNET.ImGui.GetFontSize()) * 0.5f;
+            dl.PushClipRect(p, p + new Vector2(w - (badge != null ? badgeW + 8 : 0), rowH), true);
+            dl.AddText(new Vector2(p.X + 6, ty), active ? Teal : Text, tab);
+            dl.PopClipRect();
+            if (badge != null) DrawBadge(dl, new Vector2(p.X + w - badgeW - 4, y + 3), badgeW, rowH - 6, badge, unread.Mention);
             ImGuiNET.ImGui.PopID();
-            x += bw + extra + 2;
+            y += rowH + 2;
         }
-        if (x > start.X && x + 18 > stripRight) { x = start.X; y += h + 2; }
-        if (IconButton("##chat_addtab", PhosphorIcons.Plus, new Vector2(x, y), new Vector2(18, h), TabAdd, BtnFill, font: UiFont.Ui11))
+        if (Button("##chat_addtab", PhosphorIcons.Plus + " New tab", new Vector2(start.X, y), new Vector2(w, rowH), TabAdd, BtnFill))
         {
             _pendingRule = null;
             WriteUtf8(_newTab, "");
             _openNewTab = _focusNewTab = true;
         }
         ImGuiNET.ImGui.SetItemTooltip("New tab (fill it with a rule: right-click a line, or Filters)");
-        return y + h + 4;
+    }
+
+    /// <summary>Popped out (no drawer beside the window): the channels as a list under the button.</summary>
+    private void DrawTabsPopup()
+    {
+        if (!ImGuiNET.ImGui.BeginPopup("##chat_tabs")) return;
+        string current = ChatModel.CurrentTab();
+        foreach (string tab in ChatModel.AllTabs())
+        {
+            _unread.TryGetValue(tab, out var unread);
+            bool active = string.Equals(tab, current, StringComparison.OrdinalIgnoreCase);
+            string label = !active && unread.Count > 0 ? $"{tab}  ({unread.Count})" : tab;
+            if (ImGuiNET.ImGui.Selectable(label + "##tabsel_" + tab, active)) ChatModel.SelectTab(tab);
+        }
+        ImGuiNET.ImGui.Separator();
+        if (ImGuiNET.ImGui.Selectable(PhosphorIcons.Plus + " New tab"))
+        {
+            _pendingRule = null;
+            WriteUtf8(_newTab, "");
+            _openNewTab = _focusNewTab = true;
+        }
+        ImGuiNET.ImGui.EndPopup();
+    }
+
+    /// <summary>The channels drawer on the chat window's left edge (DashboardDrawers' mechanics).</summary>
+    private sealed class ChannelsDrawer : DashboardDrawer
+    {
+        private const float RowH = 20;
+        private static bool s_open;   // this session only
+        private readonly ChatFace _face;
+
+        public ChannelsDrawer(ChatFace face) => _face = face;
+
+        public override string Key => "chat_channels";
+        public override string Icon => PhosphorIcons.ChatCircleText;
+        public override string Name => "channels";
+        public override string TabTooltip(bool right) => "Channels: every tab, with what's unread";
+        public override float Width(float k) => 150 * k;
+        public override float Height(float k) =>
+            (2 * Pad + TitleH + 4) * k + (ChatModel.AllTabs().Length + 1) * (RowH + 2) * k;
+        public override bool SavedOpen => s_open;
+        public override void SaveOpen(bool open) => s_open = open;
+
+        public override void DrawPanel(Vector2 origin, float width, float height, float k)
+        {
+            float y = PanelFrame(origin, width, height, k, Icon, "CHANNELS", null, "Hide the channels");
+            _face.DrawChannelRows(new Vector2(origin.X + Pad * k, y), width - 2 * Pad * k, RowH * k);
+        }
     }
 
     /// <summary>
@@ -639,7 +750,7 @@ internal sealed class ChatFace : IImGuiPanel
         ImGuiNET.ImGui.SetCursorScreenPos(p);
         if (ImGuiNET.ImGui.InvisibleButton("##chat_input", new Vector2(boxW, h)))
             ChatModel.BeginTyping();
-        if (!typing && ChatHooks.RynthChatOwnsChat) ImGuiNET.ImGui.SetItemTooltip("Click or press Enter to chat");
+        if (!typing && ChatHooks.RynthChatOwnsChat) ImGuiNET.ImGui.SetItemTooltip("Click or press Enter to chat (Ctrl+V pastes; /r replies, /rt retells)");
         dl.AddRectFilled(p, p + new Vector2(boxW, h), InputBg, 3);
         dl.AddRect(p, p + new Vector2(boxW, h), typing ? InputActive : InputBorder, 3);
 
@@ -722,6 +833,7 @@ internal sealed class ChatFace : IImGuiPanel
         if (_openTabMenu) { _openTabMenu = false; ImGuiNET.ImGui.OpenPopup("##chat_tabmenu"); }
         if (_openLineMenu) { _openLineMenu = false; ImGuiNET.ImGui.OpenPopup("##chat_linemenu"); }
         if (_openRename) { _openRename = false; ImGuiNET.ImGui.OpenPopup("##chat_rename"); }
+        if (_openTabsPopup) { _openTabsPopup = false; ImGuiNET.ImGui.OpenPopup("##chat_tabs"); }
 
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.PopupBg, RynthTheme.Argb(0xF2060C14));
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, TabActive);
@@ -734,6 +846,7 @@ internal sealed class ChatFace : IImGuiPanel
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(10, 8));
 
         DrawSettingsPopup();
+        DrawTabsPopup();
         DrawNewTabPopup();
         DrawTabMenu();
         DrawRenamePopup();
@@ -745,7 +858,11 @@ internal sealed class ChatFace : IImGuiPanel
 
     private void DrawSettingsPopup()
     {
-        if (!ImGuiNET.ImGui.BeginPopup("##chat_settings")) return;
+        if (!ImGuiNET.ImGui.BeginPopup("##chat_settings"))
+        {
+            if (_coloursDirty) SaveColours();   // closed mid-drag
+            return;
+        }
         ImGuiNET.ImGui.PushItemWidth(150);
         int font = (int)MathF.Round(ChatModel.FontSize);
         if (ImGuiNET.ImGui.SliderInt("Font size", ref font, 8, 18)) ChatModel.FontSize = font;
@@ -783,7 +900,7 @@ internal sealed class ChatFace : IImGuiPanel
             ChatModel.LogEnabled = log;
             ChatModel.SaveSettings();
         }
-        ImGuiNET.ImGui.SetItemTooltip("%AppData%\\RynthCore\\ChatLogs\\<character>.log");
+        ImGuiNET.ImGui.SetItemTooltip("%%AppData%%\\RynthCore\\ChatLogs\\<character>.log"); // a format string: %% is a literal %
         bool through = ChatModel.CtrlGatedClickThrough;
         if (ImGuiNET.ImGui.Checkbox("Click-through (hold Ctrl to interact)", ref through))
             ChatModel.SetCtrlGatedClickThrough(through);
@@ -817,29 +934,115 @@ internal sealed class ChatFace : IImGuiPanel
                 ChatModel.SaveSettings();
             }
         }
+        // Discord above the colours: the colour grid opens downward, so it stays last.
         DrawDiscordSettings();
+        ImGuiNET.ImGui.Separator();
+        if (ImGuiNET.ImGui.CollapsingHeader("Line colours")) DrawLineColours();
+
         if (!ChatModel.PluginBound) Label("Plugin not bound", Mute);
+        // A colour drag changes it every frame: save once the picker lets go.
+        if (_coloursDirty && !ImGuiNET.ImGui.IsAnyItemActive()) SaveColours();
         ImGuiNET.ImGui.EndPopup();
     }
 
-    /// <summary>Settings menu: the Discord relay's switch and status, and the way into its panel.</summary>
+    private void SaveColours()
+    {
+        _coloursDirty = false;
+        ChatModel.SaveSettings();
+    }
+
+    /// <summary>
+    /// A colour per kind of line (ChatLineColors), two to a row: say, tells,
+    /// allegiance, fellowship, emotes; each chat channel by its [Tag] (and any
+    /// other tag seen this session); then the tab colours everything else takes.
+    /// A rule's line colour still wins over all of these. x puts one back to its default.
+    /// </summary>
+    private void DrawLineColours()
+    {
+        Label("A rule's colour wins over these.", Mute);
+        ColourGroup("Chat", ChatLineColors.ChatKinds);
+
+        var channels = new List<ChatColorKind>(ChatLineColors.ChannelKinds);
+        var others = new List<string>(ChatLineColors.SeenTags);
+        foreach (string key in ChatLineColors.SetKeys)
+            if (ChatLineColors.IsOtherChannel(key)) others.Add(key[ChatLineColors.ChanPrefix.Length..]);
+        foreach (string tag in others)
+            if (!channels.Exists(c => string.Equals(c.Label, tag, StringComparison.OrdinalIgnoreCase)))
+                channels.Add(new ChatColorKind(ChatLineColors.ChanPrefix + tag, tag, $"[{tag}] lines", "Channels"));
+        ColourGroup("Channels", channels);
+
+        ColourGroup("Tabs (everything else)", ChatLineColors.TabKinds);
+
+        if (ChatLineColors.AnySet)
+        {
+            if (ImGuiNET.ImGui.SmallButton("Reset all colours"))
+            {
+                ChatLineColors.ResetAll();
+                SaveColours();
+            }
+        }
+    }
+
+    private void ColourGroup(string title, IReadOnlyList<ChatColorKind> kinds)
+    {
+        Label(title, Teal);
+        float x0 = ImGuiNET.ImGui.GetCursorPosX();
+        for (int i = 0; i < kinds.Count; i++)
+        {
+            if (i % 2 == 1) ImGuiNET.ImGui.SameLine(x0 + 150);
+            ColourRow(kinds[i]);
+        }
+    }
+
+    private void ColourRow(ChatColorKind kind)
+    {
+        uint argb = ChatLineColors.EffectiveArgb(kind);
+        bool set = ChatLineColors.Get(kind.Key) != null;
+        ImGuiNET.ImGui.PushID(kind.Key);
+        Vector4 v = RynthTheme.Vec(argb);
+        var rgb = new Vector3(v.X, v.Y, v.Z);
+        if (ImGuiNET.ImGui.ColorEdit3("##col", ref rgb, ImGuiColorEditFlags.NoInputs | ImGuiColorEditFlags.NoLabel))
+        {
+            ChatLineColors.Set(kind.Key, 0xFF000000
+                | ((uint)Math.Clamp((int)MathF.Round(rgb.X * 255), 0, 255) << 16)
+                | ((uint)Math.Clamp((int)MathF.Round(rgb.Y * 255), 0, 255) << 8)
+                | (uint)Math.Clamp((int)MathF.Round(rgb.Z * 255), 0, 255));
+            _coloursDirty = true;
+        }
+        ImGuiNET.ImGui.SameLine();
+        Label(kind.Label, RynthTheme.Argb(argb));
+        ImGuiNET.ImGui.SetItemTooltip(kind.Hint + (set ? "" : kind.Key.StartsWith(ChatLineColors.TabPrefix, StringComparison.Ordinal)
+            ? "\nThe built-in colour." : $"\nNot set: the {kind.Tab} tab's colour."));
+        if (set)
+        {
+            ImGuiNET.ImGui.SameLine();
+            if (ImGuiNET.ImGui.SmallButton("x"))
+            {
+                ChatLineColors.Reset(kind.Key);
+                SaveColours();
+            }
+            ImGuiNET.ImGui.SetItemTooltip("Back to the default colour");
+        }
+        ImGuiNET.ImGui.PopID();
+    }
+
+    /// <summary>
+    /// Settings menu: this character's Discord relay switch, its status and the way into the
+    /// Discord panel, in two compact rows like the rest of the menu.
+    /// </summary>
     private static void DrawDiscordSettings()
     {
         ImGuiNET.ImGui.Separator();
-        Label("Discord", Teal);
-        var discord = UI.Data.Discord.ChatDiscord.Settings;
-        bool relay = discord.Enabled;
-        if (ImGuiNET.ImGui.Checkbox("Copy chat to Discord", ref relay))
-            UI.Data.Discord.ChatDiscord.SetEnabled(relay);
-        ImGuiNET.ImGui.SetItemTooltip("Sends the chat you choose (tells, fellowship, allegiance, any chat tab...)\n" +
-            "to Discord channels by webhook or bot. Set up the connection, channels and pacing in Discord settings.");
-        Label(UI.Data.Discord.ChatDiscord.StatusLine(), Mute);
-        if (ImGuiNET.ImGui.Button("Discord settings…"))
+        ChatDiscordFace.DrawSwitch();
+        ImGuiNET.ImGui.SameLine();
+        if (ImGuiNET.ImGui.SmallButton("Discord…##chat_discord"))
         {
             if (!ImGuiPanelHost.IsOpen(ChatDiscordFace.Title)) PanelRouter.Toggle(ChatDiscordFace.Title);
             ImGuiNET.ImGui.CloseCurrentPopup();
         }
-        ImGuiNET.ImGui.SetItemTooltip("Connection (webhook or bot), which channels and tabs go where, keywords, how often, and the send log.");
+        ImGuiNET.ImGui.SetItemTooltip("Discord panel: connection (webhook or bot), which channels and tabs go where,\n" +
+            "keywords, how often, and the send log.");
+        Label(UI.Data.Discord.ChatDiscord.SwitchLine() + " " + UI.Data.Discord.ChatDiscord.StatusLine(), Mute);
     }
 
     private void DrawNewTabPopup()

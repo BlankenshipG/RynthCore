@@ -27,6 +27,9 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item><c>/rc ui retailvitals [on|off|status]</c> — hide AC's own
 ///         health/stamina/mana bars (<see cref="RetailVitalsHooks"/>; saved for the
 ///         PC, also in Settings &gt; UI). Alone it reports the state.</item>
+///   <item><c>/rc ui barsize [0-10|+|-|status]</c> - the RynthCore bar's size (its own text
+///         size step, <see cref="UI.PanelTextScale"/>; saved for the PC, also in Settings &gt;
+///         Display). Alone it reports the size.</item>
 ///   <item><c>/rc vendor [list|info|status|buy &lt;id|sel&gt; [n]|sell &lt;id|sel&gt; [id ...]]</c>
 ///         — read / trade with the open vendor through the engine's vendor
 ///         primitives (<see cref="VendorTrade"/>); a manual test hook for the
@@ -35,7 +38,8 @@ namespace RynthCore.Engine.Compatibility;
 ///         verdict before AC prints it, so a line a plugin eats is kept out of AC's chat
 ///         window too (<see cref="ChatCallbackHooks"/>). On at every start; not saved.</item>
 ///   <item><c>/rc discord [on|off|status|window|test [route]|resume [route]]</c> — RynthChat's
-///         Discord relay (<see cref="UI.Data.Discord.ChatDiscord"/>): switch it, list the routes,
+///         Discord relay (<see cref="UI.Data.Discord.ChatDiscord"/>): switch it on or off for the
+///         character you're playing (off for every character by default), list the routes,
 ///         post a test line, clear a pause; window opens its panel (Chat &gt; gear &gt; Discord).</item>
 ///   <item><c>/rv plates</c> (aliases <c>/rv nameplates</c>, <c>/rc plates</c>) — the
 ///         RynthVision nameplates and combat text: monster plates on|off, self, debuffs,
@@ -49,17 +53,33 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item><c>/rc hooks [on|off &lt;name&gt;]</c> (alias <c>/rc uihooks</c>) — the UI hooks
 ///         (screen mode, client cleanup, tooltip, drag/drop; <see cref="UiHookRegistry"/>):
 ///         status, or switch one off/on (now and in engine.json).</item>
+///   <item><c>/rc video [status|off|world|unfocused|all|fps &lt;n&gt;]</c> (alias
+///         <c>/rc videopatch</c>; "on" = world) — the video patch
+///         (<see cref="D3D9.VideoPatch"/>): stop drawing AC's 3D world (world), only while
+///         the client is in the background (unfocused), or AC's UI too (all, session only).
+///         Saved per character (also Settings &gt; Misc); fps = the frame cap while patched.</item>
 ///   <item><c>/rc mastery</c> — the Aelrynth mastery feed's state (<see cref="MasteryFeed"/>),
 ///         and ask the server for /mastery-data again.</item>
 ///   <item><c>/rc worldlayer [auto|uipass|transition|endscene]</c> — where the world overlays
 ///         (nameplates, combat text, Nav3D markers) draw in AC's frame
 ///         (<see cref="D3D9.Nav3DRenderInjector"/>): alone it reports the path and counters;
 ///         a mode forces it for this session (A/B checks). Auto at every start; not saved.</item>
+///   <item><c>/rc acmouse [watch [seconds]]</c> (alias <c>/rc mouseover</c>) - what AC's own UI
+///         has under the cursor (<see cref="AcMouseOver"/>: the 3D world or one of its windows,
+///         with the element's id and type), i.e. whether a nameplate there may take the click;
+///         watch = every change for a while (default 20 s), to chat and the log.</item>
 ///   <item><c>/rc netmsg [status|on|off|log on|off|capture on|off]</c> - the reassembled
 ///         server-message stream for plugins (<see cref="Net.ServerMessageStream"/>, API v78):
 ///         counters; on/off for this session (engine.json "ServerMessageStream": false is the
 ///         kill switch); log = the SDK parsers run on live messages, results to the log;
 ///         capture = raw datagrams to a .rnc file for tools/NetMessageTests.</item>
+///   <item><c>/rc flightdump [note]</c> - write the flight recorder (<see cref="Net.FlightRecorder"/>:
+///         the last minutes of client/server messages and engine markers) to
+///         Logs\flight-&lt;pid&gt;-&lt;time&gt;.txt; <c>/rc flightdump auto &lt;reason&gt;</c> is the rate-limited
+///         automatic form. <c>/rc flight [status|mark &lt;text&gt;|on|off|auto on|off]</c>.</item>
+///   <item><c>/rc report [text]</c> - "Report a problem" (<see cref="Report.ProblemReport"/>): alone it
+///         opens the panel; with text it sends that report now, with the recent log attached
+///         (the panel is where the log can be left out). One report a minute.</item>
 /// </list>
 /// </summary>
 internal static class RynthCoreChatCommands
@@ -156,6 +176,14 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
+        // /rc ilt [auto|on|off] : is this Infinite Leaftide (the ILT section), with a testing override
+        if (IsVerb(sub, "ilt", out string iltArgs))
+        {
+            try { HandleIltCommand(iltArgs); }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc ilt failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
         // /rc mastery : the Aelrynth mastery feed's state, and ask the server again
         if (IsVerb(sub, "mastery", out _))
         {
@@ -172,11 +200,81 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
+        // /rc acmouse [watch [seconds]] : what AC's own UI has under the cursor (the 3D world or
+        // one of its windows) - whether a nameplate there may take the click (AcMouseOver)
+        if (IsVerb(sub, "acmouse", out string acMouseArgs) || IsVerb(sub, "mouseover", out acMouseArgs))
+        {
+            try
+            {
+                string[] p = acMouseArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (p.Length > 0 && p[0].Equals("watch", StringComparison.OrdinalIgnoreCase))
+                {
+                    int secs = p.Length > 1 && int.TryParse(p[1], out int n) ? n : 20;
+                    AcMouseOver.Watch(secs);
+                    Reply($"Watching AC's mouse-over for {Math.Clamp(secs, 1, 120)} s: move the cursor over the world and over AC's windows.");
+                }
+                else
+                {
+                    Reply(AcMouseOver.Describe());
+                }
+            }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc acmouse failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc video [status|off|world|unfocused|all|fps <n>] : the video patch (stop drawing the 3D world)
+        if (IsVerb(sub, "video", out string videoArgs) || IsVerb(sub, "videopatch", out videoArgs))
+        {
+            try
+            {
+                foreach (string l in D3D9.VideoPatch.HandleCommand(videoArgs))
+                    Reply(l);
+            }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc video failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
         // /rc hooks [on|off <name>] : the UI hooks (screen mode, client cleanup, tooltip, drag/drop)
         if (IsVerb(sub, "hooks", out string hooksArgs) || IsVerb(sub, "uihooks", out hooksArgs))
         {
             try { HandleHooksCommand(hooksArgs); }
             catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc hooks failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc flightdump [note] | /rc flightdump auto <reason> : write the flight recorder now
+        if (IsVerb(sub, "flightdump", out string dumpArgs))
+        {
+            try
+            {
+                foreach (string l in Net.FlightRecorder.HandleDumpCommand(dumpArgs))
+                    Reply(l);
+            }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc flightdump failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc report [text] : Report a problem - alone it opens the panel; with text it sends now (with the log)
+        if (IsVerb(sub, "report", out string reportArgs))
+        {
+            try
+            {
+                foreach (string l in Report.ProblemReport.HandleCommand(reportArgs))
+                    Reply(l);
+            }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc report failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc flight [status|mark <text>|on|off|auto on|off] : the flight recorder
+        if (IsVerb(sub, "flight", out string flightArgs))
+        {
+            try
+            {
+                foreach (string l in Net.FlightRecorder.HandleCommand(flightArgs))
+                    Reply(l);
+            }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc flight failed - {ex.GetType().Name}: {ex.Message}"); }
             return true;
         }
 
@@ -228,6 +326,37 @@ internal static class RynthCoreChatCommands
                     Reply("The Sense panel isn't available (the ImGui layer is off?).");
                 else
                     UI.PanelRouter.Toggle(ImGuiBackend.Panels.SenseFace.Title);
+                return true;
+
+            case "itemcount":
+            case "itemhud":
+                // The ImGui Item Count panel (open/close), like its bar button.
+                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.ItemCountFace.Title))
+                    Reply("The Item Count panel isn't available (the ImGui layer is off?).");
+                else
+                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.ItemCountFace.Title);
+                return true;
+
+            case "bounties":
+            case "bounty":
+            case "bountys":
+                // The ImGui Bounties panel (ILT section: ACECustom bounties, the RynthILT plugin's
+                // tracker), like the ILT bar button. Only on Infinite Leaftide with RynthILT installed.
+                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.BountiesFace.Title))
+                    Reply("The Bounties panel isn't available (the RynthILT plugin isn't installed, or the ImGui layer is off).");
+                else if (!IltInfo.IsIlt && !ImGuiBackend.ImGuiPanelHost.IsOpen(ImGuiBackend.Panels.BountiesFace.Title))
+                    Reply("Bounties are an Infinite Leaftide feature, and this isn't Infinite Leaftide (/rc ilt for why).");
+                else
+                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.BountiesFace.Title);
+                return true;
+
+            case "remote":
+            case "miniremote":
+                // The ImGui Mini Remote panel (open/close), like its bar button.
+                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.MiniRemoteFace.Title))
+                    Reply("The Mini Remote panel isn't available (the ImGui layer is off?).");
+                else
+                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.MiniRemoteFace.Title);
                 return true;
 
             case "resetbar":
@@ -305,6 +434,29 @@ internal static class RynthCoreChatCommands
             return;
         }
 
+        // /rc ui barsize [0-10|+|-|status]: the bar's size. Alone it reports it.
+        if (parts[0].Equals("barsize", StringComparison.OrdinalIgnoreCase))
+        {
+            int cur = UI.PanelTextScale.GetChrome();
+            if (parts.Length >= 2 && !parts[1].Equals("status", StringComparison.OrdinalIgnoreCase))
+            {
+                int next;
+                // Bare + / -: one step. +n / -n: that many steps. Plain n: that size.
+                if (parts[1] == "+") next = cur + 1;
+                else if (parts[1] == "-") next = cur - 1;
+                else if (!int.TryParse(parts[1], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out next))
+                {
+                    Reply("Usage: /rc ui barsize [0-10|+|-|status]");
+                    return;
+                }
+                else if (parts[1][0] is '+' or '-')
+                    next += cur;
+                UI.PanelTextScale.SetChrome(next);
+            }
+            Reply("Bar size: " + UI.PanelTextScale.Describe(UI.PanelTextScale.GetChrome()) + ".");
+            return;
+        }
+
         // /rc ui open|close|popout|redock|snap <Panel>: drive a panel by name (tests,
         // dispatch.txt). Names may have spaces ("Monster Detail").
         string verb = parts[0].ToLowerInvariant();
@@ -337,7 +489,7 @@ internal static class RynthCoreChatCommands
 
         if (parts.Length != 2 || !UI.PanelFaceStore.TryParseFace(parts[1], out UI.PanelFace face))
         {
-            Reply("Usage: /rc ui list  |  /rc ui <Panel|bar> avalonia|imgui|both  |  /rc ui open|close|popout|redock|snap <Panel>  |  /rc ui retailvitals [on|off]");
+            Reply("Usage: /rc ui list  |  /rc ui <Panel|bar> avalonia|imgui|both  |  /rc ui open|close|popout|redock|snap <Panel>  |  /rc ui retailvitals [on|off]  |  /rc ui barsize [0-10|+|-|status]");
             return;
         }
 
@@ -439,6 +591,32 @@ internal static class RynthCoreChatCommands
         Reply($"Signals: host {ServerInfo.HostDescription}; world name {AccountHooks.AnnouncedWorldName ?? "(not announced)"}; "
             + $"override {ServerInfo.Override}.");
         Reply($"Titles (plugin API v75): {CharacterTitles.Describe()}.");
+    }
+
+    /// <summary>
+    /// /rc ilt: the Infinite Leaftide verdict, its signals and the lists in force. "on" /
+    /// "off" force it for this session (testing the ILT section anywhere); "auto" goes back
+    /// to detecting. Never saved; the lists are engine.json's IltServerNames / IltHosts.
+    /// </summary>
+    private static void HandleIltCommand(string args)
+    {
+        switch (args.Trim().ToLowerInvariant())
+        {
+            case "on": case "ilt": IltInfo.Override = IltInfo.Mode.ForceIlt; break;
+            case "off": case "other": IltInfo.Override = IltInfo.Mode.ForceOther; break;
+            case "auto": IltInfo.Override = IltInfo.Mode.Auto; break;
+            case "": break;
+            default:
+                Reply("Usage: /rc ilt [auto|on|off]");
+                return;
+        }
+        IltVerdict v = IltInfo.Current;
+        Reply($"ILT: {(v.IsIlt ? "Infinite Leaftide" : "not Infinite Leaftide")} - {v.Reason}.");
+        Reply($"Signals: host {ServerInfo.HostDescription}; world name {AccountHooks.AnnouncedWorldName ?? "(not announced)"}; "
+            + $"override {IltInfo.Override}. Lists: {IltInfo.ListsDescription}.");
+        Reply(ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.BountiesFace.Title)
+            ? "RynthILT: installed (Bounties: the ILT bar button or /rc bounties)."
+            : "RynthILT: not installed, so there is no ILT section.");
     }
 
     private static void HandleMasteryCommand()
@@ -659,6 +837,7 @@ internal static class RynthCoreChatCommands
                 break;
             case "players":
                 S.PlayerNames = Flag(value, S.PlayerNames); break;
+            case "playerbars": S.PlayerBars = Flag(value, S.PlayerBars); break;
             case "names": S.ShowNames = Flag(value, S.ShowNames); break;
             case "hp": S.ShowHpNumbers = Flag(value, S.ShowHpNumbers); break;
             case "level": S.ShowLevel = Flag(value, S.ShowLevel); break;

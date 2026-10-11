@@ -13,6 +13,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using RynthCore.Engine.ImGuiBackend.Hud;
 using System.Text.Json.Serialization;
 
 namespace RynthCore.Engine.UI.Data;
@@ -152,12 +153,41 @@ internal static class NavCommands
         5175, 5330, 5541, 6150, 6321, 6322,
     };
 
-    public static readonly string[] RecallLabels = BuildRecallLabels();
-
-    private static string[] BuildRecallLabels()
+    /// <summary>
+    /// "Lifestone Recall (1635)": the recall spells by name (2026-10-08: they showed as
+    /// "Spell 1635 (1635)"). The names come from the client's spell table, which loads in the
+    /// background, so the list is rebuilt until every name is known.
+    /// </summary>
+    public static string[] RecallLabels
     {
+        get
+        {
+            if (_recallLabels == null || !_recallLabelsNamed)
+            {
+                PortalSpellTable.EnsureLoadQueued();
+                _recallLabels = BuildRecallLabels(out _recallLabelsNamed);
+            }
+            return _recallLabels;
+        }
+    }
+
+    private static string[]? _recallLabels;
+    private static bool _recallLabelsNamed;
+
+    private static string[] BuildRecallLabels(out bool allNamed)
+    {
+        allNamed = true;
         var labels = new string[RecallIds.Length];
-        for (int i = 0; i < labels.Length; i++) labels[i] = $"Spell {RecallIds[i]} ({RecallIds[i]})";
+        for (int i = 0; i < labels.Length; i++)
+        {
+            if (PortalSpellTable.TryGetName((uint)RecallIds[i], out string name) && name.Length > 0)
+                labels[i] = $"{name} ({RecallIds[i]})";
+            else
+            {
+                labels[i] = $"Spell {RecallIds[i]} ({RecallIds[i]})";
+                allNamed = false;
+            }
+        }
         return labels;
     }
 

@@ -111,7 +111,7 @@ internal abstract class DashboardDrawer
 /// <summary>The tabs and the one open drawer beside the RynthAi dashboard.</summary>
 internal sealed class DashboardDrawers
 {
-    private const string WindowId = "##rynthai_drawers";
+    private readonly string WindowId;   // "##rynthai_drawers" for the dashboard; the chat has its own
     private const float SlideSeconds = 0.14f;
 
     private static readonly uint Teal = RynthTheme.Argb(0xFF26D9E6), Mute = RynthTheme.Argb(0xFFB8C8D8),
@@ -123,8 +123,12 @@ internal sealed class DashboardDrawers
     private float _t;            // slide position of _shown, 0 closed .. 1 open
     private bool _loaded;
 
-    public DashboardDrawers(params DashboardDrawer[] drawers)
+    public DashboardDrawers(params DashboardDrawer[] drawers) : this("##rynthai_drawers", drawers) { }
+
+    /// <summary>A drawer set beside another panel (RynthChat's channels): its own window id.</summary>
+    public DashboardDrawers(string windowId, params DashboardDrawer[] drawers)
     {
+        WindowId = windowId;
         _drawers = drawers;
         foreach (DashboardDrawer d in drawers) d.Host = this;
     }

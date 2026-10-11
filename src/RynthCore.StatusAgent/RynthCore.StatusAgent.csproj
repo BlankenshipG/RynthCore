@@ -31,8 +31,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Install-location resolver (installer-chosen RynthCore / RynthSuite folders). -->
-    <Compile Include="..\RynthCore.App\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <!-- Install-folder resolver (env, HKCU, HKLM, default C:\Games). Read only; same file in RynthSuite Plugins\Shared. -->
+    <Compile Include="..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
   </ItemGroup>
 
 </Project>
