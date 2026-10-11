@@ -817,8 +817,29 @@ internal sealed class ChatFace : IImGuiPanel
                 ChatModel.SaveSettings();
             }
         }
+        DrawDiscordSettings();
         if (!ChatModel.PluginBound) Label("Plugin not bound", Mute);
         ImGuiNET.ImGui.EndPopup();
+    }
+
+    /// <summary>Settings menu: the Discord relay's switch and status, and the way into its panel.</summary>
+    private static void DrawDiscordSettings()
+    {
+        ImGuiNET.ImGui.Separator();
+        Label("Discord", Teal);
+        var discord = UI.Data.Discord.ChatDiscord.Settings;
+        bool relay = discord.Enabled;
+        if (ImGuiNET.ImGui.Checkbox("Copy chat to Discord", ref relay))
+            UI.Data.Discord.ChatDiscord.SetEnabled(relay);
+        ImGuiNET.ImGui.SetItemTooltip("Sends the chat you choose (tells, fellowship, allegiance, any chat tab...)\n" +
+            "to Discord channels by webhook or bot. Set up the connection, channels and pacing in Discord settings.");
+        Label(UI.Data.Discord.ChatDiscord.StatusLine(), Mute);
+        if (ImGuiNET.ImGui.Button("Discord settings…"))
+        {
+            if (!ImGuiPanelHost.IsOpen(ChatDiscordFace.Title)) PanelRouter.Toggle(ChatDiscordFace.Title);
+            ImGuiNET.ImGui.CloseCurrentPopup();
+        }
+        ImGuiNET.ImGui.SetItemTooltip("Connection (webhook or bot), which channels and tabs go where, keywords, how often, and the send log.");
     }
 
     private void DrawNewTabPopup()

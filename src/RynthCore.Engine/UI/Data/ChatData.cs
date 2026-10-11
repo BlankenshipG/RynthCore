@@ -5,7 +5,9 @@
 //
 //    • ChatSource (hub, 100 ms) pulls new lines from RynthChatGetScrollbackJson
 //      on the pump thread, keeps the newest 500, routes and colours them with
-//      the rules, and writes the chat log.
+//      the rules, and writes the chat log. It also hands each new line to the
+//      Discord relay and ticks it (UI/Data/Discord/ChatDiscord.cs), which keeps
+//      this source subscribed while it is on.
 //    • ChatModel holds the settings (rynthchat_settings.json), the regex
 //      rules and custom tabs, and the chat input line.
 //
@@ -273,7 +275,7 @@ internal sealed class ChatFilterRule
     }
 }
 
-/// <summary>New RynthChat lines while a chat face is open (100 ms). Publishes the newest 500, routed.</summary>
+/// <summary>New RynthChat lines while a chat face or the Discord relay holds it (100 ms). Publishes the newest 500, routed.</summary>
 internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
 {
     private const int MaxLines = 500;
@@ -287,6 +289,17 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
     public ChatSource() : base("Chat", periodMs: 100) { }
 
     protected internal override void Poll()
+    {
+        try { PollLines(); }
+        finally
+        {
+            // Every poll, new lines or not: due Discord posts, results, retries.
+            try { Discord.ChatDiscord.PumpTick(); }
+            catch (Exception ex) { RynthLog.UI($"ChatSource: Discord relay tick failed ({ex.GetType().Name}: {ex.Message})."); }
+        }
+    }
+
+    private void PollLines()
     {
         if (_get == null)
         {
@@ -355,6 +368,8 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
         added.CopyTo(skipAdded, lines, keepOld, added.Count - skipAdded);
         Publish(lines);
         ChatModel.PumpLog(added);
+        try { Discord.ChatDiscord.PumpLines(added); }
+        catch (Exception ex) { RynthLog.UI($"ChatSource: Discord relay skipped {added.Count} line(s) ({ex.GetType().Name}: {ex.Message})."); }
     }
 
     private int _badLinesLogged;
