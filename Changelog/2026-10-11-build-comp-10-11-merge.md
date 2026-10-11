@@ -39,6 +39,14 @@
 - `RynthCore.Engine.csproj`: the `Tmds.DBus.Protocol` 0.21.3 pin was listed twice (both sides
   added it). One remains.
 
+## Local test install
+
+- Engine **2026.10.5.27** (previous local release 2026.10.5.26; rynth's 2026.10.11.1 was
+  installed), published with `scripts\Publish-EngineCoreClr.ps1 -AllowBehind` (this checkout has
+  no `status-export` branch) to `C:\Games\RynthCore\Runtime`, together with the loader and shim.
+- The replaced engine, loader and shim are in
+  `C:\Games\_rynth-backups\20261011-pre-build-comp-10-11\Runtime`.
+
 ## Verification
 
 - Engine, App.Avalonia, Injector, Loader and StatusAgent build with 0 errors.
