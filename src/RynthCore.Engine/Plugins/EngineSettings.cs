@@ -21,6 +21,8 @@ internal static class EngineSettings
     private static bool _enableImGuiShell = true;
     private static bool _enablePlugins = true;
     private static bool _enableDatShareHook = true;
+    // Owned since f81fc8d: Save() writes it only when false (a hand-set false survives saves).
+    private static bool _enableLargeAddressAlignmentFix = true;
     private static bool _enableAvaloniaOverlay = true;
     private static bool _enableD3D9Hook = true;
     private static bool _enableEngine = true;
@@ -36,6 +38,15 @@ internal static class EngineSettings
     private static bool _serverMessageStream = true;
     private static bool _flightRecorder = true;
     private static bool _insertReleasesUi;
+    // Read-only, like EnableLargeAddressAlignmentFix: only a hand-set value is written back.
+    private static int _maxHotReloads = ReloadCapNotice.DefaultMaxHotReloads;
+    // "IltServerNames" / "IltHosts": what counts as Infinite Leaftide (Compatibility/IltInfo.cs).
+    // null = not in the file: IltDetect's defaults.
+    private static List<string>? _iltServerNames;
+    private static List<string>? _iltHosts;
+    // "ReportEndpoint": where "Report a problem" posts (Report/ProblemReport.cs); null = the built-in URL.
+    // For testing only (https, or http to this PC); read only, like MaxHotReloads.
+    private static string? _reportEndpoint;
     private static bool _loaded;
 
     public static IReadOnlyList<string> PluginPaths
@@ -79,6 +90,19 @@ internal static class EngineSettings
         {
             EnsureLoaded();
             return _enableDatShareHook;
+        }
+    }
+
+    /// <summary>When false, LargeAddressAlignmentPatch leaves acclient's signed "pointer % 4"
+    /// padding code alone (stock AC behaviour, which corrupts unpacks of buffers above 2 GB).
+    /// Default true. Diagnostic kill-switch only: set "EnableLargeAddressAlignmentFix": false
+    /// in engine.json by hand.</summary>
+    public static bool EnableLargeAddressAlignmentFix
+    {
+        get
+        {
+            EnsureLoaded();
+            return _enableLargeAddressAlignmentFix;
         }
     }
 
@@ -323,6 +347,55 @@ internal static class EngineSettings
         }
     }
 
+    /// <summary>"MaxHotReloads" in engine.json (default 3, 2026-10-11): how many engine hot reloads
+    /// one client takes; the loader asks before each one (RynthCoreMaxHotReloads) and refuses the
+    /// rest, so a newer engine then needs a client restart. Clients died with CoreCLR fatal error
+    /// 0x80131506 after 4+ reloads in one process. Negative = no cap (test clients soaking
+    /// reloads), 0 = no hot reloads at all. Read at each engine init; edited in the file.</summary>
+    public static int MaxHotReloads
+    {
+        get
+        {
+            EnsureLoaded();
+            return _maxHotReloads;
+        }
+    }
+
+    /// <summary>"ReportEndpoint" in engine.json: a test URL for "Report a problem" instead of the
+    /// built-in https://aelrynth.com/rynth/report (ProblemReportCore.ResolveEndpoint accepts https,
+    /// or http to this PC; anything else is ignored). Null when the file has none. Edited in the file.</summary>
+    public static string? ReportEndpoint
+    {
+        get
+        {
+            EnsureLoaded();
+            return _reportEndpoint;
+        }
+    }
+
+    /// <summary>"IltServerNames" in engine.json: world-name patterns ('*' wildcard, case-insensitive)
+    /// treated as Infinite Leaftide; null when the file has none (IltDetect.DefaultServerNames).
+    /// An empty array turns the world-name signal off. Read only: edited in the file.</summary>
+    public static IReadOnlyList<string>? IltServerNames
+    {
+        get
+        {
+            EnsureLoaded();
+            return _iltServerNames;
+        }
+    }
+
+    /// <summary>"IltHosts" in engine.json: launch hosts (a domain covers its subdomains, '*' allowed)
+    /// treated as Infinite Leaftide; null when the file has none (IltDetect.DefaultHosts).</summary>
+    public static IReadOnlyList<string>? IltHosts
+    {
+        get
+        {
+            EnsureLoaded();
+            return _iltHosts;
+        }
+    }
+
     public static void AddPluginPath(string path)
     {
         EnsureLoaded();
@@ -388,6 +461,12 @@ internal static class EngineSettings
                 (datEl.ValueKind == JsonValueKind.True || datEl.ValueKind == JsonValueKind.False))
             {
                 _enableDatShareHook = datEl.GetBoolean();
+            }
+
+            if (doc.RootElement.TryGetProperty("EnableLargeAddressAlignmentFix", out var laaEl) &&
+                (laaEl.ValueKind == JsonValueKind.True || laaEl.ValueKind == JsonValueKind.False))
+            {
+                _enableLargeAddressAlignmentFix = laaEl.GetBoolean();
             }
 
             if (doc.RootElement.TryGetProperty("EnableAvaloniaOverlay", out var avEl) &&
@@ -457,11 +536,29 @@ internal static class EngineSettings
                 (iruEl.ValueKind == JsonValueKind.True || iruEl.ValueKind == JsonValueKind.False))
                 _insertReleasesUi = iruEl.GetBoolean();
 
+            if (doc.RootElement.TryGetProperty("MaxHotReloads", out var mhrEl) &&
+                mhrEl.ValueKind == JsonValueKind.Number &&
+                mhrEl.TryGetInt32(out int mhr))
+                _maxHotReloads = mhr;
+
+            if (doc.RootElement.TryGetProperty("ReportEndpoint", out var repEl) &&
+                repEl.ValueKind == JsonValueKind.String &&
+                repEl.GetString() is { Length: > 0 } rep)
+                _reportEndpoint = rep.Trim();
+
             if (doc.RootElement.TryGetProperty("PreventIdleLogoff", out var pilEl) &&
                 (pilEl.ValueKind == JsonValueKind.True || pilEl.ValueKind == JsonValueKind.False))
             {
                 _preventIdleLogoff = pilEl.GetBoolean();
             }
+
+            if (doc.RootElement.TryGetProperty("IltServerNames", out var ilnEl) &&
+                ilnEl.ValueKind == JsonValueKind.Array)
+                _iltServerNames = ReadStringList(ilnEl);
+
+            if (doc.RootElement.TryGetProperty("IltHosts", out var ilhEl) &&
+                ilhEl.ValueKind == JsonValueKind.Array)
+                _iltHosts = ReadStringList(ilhEl);
 
             if (doc.RootElement.TryGetProperty("DisabledUiHooks", out var duhEl) &&
                 duhEl.ValueKind == JsonValueKind.Array)
@@ -479,6 +576,20 @@ internal static class EngineSettings
         }
     }
 
+    private static List<string> ReadStringList(JsonElement arr)
+    {
+        // Trimmed, blanks dropped, case-insensitive duplicates dropped (the file stays as the player wrote it).
+        var list = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var el in arr.EnumerateArray())
+        {
+            if (el.ValueKind != JsonValueKind.String) continue;
+            string v = (el.GetString() ?? "").Trim();
+            if (v.Length > 0 && seen.Add(v)) list.Add(v);
+        }
+        return list;
+    }
+
     /// <summary>Every engine.json key EnsureLoaded reads or Save writes. Save rewrites these from
     /// memory (one written only when not the default is left out, as before) and keeps every
     /// other key as the file had it. A new engine.json setting goes here too
@@ -489,7 +600,8 @@ internal static class EngineSettings
         "EnableAvaloniaOverlay", "EnableD3D9Hook", "EnableEngine", "EngineHookCount",
         "EnableImGuiBackend", "EnableHangMinidump", "PreventIdleLogoff", "DecalBridge",
         "DecalInGameImGui", "DecalStandDown", "DisabledUiHooks", "ServerMessageStream",
-        "FlightRecorder", "InsertReleasesUi",
+        "FlightRecorder", "InsertReleasesUi", "IltServerNames", "IltHosts", "EnableLargeAddressAlignmentFix",
+        "MaxHotReloads", "ReportEndpoint",
     };
 
     private static void Save()
@@ -534,8 +646,16 @@ internal static class EngineSettings
                     w.WriteBoolean("ServerMessageStream", false);
                 if (!_flightRecorder)      // default true: leave the file as it was
                     w.WriteBoolean("FlightRecorder", false);
+                if (!_enableLargeAddressAlignmentFix)   // default true: only a hand-set false is written
+                    w.WriteBoolean("EnableLargeAddressAlignmentFix", false);
                 if (_insertReleasesUi)     // default false: leave the file as it was
                     w.WriteBoolean("InsertReleasesUi", true);
+                if (_maxHotReloads != ReloadCapNotice.DefaultMaxHotReloads)   // only a hand-set value is written
+                    w.WriteNumber("MaxHotReloads", _maxHotReloads);
+                if (_reportEndpoint != null)   // only a hand-set value is written
+                    w.WriteString("ReportEndpoint", _reportEndpoint);
+                WriteStringList(w, "IltServerNames", _iltServerNames);   // null (not in the file): left out
+                WriteStringList(w, "IltHosts", _iltHosts);
                 w.WriteEndObject();
             }
 
@@ -553,6 +673,15 @@ internal static class EngineSettings
         {
             RynthLog.Plugin($"EngineSettings: Failed to save: {ex.Message}");
         }
+    }
+
+    private static void WriteStringList(Utf8JsonWriter w, string name, List<string>? list)
+    {
+        if (list == null) return;
+        w.WriteStartArray(name);
+        foreach (string v in list)
+            w.WriteStringValue(v);
+        w.WriteEndArray();
     }
 }
 

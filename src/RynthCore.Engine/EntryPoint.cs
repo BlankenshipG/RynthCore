@@ -84,6 +84,42 @@ public static class EntryPoint
         return 0;
     }
 
+    /// <summary>
+    /// The reload cap (ReloadCapNotice): the loader asks this before every hot reload, and
+    /// refuses the reload once this client has done that many. engine.json MaxHotReloads,
+    /// default 3; negative = no cap. Loader thread.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthCoreMaxHotReloads")]
+    public static int MaxHotReloads()
+    {
+        try { return EngineSettings.MaxHotReloads; }
+        catch { return ReloadCapNotice.DefaultMaxHotReloads; }
+    }
+
+    private static readonly ReloadCapNotice s_reloadCapNotice = new();
+
+    /// <summary>
+    /// The loader refused a hot reload because this client has done <paramref name="reloads"/>
+    /// of them (the cap is <paramref name="cap"/>). The client stays on this engine. Logs it,
+    /// and says so in chat once, and again when the player asked for the reload by hand.
+    /// Loader thread.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthCoreReloadCapped")]
+    public static uint ReloadCapped(int reloads, int cap)
+    {
+        try
+        {
+            bool byHand = ReloadCapNotice.IsRecentManualSignal(EngineLifecycle.LastSignalReloadMs, Environment.TickCount64);
+            RynthLog.Warn(ReloadCapNotice.LogText(reloads, cap, byHand));
+            bool chat;
+            lock (s_reloadCapNotice) chat = s_reloadCapNotice.ShouldChat(byHand);
+            if (chat)
+                Compatibility.AcMainThreadQueue.EnqueueWriteToChat(ReloadCapNotice.ChatText(reloads), 2);
+        }
+        catch { }
+        return 0;
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthCoreShutdown")]
     public static uint Shutdown(IntPtr lpParam)
     {
@@ -195,6 +231,9 @@ public static class EntryPoint
                 RynthLog.Info("Early-init: could not resolve engine directory — minhook may not be preloaded before MultiClientHooks.");
 
             RunInitStep("early multi-client hooks", MultiClientHooks.Initialize);
+            // Before AC's main thread resumes, so no dat or network unpack runs the stock
+            // signed padding; a hot reload finds every site already patched.
+            RunInitStep("large-address alignment fix", LargeAddressAlignmentPatch.Initialize);
             // DatFileShareHooks force-shares AC's data files at the CreateFile
             // layer so we can coexist with Decal-injected clients that other
             // launchers (Thwargle etc.) have already opened against the same
@@ -941,6 +980,9 @@ public static class EntryPoint
                 {
                     UI.Data.ChatModel.EnsureSettingsLoaded();
                     UI.Data.ChatModel.InstallInput();
+                    // Discord relay settings (file read here, not on AC's thread); a relay left
+                    // on keeps the chat feed running with the Chat panel closed.
+                    UI.Data.Discord.ChatDiscord.EnsureLoaded();
                 }
                 // ImGui faces for panels docked in the client (UI.PanelRouter
                 // picks the face). Registered even while the ImGui layer is off,
@@ -951,10 +993,15 @@ public static class EntryPoint
                     ImGuiBackend.Panels.VisionFace.Register();
                 if (HasPluginDll("RynthCore.Plugin.RynthNav.dll"))
                     ImGuiBackend.Panels.RynthNavFace.Register();
+                // The ILT section (Infinite Leaftide): its faces exist only with RynthILT
+                // installed, and the bar's ILT button shows them only on ILT (IltInfo).
+                if (HasPluginDll("RynthCore.Plugin.RynthILT.dll"))
+                    ImGuiBackend.Panels.BountiesFace.Register();
                 if (HasPluginDll("RynthCore.Plugin.RynthChat.dll"))
                 {
                     ImGuiBackend.Panels.ChatFace.Register();
                     ImGuiBackend.Panels.ChatFiltersFace.Register();
+                    ImGuiBackend.Panels.ChatDiscordFace.Register();
                 }
                 ImGuiBackend.Panels.RadarFace.Register();
                 ImGuiBackend.Panels.SettingsFace.Register();

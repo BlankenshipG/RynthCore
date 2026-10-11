@@ -269,9 +269,11 @@ internal sealed class LootAddDialog
         }
         if (ImGuiNET.ImGui.IsItemHovered())
             ImGuiNET.ImGui.SetTooltip(
-                "Also require this item's T11 tier, weapon grade, damage %, every modifier, slot special\n" +
-                "and Cast on Strike, each at least as good as this one. Works with any match.\n" +
-                "Not added: Can Wield (depends on your character) and Zone Locked (depends on where it was assessed).");
+                "Also require this item's T11 tier (the server's stamped tier when it sends one), weapon grade,\n" +
+                "damage %, gear grade, every modifier, slot special and Cast on Strike, each at least as good\n" +
+                "as this one. Works with any match.\n" +
+                "Not added: Can Wield (depends on your character), Zone Locked (depends on where it was assessed),\n" +
+                "and property slots / Tainted (bag state, not quality).");
         if (!d.IsT11)
         {
             ImGuiNET.ImGui.SameLine();

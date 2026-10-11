@@ -3,7 +3,7 @@
   <!--
     Offline checks for src\RynthCore.Engine\Compatibility\AcMouseOverRules.cs (2026-10-08):
     a nameplate drawn under AC's windows may take a click only where AC's own mouse-over is
-    the 3D world (the SmartBox wrapper, type 0x10000030) - never on one of AC's windows - and
+    the 3D world (gmSmartBoxUI, type 0x10000014, or the SmartBox wrapper, 0x10000030) - never on one of AC's windows - and
     keeps today's behaviour (takes it) whenever AC's UI state can't be read.
     The AC-side facts (offsets, the type id) are checked against acclient.exe by
     tools\ui_hooks_check.py.

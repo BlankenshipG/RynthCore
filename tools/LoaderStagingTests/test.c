@@ -1,5 +1,6 @@
 // Offline checks for Loader.c's staging: CleanStaleStagingFiles rules and CopyGuarded.
 // Built with the real Loader.c included, so these are the shipped functions.
+#define LOG_DIR "logs"   // anything LoaderLog writes goes here, not C:\Games
 #include "Loader.c"
 
 static int fails;

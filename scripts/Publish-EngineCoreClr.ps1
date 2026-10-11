@@ -99,9 +99,28 @@ if (-not $EngineOnly) {
         New-Item -ItemType Directory -Force -Path $dotnet | Out-Null
         Copy-Item "$rt\native\*" $dotnet -Force
         Copy-Item "$rt\lib\net10.0\*.dll" $dotnet -Force
-        # Diagnostics-only natives the host never loads.
-        Remove-Item "$dotnet\createdump.exe", "$dotnet\mscordaccore_*.dll", "$dotnet\msquic.dll" -Force -ErrorAction SilentlyContinue
+        # msquic is never loaded. createdump.exe and the DAC (mscordaccore_*) stay: the loader
+        # turns on CoreCLR's crash dumps (Logs\dumps\clr_<pid>_<time>.dmp), which run
+        # createdump.exe from this folder, and a debugger reads the dump with the DAC.
+        Remove-Item "$dotnet\msquic.dll" -Force -ErrorAction SilentlyContinue
         Write-Host "App-local runtime $ver -> $dotnet"
+    }
+    elseif (-not (Test-Path "$dotnet\createdump.exe")) {
+        # Runtimes laid out before 2026-10-11 had createdump.exe and the DAC deleted, so a
+        # CoreCLR fatal error (0x80131506) left no dump. Put them back from the runtime pack
+        # whose coreclr.dll is this one (same file version), never from another version.
+        $have = (Get-Item "$dotnet\coreclr.dll").VersionInfo.FileVersion
+        $pack = Join-Path $env:USERPROFILE ".nuget\packages\microsoft.netcore.app.runtime.win-x86"
+        $match = Get-ChildItem $pack -Directory -ErrorAction SilentlyContinue | Where-Object Name -like "10.*" |
+            ForEach-Object { "$($_.FullName)\runtimes\win-x86\native" } |
+            Where-Object { (Test-Path "$_\createdump.exe") -and (Get-Item "$_\coreclr.dll").VersionInfo.FileVersion -eq $have } |
+            Select-Object -First 1
+        if ($match) {
+            Copy-Item "$match\createdump.exe" $dotnet -Force
+            Get-ChildItem $match -Filter "mscordaccore_*.dll" | Copy-Item -Destination $dotnet -Force
+            Write-Host "Put createdump.exe and the DAC back into $dotnet (CoreCLR crash dumps)."
+        }
+        else { Write-Warning "createdump.exe is missing from $dotnet and no runtime pack matches coreclr $have; a CoreCLR crash will leave no dump." }
     }
 }
 

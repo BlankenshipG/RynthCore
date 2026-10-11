@@ -40,6 +40,9 @@ internal static class P1Faces
         // items to use): ImGui only, saved per character in item_huds.txt.
         ItemCountFace.Register();
         MiniRemoteFace.Register();
+        // Report a problem (Report/ProblemReport.cs): ImGui only, opened from the bar's grip
+        // menu, Settings and /rc report (no bar button of its own).
+        ReportFace.Register();
     }
 }
 

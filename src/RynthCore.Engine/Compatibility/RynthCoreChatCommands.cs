@@ -27,6 +27,9 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item><c>/rc ui retailvitals [on|off|status]</c> — hide AC's own
 ///         health/stamina/mana bars (<see cref="RetailVitalsHooks"/>; saved for the
 ///         PC, also in Settings &gt; UI). Alone it reports the state.</item>
+///   <item><c>/rc ui barsize [0-10|+|-|status]</c> - the RynthCore bar's size (its own text
+///         size step, <see cref="UI.PanelTextScale"/>; saved for the PC, also in Settings &gt;
+///         Display). Alone it reports the size.</item>
 ///   <item><c>/rc vendor [list|info|status|buy &lt;id|sel&gt; [n]|sell &lt;id|sel&gt; [id ...]]</c>
 ///         — read / trade with the open vendor through the engine's vendor
 ///         primitives (<see cref="VendorTrade"/>); a manual test hook for the
@@ -34,6 +37,10 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item><c>/rc chathold [on|off|status]</c> — incoming chat waits for the plugins'
 ///         verdict before AC prints it, so a line a plugin eats is kept out of AC's chat
 ///         window too (<see cref="ChatCallbackHooks"/>). On at every start; not saved.</item>
+///   <item><c>/rc discord [on|off|status|window|test [route]|resume [route]]</c> — RynthChat's
+///         Discord relay (<see cref="UI.Data.Discord.ChatDiscord"/>): switch it on or off for the
+///         character you're playing (off for every character by default), list the routes,
+///         post a test line, clear a pause; window opens its panel (Chat &gt; gear &gt; Discord).</item>
 ///   <item><c>/rv plates</c> (aliases <c>/rv nameplates</c>, <c>/rc plates</c>) — the
 ///         RynthVision nameplates and combat text: monster plates on|off, self, debuffs,
 ///         numbers, gains [on|off] (with their sub-switches), all on|off, all|engaged,
@@ -70,6 +77,9 @@ namespace RynthCore.Engine.Compatibility;
 ///         the last minutes of client/server messages and engine markers) to
 ///         Logs\flight-&lt;pid&gt;-&lt;time&gt;.txt; <c>/rc flightdump auto &lt;reason&gt;</c> is the rate-limited
 ///         automatic form. <c>/rc flight [status|mark &lt;text&gt;|on|off|auto on|off]</c>.</item>
+///   <item><c>/rc report [text]</c> - "Report a problem" (<see cref="Report.ProblemReport"/>): alone it
+///         opens the panel; with text it sends that report now, with the recent log attached
+///         (the panel is where the log can be left out). One report a minute.</item>
 /// </list>
 /// </summary>
 internal static class RynthCoreChatCommands
@@ -142,6 +152,14 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
+        // /rc discord [on|off|status|window|test [route]|resume [route]] : RynthChat's Discord relay
+        if (IsVerb(sub, "discord", out string discordArgs))
+        {
+            try { HandleDiscordCommand(discordArgs); }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc discord failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
         // /rc plates [on|off|all|engaged|dist N|max N|scale X|opacity X|lift X|names|hp|level|weak|distance|fade|reset|status]
         if (IsVerb(sub, "plates", out string platesArgs) || IsVerb(sub, "nameplates", out platesArgs))
         {
@@ -155,6 +173,14 @@ internal static class RynthCoreChatCommands
         {
             try { HandleServerCommand(serverArgs); }
             catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc server failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc ilt [auto|on|off] : is this Infinite Leaftide (the ILT section), with a testing override
+        if (IsVerb(sub, "ilt", out string iltArgs))
+        {
+            try { HandleIltCommand(iltArgs); }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc ilt failed - {ex.GetType().Name}: {ex.Message}"); }
             return true;
         }
 
@@ -228,6 +254,18 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
+        // /rc report [text] : Report a problem - alone it opens the panel; with text it sends now (with the log)
+        if (IsVerb(sub, "report", out string reportArgs))
+        {
+            try
+            {
+                foreach (string l in Report.ProblemReport.HandleCommand(reportArgs))
+                    Reply(l);
+            }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc report failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
         // /rc flight [status|mark <text>|on|off|auto on|off] : the flight recorder
         if (IsVerb(sub, "flight", out string flightArgs))
         {
@@ -297,6 +335,19 @@ internal static class RynthCoreChatCommands
                     Reply("The Item Count panel isn't available (the ImGui layer is off?).");
                 else
                     UI.PanelRouter.Toggle(ImGuiBackend.Panels.ItemCountFace.Title);
+                return true;
+
+            case "bounties":
+            case "bounty":
+            case "bountys":
+                // The ImGui Bounties panel (ILT section: ACECustom bounties, the RynthILT plugin's
+                // tracker), like the ILT bar button. Only on Infinite Leaftide with RynthILT installed.
+                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.BountiesFace.Title))
+                    Reply("The Bounties panel isn't available (the RynthILT plugin isn't installed, or the ImGui layer is off).");
+                else if (!IltInfo.IsIlt && !ImGuiBackend.ImGuiPanelHost.IsOpen(ImGuiBackend.Panels.BountiesFace.Title))
+                    Reply("Bounties are an Infinite Leaftide feature, and this isn't Infinite Leaftide (/rc ilt for why).");
+                else
+                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.BountiesFace.Title);
                 return true;
 
             case "remote":
@@ -383,6 +434,29 @@ internal static class RynthCoreChatCommands
             return;
         }
 
+        // /rc ui barsize [0-10|+|-|status]: the bar's size. Alone it reports it.
+        if (parts[0].Equals("barsize", StringComparison.OrdinalIgnoreCase))
+        {
+            int cur = UI.PanelTextScale.GetChrome();
+            if (parts.Length >= 2 && !parts[1].Equals("status", StringComparison.OrdinalIgnoreCase))
+            {
+                int next;
+                // Bare + / -: one step. +n / -n: that many steps. Plain n: that size.
+                if (parts[1] == "+") next = cur + 1;
+                else if (parts[1] == "-") next = cur - 1;
+                else if (!int.TryParse(parts[1], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out next))
+                {
+                    Reply("Usage: /rc ui barsize [0-10|+|-|status]");
+                    return;
+                }
+                else if (parts[1][0] is '+' or '-')
+                    next += cur;
+                UI.PanelTextScale.SetChrome(next);
+            }
+            Reply("Bar size: " + UI.PanelTextScale.Describe(UI.PanelTextScale.GetChrome()) + ".");
+            return;
+        }
+
         // /rc ui open|close|popout|redock|snap <Panel>: drive a panel by name (tests,
         // dispatch.txt). Names may have spaces ("Monster Detail").
         string verb = parts[0].ToLowerInvariant();
@@ -415,7 +489,7 @@ internal static class RynthCoreChatCommands
 
         if (parts.Length != 2 || !UI.PanelFaceStore.TryParseFace(parts[1], out UI.PanelFace face))
         {
-            Reply("Usage: /rc ui list  |  /rc ui <Panel|bar> avalonia|imgui|both  |  /rc ui open|close|popout|redock|snap <Panel>  |  /rc ui retailvitals [on|off]");
+            Reply("Usage: /rc ui list  |  /rc ui <Panel|bar> avalonia|imgui|both  |  /rc ui open|close|popout|redock|snap <Panel>  |  /rc ui retailvitals [on|off]  |  /rc ui barsize [0-10|+|-|status]");
             return;
         }
 
@@ -517,6 +591,32 @@ internal static class RynthCoreChatCommands
         Reply($"Signals: host {ServerInfo.HostDescription}; world name {AccountHooks.AnnouncedWorldName ?? "(not announced)"}; "
             + $"override {ServerInfo.Override}.");
         Reply($"Titles (plugin API v75): {CharacterTitles.Describe()}.");
+    }
+
+    /// <summary>
+    /// /rc ilt: the Infinite Leaftide verdict, its signals and the lists in force. "on" /
+    /// "off" force it for this session (testing the ILT section anywhere); "auto" goes back
+    /// to detecting. Never saved; the lists are engine.json's IltServerNames / IltHosts.
+    /// </summary>
+    private static void HandleIltCommand(string args)
+    {
+        switch (args.Trim().ToLowerInvariant())
+        {
+            case "on": case "ilt": IltInfo.Override = IltInfo.Mode.ForceIlt; break;
+            case "off": case "other": IltInfo.Override = IltInfo.Mode.ForceOther; break;
+            case "auto": IltInfo.Override = IltInfo.Mode.Auto; break;
+            case "": break;
+            default:
+                Reply("Usage: /rc ilt [auto|on|off]");
+                return;
+        }
+        IltVerdict v = IltInfo.Current;
+        Reply($"ILT: {(v.IsIlt ? "Infinite Leaftide" : "not Infinite Leaftide")} - {v.Reason}.");
+        Reply($"Signals: host {ServerInfo.HostDescription}; world name {AccountHooks.AnnouncedWorldName ?? "(not announced)"}; "
+            + $"override {IltInfo.Override}. Lists: {IltInfo.ListsDescription}.");
+        Reply(ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.BountiesFace.Title)
+            ? "RynthILT: installed (Bounties: the ILT bar button or /rc bounties)."
+            : "RynthILT: not installed, so there is no ILT section.");
     }
 
     private static void HandleMasteryCommand()
@@ -737,6 +837,7 @@ internal static class RynthCoreChatCommands
                 break;
             case "players":
                 S.PlayerNames = Flag(value, S.PlayerNames); break;
+            case "playerbars": S.PlayerBars = Flag(value, S.PlayerBars); break;
             case "names": S.ShowNames = Flag(value, S.ShowNames); break;
             case "hp": S.ShowHpNumbers = Flag(value, S.ShowHpNumbers); break;
             case "level": S.ShowLevel = Flag(value, S.ShowLevel); break;
@@ -804,6 +905,28 @@ internal static class RynthCoreChatCommands
     /// <summary>"on"/"off" sets; anything else (or nothing) toggles.</summary>
     private static bool Flag(string? value, bool current) =>
         value?.ToLowerInvariant() switch { "on" or "1" or "true" => true, "off" or "0" or "false" => false, _ => !current };
+
+    /// <summary>
+    /// /rc discord: the relay's switch, status, test and resume (UI.Data.Discord.ChatDiscord);
+    /// "window" opens its panel, like Chat > gear > Discord settings.
+    /// </summary>
+    private static void HandleDiscordCommand(string args)
+    {
+        if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.ChatDiscordFace.Title))
+        {
+            Reply("The Discord relay needs the RynthChat plugin.");
+            return;
+        }
+        string verb = args.Trim();
+        if (verb.Equals("window", StringComparison.OrdinalIgnoreCase) || verb.Equals("show", StringComparison.OrdinalIgnoreCase)
+            || verb.Equals("settings", StringComparison.OrdinalIgnoreCase))
+        {
+            UI.PanelRouter.Toggle(ImGuiBackend.Panels.ChatDiscordFace.Title);
+            return;
+        }
+        foreach (string line in UI.Data.Discord.ChatDiscord.HandleCommand(verb))
+            Reply(line);
+    }
 
     private static void Reply(string text)
     {

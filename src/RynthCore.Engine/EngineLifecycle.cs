@@ -62,6 +62,10 @@ internal static class EngineLifecycle
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseHandle(IntPtr hObject);
 
+    private static long _lastSignalReloadMs;
+    /// <summary>Environment.TickCount64 of this engine's last SignalReload (0 = none).</summary>
+    internal static long LastSignalReloadMs => Interlocked.Read(ref _lastSignalReloadMs);
+
     internal static bool IsShuttingDown => Volatile.Read(ref _shuttingDown) != 0;
     internal static bool HasShutDown => Volatile.Read(ref _hasShutDown) != 0;
 
@@ -72,6 +76,9 @@ internal static class EngineLifecycle
     /// </summary>
     public static bool SignalReload()
     {
+        // Every caller is a player's request (RL, ERl, /rc rl): the reload cap's chat notice
+        // answers those each time (EntryPoint.ReloadCapped).
+        Interlocked.Exchange(ref _lastSignalReloadMs, Environment.TickCount64);
         IntPtr hEvent = OpenEventW(EVENT_MODIFY_STATE, false, ReloadEventName);
         if (hEvent == IntPtr.Zero)
         {
@@ -174,8 +181,12 @@ internal static class EngineLifecycle
         // The chat log is written on the tick pump (UiDataHub), now stopped. Left open,
         // it outlived this generation and locked the next one out of the file.
         Step("ChatModel.CloseLog", () => UI.Data.ChatModel.CloseLog());
+        // Discord posts still in flight would finish in this dying generation's code.
+        Step("ChatDiscord.Shutdown", () => UI.Data.Discord.ChatDiscord.Shutdown());
         Step("ServerMessageStream.Shutdown", () => Net.ServerMessageStream.Shutdown());
         Step("FlightRecorder.Shutdown", () => Net.FlightRecorder.Shutdown());
+        // A report still being sent: cancel it and dispose its HttpClient (nothing may outlive this generation).
+        Step("ProblemReport.Shutdown", () => Report.ProblemReport.Shutdown());
 
         Step("PluginManager.ShutdownAll (defensive)", () => PluginManager.ShutdownAll());
 

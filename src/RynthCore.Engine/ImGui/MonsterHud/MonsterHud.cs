@@ -126,6 +126,10 @@ internal static class MonsterHud
         /// <summary>RadarKind.Monster: a full monster plate. Npc / Vendor / Player: a name-only label.</summary>
         public byte Kind = RadarKind.Monster;
         public bool IsLabel => Kind != RadarKind.Monster;
+        /// <summary>A name label with a thin health bar under it (players, when "Player health bars" is on).</summary>
+        public bool WithBar;
+        public bool HpFresh;             // the last health observation is recent enough to draw a bar from
+        public bool HasBar => WithBar && HpKnown && HpFresh;
         public int Level;                // 0 = unknown
         public string LevelText = "";
         public float HeadHeight = DefaultHeadHeight;
@@ -177,6 +181,10 @@ internal static class MonsterHud
     private sealed record WeakTag(string Label, uint Color, string Icon);
 
     private const float DefaultHeadHeight = 2.0f;
+    // A player's health is only known from what the game happened to tell us; a reading older than this is not drawn.
+    private const long PlayerBarMemorySec = 90;
+    // A size from the table is the top of the model: a hand's width above it for the plate, within sane bounds.
+    private const float HeadMargin = 0.12f, MinKnownHeadHeight = 0.3f, MaxKnownHeadHeight = 120f;
     private static readonly Dictionary<uint, Plate> Plates = new(64);
     private static readonly List<Plate> DrawOrder = new(64);
     private static readonly List<Plate> Placed = new(64);
@@ -277,7 +285,7 @@ internal static class MonsterHud
             bool monsters = MonsterHudSettings.Enabled;
             bool trackMonsters = monsters || MonsterHudSettings.Numbers;
             // Name-only labels over NPCs (and, if asked, players): their own switches and cap.
-            bool track = trackMonsters || MonsterHudSettings.NpcNames || MonsterHudSettings.PlayerNames;
+            bool track = trackMonsters || MonsterHudSettings.NpcNames || MonsterHudSettings.PlayerNames || MonsterHudSettings.PlayerBars;
             if (!track) ClearPlates();
             SetDamageSubscription(monsters && MonsterHudSettings.ShowWeakness);
             if (monsters && MonsterHudSettings.ShowDebuffs) PortalSpellTable.EnsureLoadQueued();
@@ -373,7 +381,8 @@ internal static class MonsterHud
         float maxD2 = maxD * maxD;
         float targetD2 = MathF.Max(maxD2, 100f * 100f);   // the target keeps its plate a bit further out
         bool engagedOnly = MonsterHudSettings.Filter == PlateFilter.Engaged && MonsterHudSettings.Enabled;
-        bool npcNames = MonsterHudSettings.NpcNames, playerNames = MonsterHudSettings.PlayerNames;
+        bool npcNames = MonsterHudSettings.NpcNames, playerBars = MonsterHudSettings.PlayerBars,
+             playerNames = MonsterHudSettings.PlayerNames || playerBars;   // a bar comes with the name
         float npcD = MonsterHudSettings.NpcMaxDistance;
         float npcD2 = npcD * npcD;
         float npcTargetD2 = MathF.Max(npcD2, 100f * 100f);   // a selected NPC keeps its name further out too
@@ -491,6 +500,7 @@ internal static class MonsterHud
             byte cls = Classes.TryGetValue(id, out ObjClass oc) ? oc.Cls : ClsCreature;
             byte kind = cls == ClsPlayer ? RadarKind.Player : cls == ClsVendor ? RadarKind.Vendor : RadarKind.Npc;
             Plate plate = GetPlate(id, kind);
+            plate.WithBar = playerBars && kind == RadarKind.Player;
             // Head height once per name; again while selected (selecting appraises: CreatureType may arrive).
             if (name != plate.Name || isTarget)
             {
@@ -586,11 +596,16 @@ internal static class MonsterHud
     /// <summary>
     /// Metres from the feet to just above the head. The client's own model
     /// height isn't read (its CPartArray/CSetup layout isn't mapped here), so
-    /// this goes by CreatureType from the appraisal cache, then by name, then
-    /// a humanoid default; "Height lift" in the settings corrects the rest.
+    /// this goes by the creature's weenie class id against the generated size
+    /// table (CreatureSizes: model height x scale), then CreatureType from the
+    /// appraisal cache, then by name, then a humanoid default; "Height lift"
+    /// in the settings corrects the rest.
     /// </summary>
     internal static float EstimateHeadHeight(uint id, string name)
     {
+        if (ClientObjectHooks.TryGetObjectWcid(id, out uint wcid) && CreatureSizes.TryGetTop(wcid, out float top))
+            return Math.Clamp(top, MinKnownHeadHeight, MaxKnownHeadHeight) + HeadMargin;
+
         if (AppraisalHooks.TryGetCachedIntProperty(id, 2, out int ct) && ct > 0 && ct < CreatureTypeHeights.Length &&
             CreatureTypeHeights[ct] > 0)
             return CreatureTypeHeights[ct];
@@ -925,8 +940,8 @@ internal static class MonsterHud
             // Appearing: start at the right size; visible: ease (target pop, distance).
             p.Scale = wasVisible ? p.Scale + (scaleTarget - p.Scale) * kScale : scaleTarget;
 
-            // ── Health (monster plates only) ──
-            if (!label) UpdateHealth(p, f.Now, kBar, dt);
+            // ── Health (monster plates, and player labels with a bar) ──
+            if (!label || p.WithBar) UpdateHealth(p, f.Now, kBar, dt);
 
             if (!show && p.Alpha < 0.01f)
             {
@@ -979,6 +994,7 @@ internal static class MonsterHud
         if (MonsterHudData.TryGetHealth(p.Id, out HealthObservation h))
         {
             p.HpKnown = true;
+            p.HpFresh = (now - h.Ticks) < PlayerBarMemorySec * Stopwatch.Frequency;
             p.Ratio = h.Ratio;
             uint max = h.Max;
             if (ObjectQualityCache.TryGetCreatureVitals(p.Id, out CreatureVitals v) && v.MaxHealth > 0)
@@ -990,6 +1006,7 @@ internal static class MonsterHud
         {
             // Never observed: an untouched monster is at full health in practice.
             p.HpKnown = false;
+            p.HpFresh = false;
             p.Ratio = 1f;
             p.HpMax = ObjectQualityCache.TryGetCreatureVitals(p.Id, out CreatureVitals v) ? v.MaxHealth : 0;
             p.HpCur = p.HpMax;
@@ -1043,10 +1060,20 @@ internal static class MonsterHud
             p.NameFont = ImGuiFonts.Sharp(p.NameSize, bold: true);
             p.NameW = TextWidth(p.NameFont, p.NameSize, p.Name);
             p.BadgeW = 0f;
-            p.BarW = p.BarH = 0f;
             p.IconSize = 0f;
-            p.BelowBar = p.IsTarget ? 9f * k : 3f * k;   // the target pointer hangs under the name
-            p.Width = p.NameW + 8f * k;
+            if (p.HasBar)
+            {
+                // A thin bar under the name, at least the name's width.
+                p.BarW = MathF.Round(MathF.Max(p.NameW, 64f * k));
+                p.BarH = MathF.Max(3f, MathF.Round(4f * k));
+            }
+            else
+            {
+                p.BarW = p.BarH = 0f;
+            }
+            float barRow = p.BarH > 0f ? p.BarH + MathF.Round(2f * k) : 0f;
+            p.BelowBar = (p.IsTarget ? 9f * k : 3f * k) + barRow;   // the target pointer hangs under the name (and bar)
+            p.Width = MathF.Max(p.NameW, p.BarW) + 8f * k;
             p.Height = p.NameSize + 2f * k + p.BelowBar;
             return;
         }
@@ -1328,6 +1355,16 @@ internal static class MonsterHud
         float nameTop = MathF.Round(baseY - p.NameSize);
         float x = MathF.Round(cx - p.NameW * 0.5f);
         float pointerTop = baseY + 2f * k;
+
+        if (p.BarH > 0f)
+        {
+            // The player's health under the name.
+            float barTop = MathF.Round(baseY + 2f * k);
+            float barL = MathF.Round(cx - p.BarW * 0.5f);
+            PaintBar(dl, new Vector2(barL, barTop), new Vector2(barL + p.BarW, barTop + p.BarH), MathF.Max(1f, 1.5f * k), a,
+                p.ShownRatio, p.TrailRatio, HealthColor(p.Ratio), ticks: false);
+            pointerTop = barTop + p.BarH + 2f * k;
+        }
 
         if (p.Nudge > 10f * uiScale)
             dl.AddLine(new Vector2(cx, pointerTop - 1), new Vector2(cx, p.Anchor.Y - 2f * k), Mul(Leader, a), 1f);

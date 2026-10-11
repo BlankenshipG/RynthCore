@@ -10,32 +10,39 @@ internal static class Program
     public static int Main(string[] args)
     {
         // The uninstaller removes the Decal bridge registration (docs/DECAL_BRIDGE_PLAN.md):
-        // no window, just the per-user registry entries this launcher added.
+        // no window. Per-user: our entry in a per-user copy of Decal's filter list, and a copy an
+        // earlier RynthCore created (backed up to %APPDATA%\RynthCore\decal-backup-<date>.reg first;
+        // kept, with the reason logged, when it holds entries that aren't ours or in HKLM).
         if (Array.Exists(args, a => string.Equals(a, "--decal-bridge-unregister", StringComparison.OrdinalIgnoreCase)))
         {
             bool ok = RynthCore.App.DecalBridgeRegistration.Unregister(out string report);
             LauncherDiag.Info($"DECALBRIDGE: unregister (command line): {report}");
-            // A machine-wide entry (added with administrator rights when AC runs elevated on this
-            // PC) goes too: the uninstaller removes the DLL it points at. Ask for the rights only
-            // when there is one.
-            if (RynthCore.App.DecalBridgeRegistration.MachineEntryIsOurs())
+            // The machine-wide entry for THIS install goes too: the uninstaller removes the DLL it
+            // points at. Ask for the rights only when there is one (another install's entry stays).
+            string dir = RynthCore.App.DecalBridgeRegistration.DefaultBridgeDirectory;
+            if (RynthCore.App.DecalBridgeRegistration.MachineEntryIsOurs(dir))
             {
-                var outcome = RynthCore.App.DecalBridgeRegistration.UnregisterMachineWide(out string mReport);
+                var outcome = RynthCore.App.DecalBridgeRegistration.UnregisterMachineWide(out string mReport, dir);
                 if (outcome == RynthCore.App.DecalBridgeRegistration.Outcome.NeedsAdmin && Environment.ProcessPath is string self)
-                    outcome = RynthCore.App.DecalBridgeRegistration.RunElevated(self, "--decal-bridge-unregister-machine", out mReport);
+                    outcome = RynthCore.App.DecalBridgeRegistration.RunElevated(self, $"--decal-bridge-unregister-machine \"{dir}\"", out mReport);
                 LauncherDiag.Info($"DECALBRIDGE: unregister machine-wide (command line): {mReport}");
                 ok &= outcome == RynthCore.App.DecalBridgeRegistration.Outcome.Registered;
             }
             return ok ? 0 : 1;
         }
-        if (Array.Exists(args, a => string.Equals(a, "--decal-bridge-unregister-machine", StringComparison.OrdinalIgnoreCase)))
+        // --decal-bridge-unregister-machine ["<bridge folder>"]: the elevated step of the above and
+        // of the launcher's "no account uses Decal + RynthCore any more". With a folder, only an
+        // entry for that folder (or a dangling one) is removed.
+        int um = Array.FindIndex(args, a => string.Equals(a, "--decal-bridge-unregister-machine", StringComparison.OrdinalIgnoreCase));
+        if (um >= 0)
         {
-            var outcome = RynthCore.App.DecalBridgeRegistration.UnregisterMachineWide(out string report);
+            string? onlyFor = um + 1 < args.Length && !args[um + 1].StartsWith("--", StringComparison.Ordinal) ? args[um + 1] : null;
+            var outcome = RynthCore.App.DecalBridgeRegistration.UnregisterMachineWide(out string report, onlyFor);
             LauncherDiag.Info($"DECALBRIDGE: unregister machine-wide (elevated step): {report}");
             return outcome == RynthCore.App.DecalBridgeRegistration.Outcome.Registered ? 0 : 1;
         }
-        // The launcher's elevated step for "AC reads Decal's filter list for all users"
-        // (MainWindow.EnsureDecalBridgeAsync): --decal-bridge-register-machine "<bridge folder>".
+        // The launcher's (and the installer's) elevated step: the bridge into Decal's filter list
+        // for all users (MainWindow.EnsureDecalBridgeAsync): --decal-bridge-register-machine "<bridge folder>".
         int rm = Array.FindIndex(args, a => string.Equals(a, "--decal-bridge-register-machine", StringComparison.OrdinalIgnoreCase));
         if (rm >= 0)
         {
@@ -44,8 +51,10 @@ internal static class Program
             LauncherDiag.Info($"DECALBRIDGE: register machine-wide (elevated step): {report}");
             return outcome == RynthCore.App.DecalBridgeRegistration.Outcome.Registered ? 0 : 1;
         }
-        // The installer's per-user half (installer\RynthCore.iss, as the installing user, every
-        // install and update): our entry into an EXISTING per-user copy of Decal's filter list.
+        // The installer's per-user half (installer\RynthCore.iss, as the installing user, on install
+        // and update, only for a user with a Decal + RynthCore account): an earlier RynthCore's
+        // per-user copy of Decal's filter list removed (after a backup), our entry into a per-user
+        // copy that exists anyway. Never creates one.
         int iu = Array.FindIndex(args, a => string.Equals(a, "--decal-bridge-install-user", StringComparison.OrdinalIgnoreCase));
         if (iu >= 0)
         {

@@ -41,12 +41,21 @@ internal static class Program
         AcMouseTarget t = AcMouseOverRules.Classify(true, false, SomeElement, true, SmartBox);
         Check(t == AcMouseTarget.World, $"SmartBox wrapper under the mouse = World (got {t})");
         Check(AcMouseOverRules.UnderUiOverlayMayTakeClick(t), "may take the click");
+
+        // 2026-10-10 client logs: over open ground AC reports gmSmartBoxUI (element 0x1000049A,
+        // type 0x10000014), not the wrapper. Classed as a window, it kept every plate's click from the plate.
+        Case("cursor on the 3D world as AC reports it in game: gmSmartBoxUI (0x10000014) takes the click");
+        Check(AcMouseOverRules.UIElementTypeGmSmartBoxUI == 0x10000014, "gmSmartBoxUI::Register registers 0x10000014");
+        AcMouseTarget g = AcMouseOverRules.Classify(true, false, 0x1000049A, true, AcMouseOverRules.UIElementTypeGmSmartBoxUI);
+        Check(g == AcMouseTarget.World, $"gmSmartBoxUI under the mouse = World (got {g})");
+        Check(AcMouseOverRules.UnderUiOverlayMayTakeClick(g), "gmSmartBoxUI: may take the click");
     }
 
     private static void AcWindowsKeepTheClick()
     {
         Case("cursor on one of AC's windows: the click stays with AC");
-        foreach (int type in new[] { ItemList, 0x10000001, 0x10000032, 0, -1, SmartBox + 1 })
+        // 0x10000013 / 0x10000015: neighbours of gmSmartBoxUI's type stay windows.
+        foreach (int type in new[] { ItemList, 0x10000001, 0x10000032, 0, -1, SmartBox + 1, 0x10000013, 0x10000015 })
         {
             AcMouseTarget t = AcMouseOverRules.Classify(true, false, SomeElement, true, type);
             Check(t == AcMouseTarget.AcWindow, $"type 0x{type:X8} = AcWindow (got {t})");

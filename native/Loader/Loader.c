@@ -13,21 +13,42 @@
 //      reload, so a reload gives its memory back.
 //
 //  Either way the loader owns the reload event, the file watcher, the address-space
-//  guard and a MinHook facade (Hooks.c): every hook is installed once, through a
-//  permanent stub, and a reload only re-points the stub.
+//  guard, the reload cap (MaxHotReloads per client) and a MinHook facade (Hooks.c):
+//  every hook is installed once, through a permanent stub, and a reload only re-points
+//  the stub. For the managed engine it also sets up CoreCLR's crash dumps (Logs\dumps).
 // ============================================================================
 
 #include "Loader.h"
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdlib.h>
 
 #define ENGINE_DLL_NAME        "RynthCore.Engine.dll"
 #define ENGINE_INIT_EXPORT     "RynthCoreEngineInit"
 #define ENGINE_SHUTDOWN_EXPORT "RynthCoreShutdown"
 #define ENGINE_REFUSED_EXPORT  "RynthCoreReloadRefused"
+#define ENGINE_MAXRELOADS_EXPORT "RynthCoreMaxHotReloads"
+#define ENGINE_CAPPED_EXPORT   "RynthCoreReloadCapped"
+#ifndef LOG_DIR                // the offline tests (tools\Loader*Tests) log into their own folder
 #define LOG_DIR                "C:\\Games\\RynthCore\\Logs"
+#define LOG_PARENT             "C:\\Games\\RynthCore"
+#endif
 #define STAGING_SUBDIR         ".engine_loads"
+// Hot reloads one client takes before it refuses the rest (until it restarts). The engine
+// says the real number (engine.json MaxHotReloads, RynthCoreMaxHotReloads export); this is
+// for an engine without the export. After 4+ reloads in one process, clients died with
+// CoreCLR fatal error 0x80131506 at coreclr+0x256E19 (2026-10-08..10, gens 5-6 or the 4th
+// reload itself) although every generation unloaded and address space stayed flat: treated
+// as a CoreCLR limit on repeated collectible loads, so the loader stops short of it.
+#define DEFAULT_MAX_HOT_RELOADS 3
+// CoreCLR's own crash dump (createdump.exe, DOTNET_DbgEnableMiniDump): clr_<pid>_<time>.dmp
+// in Logs\dumps, newest DUMP_KEEP kept. With the heap (type 2) only while the volume keeps
+// DUMP_HEAP_MIN_FREE_MB free (a heap dump of a client is ~1 GB); else a normal one (stacks).
+#define DUMP_SUBDIR            "dumps"
+#define DUMP_PREFIX            "clr_"
+#define DUMP_KEEP              3
+#define DUMP_HEAP_MIN_FREE_MB  3072
 #define MIN_RELOAD_INTERVAL_MS 1500
 // A managed engine gives its memory back on reload, so the guard only has to keep
 // room for one more generation; the NativeAOT engine leaks every generation.
@@ -36,6 +57,8 @@
 
 typedef unsigned int (__stdcall *engine_u32_fn)(void* param);
 typedef unsigned int (__stdcall *engine_refused_fn)(int freeMb);
+typedef int (__stdcall *engine_max_reloads_fn)(void);
+typedef unsigned int (__stdcall *engine_capped_fn)(int reloads, int cap);
 
 static volatile LONG g_initialized;
 static char g_loaderDir[MAX_PATH];
@@ -71,7 +94,9 @@ void LoaderLog(const char* level, const char* fmt, ...)
     char path[MAX_PATH];
     _snprintf_s(path, sizeof path, _TRUNCATE, LOG_DIR "\\RynthCore.%lu.log", GetCurrentProcessId());
     EnterCriticalSection(&g_logLock);
-    CreateDirectoryA("C:\\Games\\RynthCore", NULL);
+#ifdef LOG_PARENT
+    CreateDirectoryA(LOG_PARENT, NULL);
+#endif
     CreateDirectoryA(LOG_DIR, NULL);
     for (int attempt = 0; attempt < 4; attempt++) {
         HANDLE h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -251,6 +276,93 @@ static int StageEngine(int generation, char* stagedPath, size_t cap, HANDLE* gua
 }
 
 // ---------------------------------------------------------------------------
+// CoreCLR crash dumps
+// ---------------------------------------------------------------------------
+
+typedef struct DumpFile {
+    FILETIME written;
+    char name[MAX_PATH];
+} DumpFile;
+
+static int CompareNewestFirst(const void* a, const void* b)
+{
+    return CompareFileTime(&((const DumpFile*)b)->written, &((const DumpFile*)a)->written);
+}
+
+// Deletes all but the newest `keep` clr_*.dmp in `dir` (other dumps, e.g. the engine's
+// hang_*.dmp, are left alone). Returns how many it deleted. Init thread only.
+static int PruneCrashDumps(const char* dir, int keep)
+{
+    static DumpFile files[512];
+    char pattern[MAX_PATH];
+    _snprintf_s(pattern, sizeof pattern, _TRUNCATE, "%s\\" DUMP_PREFIX "*.dmp", dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE f = FindFirstFileA(pattern, &fd);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    int count = 0;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        files[count].written = fd.ftLastWriteTime;
+        strcpy_s(files[count].name, sizeof files[count].name, fd.cFileName);
+        count++;
+    } while (count < (int)(sizeof files / sizeof files[0]) && FindNextFileA(f, &fd));
+    FindClose(f);
+    qsort(files, (size_t)count, sizeof files[0], CompareNewestFirst);
+    int deleted = 0;
+    for (int i = keep < 0 ? 0 : keep; i < count; i++) {
+        char p[MAX_PATH];
+        _snprintf_s(p, sizeof p, _TRUNCATE, "%s\\%s", dir, files[i].name);
+        if (DeleteFileA(p)) deleted++;   // fails for a dump still being written: fine
+    }
+    return deleted;
+}
+
+// The DOTNET_DbgMiniDumpType for a volume with `freeBytes` free: 2 (MiniDumpWithPrivateReadWrite
+// Memory: the GC heap and every private page, what a CoreCLR fatal error needs) when there is
+// room, else 1 (normal: threads and stacks, a few MB). Never 4 (full): it adds the mapped
+// images, which the debugger reads from disk anyway, for a larger file.
+static int CrashDumpType(unsigned long long freeBytes)
+{
+    return freeBytes >= (unsigned long long)DUMP_HEAP_MIN_FREE_MB * 1024 * 1024 ? 2 : 1;
+}
+
+// Before CoreCLR starts (it reads these once, in coreclr_initialize): a fatal runtime error
+// (FailFast, 0x80131506...) runs createdump.exe from the runtime folder and writes
+// <dumpDir>\clr_<pid>_<time>.dmp. Those never reach WER, so before this they left nothing.
+// Returns the dump type set, or 0 when the environment already configures it (a test or a
+// developer's own choice, including DOTNET_DbgEnableMiniDump=0 to turn it off).
+static int ConfigureCrashDumps(const char* dumpDir, const char* runtimeDir)
+{
+    char existing[64];
+    if (GetEnvironmentVariableA("DOTNET_DbgEnableMiniDump", existing, sizeof existing) > 0 ||
+        GetEnvironmentVariableA("COMPlus_DbgEnableMiniDump", existing, sizeof existing) > 0) {
+        LoaderLog("INF", "CrashDumps: DbgEnableMiniDump=%s is already set in the environment; left as it is.", existing);
+        return 0;
+    }
+    CreateDirectoryA(dumpDir, NULL);
+    int pruned = PruneCrashDumps(dumpDir, DUMP_KEEP);
+    ULARGE_INTEGER freeBytes;
+    if (!GetDiskFreeSpaceExA(dumpDir, &freeBytes, NULL, NULL)) freeBytes.QuadPart = 0;
+    int type = CrashDumpType(freeBytes.QuadPart);
+
+    // %t is createdump's own specifier (time of the dump); the pid is filled in here.
+    char name[MAX_PATH];
+    _snprintf_s(name, sizeof name, _TRUNCATE, "%s\\" DUMP_PREFIX "%lu_%%t.dmp", dumpDir, GetCurrentProcessId());
+    SetEnvironmentVariableA("DOTNET_DbgEnableMiniDump", "1");
+    SetEnvironmentVariableA("DOTNET_DbgMiniDumpType", type == 2 ? "2" : "1");
+    SetEnvironmentVariableA("DOTNET_DbgMiniDumpName", name);
+
+    LoaderLog("INF", "CrashDumps: a CoreCLR fatal error writes %s (type %d, %s; %llu MB free; newest %d kept, %d older deleted).",
+        name, type, type == 2 ? "with heap" : "stacks only, low disk", freeBytes.QuadPart / (1024 * 1024), DUMP_KEEP, pruned);
+    char createdump[MAX_PATH];
+    _snprintf_s(createdump, sizeof createdump, _TRUNCATE, "%s\\createdump.exe", runtimeDir);
+    if (GetFileAttributesA(createdump) == INVALID_FILE_ATTRIBUTES)
+        LoaderLog("WRN", "CrashDumps: %s is missing, so a CoreCLR crash still leaves no dump. "
+            "Run scripts\\Publish-EngineCoreClr.ps1 (full, not -EngineOnly) to put it back.", createdump);
+    return type;
+}
+
+// ---------------------------------------------------------------------------
 // Engine calls, whichever host
 // ---------------------------------------------------------------------------
 
@@ -258,6 +370,20 @@ static void* EngineExport(const char* name)
 {
     if (g_engineIsManaged) return ClrEngineExport(name);
     return g_engineModule ? (void*)GetProcAddress(g_engineModule, name) : NULL;
+}
+
+// 1 = a client that has done `reloadsDone` hot reloads takes no more; `cap` < 0 = no cap.
+static int ReloadCapReached(int reloadsDone, int cap)
+{
+    return cap >= 0 && reloadsDone >= cap;
+}
+
+// The current engine's MaxHotReloads (engine.json), or the default for an engine without
+// the export.
+static int CurrentReloadCap(void)
+{
+    engine_max_reloads_fn f = (engine_max_reloads_fn)EngineExport(ENGINE_MAXRELOADS_EXPORT);
+    return f ? f() : DEFAULT_MAX_HOT_RELOADS;
 }
 
 static unsigned int LoadAndInitEngine(void)
@@ -334,6 +460,10 @@ static void Reload(void)
     long freeAfter = LoaderFreeAddressSpaceMb(&largest);
     LoaderLog(rc == 0 ? "INF" : "ERR", "Reload: %s (gen %d, %ld MB free, %+ld MB vs before the reload).",
         rc == 0 ? "complete" : "re-init FAILED", g_initCount, freeAfter, freeAfter - freeBefore);
+    int cap = CurrentReloadCap();
+    if (ReloadCapReached(g_initCount - 1, cap))
+        LoaderLog("INF", "Reload: hot reload %d of %d (engine.json MaxHotReloads); this client takes no more, "
+            "a newer engine needs a client restart.", g_initCount - 1, cap);
 }
 
 // ---------------------------------------------------------------------------
@@ -349,6 +479,21 @@ static DWORD WINAPI ReloadWatcher(LPVOID unused)
         ULONGLONG last = g_lastReloadDone;
         if (last != 0 && GetTickCount64() - last < MIN_RELOAD_INTERVAL_MS) {
             LoaderLog("INF", "ReloadWatcher: signal %llu ms after the last reload; coalesced.", GetTickCount64() - last);
+            continue;
+        }
+
+        // The reload cap: nothing is shut down, unloaded or staged, so the client keeps running
+        // on this generation and its staged file stays as it is (the next client start cleans
+        // it up once this process is gone, CleanStaleStagingFiles).
+        int reloadsDone = g_initCount - 1;
+        int cap = CurrentReloadCap();
+        if (ReloadCapReached(reloadsDone, cap)) {
+            LoaderLog("WRN", "ReloadWatcher: reload REFUSED - this client has hot reloaded %d time(s), the cap "
+                "(engine.json MaxHotReloads) is %d. Staying on engine gen %d; restart the client to load the "
+                "new engine. (Repeated hot reloads in one client ended in CoreCLR fatal error 0x80131506.)",
+                reloadsDone, cap, g_initCount);
+            engine_capped_fn capped = (engine_capped_fn)EngineExport(ENGINE_CAPPED_EXPORT);
+            if (capped) capped(reloadsDone, cap);
             continue;
         }
 
@@ -440,6 +585,10 @@ unsigned int __stdcall RynthCoreInit(void* param)
         return 6;
     }
     if (managed) {
+        char dumpDir[MAX_PATH], runtimeDir[MAX_PATH];
+        _snprintf_s(dumpDir, sizeof dumpDir, _TRUNCATE, LOG_DIR "\\" DUMP_SUBDIR);
+        _snprintf_s(runtimeDir, sizeof runtimeDir, _TRUNCATE, "%s\\dotnet", g_loaderDir);
+        ConfigureCrashDumps(dumpDir, runtimeDir);
         int rc = ClrStart(g_loaderDir);
         if (rc != 0) {
             LoaderLog("ERR", "FATAL: CoreCLR did not start (rc=%d)", rc);
@@ -462,6 +611,9 @@ unsigned int __stdcall RynthCoreInit(void* param)
     t = CreateThread(NULL, 0, FileWatcher, NULL, 0, NULL);
     if (t) CloseHandle(t);
     LoaderLog("INF", "Reload watcher armed on '%s'; file watcher on '%s' (poll 1 s).", eventName, g_enginePath);
+    int cap = CurrentReloadCap();
+    if (cap < 0) LoaderLog("INF", "Hot reloads: no cap (engine.json MaxHotReloads %d).", cap);
+    else LoaderLog("INF", "Hot reloads: at most %d in this client (engine.json MaxHotReloads); after that a new engine needs a restart.", cap);
     return 0;
 }
 

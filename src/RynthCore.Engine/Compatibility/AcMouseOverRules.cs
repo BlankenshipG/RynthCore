@@ -19,7 +19,7 @@ internal enum AcMouseTarget
     Unknown,
     /// <summary>AC reports nothing under the mouse (cursor outside the client, or no element took it).</summary>
     Nothing,
-    /// <summary>The 3D view: AC's SmartBox wrapper element (UIElement type 0x10000030).</summary>
+    /// <summary>The 3D view: AC's gmSmartBoxUI panel (type 0x10000014) or its SmartBox wrapper (0x10000030).</summary>
     World,
     /// <summary>Any other AC element: a window (inventory, chat, radar, vitals, the selected-object bar...).</summary>
     AcWindow,
@@ -29,6 +29,19 @@ internal static class AcMouseOverRules
 {
     /// <summary>UIElement_SmartBoxWrapper::GetUIElementType (0x004E5E80) returns this; it is the 3D view.</summary>
     public const int UIElementTypeSmartBoxWrapper = 0x10000030;
+
+    /// <summary>
+    /// gmSmartBoxUI::Register (0x004D71E0) registers this type: the game-play 3D view panel,
+    /// element 0x1000049A (gmGamePlayUI::SetupChildren 0x004EAB50; SaveScreenLayout 0x004EB9E0
+    /// writes its rect as "&lt;SBOX&gt;"). In game it is what AC reports under the cursor over open
+    /// ground (2026-10-10 client logs), not the wrapper: missing it here sent every plate's
+    /// click to AC.
+    /// </summary>
+    public const int UIElementTypeGmSmartBoxUI = 0x10000014;
+
+    /// <summary>One of the 3D view's element types.</summary>
+    public static bool IsWorldType(int elementType) =>
+        elementType == UIElementTypeSmartBoxWrapper || elementType == UIElementTypeGmSmartBoxUI;
 
     /// <summary>
     /// Classifies one read of UIElementManager. <paramref name="stateReadable"/>: the manager
@@ -42,7 +55,7 @@ internal static class AcMouseOverRules
         if (!stateReadable) return AcMouseTarget.Unknown;
         if (mouseOutside || element == 0) return AcMouseTarget.Nothing;
         if (!typeKnown) return AcMouseTarget.Unknown;
-        return elementType == UIElementTypeSmartBoxWrapper ? AcMouseTarget.World : AcMouseTarget.AcWindow;
+        return IsWorldType(elementType) ? AcMouseTarget.World : AcMouseTarget.AcWindow;
     }
 
     /// <summary>

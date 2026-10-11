@@ -34,6 +34,12 @@ internal sealed class AppSettings
     /// True once the launcher has explained usage statistics and asked (shown once).
     public bool UsageStatsAsked { get; set; }
 
+    /// The player said "leave it" (or no at Windows' prompt) when the launcher offered to take
+    /// the RynthCore Decal bridge out of Decal's list for all users because no account uses
+    /// Decal + RynthCore any more. The launcher then doesn't ask again at start (switching the
+    /// last account away still asks). Cleared when the bridge is registered again.
+    public bool DecalFilterRemovalDeclined { get; set; }
+
     /// When true, the launcher kills any RynthCore-mode acclient.exe it
     /// launched that hasn't reached IsLoggedIn within
     /// <see cref="StuckClientTimeoutSeconds"/>. Catches stuck char-select,

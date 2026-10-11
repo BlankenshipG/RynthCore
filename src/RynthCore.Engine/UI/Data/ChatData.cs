@@ -5,7 +5,9 @@
 //
 //    • ChatSource (hub, 100 ms) pulls new lines from RynthChatGetScrollbackJson
 //      on the pump thread, keeps the newest 500, routes and colours them with
-//      the rules, and writes the chat log.
+//      the rules, and writes the chat log. It also hands each new line to the
+//      Discord relay and ticks it (UI/Data/Discord/ChatDiscord.cs), which keeps
+//      this source subscribed while it is on.
 //    • ChatModel holds the settings (rynthchat_settings.json), the regex
 //      rules and custom tabs, and the chat input line.
 //
@@ -82,6 +84,9 @@ internal sealed class ChatLine
     /// <summary>Engine-assigned, increasing for the whole session (the plugin's own
     /// seq restarts after RL).</summary>
     public long Id { get; }
+    /// <summary>RynthChat's own number for the line (restarts when its plugin reloads); 0 when not
+    /// from RynthChat. The Discord relay tells news from scrollback by it.</summary>
+    public ulong Seq { get; init; }
     public string Timestamp { get; }
     /// <summary>The channel tab it belongs to (ChatClassifier in the plugin).</summary>
     public string Channel { get; }
@@ -247,7 +252,7 @@ internal sealed class ChatFilterRule
     }
 }
 
-/// <summary>New RynthChat lines while a chat face is open (100 ms). Publishes the newest 500, routed.</summary>
+/// <summary>New RynthChat lines while a chat face or the Discord relay holds it (100 ms). Publishes the newest 500, routed.</summary>
 internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
 {
     private const int MaxLines = 500;
@@ -261,6 +266,17 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
     public ChatSource() : base("Chat", periodMs: 100) { }
 
     protected internal override void Poll()
+    {
+        try { PollLines(); }
+        finally
+        {
+            // Every poll, new lines or not: due Discord posts, results, retries.
+            try { Discord.ChatDiscord.PumpTick(); }
+            catch (Exception ex) { RynthLog.UI($"ChatSource: Discord relay tick failed ({ex.GetType().Name}: {ex.Message})."); }
+        }
+    }
+
+    private void PollLines()
     {
         if (_get == null)
         {
@@ -300,12 +316,20 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
         IntPtr ptr = _get(_sinceSeq);
         if (ptr == IntPtr.Zero) return;
         string? json = Marshal.PtrToStringAnsi(ptr);
-        if (string.IsNullOrEmpty(json) || json == "[]") return;
+        if (string.IsNullOrEmpty(json) || json == "[]")
+        {
+            RelayRead(Array.Empty<ChatLine>());
+            return;
+        }
 
         RynthChatLineDto[]? dtos = ParseLines(json, out ulong skippedSeq);
         // Lines that couldn't be read still move the mark past them, or they'd come back every poll.
         if (skippedSeq > _sinceSeq) _sinceSeq = skippedSeq;
-        if (dtos == null || dtos.Length == 0) return;
+        if (dtos == null || dtos.Length == 0)
+        {
+            RelayRead(Array.Empty<ChatLine>());
+            return;
+        }
 
         var added = new List<ChatLine>(dtos.Length);
         foreach (RynthChatLineDto dto in dtos)
@@ -314,12 +338,19 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
             _sinceSeq = dto.Seq;
             string text = StripAcLinks(dto.Text ?? "", out string? linkedName);
             var line = new ChatLine(_nextId++, dto.Ts ?? "", dto.Chan ?? "Other", dto.Type,
-                                    dto.Sender is { Length: > 0 } s ? StripAcLinks(s, out _) : linkedName, text);
+                                    dto.Sender is { Length: > 0 } s ? StripAcLinks(s, out _) : linkedName, text)
+            {
+                Seq = dto.Seq,
+            };
             line.Route = router.Evaluate(line, null);
             if (line.Route.Mention) ChatModel.PumpMentionSound();
             added.Add(line);
         }
-        if (added.Count == 0) return;
+        if (added.Count == 0)
+        {
+            RelayRead(added);
+            return;
+        }
 
         ChatLine[] old = Current?.Value ?? Array.Empty<ChatLine>();
         int keepOld = Math.Max(0, Math.Min(old.Length, MaxLines - added.Count));
@@ -329,6 +360,14 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
         added.CopyTo(skipAdded, lines, keepOld, added.Count - skipAdded);
         Publish(lines);
         ChatModel.PumpLog(added);
+        RelayRead(added);
+    }
+
+    /// <summary>Every scrollback read goes to the Discord relay, empty or not (its first read is a baseline).</summary>
+    private static void RelayRead(IReadOnlyList<ChatLine> added)
+    {
+        try { Discord.ChatDiscord.PumpRead(added); }
+        catch (Exception ex) { RynthLog.UI($"ChatSource: Discord relay skipped {added.Count} line(s) ({ex.GetType().Name}: {ex.Message})."); }
     }
 
     private int _badLinesLogged;
@@ -413,6 +452,7 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
         // The lines already shown stay.
         _get = null;
         _sinceSeq = 0;
+        Discord.ChatDiscord.PumpSourceReset();
         ChatModel.SendLinePtr = IntPtr.Zero;
         ChatModel.PluginBound = false;
     }

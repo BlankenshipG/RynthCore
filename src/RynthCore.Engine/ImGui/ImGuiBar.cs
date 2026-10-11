@@ -8,10 +8,16 @@
 //  an unknown panel shows its first letter), reload (RL) and pop out.
 //  Dragging the grip moves the bar; the position is the shared bar= row in
 //  panel_state.txt. Right-click a panel button (or the grip for the bar
-//  itself) to choose which face shows it docked. Pop out moves the ImGui bar
+//  itself) to choose which face shows it docked; the grip's menu also has the
+//  bar's size and "Report a problem". Pop out moves the ImGui bar
 //  into its own window (ImGuiPopOuts, sized to its content; dock back
 //  returns it); a bar whose face is Avalonia/Both still pops out as the
 //  Avalonia bar.
+//
+//  The bar's size is its own text size step (PanelTextScale chrome row): the bar's
+//  fonts come from that baked set and its metrics scale by the step's factor. Set it
+//  from the grip's right-click menu, Ctrl+wheel over the bar, Settings > Display or
+//  /rc ui barsize.
 //
 //  Face key "__bar" in panel_faces.txt; code default Avalonia. While the ImGui
 //  bar shows, the docked Avalonia bar is hidden and takes no clicks
@@ -23,6 +29,7 @@ using System.Collections.Generic;
 using System.Numerics;
 using System.Threading;
 using ImGuiNET;
+using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.UI;
 using RynthCore.Engine.UI.ScriptWindows;
 
@@ -47,6 +54,11 @@ internal static class ImGuiBar
     // Engine panels with an ImGui face only (no OverlayHost entry) that get a bar button.
     private static readonly string[] ImGuiOnlyBarPanels =
         { Panels.InventoryFace.Title, Panels.SkillsFace.Title, Panels.SenseFace.Title, Panels.ItemCountFace.Title, Panels.MiniRemoteFace.Title };
+
+    // The ILT section: the RynthILT plugin's ImGui-only panels. They never get buttons of their
+    // own; one ILT button stands for them, shown only on Infinite Leaftide (IltInfo.IsIlt) and
+    // only for the ones registered (EntryPoint registers them when RynthILT is installed).
+    private static readonly string[] IltPanels = { Panels.BountiesFace.Title };
 
     // Known panels' icons (DrakBot's where the same window exists); others show their first letter.
     private static readonly Dictionary<string, string> PanelIcons = new(StringComparer.OrdinalIgnoreCase)
@@ -87,10 +99,26 @@ internal static class ImGuiBar
     // Square buttons, logical px (x the DPI scale).
     private const float ButtonSize = 20f, ButtonGap = 3f;
 
+    /// <summary>
+    /// The bar's text size step (the nearest one already baked) and its scale factor. The one
+    /// place either is worked out, so the bar's fonts and its metrics always agree.
+    /// </summary>
+    private static int ChromeStep(out float factor)
+    {
+        int step = ImGuiFonts.BakedStepNear(PanelTextScale.GetChrome());
+        factor = PanelTextScale.Factor(step);
+        return step;
+    }
+
     private static ButtonInfo[]? _buttons;
     private static string _tooltip = "";
     private static bool _placed;
     private static Vector2 _pos, _persistedPos;
+    // What may write a new position to the bar= row: the user dragging the grip, or the bar being
+    // pulled back on screen by a size change (a few frames: the window grows a frame late). A clamp
+    // from a smaller AC window leaves the saved position alone.
+    private static bool _userMoved;
+    private static int _lastStep, _sizeWatch;
 
     private const string PopOutTitle = "__bar";
     // Popped out (the ImGui bar in its own window). Read from panel_state once,
@@ -173,12 +201,15 @@ internal static class ImGuiBar
     private static void DrawPopped(float s, Vector2 display)
     {
         EnsureButtons();
+        int step = ChromeStep(out float factor);
+        s *= factor;
         float place = AvaloniaOverlay.InputScale > 0 ? AvaloniaOverlay.InputScale : 1f;
         ImGuiNET.ImGui.SetNextWindowPos(ImGuiPopOuts.PanelOrigin, ImGuiCond.Always);
         PushBarWindowStyle(s);
         ImGuiNET.ImGui.Begin("##rc_bar", BarFlags);
         try
         {
+            ImGuiFonts.CurrentStep = step;
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
             DrawContent(s, place, popped: true);
             ImGuiNET.ImGui.PopFont();
@@ -189,6 +220,7 @@ internal static class ImGuiBar
         }
         finally
         {
+            ImGuiFonts.CurrentStep = 0;
             ImGuiNET.ImGui.End();
             PopBarWindowStyle();
         }
@@ -218,6 +250,8 @@ internal static class ImGuiBar
     public static void Draw(float s)
     {
         EnsureButtons();
+        int step = ChromeStep(out float factor);
+        s *= factor;
         float place = AvaloniaOverlay.InputScale > 0 ? AvaloniaOverlay.InputScale : 1f;
         bool both = ResolveFace() == PanelFace.Both;
 
@@ -229,18 +263,23 @@ internal static class ImGuiBar
             _pos = _persistedPos = logical * place;
             ImGuiNET.ImGui.SetNextWindowPos(_pos, ImGuiCond.Always);
             _placed = true;
+            _lastStep = step;   // the size the bar loads at is the baseline, not a change
         }
 
+        if (step != _lastStep) { _lastStep = step; _sizeWatch = 4; }
         PushBarWindowStyle(s);
         ImGuiNET.ImGui.Begin("##rc_bar", BarFlags);
         try
         {
+            ImGuiFonts.CurrentStep = step;
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
             DrawContent(s, place, popped: false);
             ImGuiNET.ImGui.PopFont();
+            KeepOnScreen();
         }
         finally
         {
+            ImGuiFonts.CurrentStep = 0;
             _pos = ImGuiNET.ImGui.GetWindowPos();
             ImGuiNET.ImGui.End();
             PopBarWindowStyle();
@@ -249,15 +288,35 @@ internal static class ImGuiBar
         if (!ImGuiNET.ImGui.IsMouseDown(ImGuiMouseButton.Left) && _pos != _persistedPos)
         {
             _persistedPos = _pos;
-            Vector2 logical = _pos / place - (both ? new Vector2(24, 24) : Vector2.Zero);
-            double left = logical.X, top = logical.Y;
-            UiBackgroundWriter.Enqueue("persist bar", () => PanelStateStore.SetBarPosition(left, top));
-            if (!both) AvaloniaOverlay.SyncDockedBarPosition(left, top);
+            if (_userMoved || _sizeWatch > 0)
+            {
+                Vector2 logical = _pos / place - (both ? new Vector2(24, 24) : Vector2.Zero);
+                double left = logical.X, top = logical.Y;
+                UiBackgroundWriter.Enqueue("persist bar", () => PanelStateStore.SetBarPosition(left, top));
+                if (!both) AvaloniaOverlay.SyncDockedBarPosition(left, top);
+            }
+            _userMoved = false;
         }
+        if (_sizeWatch > 0) _sizeWatch--;
+    }
+
+    /// <summary>A bigger size can push the bar's right end off the screen: pull it back (not while it is being dragged).</summary>
+    private static void KeepOnScreen()
+    {
+        Vector2 display = ImGuiNET.ImGui.GetIO().DisplaySize;
+        if (display.X <= 1 || ImGuiNET.ImGui.IsMouseDown(ImGuiMouseButton.Left)) return;
+        Vector2 pos = ImGuiNET.ImGui.GetWindowPos();
+        Vector2 next = Vector2.Clamp(pos, Vector2.Zero, Vector2.Max(Vector2.Zero, display - ImGuiNET.ImGui.GetWindowSize()));
+        if (next != pos) ImGuiNET.ImGui.SetWindowPos(next);
     }
 
     private static void DrawContent(float s, float place, bool popped)
     {
+        // Ctrl+wheel over the bar steps its size (the panels' title bars do the same).
+        ImGuiIOPtr io = ImGuiNET.ImGui.GetIO();
+        if (io.KeyCtrl && io.MouseWheel != 0f && ImGuiNET.ImGui.IsWindowHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem))
+            PanelTextScale.SetChrome(PanelTextScale.GetChrome() + (io.MouseWheel > 0f ? 1 : -1));
+
         var square = new Vector2(ButtonSize, ButtonSize) * s;
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         ImFontPtr iconFont = ImGuiFonts.Get(UiFont.Ui14);
@@ -280,12 +339,13 @@ internal static class ImGuiBar
             if (display.X > 1)
                 next = Vector2.Clamp(next, Vector2.Zero, Vector2.Max(Vector2.Zero, display - size));
             ImGuiNET.ImGui.SetWindowPos(next);
+            _userMoved = true;
         }
         ImGuiNET.ImGui.SetItemTooltip(_tooltip);
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
             ImGuiNET.ImGui.OpenPopup("##face_bar");
         PhosphorIcons.DrawCentered(dl, iconFont, PhosphorIcons.DotsSixVertical, rcPos, new Vector2(square.X * 0.8f, square.Y), RynthTheme.RcLabel);
-        FacePopup("##face_bar", FaceKey, hasImGuiFace: true);
+        FacePopup("##face_bar", FaceKey, hasImGuiFace: true, s);
 
         // Collapse: the bar folds to its grip and this caret.
         bool collapsed = RynthAiDashboardState.BarCollapsed;
@@ -312,6 +372,21 @@ internal static class ImGuiBar
             if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
                 ImGuiNET.ImGui.OpenPopup(b.PopupId);
             FacePopup(b.PopupId, b.Title, ImGuiPanelHost.HasFace(b.Title));
+        }
+
+        // The ILT section: one button, only on Infinite Leaftide with RynthILT's panels
+        // registered. With one panel it toggles that panel; with more it opens a menu.
+        int iltCount = IltPanelCount();
+        if (iltCount > 0)
+        {
+            ImGuiNET.ImGui.SameLine();
+            string? only = iltCount == 1 ? FirstIltPanel() : null;
+            if (IconButton("##ilt", iconFont, PhosphorIcons.Leaf, square, RynthTheme.BarText))
+            {
+                if (only != null) PanelRouter.Toggle(only);
+                else ImGuiNET.ImGui.OpenPopup("##ilt_menu");
+            }
+            ImGuiNET.ImGui.SetItemTooltip(only != null ? "Infinite Leaftide: " + only : "Infinite Leaftide");
         }
 
         // Script windows (decision 2): one button with a menu, only while a ShowInBar
@@ -352,6 +427,44 @@ internal static class ImGuiBar
 
         // Drawn after the bar buttons' style is popped, so the menu has the normal look.
         ScriptsMenu(scripts);
+        IltMenu();
+    }
+
+    /// <summary>The ILT panels the bar offers now: 0 off Infinite Leaftide or without RynthILT. AC thread.</summary>
+    private static int IltPanelCount()
+    {
+        int n = 0;
+        foreach (string title in IltPanels)
+            if (ImGuiPanelHost.HasFace(title)) n++;
+        return n > 0 && IltInfo.IsIlt ? n : 0;
+    }
+
+    private static string? FirstIltPanel()
+    {
+        foreach (string title in IltPanels)
+            if (ImGuiPanelHost.HasFace(title)) return title;
+        return null;
+    }
+
+    /// <summary>The ILT button's menu (two or more ILT panels): a checkbox item each for open.</summary>
+    private static void IltMenu()
+    {
+        if (!ImGuiNET.ImGui.BeginPopup("##ilt_menu")) return;
+        try
+        {
+            ImGuiNET.ImGui.TextDisabled("Infinite Leaftide");
+            foreach (string title in IltPanels)
+            {
+                if (!ImGuiPanelHost.HasFace(title)) continue;
+                bool open = ImGuiPanelHost.IsOpen(title);
+                if (ImGuiNET.ImGui.MenuItem(title, "", open))
+                    PanelRouter.Toggle(title);
+            }
+        }
+        finally
+        {
+            ImGuiNET.ImGui.EndPopup();
+        }
     }
 
     /// <summary>
@@ -394,7 +507,7 @@ internal static class ImGuiBar
         return clicked;
     }
 
-    private static void FacePopup(string popupId, string title, bool hasImGuiFace)
+    private static void FacePopup(string popupId, string title, bool hasImGuiFace, float s = 1f)
     {
         if (!ImGuiNET.ImGui.BeginPopup(popupId)) return;
         ImGuiNET.ImGui.TextDisabled(title == FaceKey ? "Bar, docked, shows as" : "Docked, shows as");
@@ -407,7 +520,57 @@ internal static class ImGuiBar
         }
         if (!hasImGuiFace)
             ImGuiNET.ImGui.TextDisabled("(no ImGui version yet)");
+        if (title == FaceKey)
+        {
+            BarSizeRows(s);
+            ReportRow();
+        }
         ImGuiNET.ImGui.EndPopup();
+    }
+
+    /// <summary>The bar's own popup: smaller / bigger, the current size, reset (the panels' text size popup, for the bar).</summary>
+    private static void BarSizeRows(float s)
+    {
+        int step = PanelTextScale.GetChrome();
+        int max = PanelTextScale.SizeNames.Length - 1;
+        float btn = ButtonSize * s;
+        ImFontPtr iconFont = ImGuiFonts.Get(UiFont.Ui14);
+        uint text = ImGuiNET.ImGui.GetColorU32(ImGuiCol.Text);
+
+        ImGuiNET.ImGui.Separator();
+        ImGuiNET.ImGui.TextUnformatted("Bar size");
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, Vector2.Zero);
+        ImGuiNET.ImGui.BeginDisabled(step <= 0);
+        if (IconButton("##bs_smaller", iconFont, PhosphorIcons.Minus, new Vector2(btn, btn), text))
+            PanelTextScale.SetChrome(step - 1);
+        ImGuiNET.ImGui.EndDisabled();
+        ImGuiNET.ImGui.SetItemTooltip("Smaller");
+        ImGuiNET.ImGui.SameLine(0, 4 * s);
+        ImGuiNET.ImGui.BeginDisabled(step >= max);
+        if (IconButton("##bs_bigger", iconFont, PhosphorIcons.Plus, new Vector2(btn, btn), text))
+            PanelTextScale.SetChrome(step + 1);
+        ImGuiNET.ImGui.EndDisabled();
+        ImGuiNET.ImGui.SetItemTooltip("Bigger");
+        ImGuiNET.ImGui.PopStyleVar();
+        ImGuiNET.ImGui.SameLine(0, 8 * s);
+        ImGuiNET.ImGui.AlignTextToFramePadding();
+        ImGuiNET.ImGui.TextUnformatted(PanelTextScale.Describe(step));
+
+        ImGuiNET.ImGui.BeginDisabled(step == 0);
+        if (ImGuiNET.ImGui.Button(PhosphorIcons.ArrowCounterClockwise + " Reset"))
+            PanelTextScale.SetChrome(0);
+        ImGuiNET.ImGui.EndDisabled();
+        ImGuiNET.ImGui.SetItemTooltip("Back to normal size");
+    }
+
+    /// <summary>The grip menu's "Report a problem" entry (Report/ProblemReport.cs).</summary>
+    private static void ReportRow()
+    {
+        if (!ImGuiPanelHost.HasFace(Panels.ReportFace.Title)) return;
+        ImGuiNET.ImGui.Separator();
+        if (ImGuiNET.ImGui.MenuItem(PhosphorIcons.Warning + " Report a problem..."))
+            Report.ProblemReport.OpenPanel();
+        ImGuiNET.ImGui.SetItemTooltip("Tell the staff what went wrong (also /rc report).");
     }
 
     private static void PushBarButtonStyle(float s)
@@ -446,6 +609,6 @@ internal static class ImGuiBar
                 list.Add(new ButtonInfo(title, "##bar_" + title, "##face_" + title, icon, letter, title, ImGuiOnly: true));
             }
         _buttons = list.ToArray();
-        _tooltip = $"RynthCore {EntryPoint.BuildStamp}\nDrag here to move the bar. Right-click: bar face.";
+        _tooltip = $"RynthCore {EntryPoint.BuildStamp}\nDrag here to move the bar. Right-click: bar face and size. Ctrl+wheel over the bar: size.";
     }
 }

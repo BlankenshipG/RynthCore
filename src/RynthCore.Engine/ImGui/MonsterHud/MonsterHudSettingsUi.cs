@@ -87,6 +87,9 @@ internal static class MonsterHudSettingsUi
             "Text size of the names over NPCs and vendors (1.00x = the default). Names have no bar.");
         changed |= Toggle("Player names", ref MonsterHudSettings.PlayerNames,
             "The name over other players too (blue), within the same distance and count. Chat: /rv plates players.");
+        changed |= Toggle("Player health bars", ref MonsterHudSettings.PlayerBars,
+            "A health bar under other players' names (and their name, even with Player names off). The game only tells you a player's health " +
+            "once you select them or they share it (fellowship), so a bar shows from then on; others keep just the name. Chat: /rv plates playerbars.");
         changed |= SizeSlider("Player name size", ref MonsterHudSettings.PlayerTextSize, MonsterHudSettings.MinTextSize, MonsterHudSettings.MaxTextSize, w,
             "Text size of the names over other players (1.00x = the default). Names have no bar.");
         Note("Names count apart from the monster plates, so they never push one out; the nearest win.", w);

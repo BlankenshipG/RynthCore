@@ -462,6 +462,8 @@ internal static class SettingsSchema
             Section("Text Size (in-game panels)"),
             Combo("All Panels", PanelTextScale.SizeNames, _ => PanelTextScale.GetAll(), (_, v) => PanelTextScale.SetAll(v),
                 "Text size for every in-game panel: 0 = normal, each step 10% bigger, yourjokin = 2.5x."),
+            Combo("Toolbar", PanelTextScale.SizeNames, _ => PanelTextScale.GetChrome(), (_, v) => PanelTextScale.SetChrome(v),
+                "Size of the RynthCore icon bar (its icons and tooltips), separate from the panels: 0 = normal, each step 10% bigger.\nAlso: right-click the bar's grip, Ctrl+wheel over the bar, or /rc ui barsize."),
             Bool("Size Each Panel Separately", _ => PanelTextScale.PerPanel, (_, v) => PanelTextScale.PerPanel = v,
                 "Off: every panel uses All Panels. On: set each panel's text size below.", gates: true),
             TextSize("RynthAi Dashboard", "RynthAi"),

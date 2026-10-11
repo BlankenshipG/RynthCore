@@ -49,6 +49,7 @@ namespace EngineSettingsTests
                 Run(nameof(SaveRoundTripsOwnedKeys), SaveRoundTripsOwnedKeys);
                 Run(nameof(SaveWithoutFileWritesOwnedKeys), SaveWithoutFileWritesOwnedKeys);
                 Run(nameof(SaveLeavesMalformedFileAlone), SaveLeavesMalformedFileAlone);
+                Run(nameof(MaxHotReloadsReadAndKept), MaxHotReloadsReadAndKept);
             }
             finally
             {
@@ -85,6 +86,7 @@ namespace EngineSettingsTests
                         Console.WriteLine("DecalBridge=" + EngineSettings.DecalBridgeMode);
                         Console.WriteLine("ImGuiBackend=" + EngineSettings.EnableImGuiBackend);
                         Console.WriteLine("ServerMessageStream=" + EngineSettings.ServerMessageStream);
+                        Console.WriteLine("MaxHotReloads=" + EngineSettings.MaxHotReloads);
                         break;
                     default: throw new ArgumentException(args[0]);
                 }
@@ -250,6 +252,52 @@ namespace EngineSettingsTests
             File.WriteAllText(emptyPath, "");
             Eq(RunChild(emptyPath, "hook-off", "StartTooltip").Exit, 0, "empty: no crash");
             Eq(ReadJson(emptyPath).GetProperty("DisabledUiHooks")[0].GetString(), "StartTooltip", "empty: rewritten with the change");
+        }
+
+        // engine.json "MaxHotReloads" (the loader's hot-reload cap): default 3, a hand-set value
+        // (including -1 = no cap) is read and survives the engine's own saves, the default is
+        // never written, and a value that isn't a whole number is ignored.
+        private static void MaxHotReloadsReadAndKept()
+        {
+            string dir = NewDir("maxreloads");
+            string path = Path.Combine(dir, "engine.json");
+
+            File.WriteAllText(path, LauncherFile);
+            var (exit, output) = RunChild(path, "dump");
+            Eq(exit, 0, "dump (missing)");
+            Eq(DumpValue(output, "MaxHotReloads"), "3", "missing: the default");
+            Eq(RunChild(path, "hook-off", "StartTooltip").Exit, 0, "save with the default");
+            Check(!ReadJson(path).TryGetProperty("MaxHotReloads", out _), "the default isn't written to the file");
+
+            foreach ((string json, string expected) in new[] { ("5", "5"), ("-1", "-1"), ("0", "0") })
+            {
+                File.WriteAllText(path, LauncherFile.Replace("\"LoggingLevel\"", $"\"MaxHotReloads\": {json}, \"LoggingLevel\""));
+                (exit, output) = RunChild(path, "dump");
+                Eq(exit, 0, $"{json}: dump");
+                Eq(DumpValue(output, "MaxHotReloads"), expected, $"{json}: read back");
+                Eq(RunChild(path, "hook-off", "CheckTooltip").Exit, 0, $"{json}: save");
+                Eq(ReadJson(path).GetProperty("MaxHotReloads").GetRawText(), json, $"{json}: kept by the engine's save");
+                Eq(DumpValue(RunChild(path, "dump").Out, "MaxHotReloads"), expected, $"{json}: still the same after the save");
+            }
+
+            foreach (string bad in new[] { "\"lots\"", "2.5", "true", "null" })
+            {
+                File.WriteAllText(path, LauncherFile.Replace("\"LoggingLevel\"", $"\"MaxHotReloads\": {bad}, \"LoggingLevel\""));
+                (exit, output) = RunChild(path, "dump");
+                Eq(exit, 0, $"{bad}: dump");
+                Eq(DumpValue(output, "MaxHotReloads"), "3", $"{bad}: ignored, the default");
+            }
+        }
+
+        /// <summary>The value of a "Name=value" line of the child's dump output ("" if none).</summary>
+        private static string DumpValue(string output, string name)
+        {
+            foreach (string line in output.Split('\n'))
+            {
+                string l = line.TrimEnd('\r');
+                if (l.StartsWith(name + "=", StringComparison.Ordinal)) return l.Substring(name.Length + 1);
+            }
+            return "";
         }
 
         // ── EngineSettingsFile, direct ──────────────────────────────────────────

@@ -153,7 +153,11 @@ internal partial class MainWindow : Window
         _updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync();
         _updateTimer.Start();
         _ = CheckForUpdatesAsync();
-        Opened += async (_, _) => await AskAboutUsageStatsOnceAsync();
+        Opened += async (_, _) =>
+        {
+            await AskAboutUsageStatsOnceAsync();
+            await CleanUpDecalBridgeIfUnusedAsync(atStartup: true);
+        };
     }
 
     private void WireEvents()
@@ -179,6 +183,7 @@ internal partial class MainWindow : Window
         RefreshSessionsButton.Click += (_, _) => RefreshSessionState();
         ResetOverlayBarButton.Click += (_, _) => ResetOverlayBar();
         CheckDecalBridgeButton.Click += async (_, _) => await CheckDecalBridgeAsync();
+        RepairDecalButton.Click += async (_, _) => await RepairDecalAsync();
         AddPluginDllButton.Click += async (_, _) => await AddPluginDllAsync();
         CheckUpdatesButton.Click += async (_, _) => await CheckForUpdatesAsync();
         UpdateCardActionButton.Click += async (_, _) => await OnUpdateCardActionAsync();
@@ -775,7 +780,7 @@ internal partial class MainWindow : Window
             _settings.SelectedAccountProfileId = _settings.AccountProfiles.FirstOrDefault()?.Id ?? string.Empty;
         SaveSettings();
         if (removed.InjectionMode == InjectionMode.DecalBridge)
-            UnregisterDecalBridgeIfUnused();
+            _ = CleanUpDecalBridgeIfUnusedAsync(atStartup: false);
         RefreshLists();
         AccountProfilesList.SelectedIndex = Math.Min(index, _settings.AccountProfiles.Count - 1);
         RefreshSummary();
@@ -1077,9 +1082,8 @@ internal partial class MainWindow : Window
         global::Avalonia.Controls.ToolTip.SetTip(bridgeItem,
             "EXPERIMENTAL. Decal and RynthCore in the same client: Decal's plugins and RynthCore's " +
             "in-game UI run side by side. RynthCore gets chat from Decal through the RynthCore Decal " +
-            "bridge, which this launcher adds to Decal's filter list before the launch: for your Windows " +
-            "user, or (when AC runs as administrator on this PC) once for all users after a Windows " +
-            "administrator prompt. Recovery Actions > Check Decal bridge shows whether it will load. Run one bot per client (VTank or the RynthAi macro, not both). To stop using it, " +
+            "bridge, which this launcher adds to Decal's filter list for all users when you pick this mode " +
+            "(once; Windows asks for administrator permission). Recovery Actions > Check Decal bridge shows whether it will load. Run one bot per client (VTank or the RynthAi macro, not both). To stop using it, " +
             "set the account back to RynthCore or Decal: once no account uses it, the launcher takes the " +
             "bridge out of Decal's list again (uninstalling RynthCore does too).");
 
@@ -1111,45 +1115,126 @@ internal partial class MainWindow : Window
                 SaveSettings();
                 AppendActivity(mode == InjectionMode.DecalBridge
                     ? $"{account.DisplayName}: injection method set to Decal + RynthCore (experimental). " +
-                      "The Decal bridge is registered for your Windows user at this account's next launch."
+                      "Adding the RynthCore Decal bridge to Decal's filter list for all users (once; Windows may ask for administrator permission)."
                     : $"{account.DisplayName}: injection method set to {mode}.");
-                if (wasBridge)
-                    UnregisterDecalBridgeIfUnused();
+                if (mode == InjectionMode.DecalBridge)
+                    _ = EnableDecalBridgeAsync();
+                else if (wasBridge)
+                    _ = CleanUpDecalBridgeIfUnusedAsync(atStartup: false);
             }
         };
 
         return dropdown;
     }
 
+    // One Decal registry job at a time (start-up cleanup, a mode change, Repair Decal, a launch).
+    private readonly SemaphoreSlim _decalBridgeGate = new(1, 1);
+
     /// <summary>
-    /// The last "Decal + RynthCore" account was switched to another mode: take the Decal bridge
-    /// out of Decal's filter list for this Windows user again (registration is opt-in and only
-    /// lasts while an account uses it). Running clients keep what they loaded; the next
-    /// "Decal + RynthCore" launch registers again.
+    /// No account uses "Decal + RynthCore" (at start, after a mode change or a deleted account):
+    /// take the RynthCore Decal bridge out of Decal's filter list again (registration is opt-in
+    /// and only lasts while an account uses it).
+    ///   - Per-user (no prompt): our entry in a per-user copy of Decal's filter list, and a copy
+    ///     an earlier RynthCore created (backed up first). Only when there is something to remove.
+    ///   - Machine-wide, this install's entry only: asks first, then Windows' administrator prompt
+    ///     (unless the launcher runs elevated). Only when the entry exists; at start, never again
+    ///     after the player said "leave it" (<see cref="AppSettings.DecalFilterRemovalDeclined"/>).
+    /// Running clients keep what they loaded.
     /// </summary>
-    private void UnregisterDecalBridgeIfUnused()
+    private async Task CleanUpDecalBridgeIfUnusedAsync(bool atStartup)
     {
         if (_settings.AccountProfiles.Any(a => a.InjectionMode == InjectionMode.DecalBridge))
             return;
+        await _decalBridgeGate.WaitAsync();
         try
         {
-            DecalBridgeRegistration.Status status = DecalBridgeRegistration.GetStatus();
-            if (status.RegisteredMachineWide)
-                AppendActivity("No account uses Decal + RynthCore any more. The Decal bridge's entry for all users stays (removing it needs administrator rights; uninstalling RynthCore removes it). " +
-                    "It stays idle in Decal clients without RynthCore.");
-            if (!status.RegisteredPerUser)
+            if (_settings.AccountProfiles.Any(a => a.InjectionMode == InjectionMode.DecalBridge))
                 return;
-            bool ok = DecalBridgeRegistration.Unregister(out string report);
-            LauncherDiag.Info($"DECALBRIDGE: no Decal + RynthCore account left - unregister: {report}");
-            AppendActivity(ok
-                ? $"No account uses Decal + RynthCore any more - Decal bridge removed from Decal's filter list. {report}"
-                : $"No account uses Decal + RynthCore any more, but removing the Decal bridge did not finish: {report}");
+
+            if (DecalBridgeRegistration.PerUserCleanupNeeded())
+            {
+                bool ok = DecalBridgeRegistration.Unregister(out string report);
+                LauncherDiag.Info($"DECALBRIDGE: no Decal + RynthCore account - per-user cleanup: {report}");
+                AppendActivity(ok
+                    ? $"No account uses Decal + RynthCore - Decal bridge taken out of your per-user Decal settings: {report}"
+                    : $"No account uses Decal + RynthCore, but taking the Decal bridge out of your per-user Decal settings did not finish: {report}");
+            }
+
+            string dir = DecalBridgeRegistration.DefaultBridgeDirectory;
+            if (!DecalBridgeRegistration.MachineEntryIsOurs(dir))
+                return;
+            if (atStartup && _settings.DecalFilterRemovalDeclined)
+            {
+                LauncherDiag.Info("DECALBRIDGE: no Decal + RynthCore account, machine-wide entry left (the player chose to keep it); not asking at start.");
+                return;
+            }
+
+            var outcome = DecalBridgeRegistration.UnregisterMachineWide(out string mReport, dir);
+            LauncherDiag.Info($"DECALBRIDGE: no Decal + RynthCore account - unregister machine-wide: {outcome}: {mReport}");
+            if (outcome == DecalBridgeRegistration.Outcome.NeedsAdmin)
+            {
+                bool yes = await DecalBridgeDialog.AskAsync(this,
+                    "Decal + RynthCore is not in use",
+                    "No account uses Decal + RynthCore any more, but the RynthCore Decal bridge is still in Decal's plugin list for all users on this PC. " +
+                    "It does nothing without RynthCore, but you can take it out now. Windows will ask for administrator permission.\n\n" +
+                    "If you leave it, the launcher won't ask again when it starts. Uninstalling RynthCore also takes it out.",
+                    "Take it out (asks for administrator)", "Leave it");
+                if (!yes)
+                {
+                    RememberDecalFilterRemovalDeclined(true);
+                    AppendActivity("No account uses Decal + RynthCore. The Decal bridge stays in Decal's list for all users (idle without RynthCore); the launcher won't ask again at start.");
+                    return;
+                }
+                string? self = Environment.ProcessPath;
+                if (self == null)
+                {
+                    AppendActivity("Decal bridge: can't find the launcher's own exe for the administrator step.");
+                    return;
+                }
+                outcome = DecalBridgeRegistration.RunElevated(self, $"--decal-bridge-unregister-machine \"{dir}\"", out mReport);
+                LauncherDiag.Info($"DECALBRIDGE: elevated unregister machine-wide: {outcome}: {mReport}");
+                if (outcome == DecalBridgeRegistration.Outcome.NeedsAdmin)
+                {
+                    RememberDecalFilterRemovalDeclined(true);
+                    AppendActivity("Decal bridge: not taken out (cancelled at the Windows administrator prompt). It stays idle without RynthCore; the launcher won't ask again at start.");
+                    return;
+                }
+            }
+            if (outcome == DecalBridgeRegistration.Outcome.Registered && !DecalBridgeRegistration.MachineEntryIsOurs(dir))
+            {
+                RememberDecalFilterRemovalDeclined(false);
+                AppendActivity("No account uses Decal + RynthCore any more - the Decal bridge is out of Decal's list for all users.");
+            }
+            else
+            {
+                AppendActivity($"No account uses Decal + RynthCore, but taking the Decal bridge out of Decal's list for all users did not finish: {mReport}");
+            }
         }
         catch (Exception ex)
         {
-            LauncherDiag.Info($"DECALBRIDGE: unregister failed ({ex.GetType().Name}: {ex.Message})");
+            LauncherDiag.Info($"DECALBRIDGE: cleanup failed ({ex.GetType().Name}: {ex.Message})");
             AppendActivity($"Removing the Decal bridge failed: {ex.Message}");
         }
+        finally
+        {
+            _decalBridgeGate.Release();
+        }
+    }
+
+    private void RememberDecalFilterRemovalDeclined(bool declined)
+    {
+        if (_settings.DecalFilterRemovalDeclined == declined)
+            return;
+        _settings.DecalFilterRemovalDeclined = declined;
+        SaveSettings();
+    }
+
+    /// <summary>An account was just set to Decal + RynthCore: register now (the one prompt, if needed).</summary>
+    private async Task EnableDecalBridgeAsync()
+    {
+        bool ok = await EnsureDecalBridgeAsync(DecalBridgeAcClientPath, interactive: true);
+        if (ok)
+            AppendActivity("Decal bridge ready: Decal + RynthCore accounts can launch.");
     }
 
     // ── Decal bridge: register where this PC's client reads, check, explain ─────────────
@@ -1158,13 +1243,27 @@ internal partial class MainWindow : Window
         DecalLocator.TryGetDecalAcClientPath() ?? AcClientPathTextBox.Text?.Trim() ?? string.Empty;
 
     /// <summary>
-    /// Registers the Decal bridge where a client started now will read Decal's filter list
-    /// (DecalBridgeRegistration.RegisterForClients) and checks the result. When that place is
-    /// the machine-wide list (AC runs with administrator rights on this PC), asks first and runs
-    /// the one elevated step. False = a Decal + RynthCore client would not load the bridge.
-    /// Automatic launches never prompt: they log the reason and stay blocked.
+    /// Registers the Decal bridge in Decal's filter list for all users
+    /// (DecalBridgeRegistration.RegisterForClients) and checks the result. When this launcher may
+    /// not write that list, asks first and runs the one elevated step
+    /// (--decal-bridge-register-machine), then registers again to finish the per-user side. There
+    /// is no per-user fallback: declined or failed = Decal + RynthCore can't be used until it is
+    /// registered for all users. False = a Decal + RynthCore client would not load the bridge.
+    /// Only interactive callers (the player picked the mode, launched, or pressed Repair) prompt;
+    /// automatic launches log the reason and stay blocked.
     /// </summary>
     private async Task<bool> EnsureDecalBridgeAsync(string acClientPath, bool interactive)
+    {
+        await _decalBridgeGate.WaitAsync();
+        try { return await EnsureDecalBridgeCoreAsync(acClientPath, interactive); }
+        finally { _decalBridgeGate.Release(); }
+    }
+
+    private const string DecalBridgeNotRegisteredText =
+        "Decal + RynthCore can't be used until the RynthCore Decal bridge is in Decal's list for all users. " +
+        "To add it, launch a Decal + RynthCore account (or use Recovery Actions > Check Decal bridge > Repair) and say yes to Windows' administrator prompt.";
+
+    private async Task<bool> EnsureDecalBridgeCoreAsync(string acClientPath, bool interactive)
     {
         string dir = DecalBridgeRegistration.DefaultBridgeDirectory;
         var outcome = DecalBridgeRegistration.RegisterForClients(dir, acClientPath, EngineJsonStore.Path, out string report, out DecalBridgeCheck.Result? check);
@@ -1173,6 +1272,7 @@ internal partial class MainWindow : Window
             LauncherDiag.Info($"DECALBRIDGE: check after register:{Environment.NewLine}{check.ToReport()}");
         if (outcome == DecalBridgeRegistration.Outcome.Registered)
         {
+            RememberDecalFilterRemovalDeclined(false);
             AppendActivity(report);
             return true;
         }
@@ -1181,34 +1281,48 @@ internal partial class MainWindow : Window
         {
             AppendActivity(report);
             if (!interactive)
+            {
+                AppendActivity(DecalBridgeNotRegisteredText);
                 return false;
+            }
             bool yes = await DecalBridgeDialog.AskAsync(this,
                 "Decal + RynthCore: one administrator step",
-                "On this PC, Asheron's Call reads Decal's plugin list for all users, not just for you" +
-                (check != null && check.ClientReason.Length > 0 ? $" ({check.ClientReason})" : "") + ".\n\n" +
-                "RynthCore has to add its Decal bridge to that list once, so Decal loads it next to your other Decal plugins. " +
-                "Windows will now ask for administrator permission. Nothing else changes; switching every account away from " +
-                "Decal + RynthCore, or uninstalling RynthCore, takes the entry out again.",
+                "Decal + RynthCore needs the RynthCore Decal bridge in Decal's plugin list for all users on this PC, " +
+                "so Decal loads it next to your other Decal plugins (it does nothing in clients without RynthCore).\n\n" +
+                "Adding it needs administrator permission once; Windows will ask now. Nothing else in Decal changes. " +
+                "Switching every account away from Decal + RynthCore, or uninstalling RynthCore, takes the entry out again.",
                 "Add it (asks for administrator)", "Cancel");
             if (!yes)
             {
-                AppendActivity("Decal bridge: the administrator step was cancelled.");
+                AppendActivity("Decal bridge: not added (cancelled). " + DecalBridgeNotRegisteredText);
                 return false;
             }
             string? self = Environment.ProcessPath;
             if (self == null)
             {
-                AppendActivity("Decal bridge: can't find the launcher's own exe for the administrator step.");
+                AppendActivity("Decal bridge: can't find the launcher's own exe for the administrator step. " + DecalBridgeNotRegisteredText);
                 return false;
             }
             var elevated = DecalBridgeRegistration.RunElevated(self, $"--decal-bridge-register-machine \"{dir}\"", out string eReport);
             LauncherDiag.Info($"DECALBRIDGE: elevated register: {elevated}: {eReport}");
+            if (elevated != DecalBridgeRegistration.Outcome.Registered)
+            {
+                AppendActivity($"Decal bridge: not added ({eReport}) " + DecalBridgeNotRegisteredText);
+                return false;
+            }
             AppendActivity("Decal bridge: " + eReport);
-            check = RealDecalCheckHost.Check(dir, acClientPath, EngineJsonStore.Path);
-            LauncherDiag.Info($"DECALBRIDGE: check after the administrator step:{Environment.NewLine}{check.ToReport()}");
-            AppendActivity(check.Summary);
-            if (!check.Blocking)
+            // Again, without rights: the machine-wide entry is there now, so this only finishes the
+            // per-user side and checks.
+            outcome = DecalBridgeRegistration.RegisterForClients(dir, acClientPath, EngineJsonStore.Path, out report, out check);
+            LauncherDiag.Info($"DECALBRIDGE: register after the administrator step: {outcome}: {report}");
+            if (check != null)
+                LauncherDiag.Info($"DECALBRIDGE: check after the administrator step:{Environment.NewLine}{check.ToReport()}");
+            AppendActivity(report);
+            if (outcome == DecalBridgeRegistration.Outcome.Registered)
+            {
+                RememberDecalFilterRemovalDeclined(false);
                 return true;
+            }
         }
         else
         {
@@ -1218,6 +1332,68 @@ internal partial class MainWindow : Window
         if (interactive && check != null)
             await DecalBridgeDialog.ShowReportAsync(this, check, offerRepair: false);
         return false;
+    }
+
+    /// <summary>
+    /// Recovery Actions > Repair Decal: Decal is reading an old per-user copy of its settings
+    /// (Windows' UAC virtualization; made by an earlier RynthCore or by Decal itself), which hides
+    /// plugins and filters installed for all users since. Asks, backs the copy up to a .reg file in
+    /// %APPDATA%\RynthCore, removes it, re-registers the bridge for all users when an account uses
+    /// Decal + RynthCore, and reports what it did.
+    /// </summary>
+    private async Task RepairDecalAsync()
+    {
+        DecalBridgeRegistration.RepairResult result;
+        await _decalBridgeGate.WaitAsync();
+        try
+        {
+            List<string> keys = DecalBridgeRegistration.FindVirtualStoreDecalKeys();
+            LauncherDiag.Info($"DECALBRIDGE: Repair Decal: per-user copies found: {(keys.Count == 0 ? "none" : string.Join(", ", keys))}");
+            if (keys.Count == 0)
+            {
+                AppendActivity("Repair Decal: nothing to repair - Decal has no per-user copy of its settings and already reads the settings for all users.");
+                await DecalBridgeDialog.InfoAsync(this, "Repair Decal",
+                    "Nothing to repair: Decal has no per-user copy of its settings, so it already sees every installed plugin.");
+                return;
+            }
+            bool yes = await DecalBridgeDialog.AskAsync(this, "Repair Decal",
+                "Decal is reading an old per-user copy of its settings; this removes it so Decal sees all installed plugins. A backup is saved first.\n\n" +
+                "Close every Asheron's Call client first. Settings you changed in Decal while that copy was in use go back to the ones for all users " +
+                "(the backup has them).\n\nWill be removed:\n" + string.Join("\n", keys),
+                "Back up and remove", "Cancel");
+            if (!yes)
+            {
+                AppendActivity("Repair Decal: cancelled; nothing changed.");
+                return;
+            }
+            result = DecalBridgeRegistration.RepairDecal();
+            LauncherDiag.Info($"DECALBRIDGE: Repair Decal: ok={result.Ok}: {result.Report}");
+            AppendActivity("Repair Decal: " + result.Report);
+        }
+        catch (Exception ex)
+        {
+            LauncherDiag.Info($"DECALBRIDGE: Repair Decal failed ({ex.GetType().Name}: {ex.Message})");
+            AppendActivity($"Repair Decal failed: {ex.Message}");
+            return;
+        }
+        finally
+        {
+            _decalBridgeGate.Release();
+        }
+
+        string bridgeLine = string.Empty;
+        if (result.Removed.Count > 0 && _settings.AccountProfiles.Any(a => a.InjectionMode == InjectionMode.DecalBridge))
+        {
+            bool ok = await EnsureDecalBridgeAsync(DecalBridgeAcClientPath, interactive: true);
+            bridgeLine = ok
+                ? "\n\nThe RynthCore Decal bridge is registered for all users again (an account uses Decal + RynthCore)."
+                : "\n\nThe RynthCore Decal bridge is NOT registered for all users (see the Activity tab); Decal + RynthCore can't be used until it is.";
+        }
+        string text = result.Ok
+            ? "Done. Removed:\n" + string.Join("\n", result.Removed) + $"\n\nBackup: {result.BackupPath}\n(double-click it to put the keys back)"
+            : "Repair Decal did not finish. " + result.Report;
+        text += bridgeLine;
+        await DecalBridgeDialog.InfoAsync(this, "Repair Decal", text);
     }
 
     /// <summary>Recovery Actions > Check Decal bridge: the read-only check, with a Repair button when it fails.</summary>

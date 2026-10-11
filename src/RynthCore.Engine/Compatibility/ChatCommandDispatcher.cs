@@ -203,9 +203,11 @@ internal static unsafe class ChatCommandDispatcher
             if (StartsWithCmd(trimmed, "/tell "))
                 return DispatchTell(trimmed.Substring(6));
 
-            // /a message (allegiance channel broadcast)
+            // /a message (allegiance): AC's own chat command, like /f. Event_ChannelBroadcast(1)
+            // got "You do not have permission to talk in that channel" (2026-10-11): the server
+            // gives each allegiance its own Turbine chat room, which only AC's /a knows.
             if (StartsWithCmd(trimmed, "/a "))
-                return DispatchChannelBroadcast(1, trimmed.Substring(3));
+                return DispatchRaw(trimmed);
 
             // /f message (fellowship — no direct Event_*; use the raw chat path)
             if (StartsWithCmd(trimmed, "/f "))

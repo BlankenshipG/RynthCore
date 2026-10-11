@@ -173,6 +173,9 @@ def main():
         # 8a. the 3D view's element class (Compatibility/AcMouseOver.cs)
         smartbox = [t for t in tables if at(u32(t + 0x98), 6) == bytes([0xB8, 0x30, 0x00, 0x00, 0x10, 0xC3])]
         check(len(smartbox) == 1, f"UIElement_SmartBoxWrapper: one UIElement vtable whose GetUIElementType returns 0x10000030 ({len(smartbox)})")
+        # gmSmartBoxUI: what AC actually reports over open ground (element 0x1000049A)
+        gmsbox = [t for t in tables if at(u32(t + 0x98), 6) == bytes([0xB8, 0x14, 0x00, 0x00, 0x10, 0xC3])]
+        check(len(gmsbox) == 1, f"gmSmartBoxUI: one UIElement vtable whose GetUIElementType returns 0x10000014 ({len(gmsbox)})")
 
     # 8. AC's mouse-over element (Compatibility/AcMouseOver.cs): UIElementManager +0x244
     switch = find([0x53, 0x8B, 0x5C, 0x24, 0x08, 0x56, 0x8B, 0xF1, 0x8B, 0x86, 0x44, 0x02, 0x00, 0x00, 0x57, 0x33, 0xFF,
@@ -215,6 +218,9 @@ def main():
     check("MgrMouseOver = 0x244" in mo and "MgrMouseOutside = 0x2D4" in mo and "VtGetUIElementType = 0x98" in mo,
           "AcMouseOver.cs reads +0x244, +0x2D4 and vtable +0x98")
     check("UIElementTypeSmartBoxWrapper = 0x10000030" in rules, "AcMouseOverRules.cs: the 3D view is type 0x10000030")
+    check("UIElementTypeGmSmartBoxUI = 0x10000014" in rules, "AcMouseOverRules.cs: gmSmartBoxUI (0x10000014) is the 3D view too")
+    check(len(matches(W, [0x68, 0x14, 0x00, 0x00, 0x10], limit=8)) >= 1,
+          "push 10000014h present (gmSmartBoxUI::Register registers the type)")
 
     print("=" * 60)
     print("PASS - the UI hooks' facts hold on this client." if fails == 0 else f"FAIL - {fails} check(s) failed.")

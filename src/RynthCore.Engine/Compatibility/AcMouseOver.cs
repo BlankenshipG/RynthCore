@@ -32,8 +32,10 @@
 //  (0x0083E03C, CreateUIElementManager 0x0045F900) is not used, to ship no fixed
 //  address. No manager (tooltip hooks off or not found) = Unknown = fail open.
 //
-//  Not confirmed in game yet: that the element under the mouse over open
-//  ground is the SmartBox wrapper itself rather than a child. `/rc acmouse`
+//  In game (2026-10-10 logs) the element under the mouse over open ground is
+//  NOT the wrapper but gmSmartBoxUI, element 0x1000049A, type 0x10000014
+//  (gmSmartBoxUI::Register 0x004D71E0; gmGamePlayUI's "<SBOX>"). Both types
+//  count as the world (AcMouseOverRules.IsWorldType). `/rc acmouse`
 //  (or `/rc acmouse watch` for 20 s of changes in chat) names what AC has
 //  under the cursor; Identify is the one place that decides.
 //
@@ -110,7 +112,7 @@ internal static unsafe class AcMouseOver
     }
 
     /// <summary>
-    /// The one decision: the 3D view is the SmartBox wrapper element (type 0x10000030);
+    /// The one decision: the 3D view is gmSmartBoxUI (type 0x10000014) or its SmartBox wrapper (0x10000030);
     /// any other element AC reports is one of its windows; nothing readable is Unknown.
     /// </summary>
     private static AcMouseTarget Identify(bool readable, bool outside, IntPtr element, bool typeKnown, int type)

@@ -900,7 +900,7 @@ internal sealed class ChatFace : IImGuiPanel
             ChatModel.LogEnabled = log;
             ChatModel.SaveSettings();
         }
-        ImGuiNET.ImGui.SetItemTooltip("%AppData%\\RynthCore\\ChatLogs\\<character>.log");
+        ImGuiNET.ImGui.SetItemTooltip("%%AppData%%\\RynthCore\\ChatLogs\\<character>.log"); // a format string: %% is a literal %
         bool through = ChatModel.CtrlGatedClickThrough;
         if (ImGuiNET.ImGui.Checkbox("Click-through (hold Ctrl to interact)", ref through))
             ChatModel.SetCtrlGatedClickThrough(through);
@@ -934,6 +934,8 @@ internal sealed class ChatFace : IImGuiPanel
                 ChatModel.SaveSettings();
             }
         }
+        // Discord above the colours: the colour grid opens downward, so it stays last.
+        DrawDiscordSettings();
         ImGuiNET.ImGui.Separator();
         if (ImGuiNET.ImGui.CollapsingHeader("Line colours")) DrawLineColours();
 
@@ -1022,6 +1024,25 @@ internal sealed class ChatFace : IImGuiPanel
             ImGuiNET.ImGui.SetItemTooltip("Back to the default colour");
         }
         ImGuiNET.ImGui.PopID();
+    }
+
+    /// <summary>
+    /// Settings menu: this character's Discord relay switch, its status and the way into the
+    /// Discord panel, in two compact rows like the rest of the menu.
+    /// </summary>
+    private static void DrawDiscordSettings()
+    {
+        ImGuiNET.ImGui.Separator();
+        ChatDiscordFace.DrawSwitch();
+        ImGuiNET.ImGui.SameLine();
+        if (ImGuiNET.ImGui.SmallButton("Discord…##chat_discord"))
+        {
+            if (!ImGuiPanelHost.IsOpen(ChatDiscordFace.Title)) PanelRouter.Toggle(ChatDiscordFace.Title);
+            ImGuiNET.ImGui.CloseCurrentPopup();
+        }
+        ImGuiNET.ImGui.SetItemTooltip("Discord panel: connection (webhook or bot), which channels and tabs go where,\n" +
+            "keywords, how often, and the send log.");
+        Label(UI.Data.Discord.ChatDiscord.SwitchLine() + " " + UI.Data.Discord.ChatDiscord.StatusLine(), Mute);
     }
 
     private void DrawNewTabPopup()

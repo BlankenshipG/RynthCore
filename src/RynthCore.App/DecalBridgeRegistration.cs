@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -9,36 +11,124 @@ using Microsoft.Win32;
 namespace RynthCore.App;
 
 /// <summary>
+/// Where <see cref="DecalBridgeRegistration"/> reads and writes: the 32-bit view of HKLM,
+/// HKCU, and %APPDATA%\RynthCore. <see cref="Real"/> is the machine. The offline tests
+/// (tools\DecalBridgeCheckTests) use <see cref="ForTests"/>: a scratch key under
+/// HKCU\Software\RynthCoreTests and a temp folder, so they never touch Decal's keys.
+/// </summary>
+internal sealed class DecalRegistryRoots
+{
+    private readonly Func<RegistryKey> _machine;
+    private readonly Func<RegistryKey> _machineForWrite;
+    private readonly Func<RegistryKey> _user;
+    private readonly Func<bool> _decalInstalled;
+
+    public bool Is64BitOs { get; }
+    /// <summary>The user base as reg.exe names it ("HKCU", or the test key), for backups.</summary>
+    public string UserRegPath { get; }
+    /// <summary>%APPDATA%\RynthCore: the record file and the backups.</summary>
+    public string DataDirectory { get; }
+
+    private DecalRegistryRoots(Func<RegistryKey> machine, Func<RegistryKey> machineForWrite, Func<RegistryKey> user,
+        Func<bool> decalInstalled, bool is64BitOs, string userRegPath, string dataDirectory)
+    {
+        _machine = machine;
+        _machineForWrite = machineForWrite;
+        _user = user;
+        _decalInstalled = decalInstalled;
+        Is64BitOs = is64BitOs;
+        UserRegPath = userRegPath;
+        DataDirectory = dataDirectory;
+    }
+
+    /// <summary>HKLM, 32-bit view (what the 32-bit client reads). Dispose it.</summary>
+    public RegistryKey Machine() => _machine();
+    /// <summary>HKLM for a write. Refuses while this process is still virtualized (the write would land in the per-user copy).</summary>
+    public RegistryKey MachineForWrite() => _machineForWrite();
+    /// <summary>HKCU (64-bit view on 64-bit Windows, where the VirtualStore lives). Dispose it.</summary>
+    public RegistryKey User() => _user();
+    public bool DecalInstalled() => _decalInstalled();
+
+    public static DecalRegistryRoots Real { get; } = new(
+        () => RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry32),
+        () =>
+        {
+            if (RealRegistryView.ProcessVirtualized())
+                throw new InvalidOperationException("UAC registry virtualization is still on for this process; " +
+                    "writing HKLM now would create the per-user copy of Decal's settings instead, so nothing was written");
+            return RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry32);
+        },
+        () => RegistryKey.OpenBaseKey(RegistryHive.CurrentUser,
+            Environment.Is64BitOperatingSystem ? RegistryView.Registry64 : RegistryView.Default),
+        DecalLocator.IsInstalled,
+        Environment.Is64BitOperatingSystem,
+        "HKCU",
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore"));
+
+    /// <summary>
+    /// A scratch registry: HKCU\<paramref name="testKey"/>\Machine stands in for HKLM (32-bit
+    /// view) and HKCU\<paramref name="testKey"/>\User for HKCU. <paramref name="machineWritable"/>
+    /// false makes every HKLM write fail with "access denied", as for a non-elevated launcher.
+    /// </summary>
+    public static DecalRegistryRoots ForTests(string testKey, string dataDirectory, Func<bool> machineWritable)
+    {
+        if (!testKey.StartsWith(@"Software\RynthCoreTests\", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException(@"Test registry roots must live under HKCU\Software\RynthCoreTests\.", nameof(testKey));
+        RegistryKey Base(string part)
+        {
+            using RegistryKey hkcu = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, RegistryView.Registry64);
+            return hkcu.CreateSubKey(testKey + "\\" + part, writable: true);
+        }
+        return new DecalRegistryRoots(
+            () => Base("Machine"),
+            () => machineWritable() ? Base("Machine") : throw new UnauthorizedAccessException("test: HKLM is not writable"),
+            () => Base("User"),
+            () =>
+            {
+                using RegistryKey m = Base("Machine");
+                using RegistryKey? agent = m.OpenSubKey(@"SOFTWARE\Decal\Agent");
+                return agent?.GetValue("AgentPath") is string s && s.Length > 0;
+            },
+            is64BitOs: true,
+            userRegPath: @"HKCU\" + testKey + @"\User",
+            dataDirectory: dataDirectory);
+    }
+}
+
+/// <summary>
 /// Registers (and cleanly unregisters) the RynthCore Decal bridge - the small Decal
 /// network filter in src\RynthCore.DecalBridge - in Decal's filter list. See
-/// docs\DECAL_BRIDGE_PLAN.md, "Where Decal reads its filters".
+/// docs\DECAL_BRIDGE_PLAN.md, "Where Decal reads its filters" and "Opt-in, machine-wide only".
 ///
-/// <see cref="RegisterForClients"/> picks the place: the per-user copy below when the AC
-/// client will be virtualized (the usual, non-elevated case), the machine-wide HKLM list
-/// (administrator rights, once) when it won't be. An elevated or unvirtualized client never
-/// reads the per-user copy (2026-10-03: a player's Decal + RynthCore client never loaded the
-/// bridge). <see cref="DecalBridgeCheck"/> verifies the result.
+/// Machine-wide only (since 2026-10-10). The bridge goes into Decal's own list,
+/// HKLM\SOFTWARE\(WOW6432Node\)Decal\NetworkFilters, which needs administrator rights once:
+/// the launcher runs itself elevated with --decal-bridge-register-machine (one Windows prompt)
+/// when the user turns on "Decal + RynthCore" or launches such an account. If that is declined,
+/// Decal + RynthCore can't be used; there is no per-user fallback.
 ///
-/// Per-user. The launcher runs without admin rights, so it can't write Decal's own
-/// key (HKLM\SOFTWARE\WOW6432Node\Decal\NetworkFilters). acclient.exe is a legacy 32-bit
-/// program that Windows "virtualizes": its reads of that HKLM key are served from the
-/// per-user copy under HKCU\Software\Classes\VirtualStore when one exists. Registering
-/// there makes every Decal client this user starts load the bridge (it stays idle unless
-/// RynthCore is in the same client).
+/// Why never per-user. acclient.exe is a legacy 32-bit program that Windows "virtualizes": its
+/// reads of that HKLM key are served from the per-user copy
+/// HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Decal\NetworkFilters whenever
+/// that copy exists, and Decal then sees ONLY the copy. Launchers before 2026-10-10 created that
+/// copy when they couldn't write HKLM (mirroring HKLM's filters into it). Filters installed for
+/// all users afterwards were hidden from plain Decal launches (a player's new plugins and
+/// UtilityBelt's newer service vanished, and reinstalling didn't help). This class never creates
+/// that copy now:
+///   - a copy an older launcher created (the record file says so) is backed up and removed once
+///     the machine-wide entry is in place, or at uninstall / when no account uses the mode;
+///   - a copy that existed anyway (Decal writes one itself when run without administrator rights)
+///     gets our entry too, because a virtualized client reads nothing else; Recovery Actions >
+///     Repair Decal removes such copies after a backup (<see cref="RepairDecal"/>).
 ///
-/// The trap (measured 2026-09-29): once the per-user NetworkFilters key exists, Decal
-/// sees ONLY its entries - HKLM's filters (World Object Filter, Echo Filter, ...) vanish,
-/// Decal's WorldFilter is null and VTank refuses to start. So when this class has to
-/// create that key, it first mirrors every HKLM filter entry into it, and on each
-/// Register call it copies over HKLM entries added since.
-///
-/// What it adds is recorded in %APPDATA%\RynthCore\decal-bridge-registration.json;
-/// Unregister removes exactly that: the bridge's own entry, the mirrored copies nobody has
-/// changed since, and the per-user key itself only if this class created it and nothing
-/// else is left in it. Register is idempotent.
+/// The record of an older launcher's copy is %APPDATA%\RynthCore\decal-bridge-registration.json
+/// (read only now; deleted once the copy is gone). Every removal of a copy is preceded by
+/// "reg export" to %APPDATA%\RynthCore\decal-backup-&lt;date&gt;.reg. Entries in a copy that are
+/// neither ours nor in HKLM belong to someone else: the copy is then left in place and the
+/// reason logged.
 ///
 /// Opt-in only: nothing calls Register unless the user picked "Decal + RynthCore" for an
-/// account (or ran the injector's --decal-bridge register).
+/// account (or ran the injector's --decal-bridge register), and the installer registers only
+/// for a user who has such an account.
 /// </summary>
 internal static class DecalBridgeRegistration
 {
@@ -51,15 +141,19 @@ internal static class DecalBridgeRegistration
     private const string DotNetSurrogate = "{71A69713-6593-47EC-0002-0000000DECA1}";
 
     private const string DecalFiltersSubKey = @"SOFTWARE\Decal\NetworkFilters";   // seen through the 32-bit view
-    private const RegistryView MachineView = RegistryView.Registry32;   // what the 32-bit client reads
+    public const string StateFileName = "decal-bridge-registration.json";
 
-    private static string StatePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore", "decal-bridge-registration.json");
+    private static string StatePath(DecalRegistryRoots roots) => Path.Combine(roots.DataDirectory, StateFileName);
 
     /// <summary>HKCU path of the per-user copy the virtualized 32-bit client reads.</summary>
-    public static string VirtualStoreFiltersSubKey => Environment.Is64BitOperatingSystem
-        ? @"Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Decal\NetworkFilters"
-        : @"Software\Classes\VirtualStore\MACHINE\SOFTWARE\Decal\NetworkFilters";
+    public static string VirtualStoreFiltersSubKey => DecalBridgeCheck.VirtualStoreDecalPath(Environment.Is64BitOperatingSystem, "NetworkFilters");
+
+    /// <summary>The per-user copies of Decal's whole key a virtualized program can leave behind (both spellings).</summary>
+    public static readonly string[] VirtualStoreDecalKeys =
+    {
+        @"Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Decal",
+        @"Software\Classes\VirtualStore\MACHINE\SOFTWARE\Decal",
+    };
 
     /// <summary>The folder the launcher registers: &lt;install&gt;\DecalBridge.</summary>
     public static string DefaultBridgeDirectory => Path.Combine(AppContext.BaseDirectory, "DecalBridge");
@@ -97,13 +191,17 @@ internal static class DecalBridgeRegistration
             sb.Append('.');
             if (ClientReason.Length > 0) sb.Append($" Client: {ClientReason}.");
             if (PerUserKeyExists)
-                sb.Append($" Per-user filter list: {(PerUserKeyCreatedByUs ? "created by RynthCore" : "existed before RynthCore")}.");
+                sb.Append($" Per-user filter list: {(PerUserKeyCreatedByUs ? "created by an earlier RynthCore" : "not created by RynthCore")}.");
             if (HiddenMachineFilters.Count > 0)
                 sb.Append($" Hidden from Decal clients (in HKLM, not in the per-user list): {string.Join(", ", HiddenMachineFilters)}.");
             return sb.ToString();
         }
     }
 
+    /// <summary>
+    /// The record launchers before 2026-10-10 wrote when they created the per-user copy. Read
+    /// only now: it tells "our copy" from one Decal made, and which entries we mirrored.
+    /// </summary>
     private sealed class State
     {
         public bool CreatedFiltersKey { get; set; }
@@ -115,24 +213,24 @@ internal static class DecalBridgeRegistration
         public Dictionary<string, string> MirroredValues { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
-    // ── public API ───────────────────────────────────────────────────────────
+    // ── status ───────────────────────────────────────────────────────────────
 
     public static Status GetStatus(string? acClientPath = null)
     {
         bool virt = RealDecalCheckHost.PredictClientVirtualized(acClientPath ?? DecalLocator.TryGetDecalAcClientPath(), out string reason, out _);
         Status s;
-        using (RealRegistryView.Enter()) s = GetStatusCore();
+        using (RealRegistryView.Enter()) s = GetStatusCore(DecalRegistryRoots.Real);
         s.ClientVirtualized = virt;
         s.ClientReason = reason;
         return s;
     }
 
-    private static Status GetStatusCore()
+    internal static Status GetStatusCore(DecalRegistryRoots roots)
     {
-        var s = new Status { DecalInstalled = DecalLocator.IsInstalled() };
-        State? state = LoadState();
-        using RegistryKey? machine = OpenMachineFilters();
-        using RegistryKey? user = OpenUserFilters(writable: false);
+        var s = new Status { DecalInstalled = roots.DecalInstalled() };
+        State? state = LoadState(roots);
+        using RegistryKey? machine = OpenMachineFilters(roots);
+        using RegistryKey? user = OpenUserFilters(roots, writable: false);
         s.PerUserKeyExists = user != null;
         s.PerUserKeyCreatedByUs = user != null && state?.CreatedFiltersKey == true;
 
@@ -163,20 +261,18 @@ internal static class DecalBridgeRegistration
         return s;
     }
 
+    // ── register ─────────────────────────────────────────────────────────────
+
     public enum Outcome { Registered, NeedsAdmin, Failed }
 
     /// <summary>
-    /// Registers the bridge where a Decal client started now reads its filter list, then
-    /// verifies it with <see cref="DecalBridgeCheck"/> (reading back from that place, and
-    /// through this process's own view when it is the client's).
-    ///   - Client virtualized (non-elevated AC, the usual case): the per-user VirtualStore copy,
-    ///     as before (no administrator rights needed).
-    ///   - Client not virtualized (RynthCore/AC run as administrator, UAC off, a manifest,
-    ///     virtualization off by policy): Decal reads the real
-    ///     HKLM\SOFTWARE\(WOW6432Node\)Decal\NetworkFilters, where a per-user entry is
-    ///     invisible. Written directly when this process may; otherwise <see cref="Outcome.NeedsAdmin"/>,
-    ///     and the caller runs <c>--decal-bridge-register-machine</c> elevated (<see cref="RunElevated"/>).
-    /// Idempotent. Also removes a "downloaded from the internet" mark from the bridge DLL.
+    /// Registers the bridge in Decal's machine-wide filter list, then verifies it with
+    /// <see cref="DecalBridgeCheck"/>. <see cref="Outcome.NeedsAdmin"/> when this process may not
+    /// write HKLM: the caller runs <c>--decal-bridge-register-machine</c> elevated
+    /// (<see cref="RunElevated"/>) and calls this again, which then finishes the per-user side
+    /// (an older launcher's per-user copy removed after a backup; our entry added to a per-user
+    /// copy that exists anyway). Never creates the per-user copy. Idempotent. Also removes a
+    /// "downloaded from the internet" mark from the bridge DLL.
     /// </summary>
     public static Outcome RegisterForClients(string bridgeDirectory, string? acClientPath, string? engineJsonPath,
         out string report, out DecalBridgeCheck.Result? check)
@@ -193,31 +289,20 @@ internal static class DecalBridgeRegistration
                 ? "removed the 'downloaded from the internet' mark from the bridge DLL"
                 : "could not remove the 'downloaded from the internet' mark from the bridge DLL");
 
-        bool virtualized = RealDecalCheckHost.PredictClientVirtualized(acClientPath, out string why, out _);
-        bool ok;
-        string step;
-        if (virtualized)
+        Outcome outcome;
+        using (RealRegistryView.Enter())
+            outcome = RegisterCore(DecalRegistryRoots.Real, dir, log);
+        if (outcome == Outcome.NeedsAdmin)
         {
-            ok = RegisterPerUser(dir, out step);
+            log.Add("Decal + RynthCore needs the bridge in Decal's filter list for all users on this PC; adding it needs administrator rights once.");
+            report = string.Join(" ", log);
+            return Outcome.NeedsAdmin;
         }
-        else
-        {
-            Outcome mw = RegisterMachineWide(dir, out step);
-            if (mw == Outcome.NeedsAdmin)
-            {
-                log.Add($"AC reads Decal's filter list for all users on this PC ({why}); adding the bridge there needs administrator rights once.");
-                report = string.Join(" ", log);
-                return Outcome.NeedsAdmin;
-            }
-            ok = mw == Outcome.Registered;
-            step = $"({why}) " + step;
-        }
-        log.Add(step);
 
         check = RealDecalCheckHost.Check(dir, acClientPath, engineJsonPath);
         log.Add(check.Summary);
         report = string.Join(" ", log);
-        if (!ok) return Outcome.Failed;
+        if (outcome != Outcome.Registered) return Outcome.Failed;
         if (check.Blocking) return check.NeedsMachineWideRegistration ? Outcome.NeedsAdmin : Outcome.Failed;
         return Outcome.Registered;
     }
@@ -229,179 +314,247 @@ internal static class DecalBridgeRegistration
     public static bool Register(string bridgeDirectory, out string report) =>
         RegisterForClients(bridgeDirectory, DecalLocator.TryGetDecalAcClientPath(), null, out report, out _) == Outcome.Registered;
 
+    /// <summary>The registration itself, against <paramref name="roots"/> (the tests pass a scratch registry).</summary>
+    internal static Outcome RegisterCore(DecalRegistryRoots roots, string dir, List<string> log)
+    {
+        if (!roots.DecalInstalled())
+        {
+            log.Add("Decal is not installed (HKLM\\SOFTWARE\\Decal\\Agent) - nothing registered.");
+            return Outcome.Failed;
+        }
+        if (!File.Exists(Path.Combine(dir, AssemblyFile)))
+        {
+            log.Add($"{AssemblyFile} not found in {dir} - nothing registered.");
+            return Outcome.Failed;
+        }
+        Outcome mw = MachineWideCore(roots, dir, log);
+        if (mw != Outcome.Registered)
+            return mw;
+        return PerUserCore(roots, dir, log) ? Outcome.Registered : Outcome.Failed;
+    }
+
     /// <summary>
     /// Adds the bridge to the machine-wide list, HKLM\SOFTWARE\(WOW6432Node\)Decal\NetworkFilters
     /// (32-bit view). Needs administrator rights: run elevated (--decal-bridge-register-machine).
     /// Virtualization is off while it writes, so a non-elevated process gets "access denied"
-    /// (NeedsAdmin) instead of a silent write into the per-user copy. Idempotent; nothing to mirror
-    /// (the machine list is the one every other filter is in).
+    /// (NeedsAdmin) instead of a silent write into the per-user copy. Idempotent.
     /// </summary>
     public static Outcome RegisterMachineWide(string bridgeDirectory, out string report)
     {
         var log = new List<string>();
         using (RealRegistryView.Enter())
         {
-            try
+            DecalRegistryRoots roots = DecalRegistryRoots.Real;
+            if (!roots.DecalInstalled())
             {
-                if (!DecalLocator.IsInstalled())
-                {
-                    report = "Decal is not installed (HKLM\\SOFTWARE\\Decal\\Agent) - nothing registered.";
-                    return Outcome.Failed;
-                }
-                string dir = Path.GetFullPath(bridgeDirectory).TrimEnd('\\');
-                if (!File.Exists(Path.Combine(dir, AssemblyFile)))
-                {
-                    report = $"{AssemblyFile} not found in {dir} - nothing registered.";
-                    return Outcome.Failed;
-                }
-                using RegistryKey hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, MachineView);
-                using RegistryKey filters = hklm.CreateSubKey(DecalFiltersSubKey, writable: true);
-                using (RegistryKey? existing = filters.OpenSubKey(FilterGuid))
-                {
-                    if (existing != null && !IsOurs(existing))
-                    {
-                        report = $"another filter uses the bridge's id {FilterGuid} in the machine-wide list - nothing changed.";
-                        return Outcome.Failed;
-                    }
-                }
-                using (RegistryKey entry = filters.CreateSubKey(FilterGuid, writable: true))
-                {
-                    SetIfDifferent(entry, "", FilterName, RegistryValueKind.String, log);
-                    SetIfDifferent(entry, "Enabled", 1, RegistryValueKind.DWord, log);
-                    SetIfDifferent(entry, "Assembly", AssemblyFile, RegistryValueKind.String, log);
-                    SetIfDifferent(entry, "Path", dir, RegistryValueKind.String, log);
-                    SetIfDifferent(entry, "Object", FilterObject, RegistryValueKind.String, log);
-                    SetIfDifferent(entry, "Surrogate", DotNetSurrogate, RegistryValueKind.String, log);
-                }
-                report = log.Count == 0
-                    ? $"Decal bridge already registered for all users ({dir}); nothing changed."
-                    : $"Decal bridge registered for all users ({dir}): {string.Join("; ", log)}.";
-                return Outcome.Registered;
-            }
-            catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException)
-            {
-                report = "Registering the Decal bridge for all users needs administrator rights.";
-                return Outcome.NeedsAdmin;
-            }
-            catch (Exception ex)
-            {
-                report = $"Decal bridge registration for all users failed: {Describe(ex)}";
+                report = "Decal is not installed (HKLM\\SOFTWARE\\Decal\\Agent) - nothing registered.";
                 return Outcome.Failed;
             }
+            string dir;
+            try { dir = Path.GetFullPath(bridgeDirectory).TrimEnd('\\'); }
+            catch (Exception ex) { report = $"Bad bridge folder '{bridgeDirectory}': {ex.Message}"; return Outcome.Failed; }
+            if (!File.Exists(Path.Combine(dir, AssemblyFile)))
+            {
+                report = $"{AssemblyFile} not found in {dir} - nothing registered.";
+                return Outcome.Failed;
+            }
+            Outcome outcome = MachineWideCore(roots, dir, log);
+            report = string.Join(" ", log);
+            return outcome;
+        }
+    }
+
+    private static Outcome MachineWideCore(DecalRegistryRoots roots, string dir, List<string> log)
+    {
+        try
+        {
+            if (MachineEntryCurrent(roots, dir))
+            {
+                log.Add($"Decal bridge already in Decal's filter list for all users ({dir}).");
+                return Outcome.Registered;
+            }
+            var changes = new List<string>();
+            using RegistryKey hklm = roots.MachineForWrite();
+            using RegistryKey filters = hklm.CreateSubKey(DecalFiltersSubKey, writable: true);
+            using (RegistryKey? existing = filters.OpenSubKey(FilterGuid))
+            {
+                if (existing != null && !IsOurs(existing))
+                {
+                    log.Add($"Another filter uses the bridge's id {FilterGuid} in the machine-wide list - nothing changed.");
+                    return Outcome.Failed;
+                }
+            }
+            using (RegistryKey entry = filters.CreateSubKey(FilterGuid, writable: true))
+                WriteEntry(entry, dir, changes);
+            log.Add(changes.Count == 0
+                ? $"Decal bridge already registered for all users ({dir}); nothing changed."
+                : $"Decal bridge registered for all users ({dir}): {string.Join("; ", changes)}.");
+            return Outcome.Registered;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            log.Add("Registering the Decal bridge for all users needs administrator rights.");
+            return Outcome.NeedsAdmin;
+        }
+        catch (Exception ex)
+        {
+            log.Add($"Decal bridge registration for all users failed: {Describe(ex)}");
+            return Outcome.Failed;
         }
     }
 
     /// <summary>
-    /// The installer's per-user half (installer\RynthCore.iss, run as the installing user on
-    /// every install and update; the elevated half is <see cref="RegisterMachineWide"/>).
-    /// Writes our entry into this user's VirtualStore copy of Decal's filter list ONLY when
-    /// that copy already exists - see <see cref="DecalBridgeCheck.PlanInstall"/> for why both
-    /// places are written and why a missing copy is never created here. The entry is ours
-    /// (Object = <see cref="FilterObject"/>), so <see cref="Unregister"/> removes it.
+    /// The per-user side, after the machine-wide entry is in place. Never creates the per-user copy.
+    ///   - A copy an older launcher created (record file): backed up and removed, so Decal reads
+    ///     the machine-wide list again (left in place, and logged, when it holds entries that are
+    ///     neither ours nor in HKLM).
+    ///   - A copy that exists anyway: our entry goes into it, because a virtualized client reads
+    ///     nothing else (Repair Decal removes such copies).
+    /// </summary>
+    private static bool PerUserCore(DecalRegistryRoots roots, string dir, List<string> log)
+    {
+        bool ok = true;
+        State? state = LoadState(roots);
+        bool copyExists;
+        using (RegistryKey? u = OpenUserFilters(roots, writable: false)) copyExists = u != null;
+        if (state?.CreatedFiltersKey == true)
+        {
+            if (!copyExists)
+                DeleteState(roots);   // someone removed the copy already
+            else if (MachineEntryCurrent(roots, dir))
+            {
+                // Not fatal: the copy then stays as it is and gets our entry below.
+                var failed = new List<string>();
+                CleanUpOwnCopy(roots, state, removeBridgeIfKept: false, log, failed, out _);
+                log.AddRange(failed);
+            }
+        }
+
+        try
+        {
+            using RegistryKey? user = OpenUserFilters(roots, writable: true);
+            if (user == null)
+                return ok;
+            using (RegistryKey? existing = user.OpenSubKey(FilterGuid))
+            {
+                if (existing != null && !IsOurs(existing))
+                {
+                    log.Add($"Another filter uses the bridge's id {FilterGuid} in your per-user copy of Decal's filter list - nothing changed there.");
+                    return false;
+                }
+            }
+            var changes = new List<string>();
+            using (RegistryKey entry = user.CreateSubKey(FilterGuid, writable: true))
+                WriteEntry(entry, dir, changes);
+            if (changes.Count > 0)
+                log.Add($"Also added to your Windows user's existing copy of Decal's filter list (HKCU\\{DecalBridgeCheck.VirtualStoreDecalPath(roots.Is64BitOs, "NetworkFilters")}), " +
+                    "which Decal reads instead of the list for all users when AC runs without administrator rights. Recovery Actions > Repair Decal removes that copy.");
+        }
+        catch (Exception ex)
+        {
+            log.Add($"Adding the bridge to your per-user copy of Decal's filter list failed: {Describe(ex)}");
+            ok = false;
+        }
+        return ok;
+    }
+
+    /// <summary>
+    /// The installer's per-user half (installer\RynthCore.iss, as the installing user, after
+    /// the elevated <see cref="RegisterMachineWide"/>, only for a user with a Decal + RynthCore
+    /// account). The per-user side of <see cref="RegisterCore"/>: never creates the per-user copy.
     /// </summary>
     public static bool InstallPerUser(string bridgeDirectory, out string report)
     {
         try
         {
-            var plan = RealDecalCheckHost.PlanInstall();
-            if (!plan.Machine)
-            {
-                report = "Decal is not installed - nothing to do for this user.";
-                return true;
-            }
-            if (!plan.PerUser)
-            {
-                report = "This user has no per-user copy of Decal's filter list - the machine-wide entry is the one AC reads; nothing written.";
-                return true;
-            }
-            string dir = Path.GetFullPath(bridgeDirectory).TrimEnd('\\');
-            if (!File.Exists(Path.Combine(dir, AssemblyFile)))
-            {
-                report = $"{AssemblyFile} not found in {dir} - nothing written.";
-                return false;
-            }
-            var log = new List<string>();
             using (RealRegistryView.Enter())
             {
-                using RegistryKey? user = OpenUserFilters(writable: true);
-                if (user == null)
+                DecalRegistryRoots roots = DecalRegistryRoots.Real;
+                if (!roots.DecalInstalled())
                 {
-                    report = "The per-user copy disappeared - nothing written.";
+                    report = "Decal is not installed - nothing to do for this user.";
                     return true;
                 }
-                using (RegistryKey? existing = user.OpenSubKey(FilterGuid))
+                string dir = Path.GetFullPath(bridgeDirectory).TrimEnd('\\');
+                if (!File.Exists(Path.Combine(dir, AssemblyFile)))
                 {
-                    if (existing != null && !IsOurs(existing))
-                    {
-                        report = $"another filter uses the bridge's id {FilterGuid} in the per-user copy - nothing changed.";
-                        return false;
-                    }
+                    report = $"{AssemblyFile} not found in {dir} - nothing written.";
+                    return false;
                 }
-                using RegistryKey entry = user.CreateSubKey(FilterGuid, writable: true);
-                SetIfDifferent(entry, "", FilterName, RegistryValueKind.String, log);
-                SetIfDifferent(entry, "Enabled", 1, RegistryValueKind.DWord, log);
-                SetIfDifferent(entry, "Assembly", AssemblyFile, RegistryValueKind.String, log);
-                SetIfDifferent(entry, "Path", dir, RegistryValueKind.String, log);
-                SetIfDifferent(entry, "Object", FilterObject, RegistryValueKind.String, log);
-                SetIfDifferent(entry, "Surrogate", DotNetSurrogate, RegistryValueKind.String, log);
+                var log = new List<string>();
+                bool ok = PerUserCore(roots, dir, log);
+                report = log.Count == 0 ? "No per-user copy of Decal's filter list - nothing to do for this user." : string.Join(" ", log);
+                return ok;
             }
-            report = log.Count == 0
-                ? $"Decal bridge already in this user's per-user copy ({dir}); nothing changed."
-                : $"Decal bridge added to this user's existing per-user copy ({dir}): {string.Join("; ", log)}.";
-            return true;
         }
         catch (Exception ex)
         {
-            report = $"Per-user Decal bridge entry failed: {Describe(ex)}";
+            report = $"Per-user Decal bridge step failed: {Describe(ex)}";
             return false;
         }
     }
 
-    /// <summary>The machine-wide list holds our entry (the launcher/injector never adds it without being asked).</summary>
-    public static bool MachineEntryIsOurs()
+    // ── unregister ───────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The machine-wide list holds our entry. With <paramref name="onlyForDir"/>, only an entry
+    /// that points at that folder (or at a DLL that is gone): another install's entry is left alone.
+    /// </summary>
+    public static bool MachineEntryIsOurs(string? onlyForDir = null)
     {
         using (RealRegistryView.Enter())
         {
-            try
-            {
-                using RegistryKey? machine = OpenMachineFilters();
-                using RegistryKey? m = machine?.OpenSubKey(FilterGuid);
-                return m != null && IsOurs(m);
-            }
+            try { return MachineEntryIsOursCore(DecalRegistryRoots.Real, onlyForDir); }
             catch { return false; }
         }
     }
 
-    /// <summary>Removes our machine-wide entry (only ours). Needs administrator rights.</summary>
-    public static Outcome UnregisterMachineWide(out string report)
+    internal static bool MachineEntryIsOursCore(DecalRegistryRoots roots, string? onlyForDir)
+    {
+        using RegistryKey? machine = OpenMachineFilters(roots);
+        using RegistryKey? m = machine?.OpenSubKey(FilterGuid);
+        return m != null && IsOurs(m) && (onlyForDir == null || PointsAt(m, onlyForDir));
+    }
+
+    /// <summary>Removes our machine-wide entry (only ours; with <paramref name="onlyForDir"/>, only one for that folder). Needs administrator rights.</summary>
+    public static Outcome UnregisterMachineWide(out string report, string? onlyForDir = null)
     {
         using (RealRegistryView.Enter())
         {
-            try
+            var log = new List<string>();
+            Outcome o = UnregisterMachineWideCore(DecalRegistryRoots.Real, onlyForDir, log);
+            report = string.Join(" ", log);
+            return o;
+        }
+    }
+
+    internal static Outcome UnregisterMachineWideCore(DecalRegistryRoots roots, string? onlyForDir, List<string> log)
+    {
+        try
+        {
+            if (!MachineEntryIsOursCore(roots, onlyForDir))
             {
-                using RegistryKey hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, MachineView);
-                using RegistryKey? probe = hklm.OpenSubKey(DecalFiltersSubKey);
-                using RegistryKey? m = probe?.OpenSubKey(FilterGuid);
-                if (m == null || !IsOurs(m))
-                {
-                    report = "No machine-wide Decal bridge entry; nothing to remove.";
-                    return Outcome.Registered;
-                }
-                using RegistryKey filters = hklm.OpenSubKey(DecalFiltersSubKey, writable: true)!;
-                filters.DeleteSubKeyTree(FilterGuid, throwOnMissingSubKey: false);
-                report = "Removed the machine-wide Decal bridge entry.";
+                log.Add(onlyForDir == null
+                    ? "No machine-wide Decal bridge entry; nothing to remove."
+                    : $"No machine-wide Decal bridge entry for {onlyForDir}; nothing to remove.");
                 return Outcome.Registered;
             }
-            catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException)
-            {
-                report = "Removing the machine-wide Decal bridge entry needs administrator rights.";
-                return Outcome.NeedsAdmin;
-            }
-            catch (Exception ex)
-            {
-                report = $"Removing the machine-wide Decal bridge entry failed: {Describe(ex)}";
-                return Outcome.Failed;
-            }
+            using RegistryKey hklm = roots.MachineForWrite();
+            using RegistryKey filters = hklm.OpenSubKey(DecalFiltersSubKey, writable: true)
+                ?? throw new IOException("Decal's filter list disappeared");
+            filters.DeleteSubKeyTree(FilterGuid, throwOnMissingSubKey: false);
+            log.Add("Removed the machine-wide Decal bridge entry.");
+            return Outcome.Registered;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            log.Add("Removing the machine-wide Decal bridge entry needs administrator rights.");
+            return Outcome.NeedsAdmin;
+        }
+        catch (Exception ex)
+        {
+            log.Add($"Removing the machine-wide Decal bridge entry failed: {Describe(ex)}");
+            return Outcome.Failed;
         }
     }
 
@@ -413,13 +566,13 @@ internal static class DecalBridgeRegistration
     {
         try
         {
-            var psi = new System.Diagnostics.ProcessStartInfo(exePath, arguments)
+            var psi = new ProcessStartInfo(exePath, arguments)
             {
                 UseShellExecute = true,
                 Verb = "runas",
-                WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+                WindowStyle = ProcessWindowStyle.Hidden,
             };
-            using System.Diagnostics.Process? p = System.Diagnostics.Process.Start(psi);
+            using Process? p = Process.Start(psi);
             if (p == null)
             {
                 report = "Windows did not start the administrator step.";
@@ -446,188 +599,71 @@ internal static class DecalBridgeRegistration
     }
 
     /// <summary>
-    /// Makes Decal clients of this user load the bridge from <paramref name="bridgeDirectory"/>
-    /// through the per-user VirtualStore copy (virtualized clients only: see
-    /// <see cref="RegisterForClients"/>). Idempotent. Returns false (with the reason in
-    /// <paramref name="report"/>) when Decal isn't installed or the bridge DLL isn't there.
+    /// Something of ours is on the per-user side for <see cref="Unregister"/> to remove: our
+    /// entry in a per-user copy, an older launcher's copy that can go, or a stale record.
+    /// The launcher asks this at start so it never logs "nothing to remove" on every start.
     /// </summary>
-    public static bool RegisterPerUser(string bridgeDirectory, out string report)
+    public static bool PerUserCleanupNeeded()
     {
-        using (RealRegistryView.Enter()) return RegisterCore(bridgeDirectory, out report);
+        using (RealRegistryView.Enter())
+        {
+            try { return PerUserCleanupNeededCore(DecalRegistryRoots.Real); }
+            catch { return false; }
+        }
     }
 
-    private static bool RegisterCore(string bridgeDirectory, out string report)
+    internal static bool PerUserCleanupNeededCore(DecalRegistryRoots roots)
     {
-        var log = new List<string>();
-        try
+        State? state = LoadState(roots);
+        using RegistryKey? user = OpenUserFilters(roots, writable: false);
+        if (user == null)
+            return state != null;
+        foreach (string name in user.GetSubKeyNames())
         {
-            if (!DecalLocator.IsInstalled())
-            {
-                report = "Decal is not installed (HKLM\\SOFTWARE\\Decal\\Agent) - nothing registered.";
-                return false;
-            }
-            string dir = Path.GetFullPath(bridgeDirectory).TrimEnd('\\');
-            if (!File.Exists(Path.Combine(dir, AssemblyFile)))
-            {
-                report = $"{AssemblyFile} not found in {dir} - nothing registered.";
-                return false;
-            }
-
-            State state = LoadState() ?? new State();
-            using RegistryKey? machine = OpenMachineFilters();
-            using RegistryKey? existingUser = OpenUserFilters(writable: true);
-            if (existingUser == null && state.CreatedFiltersKey)
-            {
-                // Someone removed the key we created; start the record over.
-                state = new State();
-            }
-
-            RegistryKey? user = existingUser;
-            try
-            {
-                if (user == null)
-                {
-                    // No per-user list yet. If an administrator already registered the bridge in
-                    // HKLM with this path, clients see it without us creating anything.
-                    using (RegistryKey? m = machine?.OpenSubKey(FilterGuid))
-                    {
-                        if (m != null && IsOurs(m) && Enabled(m) &&
-                            string.Equals((m.GetValue("Path") as string)?.TrimEnd('\\'), dir, StringComparison.OrdinalIgnoreCase))
-                        {
-                            report = "Already registered machine-wide (HKLM) with this path; nothing changed.";
-                            return true;
-                        }
-                    }
-                    user = UserHive().CreateSubKey(VirtualStoreFiltersSubKey, writable: true);
-                    state.CreatedFiltersKey = true;
-                    log.Add($"created HKCU\\{VirtualStoreFiltersSubKey}");
-                }
-
-                if (state.CreatedFiltersKey && machine != null)
-                    SyncMirror(machine, user, state, log);
-
-                using (RegistryKey entry = user.CreateSubKey(FilterGuid, writable: true))
-                {
-                    SetIfDifferent(entry, "", FilterName, RegistryValueKind.String, log);
-                    SetIfDifferent(entry, "Enabled", 1, RegistryValueKind.DWord, log);
-                    SetIfDifferent(entry, "Assembly", AssemblyFile, RegistryValueKind.String, log);
-                    SetIfDifferent(entry, "Path", dir, RegistryValueKind.String, log);
-                    SetIfDifferent(entry, "Object", FilterObject, RegistryValueKind.String, log);
-                    SetIfDifferent(entry, "Surrogate", DotNetSurrogate, RegistryValueKind.String, log);
-                }
-            }
-            finally
-            {
-                if (!ReferenceEquals(user, existingUser)) user?.Dispose();
-            }
-
-            state.BridgePath = dir;
-            state.RegisteredUtc = DateTime.UtcNow;
-            SaveState(state);
-            report = log.Count == 0
-                ? $"Decal bridge already registered for this user ({dir}); nothing changed."
-                : $"Decal bridge registered for this user ({dir}): {string.Join("; ", log)}.";
-            return true;
+            using RegistryKey? k = user.OpenSubKey(name);
+            if (k != null && IsOurs(k)) return true;
         }
-        catch (Exception ex)
-        {
-            report = $"Decal bridge registration failed: {ex.GetType().Name}: {ex.Message}" +
-                (log.Count > 0 ? $" (done before the failure: {string.Join("; ", log)})" : "");
-            return false;
-        }
+        return state?.CreatedFiltersKey == true && ForeignEntries(roots, user, state).Count == 0;
     }
 
     /// <summary>
-    /// Removes what <see cref="Register"/> added: the bridge's entry, the mirrored copies of
-    /// HKLM filters, and the per-user key if this class created it and nothing foreign is
-    /// left in it. A mirrored copy that changed since (Decal plugins write to "HKLM" through
-    /// UAC virtualization, so their writes land in our per-user copy) is removed as well when
-    /// RynthCore created the key: HKLM still holds the original, and a per-user list left with
-    /// a few entries would hide every other HKLM filter from Decal clients (VTank then has no
-    /// WorldFilter). Anything RynthCore didn't add is left in place and reported, and the
-    /// record (%APPDATA%\RynthCore\decal-bridge-registration.json) is kept until nothing of
-    /// ours remains, so a later unregister can finish the job.
+    /// The uninstaller's (and the launcher's "no account uses Decal + RynthCore") per-user
+    /// cleanup. Removes our entry from any per-user copy of Decal's filter list. A copy an older
+    /// launcher created (record file) goes entirely, whatever is in it now - our entries, the
+    /// copies of HKLM filters it mirrored (changed or not; HKLM keeps the originals) - after a
+    /// backup to %APPDATA%\RynthCore\decal-backup-&lt;date&gt;.reg. When that copy holds entries
+    /// that are neither ours nor in HKLM, they belong to someone else: the copy stays (only our
+    /// entry goes) and the reason is logged; the record is kept for a later attempt.
+    /// The machine-wide entry is <see cref="UnregisterMachineWide"/>'s job.
     /// </summary>
     public static bool Unregister(out string report)
     {
-        using (RealRegistryView.Enter()) return UnregisterCore(out report);
+        using (RealRegistryView.Enter()) return UnregisterCore(DecalRegistryRoots.Real, out report);
     }
 
-    private static bool UnregisterCore(out string report)
+    internal static bool UnregisterCore(DecalRegistryRoots roots, out string report)
     {
         var log = new List<string>();
         var failed = new List<string>();
         try
         {
-            State? state = LoadState();
-            bool done = true;
-            using RegistryKey? user = OpenUserFilters(writable: true);
-            if (user != null)
+            State? state = LoadState(roots);
+            bool copyExists;
+            using (RegistryKey? u = OpenUserFilters(roots, writable: false)) copyExists = u != null;
+            if (state?.CreatedFiltersKey == true && copyExists)
             {
-                foreach (string name in user.GetSubKeyNames())
-                {
-                    try
-                    {
-                        bool ours;
-                        using (RegistryKey? k = user.OpenSubKey(name))
-                            ours = k != null && IsOurs(k);
-                        if (!ours) continue;
-                        user.DeleteSubKeyTree(name, throwOnMissingSubKey: false);
-                        log.Add($"removed bridge entry {name}");
-                    }
-                    catch (Exception ex) { failed.Add($"{name}: {Describe(ex)}"); }
-                }
-
-                if (state?.CreatedFiltersKey == true)
-                {
-                    int same = 0, changed = 0;
-                    foreach (KeyValuePair<string, string> kv in state.MirroredKeys)
-                    {
-                        try
-                        {
-                            bool unchanged;
-                            using (RegistryKey? k = user.OpenSubKey(kv.Key))
-                            {
-                                if (k == null) continue;
-                                unchanged = Fingerprint(k) == kv.Value;
-                            }
-                            user.DeleteSubKeyTree(kv.Key, throwOnMissingSubKey: false);
-                            if (unchanged) same++; else changed++;
-                        }
-                        catch (Exception ex) { failed.Add($"{kv.Key}: {Describe(ex)}"); }
-                    }
-                    foreach (KeyValuePair<string, string> kv in state.MirroredValues)
-                    {
-                        try { user.DeleteValue(kv.Key, throwOnMissingValue: false); }
-                        catch (Exception ex) { failed.Add($"value {kv.Key}: {Describe(ex)}"); }
-                    }
-                    log.Add($"removed {same + changed} mirrored filter entr{(same + changed == 1 ? "y" : "ies")}" +
-                        (changed > 0 ? $" ({changed} changed by Decal plugins since; HKLM keeps the originals)" : ""));
-
-                    var foreign = new List<string>();
-                    foreach (string n in user.GetSubKeyNames()) foreign.Add(n);
-                    foreach (string n in user.GetValueNames()) if (n.Length > 0) foreign.Add(n);
-                    if (foreign.Count == 0 && failed.Count == 0)
-                    {
-                        user.Dispose();
-                        UserHive().DeleteSubKey(VirtualStoreFiltersSubKey, throwOnMissingSubKey: false);
-                        log.Add($"removed HKCU\\{VirtualStoreFiltersSubKey} (created by RynthCore)");
-                    }
-                    else
-                    {
-                        done = false;
-                        log.Add($"left HKCU\\{VirtualStoreFiltersSubKey} in place" +
-                            (foreign.Count > 0 ? $": it holds entries RynthCore didn't add ({string.Join(", ", foreign)})" : ""));
-                    }
-                }
+                CleanUpOwnCopy(roots, state, removeBridgeIfKept: true, log, failed, out bool removed);
+                if (!removed && failed.Count == 0)
+                    log.Add($"kept {StatePath(roots)} for a later cleanup");
+            }
+            else
+            {
+                if (copyExists)
+                    RemoveBridgeEntries(roots, log, failed);
+                if (failed.Count == 0 && state != null)
+                    DeleteState(roots);
             }
 
-            if (failed.Count > 0)
-                done = false;
-            if (done && File.Exists(StatePath))
-                File.Delete(StatePath);
-            else if (!done)
-                log.Add($"kept {StatePath} for the next unregister");
             if (failed.Count > 0)
             {
                 report = $"Decal bridge unregistration incomplete: {string.Join("; ", failed)}" +
@@ -645,6 +681,283 @@ internal static class DecalBridgeRegistration
         }
     }
 
+    /// <summary>
+    /// An older launcher's per-user copy (state.CreatedFiltersKey): removed after a backup
+    /// unless it holds foreign entries. <paramref name="removeBridgeIfKept"/>: when it stays,
+    /// take our entry out of it (unregister) or leave it (register: a virtualized client reads
+    /// nothing but the copy). Returns false when something failed.
+    /// </summary>
+    private static bool CleanUpOwnCopy(DecalRegistryRoots roots, State state, bool removeBridgeIfKept,
+        List<string> log, List<string> failed, out bool removed)
+    {
+        removed = false;
+        string vs = DecalBridgeCheck.VirtualStoreDecalPath(roots.Is64BitOs, "NetworkFilters");
+        List<string> foreign;
+        using (RegistryKey? user = OpenUserFilters(roots, writable: false))
+        {
+            if (user == null)
+            {
+                DeleteState(roots);
+                return true;
+            }
+            foreign = ForeignEntries(roots, user, state);
+        }
+
+        if (foreign.Count > 0)
+        {
+            log.Add($"left HKCU\\{vs} (a per-user copy of Decal's filter list an earlier RynthCore created) in place: " +
+                $"it holds entries RynthCore didn't add and that aren't in the list for all users ({string.Join(", ", foreign)}). " +
+                "Recovery Actions > Repair Decal removes it after a backup");
+            if (removeBridgeIfKept)
+                RemoveBridgeEntries(roots, log, failed);
+            return failed.Count == 0;
+        }
+
+        if (!BackupUserKeys(roots, new[] { vs }, out string? backup, out string error))
+        {
+            failed.Add($"left HKCU\\{vs} in place: the backup failed ({error})");
+            if (removeBridgeIfKept)
+                RemoveBridgeEntries(roots, log, failed);
+            return false;
+        }
+        try
+        {
+            using (RegistryKey hkcu = roots.User())
+                hkcu.DeleteSubKeyTree(vs, throwOnMissingSubKey: false);
+            DeleteState(roots);
+            removed = true;
+            log.Add($"removed HKCU\\{vs}, the per-user copy of Decal's filter list an earlier RynthCore created " +
+                $"(Decal reads the list for all users again; backup: {backup})");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            failed.Add($"removing HKCU\\{vs} failed: {Describe(ex)} (backup: {backup})");
+            return false;
+        }
+    }
+
+    /// <summary>Entries in an older launcher's copy that are neither ours, nor mirrored, nor in HKLM.</summary>
+    private static List<string> ForeignEntries(DecalRegistryRoots roots, RegistryKey user, State state)
+    {
+        HashSet<string> machineKeys = new(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> machineValues = new(StringComparer.OrdinalIgnoreCase);
+        using (RegistryKey? machine = OpenMachineFilters(roots))
+        {
+            if (machine != null)
+            {
+                machineKeys.UnionWith(machine.GetSubKeyNames());
+                machineValues.UnionWith(machine.GetValueNames());
+            }
+        }
+        var foreign = new List<string>();
+        foreach (string name in user.GetSubKeyNames())
+        {
+            if (machineKeys.Contains(name) || state.MirroredKeys.ContainsKey(name))
+                continue;
+            using RegistryKey? k = user.OpenSubKey(name);
+            if (k != null && IsOurs(k))
+                continue;
+            foreign.Add(k?.GetValue("") is string friendly && friendly.Length > 0 ? $"{friendly} {name}" : name);
+        }
+        foreach (string name in user.GetValueNames())
+        {
+            if (name.Length == 0 || machineValues.Contains(name) || state.MirroredValues.ContainsKey(name))
+                continue;
+            foreign.Add($"value '{name}'");
+        }
+        return foreign;
+    }
+
+    private static void RemoveBridgeEntries(DecalRegistryRoots roots, List<string> log, List<string> failed)
+    {
+        using RegistryKey? user = OpenUserFilters(roots, writable: true);
+        if (user == null) return;
+        foreach (string name in user.GetSubKeyNames())
+        {
+            try
+            {
+                bool ours;
+                using (RegistryKey? k = user.OpenSubKey(name))
+                    ours = k != null && IsOurs(k);
+                if (!ours) continue;
+                user.DeleteSubKeyTree(name, throwOnMissingSubKey: false);
+                log.Add($"removed bridge entry {name} from the per-user copy of Decal's filter list");
+            }
+            catch (Exception ex) { failed.Add($"{name}: {Describe(ex)}"); }
+        }
+    }
+
+    // ── Repair Decal ─────────────────────────────────────────────────────────
+
+    public sealed class RepairResult
+    {
+        public bool Ok;
+        public string? BackupPath;
+        /// <summary>The keys removed, as HKCU\... paths.</summary>
+        public List<string> Removed { get; } = new();
+        public string Report = string.Empty;
+    }
+
+    /// <summary>The per-user copies of Decal's settings that exist now, as HKCU\... paths (read only).</summary>
+    public static List<string> FindVirtualStoreDecalKeys()
+    {
+        using (RealRegistryView.Enter()) return FindVirtualStoreDecalKeysCore(DecalRegistryRoots.Real).Select(k => @"HKCU\" + k).ToList();
+    }
+
+    internal static List<string> FindVirtualStoreDecalKeysCore(DecalRegistryRoots roots)
+    {
+        var found = new List<string>();
+        using RegistryKey hkcu = roots.User();
+        foreach (string k in VirtualStoreDecalKeys)
+        {
+            using RegistryKey? key = hkcu.OpenSubKey(k);
+            if (key != null) found.Add(k);
+        }
+        return found;
+    }
+
+    /// <summary>
+    /// Recovery Actions > Repair Decal: Decal is reading an old per-user copy of its settings
+    /// (UAC virtualization; made by an earlier RynthCore or by Decal itself). Backs up every
+    /// HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\(WOW6432Node\)Decal key to one .reg
+    /// file in %APPDATA%\RynthCore, then deletes them, so Decal sees every installed plugin and
+    /// filter again. Deletes nothing when the backup fails. The caller re-registers the bridge
+    /// machine-wide afterwards when an account uses Decal + RynthCore.
+    /// </summary>
+    public static RepairResult RepairDecal()
+    {
+        using (RealRegistryView.Enter()) return RepairDecalCore(DecalRegistryRoots.Real);
+    }
+
+    internal static RepairResult RepairDecalCore(DecalRegistryRoots roots)
+    {
+        var r = new RepairResult();
+        List<string> keys = FindVirtualStoreDecalKeysCore(roots);
+        if (keys.Count == 0)
+        {
+            r.Ok = true;
+            r.Report = "Decal has no per-user copy of its settings; it already reads the settings for all users. Nothing changed.";
+            return r;
+        }
+        if (!BackupUserKeys(roots, keys, out r.BackupPath, out string error))
+        {
+            r.Report = $"Repair Decal stopped before deleting anything: the backup failed ({error}).";
+            return r;
+        }
+        var failed = new List<string>();
+        using (RegistryKey hkcu = roots.User())
+        {
+            foreach (string k in keys)
+            {
+                try
+                {
+                    hkcu.DeleteSubKeyTree(k, throwOnMissingSubKey: false);
+                    r.Removed.Add(@"HKCU\" + k);
+                }
+                catch (Exception ex) { failed.Add($"HKCU\\{k}: {Describe(ex)}"); }
+            }
+        }
+        if (failed.Count == 0)
+            DeleteState(roots);   // an earlier RynthCore's copy is gone with them
+        r.Ok = failed.Count == 0;
+        r.Report = (r.Removed.Count > 0 ? $"Removed {string.Join(", ", r.Removed)}. " : "") +
+            (failed.Count > 0 ? $"Could not remove: {string.Join("; ", failed)}. " : "") +
+            $"Backup: {r.BackupPath} (double-click it to put the keys back).";
+        return r;
+    }
+
+    // ── backups ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// "reg export" of the given HKCU subkeys into one .reg file,
+    /// &lt;DataDirectory&gt;\decal-backup-&lt;date&gt;.reg. False (nothing written) when any export fails.
+    /// </summary>
+    internal static bool BackupUserKeys(DecalRegistryRoots roots, IReadOnlyList<string> subKeys, out string? backupPath, out string error)
+    {
+        backupPath = null;
+        error = string.Empty;
+        try
+        {
+            Directory.CreateDirectory(roots.DataDirectory);
+            string stamp = DateTime.Now.ToString("yyyy-MM-dd-HHmmss", CultureInfo.InvariantCulture);
+            string path = Path.Combine(roots.DataDirectory, $"decal-backup-{stamp}.reg");
+            for (int n = 2; File.Exists(path); n++)
+                path = Path.Combine(roots.DataDirectory, $"decal-backup-{stamp}-{n}.reg");
+
+            var sb = new StringBuilder();
+            foreach (string sub in subKeys)
+            {
+                string tmp = Path.Combine(roots.DataDirectory, $"decal-backup-{Guid.NewGuid():N}.tmp");
+                try
+                {
+                    if (!RegExport(roots.UserRegPath + "\\" + sub, tmp, roots.Is64BitOs, out error))
+                        return false;
+                    string text = File.ReadAllText(tmp);   // reg.exe writes UTF-16 with a BOM
+                    if (sb.Length > 0)
+                    {
+                        int nl = text.IndexOf('\n');   // one header line per file
+                        text = nl >= 0 ? text.Substring(nl + 1) : string.Empty;
+                    }
+                    sb.Append(text);
+                    if (!text.EndsWith("\n", StringComparison.Ordinal)) sb.Append("\r\n");
+                }
+                finally
+                {
+                    try { File.Delete(tmp); } catch { }
+                }
+            }
+            File.WriteAllText(path, sb.ToString(), Encoding.Unicode);
+            backupPath = path;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = Describe(ex);
+            return false;
+        }
+    }
+
+    private static bool RegExport(string key, string file, bool is64BitOs, out string error)
+    {
+        error = string.Empty;
+        var psi = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "reg.exe"))
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        psi.ArgumentList.Add("export");
+        psi.ArgumentList.Add(key);
+        psi.ArgumentList.Add(file);
+        psi.ArgumentList.Add("/y");
+        if (is64BitOs) psi.ArgumentList.Add("/reg:64");   // the launcher is 32-bit; the VirtualStore is in the 64-bit view
+        using Process? p = Process.Start(psi);
+        if (p == null)
+        {
+            error = "reg.exe did not start";
+            return false;
+        }
+        var stdout = p.StandardOutput.ReadToEndAsync();
+        string stderr = p.StandardError.ReadToEnd();
+        if (!p.WaitForExit(30_000))
+        {
+            try { p.Kill(); } catch { }
+            error = "reg export did not finish within 30 seconds";
+            return false;
+        }
+        _ = stdout.Result;
+        if (p.ExitCode != 0 || !File.Exists(file))
+        {
+            error = $"reg export {key} failed (exit code {p.ExitCode}): {stderr.Trim()}";
+            return false;
+        }
+        return true;
+    }
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
     // Exception type, message and the innermost frame, for a one-line report.
     private static string Describe(Exception ex)
     {
@@ -652,74 +965,8 @@ internal static class DecalBridgeRegistration
         return $"{ex.GetType().Name}: {ex.Message}" + (frame != null ? $" [{frame}]" : "");
     }
 
-    // ── mirror ───────────────────────────────────────────────────────────────
-
-    // Copies HKLM entries the per-user list lacks, and refreshes copies nobody changed
-    // since we wrote them (so a filter the user enables/disables machine-wide follows).
-    private static void SyncMirror(RegistryKey machine, RegistryKey user, State state, List<string> log)
-    {
-        int added = 0, refreshed = 0;
-        foreach (string name in machine.GetValueNames())
-        {
-            if (name.Length == 0) continue;
-            object? v = machine.GetValue(name, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
-            if (v == null) continue;
-            RegistryValueKind kind = machine.GetValueKind(name);
-            object? have = user.GetValue(name, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
-            bool ours = state.MirroredValues.TryGetValue(name, out string? print);
-            if (have == null || (ours && ValuePrint(user.GetValueKind(name), have) == print))
-            {
-                user.SetValue(name, v, kind);
-                state.MirroredValues[name] = ValuePrint(kind, v);
-            }
-        }
-        foreach (string name in machine.GetSubKeyNames())
-        {
-            if (string.Equals(name, FilterGuid, StringComparison.OrdinalIgnoreCase)) continue;
-            using RegistryKey? src = machine.OpenSubKey(name);
-            if (src == null) continue;
-            string srcPrint = Fingerprint(src);
-            using RegistryKey? existing = user.OpenSubKey(name);
-            if (existing == null)
-            {
-                using RegistryKey dst = user.CreateSubKey(name, writable: true);
-                CopyTree(src, dst);
-                state.MirroredKeys[name] = Fingerprint(dst);
-                added++;
-            }
-            else if (state.MirroredKeys.TryGetValue(name, out string? written) &&
-                     Fingerprint(existing) == written && srcPrint != written)
-            {
-                existing.Dispose();
-                user.DeleteSubKeyTree(name, throwOnMissingSubKey: false);
-                using RegistryKey dst = user.CreateSubKey(name, writable: true);
-                CopyTree(src, dst);
-                state.MirroredKeys[name] = Fingerprint(dst);
-                refreshed++;
-            }
-        }
-        if (added > 0) log.Add($"mirrored {added} HKLM filter entr{(added == 1 ? "y" : "ies")} (so Decal still sees them)");
-        if (refreshed > 0) log.Add($"refreshed {refreshed} mirrored entr{(refreshed == 1 ? "y" : "ies")} from HKLM");
-    }
-
-    private static void CopyTree(RegistryKey src, RegistryKey dst)
-    {
-        foreach (string name in src.GetValueNames())
-        {
-            object? v = src.GetValue(name, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
-            if (v != null) dst.SetValue(name, v, src.GetValueKind(name));
-        }
-        foreach (string sub in src.GetSubKeyNames())
-        {
-            using RegistryKey? s = src.OpenSubKey(sub);
-            if (s == null) continue;
-            using RegistryKey d = dst.CreateSubKey(sub, writable: true);
-            CopyTree(s, d);
-        }
-    }
-
-    /// <summary>A stable text form of a key's values and subkeys, to tell "still as we wrote it".</summary>
-    private static string Fingerprint(RegistryKey key)
+    /// <summary>A stable text form of a key's values and subkeys (tests compare snapshots with it).</summary>
+    internal static string Fingerprint(RegistryKey key)
     {
         var sb = new StringBuilder();
         foreach (string name in key.GetValueNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
@@ -743,18 +990,52 @@ internal static class DecalBridgeRegistration
     {
         byte[] b => Convert.ToHexString(b),
         string[] a => string.Join("\u0001", a),
-        _ => Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+        _ => Convert.ToString(v, CultureInfo.InvariantCulture) ?? string.Empty,
     };
 
-    // ── registry helpers ─────────────────────────────────────────────────────
+    private static RegistryKey? OpenUserFilters(DecalRegistryRoots roots, bool writable)
+    {
+        using RegistryKey hkcu = roots.User();
+        return hkcu.OpenSubKey(DecalBridgeCheck.VirtualStoreDecalPath(roots.Is64BitOs, "NetworkFilters"), writable);
+    }
 
-    private static RegistryKey UserHive() => RegistryKey.OpenBaseKey(RegistryHive.CurrentUser,
-        Environment.Is64BitOperatingSystem ? RegistryView.Registry64 : RegistryView.Default);
+    private static RegistryKey? OpenMachineFilters(DecalRegistryRoots roots)
+    {
+        using RegistryKey hklm = roots.Machine();
+        return hklm.OpenSubKey(DecalFiltersSubKey);
+    }
 
-    private static RegistryKey? OpenUserFilters(bool writable) => UserHive().OpenSubKey(VirtualStoreFiltersSubKey, writable);
+    /// <summary>HKLM holds our entry, enabled, for <paramref name="dir"/>, with every value as we write it.</summary>
+    private static bool MachineEntryCurrent(DecalRegistryRoots roots, string dir)
+    {
+        using RegistryKey? machine = OpenMachineFilters(roots);
+        using RegistryKey? m = machine?.OpenSubKey(FilterGuid);
+        if (m == null || !IsOurs(m) || !Enabled(m)) return false;
+        return string.Equals((m.GetValue("Path") as string)?.TrimEnd('\\'), dir, StringComparison.OrdinalIgnoreCase) &&
+               Equals(m.GetValue(""), FilterName) &&
+               Equals(m.GetValue("Assembly"), AssemblyFile) &&
+               string.Equals(m.GetValue("Surrogate") as string, DotNetSurrogate, StringComparison.OrdinalIgnoreCase);
+    }
 
-    private static RegistryKey? OpenMachineFilters() =>
-        RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, MachineView).OpenSubKey(DecalFiltersSubKey);
+    private static bool PointsAt(RegistryKey entry, string dir)
+    {
+        string? path = (entry.GetValue("Path") as string)?.TrimEnd('\\');
+        if (path == null) return true;
+        if (string.Equals(path, dir.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) return true;
+        string file = entry.GetValue("Assembly") as string ?? AssemblyFile;
+        try { return !File.Exists(Path.Combine(path, file)); }   // a dangling entry is nobody's
+        catch { return false; }
+    }
+
+    private static void WriteEntry(RegistryKey entry, string dir, List<string> changes)
+    {
+        SetIfDifferent(entry, "", FilterName, RegistryValueKind.String, changes);
+        SetIfDifferent(entry, "Enabled", 1, RegistryValueKind.DWord, changes);
+        SetIfDifferent(entry, "Assembly", AssemblyFile, RegistryValueKind.String, changes);
+        SetIfDifferent(entry, "Path", dir, RegistryValueKind.String, changes);
+        SetIfDifferent(entry, "Object", FilterObject, RegistryValueKind.String, changes);
+        SetIfDifferent(entry, "Surrogate", DotNetSurrogate, RegistryValueKind.String, changes);
+    }
 
     private static bool IsOurs(RegistryKey k) =>
         string.Equals(k.GetValue("Object") as string, FilterObject, StringComparison.Ordinal);
@@ -783,16 +1064,17 @@ internal static class DecalBridgeRegistration
         log.Add($"set {(name.Length == 0 ? "(default)" : name)}");
     }
 
-    private static State? LoadState()
+    private static State? LoadState(DecalRegistryRoots roots)
     {
         try
         {
-            if (!File.Exists(StatePath)) return null;
-            State? s = JsonSerializer.Deserialize<State>(File.ReadAllText(StatePath));
+            string path = StatePath(roots);
+            if (!File.Exists(path)) return null;
+            State? s = JsonSerializer.Deserialize<State>(File.ReadAllText(path));
             if (s == null) return null;
             // Dictionary comparers don't survive serialization.
-            s.MirroredKeys = new Dictionary<string, string>(s.MirroredKeys, StringComparer.OrdinalIgnoreCase);
-            s.MirroredValues = new Dictionary<string, string>(s.MirroredValues, StringComparer.OrdinalIgnoreCase);
+            s.MirroredKeys = new Dictionary<string, string>(s.MirroredKeys ?? new(), StringComparer.OrdinalIgnoreCase);
+            s.MirroredValues = new Dictionary<string, string>(s.MirroredValues ?? new(), StringComparer.OrdinalIgnoreCase);
             return s;
         }
         catch
@@ -801,10 +1083,13 @@ internal static class DecalBridgeRegistration
         }
     }
 
-    private static void SaveState(State s)
+    private static void DeleteState(DecalRegistryRoots roots)
     {
-        string? dir = Path.GetDirectoryName(StatePath);
-        if (dir != null) Directory.CreateDirectory(dir);
-        File.WriteAllText(StatePath, JsonSerializer.Serialize(s, new JsonSerializerOptions { WriteIndented = true }));
+        try
+        {
+            string path = StatePath(roots);
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch { }
     }
 }

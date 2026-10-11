@@ -32,9 +32,11 @@ internal static class UiSources
     public static readonly MonsterDetailSource MonsterDetail = new();
     public static readonly LootEditSource LootEdit = new();
     public static readonly SenseSource Sense = new();
+    public static readonly BountiesSource Bounties = new();
 
     static UiSources()
     {
+        UiDataHub.Register(Bounties);
         UiDataHub.Register(Settings);
         UiDataHub.Register(Meta);
         UiDataHub.Register(LootEdit);
