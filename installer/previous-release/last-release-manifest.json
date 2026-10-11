@@ -1,24 +1,24 @@
 {
     "schema":  1,
     "product":  "RynthCore + RynthSuite",
-    "version":  "2026.10.5.25",
-    "release":  2026100525,
-    "builtUtc":  "2026-10-11T14:33:08Z",
-    "previous":  "2026.10.5.24",
+    "version":  "2026.10.5.26",
+    "release":  2026100526,
+    "builtUtc":  "2026-10-11T15:27:25Z",
+    "previous":  "2026.10.5.25",
     "installer":  {
-                      "file":  "RynthCore-Setup-2026.10.5.25.exe",
-                      "size":  131637848,
-                      "sha256":  "e59e6c9e88569acce4024c00ee5b0e4c821cc74d9153a1101d0781d7de8f5bb2"
+                      "file":  "RynthCore-Setup-2026.10.5.26.exe",
+                      "size":  131699930,
+                      "sha256":  "2a6d16dcca8786c23ad7ce6e85c7e1080dddac0864b3305a4121d90ba4b9587c"
                   },
     "source":  {
                    "rynthCore":  {
                                      "branch":  "main",
-                                     "commit":  "58b4efe6d354352d85efc46744ffe087f18a56e7",
+                                     "commit":  "c55c897a39d384f766b968a3a5032ed666fcef29",
                                      "dirty":  false
                                  },
                    "rynthSuite":  {
-                                      "branch":  "feat/discord-chat-relay",
-                                      "commit":  "3ffcba71eb691d3522a41763cc87767aa1efaaaf",
+                                      "branch":  "main",
+                                      "commit":  "ef46b1c6923ce9ae78b5d8ae8dd3793a52a3f935",
                                       "dirty":  false
                                   }
                },
@@ -26,12 +26,12 @@
                        {
                            "name":  "Launcher (RynthCore.exe)",
                            "file":  "core\\RynthCore.exe",
-                           "version":  "2026.10.5.25+58b4efe6d354352d85efc46744ffe087f18a56e7"
+                           "version":  "2026.10.5.26+c55c897a39d384f766b968a3a5032ed666fcef29"
                        },
                        {
                            "name":  "Engine",
                            "file":  "core\\Runtime\\RynthCore.Engine.dll",
-                           "version":  "2026.10.5.25+58b4efe6d354352d85efc46744ffe087f18a56e7"
+                           "version":  "2026.10.5.26+c55c897a39d384f766b968a3a5032ed666fcef29"
                        },
                        {
                            "name":  "Loader",
@@ -41,56 +41,57 @@
                        {
                            "name":  "Loot Editor",
                            "file":  "core\\Tools\\LootEditor\\RynthCore.LootEditor.exe",
-                           "version":  "2026.10.5.25+3ffcba71eb691d3522a41763cc87767aa1efaaaf"
+                           "version":  "2026.10.5.26+ef46b1c6923ce9ae78b5d8ae8dd3793a52a3f935"
                        },
                        {
                            "name":  "RynthAi plugin",
                            "file":  "suite\\RynthAi\\RynthCore.Plugin.RynthAi.dll",
-                           "version":  "1.0.0+3ffcba71eb691d3522a41763cc87767aa1efaaaf"
+                           "version":  "1.0.0+ef46b1c6923ce9ae78b5d8ae8dd3793a52a3f935"
                        },
                        {
                            "name":  "Monster Editor",
                            "file":  "suite\\RynthAi\\MonsterEditor\\RynthCore.MonsterEditor.exe",
-                           "version":  "2026.10.5.25+3ffcba71eb691d3522a41763cc87767aa1efaaaf"
+                           "version":  "2026.10.5.26+ef46b1c6923ce9ae78b5d8ae8dd3793a52a3f935"
                        },
                        {
                            "name":  "RynthChat (experimental)",
                            "file":  "suite\\RynthChat\\RynthCore.Plugin.RynthChat.dll",
-                           "version":  "1.0.0+3ffcba71eb691d3522a41763cc87767aa1efaaaf"
+                           "version":  "1.0.0+ef46b1c6923ce9ae78b5d8ae8dd3793a52a3f935"
                        },
                        {
                            "name":  "RynthJuice (experimental)",
                            "file":  "suite\\RynthJuice\\RynthCore.Plugin.RynthJuice.dll",
-                           "version":  "0.1.2-experimental+3ffcba71eb691d3522a41763cc87767aa1efaaaf"
+                           "version":  "0.1.2-experimental+ef46b1c6923ce9ae78b5d8ae8dd3793a52a3f935"
                        },
                        {
                            "name":  "RynthNav (experimental)",
                            "file":  "suite\\RynthNav\\RynthCore.Plugin.RynthNav.dll",
-                           "version":  "1.0.0+3ffcba71eb691d3522a41763cc87767aa1efaaaf"
+                           "version":  "1.0.0+ef46b1c6923ce9ae78b5d8ae8dd3793a52a3f935"
                        },
                        {
                            "name":  "RynthTracker (experimental)",
                            "file":  "suite\\RynthTracker\\RynthCore.Plugin.RynthTracker.dll",
-                           "version":  "1.0.0+3ffcba71eb691d3522a41763cc87767aa1efaaaf"
+                           "version":  "1.0.0+ef46b1c6923ce9ae78b5d8ae8dd3793a52a3f935"
                        },
                        {
                            "name":  "RynthVision (experimental)",
                            "file":  "suite\\RynthVision\\RynthCore.Plugin.RynthVision.dll",
-                           "version":  "1.0.0+3ffcba71eb691d3522a41763cc87767aa1efaaaf"
+                           "version":  "1.0.0+ef46b1c6923ce9ae78b5d8ae8dd3793a52a3f935"
                        },
                        {
                            "name":  "UbRythai (experimental)",
                            "file":  "suite\\UbRythai\\RynthCore.Plugin.UbRythai.dll",
-                           "version":  "3.1.10+3ffcba71eb691d3522a41763cc87767aa1efaaaf"
+                           "version":  "3.1.10+ef46b1c6923ce9ae78b5d8ae8dd3793a52a3f935"
                        }
                    ],
     "changelog":  [
-                      "RynthCore/Changelog/2026-10-10-installer-2026.10.5.24-release.md",
-                      "RynthSuite/Changelog/2026-10-11-release-0.5.33-discord-chat-relay.md"
+                      "RynthCore/Changelog/2026-10-11-chat-discord-relay.md",
+                      "RynthCore/Changelog/2026-10-11-installer-2026.10.5.25-release.md",
+                      "RynthSuite/Changelog/2026-10-11-release-0.5.34-discord-relay-moved-to-chat.md"
                   ],
     "changelogSince":  {
-                           "rynthCore":  "75bac262088ee2436e74d5eb7187d9933a027a1c",
-                           "rynthSuite":  "fc0d7a0876f979b641bfb7721bd7bf14df819e81",
+                           "rynthCore":  "58b4efe6d354352d85efc46744ffe087f18a56e7",
+                           "rynthSuite":  "3ffcba71eb691d3522a41763cc87767aa1efaaaf",
                            "date":  ""
                        }
 }
