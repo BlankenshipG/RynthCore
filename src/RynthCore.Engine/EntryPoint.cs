@@ -989,6 +989,9 @@ public static class EntryPoint
                 {
                     UI.Data.ChatModel.EnsureSettingsLoaded();
                     UI.Data.ChatModel.InstallInput();
+                    // Discord relay settings (file read here, not on AC's thread); a relay left
+                    // on keeps the chat feed running with the Chat panel closed.
+                    UI.Data.Discord.ChatDiscord.EnsureLoaded();
                 }
                 // ImGui faces for panels docked in the client (UI.PanelRouter
                 // picks the face). Registered even while the ImGui layer is off,
@@ -1003,6 +1006,7 @@ public static class EntryPoint
                 {
                     ImGuiBackend.Panels.ChatFace.Register();
                     ImGuiBackend.Panels.ChatFiltersFace.Register();
+                    ImGuiBackend.Panels.ChatDiscordFace.Register();
                 }
                 ImGuiBackend.Panels.RadarFace.Register();
                 ImGuiBackend.Panels.SettingsFace.Register();

@@ -34,6 +34,9 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item><c>/rc chathold [on|off|status]</c> — incoming chat waits for the plugins'
 ///         verdict before AC prints it, so a line a plugin eats is kept out of AC's chat
 ///         window too (<see cref="ChatCallbackHooks"/>). On at every start; not saved.</item>
+///   <item><c>/rc discord [on|off|status|window|test [route]|resume [route]]</c> — RynthChat's
+///         Discord relay (<see cref="UI.Data.Discord.ChatDiscord"/>): switch it, list the routes,
+///         post a test line, clear a pause; window opens its panel (Chat &gt; gear &gt; Discord).</item>
 ///   <item><c>/rv plates</c> (aliases <c>/rv nameplates</c>, <c>/rc plates</c>) — the
 ///         RynthVision nameplates and combat text: monster plates on|off, self, debuffs,
 ///         numbers, gains [on|off] (with their sub-switches), all on|off, all|engaged,
@@ -126,6 +129,14 @@ internal static class RynthCoreChatCommands
         {
             try { HandleChatHoldCommand(holdArgs); }
             catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc chathold failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc discord [on|off|status|window|test [route]|resume [route]] : RynthChat's Discord relay
+        if (IsVerb(sub, "discord", out string discordArgs))
+        {
+            try { HandleDiscordCommand(discordArgs); }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc discord failed - {ex.GetType().Name}: {ex.Message}"); }
             return true;
         }
 
@@ -715,6 +726,28 @@ internal static class RynthCoreChatCommands
     /// <summary>"on"/"off" sets; anything else (or nothing) toggles.</summary>
     private static bool Flag(string? value, bool current) =>
         value?.ToLowerInvariant() switch { "on" or "1" or "true" => true, "off" or "0" or "false" => false, _ => !current };
+
+    /// <summary>
+    /// /rc discord: the relay's switch, status, test and resume (UI.Data.Discord.ChatDiscord);
+    /// "window" opens its panel, like Chat > gear > Discord settings.
+    /// </summary>
+    private static void HandleDiscordCommand(string args)
+    {
+        if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.ChatDiscordFace.Title))
+        {
+            Reply("The Discord relay needs the RynthChat plugin.");
+            return;
+        }
+        string verb = args.Trim();
+        if (verb.Equals("window", StringComparison.OrdinalIgnoreCase) || verb.Equals("show", StringComparison.OrdinalIgnoreCase)
+            || verb.Equals("settings", StringComparison.OrdinalIgnoreCase))
+        {
+            UI.PanelRouter.Toggle(ImGuiBackend.Panels.ChatDiscordFace.Title);
+            return;
+        }
+        foreach (string line in UI.Data.Discord.ChatDiscord.HandleCommand(verb))
+            Reply(line);
+    }
 
     private static void Reply(string text)
     {
