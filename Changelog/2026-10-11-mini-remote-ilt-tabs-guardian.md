@@ -48,3 +48,9 @@ Engine 2026.10.5.29 (previous local build: 2026.10.5.28). Pairs with RynthAi 0.5
 - Engine and plugin both build in Release.
 - In-game checks are listed in RynthSuite's
   `Changelog/2026-10-11-release-0.5.37-mini-remote-ilt-tabs.md`.
+
+## Local test install
+
+Installed 2026-10-11 to `C:\Games\RynthCore\Runtime` (engine 2026.10.5.29). The previous engine
+(2026.10.5.28) is saved in `C:\Games\Rynthcore\PreviousReleases\2026.10.5.28-engine` and
+`C:\Games\_rynth-backups\20261011-pre-ilt-tabs`.
