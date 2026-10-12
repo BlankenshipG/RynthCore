@@ -164,6 +164,9 @@ public struct RynthCoreApiNative
     public IntPtr TrainSkillFn;              // int TrainSkill(uint stype, int expectedCredits) -> RaiseResult
     // v80: outcome of the latest merge-stack request (cdecl thunk); was v77 on QOL-items
     public IntPtr GetMergeStackResultFn;     // int GetMergeStackResult(uint src, uint tgt, int* amount, int* ageMs)
+    // v81: answer the server's yes/no prompt (craft chance) without the client's dialog
+    public IntPtr ArmConfirmationFn;         // int ArmConfirmation(uint type, int minPercent, int timeoutMs) -> 1 armed, 0 unavailable, -3 bad args
+    public IntPtr GetLastConfirmationFn;     // int GetLastConfirmation(uint* type, uint* ctx, int* percent, int* outcome, int* ageMs) -> seq
 }
 
 /// <summary>

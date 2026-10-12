@@ -16,5 +16,6 @@ namespace RynthCore.Engine.Plugins;
 internal static class PluginContractVersion
 {
     // v80: GetMergeStackResult (was v77 on QOL-items, renumbered after upstream's v77-v79).
-    public const uint Current = 80;
+    // v81: ArmConfirmation / GetLastConfirmation (answer the craft-chance prompt for a plugin).
+    public const uint Current = 81;
 }

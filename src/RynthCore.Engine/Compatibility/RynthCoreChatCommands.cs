@@ -316,7 +316,7 @@ internal static class RynthCoreChatCommands
 
         // /rc miniremote [show|hide|toggle|tab <tab>] : the ImGui Mini Remote panel, like its bar
         // button (RynthAi's dashboard and "/ra hub" use show / hide). "tab" opens it on one of
-        // RynthAi's tabs (character, quests, pets, banking, gear, games; none = the remote).
+        // RynthAi's tabs (character, quests, pets, crafting, banking, gear, games; none = the remote).
         if (IsVerb(sub, "miniremote", out string remoteArgs) || IsVerb(sub, "remote", out remoteArgs))
         {
             if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.MiniRemoteFace.Title))

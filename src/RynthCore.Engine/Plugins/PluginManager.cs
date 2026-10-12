@@ -270,6 +270,8 @@ internal static partial class PluginManager
     private static VendorSellCallbackDelegate? _vendorSellCallback;
     private static GetVendorTradeStatusCallbackDelegate? _getVendorTradeStatusCallback;
     private static GetMergeStackResultCallbackDelegate? _getMergeStackResultCallback;
+    private static ArmConfirmationCallbackDelegate? _armConfirmationCallback;             // v81
+    private static GetLastConfirmationCallbackDelegate? _getLastConfirmationCallback;     // v81
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -3007,6 +3009,8 @@ internal static partial class PluginManager
         _vendorSellCallback ??= VendorSellAction;
         _getVendorTradeStatusCallback ??= GetVendorTradeStatusAction;
         _getMergeStackResultCallback ??= GetMergeStackResultAction;
+        _armConfirmationCallback ??= ArmConfirmationAction;
+        unsafe { _getLastConfirmationCallback ??= GetLastConfirmationAction; }
 
         _api.Version = PluginContractVersion.Current;
         _api.LogFn = Marshal.GetFunctionPointerForDelegate(_logCallback);
@@ -3151,6 +3155,8 @@ internal static partial class PluginManager
         _api.VendorSellFn = Marshal.GetFunctionPointerForDelegate(_vendorSellCallback);
         _api.GetVendorTradeStatusFn = Marshal.GetFunctionPointerForDelegate(_getVendorTradeStatusCallback);
         _api.GetMergeStackResultFn = Marshal.GetFunctionPointerForDelegate(_getMergeStackResultCallback);
+        _api.ArmConfirmationFn = Marshal.GetFunctionPointerForDelegate(_armConfirmationCallback);
+        _api.GetLastConfirmationFn = Marshal.GetFunctionPointerForDelegate(_getLastConfirmationCallback);
         RouteApiThroughLoader();
     }
 
@@ -3888,6 +3894,32 @@ internal static partial class PluginManager
         catch
         {
             return MergeStackResults.None;
+        }
+    }
+
+    // v81: arm one answer for the next server yes/no prompt (ConfirmationResponder).
+    private static int ArmConfirmationAction(uint type, int minPercent, int timeoutMs)
+    {
+        try { return ConfirmationResponder.Arm(type, minPercent, timeoutMs); }
+        catch { return 0; }
+    }
+
+    // v81: the last server yes/no prompt and what happened to it.
+    private static unsafe int GetLastConfirmationAction(uint* type, uint* contextId, int* percent, int* outcome, int* ageMs)
+    {
+        try
+        {
+            int seq = ConfirmationResponder.GetLast(out uint t, out uint ctx, out int pct, out int oc, out int age);
+            if (type != null) *type = t;
+            if (contextId != null) *contextId = ctx;
+            if (percent != null) *percent = pct;
+            if (outcome != null) *outcome = oc;
+            if (ageMs != null) *ageMs = age;
+            return seq;
+        }
+        catch
+        {
+            return 0;
         }
     }
 

@@ -864,6 +864,20 @@ internal struct RynthCoreAPI
     /// The thunk is cdecl. Any thread. Requires API v80+ (it was v77 on QOL-items before
     /// upstream's v77-v79 landed; plugins built against that SDK must be rebuilt).</summary>
     public IntPtr GetMergeStackResultFn;
+
+    /// <summary>v81: <c>int ArmConfirmation(uint type, int minPercent, int timeoutMs)</c>: answer
+    /// the next server yes/no prompt (ConfirmationRequest 0x0274) of this type within timeoutMs,
+    /// without the client opening its dialog: Yes when the server's "N percent" is at least
+    /// minPercent (or minPercent is 0), else No. One-shot. timeoutMs &lt;= 0 disarms.
+    /// 1 armed/disarmed, 0 sender or game-event hook unavailable, -3 bad arguments
+    /// (type 0, minPercent outside 0-100, timeout over 120 s). Any thread. Requires API v81+.</summary>
+    public IntPtr ArmConfirmationFn;
+
+    /// <summary>v81: <c>int GetLastConfirmation(uint* type, uint* contextId, int* percent, int* outcome, int* ageMs)</c>:
+    /// the last prompt the server sent: returns its sequence number (0 = none yet); percent -1
+    /// when the text has none; outcome 1 shown to the player, 2 answered Yes, 3 answered No,
+    /// 4 the send failed (shown). Any out pointer may be null. Any thread. Requires API v81+.</summary>
+    public IntPtr GetLastConfirmationFn;
 }
 
 /// <summary>v79 <see cref="TrainingInfoNative.Flags"/> bits.</summary>
@@ -1658,6 +1672,12 @@ internal unsafe delegate int GetVendorTradeStatusCallbackDelegate(VendorTradeSta
 // the cdecl caller both pop the args, and the plugin's stack drifts on every call.
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetMergeStackResultCallbackDelegate(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int ArmConfirmationCallbackDelegate(uint type, int minPercent, int timeoutMs);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetLastConfirmationCallbackDelegate(uint* type, uint* contextId, int* percent, int* outcome, int* ageMs);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetVTankStateCallbackDelegate(int* sequence);

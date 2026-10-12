@@ -158,6 +158,8 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetPluginExportJson     => _api.Version >= 66 && _api.GetPluginExportJsonFn     != IntPtr.Zero;
     // Version-checked first: on an older engine the field lies past the end of its API table.
     public bool HasGetMergeStackResult     => _api.Version >= 80 && _api.GetMergeStackResultFn     != IntPtr.Zero;
+    /// <summary>v81: <see cref="ArmConfirmation"/> and <see cref="TryGetLastConfirmation"/>.</summary>
+    public bool HasConfirmationAnswers     => _api.Version >= 81 && _api.ArmConfirmationFn != IntPtr.Zero && _api.GetLastConfirmationFn != IntPtr.Zero;
     public bool HasGetPluginInterface      => _api.Version >= 68 && _api.GetPluginInterfaceFn      != IntPtr.Zero;
     public bool HasGetLiveObjectIds        => _api.Version >= 69 && _api.GetLiveObjectIdsFn        != IntPtr.Zero;
     public bool HasGetLastUseDone          => _api.Version >= 70 && _api.GetLastUseDoneFn          != IntPtr.Zero;
@@ -593,6 +595,60 @@ public readonly unsafe struct RynthCoreHost
         amount = a;
         ageMs = age;
         return status;
+    }
+
+    /// <summary>Server yes/no prompt types (ConfirmationRequest 0x0274).</summary>
+    public static class ConfirmationKind
+    {
+        public const uint SwearAllegiance = 1;
+        public const uint AlterSkill = 2;
+        public const uint AlterAttribute = 3;
+        public const uint Fellowship = 4;
+        public const uint CraftInteraction = 5;
+        public const uint Augmentation = 6;
+        public const uint YesNo = 7;
+    }
+
+    /// <summary>What happened to the last prompt (<see cref="TryGetLastConfirmation"/>).</summary>
+    public static class ConfirmationOutcome
+    {
+        public const int None = 0;       // no prompt this session
+        public const int Shown = 1;      // not armed: the client showed its dialog
+        public const int Accepted = 2;   // answered Yes for the plugin
+        public const int Declined = 3;   // answered No: the server's percent was below the minimum
+        public const int SendFailed = 4; // armed, but the send failed: the client showed it
+    }
+
+    /// <summary>
+    /// v81: answer the next server prompt of <paramref name="type"/> (a
+    /// <see cref="ConfirmationKind"/>) that arrives within <paramref name="timeoutMs"/>,
+    /// without the client opening its dialog: Yes when the server's "N percent chance" is at
+    /// least <paramref name="minPercent"/> (or it is 0), else No. One-shot; timeoutMs &lt;= 0
+    /// disarms. 1 armed, 0 unavailable (engine before v81, sender or hook missing), -3 bad
+    /// arguments.
+    /// </summary>
+    public int ArmConfirmation(uint type, int minPercent, int timeoutMs)
+    {
+        if (!HasConfirmationAnswers)
+            return 0;
+        return ((delegate* unmanaged[Cdecl]<uint, int, int, int>)_api.ArmConfirmationFn)(type, minPercent, timeoutMs);
+    }
+
+    /// <summary>
+    /// v81: the last prompt the server sent. <paramref name="seq"/> counts them (0 = none yet);
+    /// <paramref name="percent"/> is -1 when the text has none; <paramref name="outcome"/> is a
+    /// <see cref="ConfirmationOutcome"/>. False on an engine before v81.
+    /// </summary>
+    public bool TryGetLastConfirmation(out int seq, out uint type, out int percent, out int outcome, out int ageMs)
+    {
+        seq = 0; type = 0; percent = -1; outcome = 0; ageMs = 0;
+        if (!HasConfirmationAnswers)
+            return false;
+        uint t = 0, ctx = 0;
+        int pct = -1, oc = 0, age = 0;
+        seq = ((delegate* unmanaged[Cdecl]<uint*, uint*, int*, int*, int*, int>)_api.GetLastConfirmationFn)(&t, &ctx, &pct, &oc, &age);
+        type = t; percent = pct; outcome = oc; ageMs = age;
+        return true;
     }
 
     /// <summary>
