@@ -40,3 +40,9 @@ the window shows the engine grid instead.
 ## Tests
 
 - ItemHudTests: PASS (63 assertions).
+
+## Local test install
+
+- Engine `2026.10.5.28+f88c931` published to `C:\Games\RynthCore\Runtime` (`-EngineOnly`, so a
+  running client hot-reloads onto it).
+- Previous engine and plugin backed up to `C:\Games\_rynth-backups\20261011-pre-miniremote\`.
