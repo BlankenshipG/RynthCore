@@ -540,7 +540,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         // Char and Hub open the Mini Remote window (MiniRemoteFace, hosting RynthAi's remote): Char
         // on its Character tab (an ILT tab; elsewhere the remote shows), Hub as it was left.
         Launcher("##l_char", PhosphorIcons.User, "Char",
-            "Char. Left-click: the Mini Remote on its Character tab (ILT worlds).  Right-click: the Mini Remote's tabs, Guardian, Progression (Skills panel).",
+            "Char. Left-click: the Mini Remote on its Character tab (ILT worlds).  Right-click: Character windows (Spells, Skills, Inventory...), then this server's plugin windows.",
             x, y, bw, labels, () => ShowMiniRemoteTab("character"));
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
         {
@@ -753,14 +753,9 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         dl.AddText(font, font.FontSize, new Vector2(x + 4 + CalcWidth(font, icon) + 3, ty), White, bar.Text ?? "");
     }
 
-    // ── Char menu (right-click Char): RynthAi's character windows ──────────
-
-    /// <summary>The Mini Remote's ILT tabs: menu label and the "/ra hub tab" name RynthAi parses.</summary>
-    private static readonly (string Label, string Section)[] HubSections =
-    {
-        ("Character", "character"), ("Quests", "quests"), ("Pets", "pets"),
-        ("Banking", "banking"), ("Gear", "gear"), ("Games", "games"),
-    };
+    // ── Char menu (right-click Char) ───────────────────────────────────
+    // Top: "Character", the windows every server has. Bottom: the server section
+    // (UI.ServerMenus): the installed server plugins' windows for the world you're on.
 
     /// <summary>
     /// Opens the Mini Remote window on one of its tabs ("" = the remote). RynthAi shows the tab
@@ -770,6 +765,14 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     {
         ImGuiPanelHost.Open(MiniRemoteFace.Title);
         RynthAiCommands.ApplyRemoteCommand("hub", section.Length > 0 ? "tab " + section : "tab");
+    }
+
+    /// <summary>A Char menu item that toggles a registered ImGui panel (checked while open).</summary>
+    private static void PanelMenuItem(string title, string command)
+    {
+        if (!ImGuiPanelHost.HasFace(title)) return;
+        if (ImGuiNET.ImGui.MenuItem(title, command, ImGuiPanelHost.IsOpen(title)))
+            PanelRouter.Toggle(title);
     }
 
     private static void CharMenu()
@@ -783,23 +786,17 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         if (!open) return;
         try
         {
-            // The ILT sections are tabs of the one Mini Remote window; Guardian is an ILT panel.
-            if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote"))
+            ImGuiNET.ImGui.TextDisabled("Character");
+            if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote", ImGuiPanelHost.IsOpen(MiniRemoteFace.Title)))
                 ShowMiniRemoteTab("");
-            ImGuiNET.ImGui.Separator();
-            ImGuiNET.ImGui.TextDisabled("Mini Remote tabs (ILT worlds)");
-            foreach ((string label, string section) in HubSections)
-            {
-                if (ImGuiNET.ImGui.MenuItem(label, "/ra hub open " + section))
-                    ShowMiniRemoteTab(section);
-            }
-            if (ImGuiPanelHost.HasFace(GuardianFace.Title)
-                && ImGuiNET.ImGui.MenuItem("Guardian", "/rc guardian", ImGuiPanelHost.IsOpen(GuardianFace.Title)))
-                PanelRouter.Toggle(GuardianFace.Title);
-            ImGuiNET.ImGui.Separator();
-            if (ImGuiNET.ImGui.MenuItem("Progression (Skills panel)"))
-                SkillsFace.ShowProgression();
-            ImGuiNET.ImGui.SetItemTooltip("XP planner, augmentations and enlightenment (ILT worlds)");
+            if (ImGuiNET.ImGui.MenuItem("Spells", "/rc spells"))
+                RynthAiCommands.ApplyRemoteCommand("spells", "toggle");
+            ImGuiNET.ImGui.SetItemTooltip("RynthAi Spells: the spell catalog and buff profiles.");
+            PanelMenuItem(SkillsFace.Title, "/rc skills");
+            PanelMenuItem(InventoryFace.Title, "/rc inventory");
+            PanelMenuItem(ItemCountFace.Title, "/rc itemcount");
+
+            UI.ServerMenus.DrawImGuiMenu(separatorFirst: true);
         }
         finally
         {

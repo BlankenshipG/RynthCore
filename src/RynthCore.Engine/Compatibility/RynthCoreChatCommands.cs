@@ -314,16 +314,55 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
-        // /rc miniremote [show|hide|toggle] : the ImGui Mini Remote panel, like its bar button
-        // (RynthAi's dashboard and "/ra hub" use show / hide).
+        // /rc miniremote [show|hide|toggle|tab <tab>] : the ImGui Mini Remote panel, like its bar
+        // button (RynthAi's dashboard and "/ra hub" use show / hide). "tab" opens it on one of
+        // RynthAi's tabs (character, quests, pets, banking, gear, games; none = the remote).
         if (IsVerb(sub, "miniremote", out string remoteArgs) || IsVerb(sub, "remote", out remoteArgs))
         {
             if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.MiniRemoteFace.Title))
                 Reply("The Mini Remote panel isn't available (the ImGui layer is off?).");
+            else if (IsVerb(remoteArgs, "tab", out string tab))
+            {
+                ImGuiBackend.ImGuiPanelHost.Open(ImGuiBackend.Panels.MiniRemoteFace.Title);
+                UI.Data.RynthAiCommands.ApplyRemoteCommand("hub", tab.Length > 0 ? "tab " + tab : "tab");
+            }
             else if (!TryPanelMode(remoteArgs, out bool? show))
-                Reply("Usage: /rc miniremote [show|hide|toggle]");
+                Reply("Usage: /rc miniremote [show|hide|toggle|tab <tab>]");
             else
                 SetPanelOpen(ImGuiBackend.Panels.MiniRemoteFace.Title, show);
+            return true;
+        }
+
+        // /rc skills [show|hide|toggle] : the ImGui Skills panel; /rc progression opens it on its
+        // Progression tab (ILT worlds; the tab shows once RynthAi reports ILT features).
+        if (IsVerb(sub, "skills", out string skillsArgs))
+        {
+            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SkillsFace.Title))
+                Reply("The Skills panel isn't available (the ImGui layer is off?).");
+            else if (!TryPanelMode(skillsArgs, out bool? show))
+                Reply("Usage: /rc skills [show|hide|toggle]");
+            else
+                SetPanelOpen(ImGuiBackend.Panels.SkillsFace.Title, show);
+            return true;
+        }
+        if (sub.Equals("progression", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SkillsFace.Title))
+                Reply("The Skills panel isn't available (the ImGui layer is off?).");
+            else
+                ImGuiBackend.Panels.SkillsFace.ShowProgression();
+            return true;
+        }
+
+        // /rc spells [show|hide|toggle] : RynthAi's Spells window (spell catalog, buff profiles).
+        if (IsVerb(sub, "spells", out string spellsArgs))
+        {
+            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.RynthAiFace.Title))
+                Reply("The Spells window comes with RynthAi; it isn't installed.");
+            else if (!TryPanelMode(spellsArgs, out bool? show))
+                Reply("Usage: /rc spells [show|hide|toggle]");
+            else
+                UI.Data.RynthAiCommands.ApplyRemoteCommand("spells", show == null ? "toggle" : show.Value ? "show" : "hide");
             return true;
         }
 

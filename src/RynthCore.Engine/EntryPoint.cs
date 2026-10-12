@@ -566,6 +566,44 @@ public static class EntryPoint
     /// (RynthAi/RynthChat/RynthVision) on the user's launcher selection.
     /// Filename match (not full-path) so users can keep the DLL anywhere.
     /// </summary>
+    private static bool _serverMenusRegistered;
+
+    /// <summary>
+    /// The server sections of the Char and Mini Remote menus (UI.ServerMenus): each server once,
+    /// then the items of the installed plugins that have windows for it. A server whose plugins
+    /// are all missing gets no items, so its section never shows.
+    /// </summary>
+    private static void RegisterServerMenus(bool rynthAi, bool rynthIlt)
+    {
+        if (_serverMenusRegistered) return;
+        _serverMenusRegistered = true;
+
+        // Infinite Leaftide: IltInfo (host / world name lists, or "/rc ilt on" for the session).
+        UI.ServerMenus.DefineServer("ilt", "Infinite Leaftide", static () => IltInfo.IsIlt, "/rc ilt on");
+        if (rynthAi)
+        {
+            // RynthAi's ILT features: the Mini Remote's tabs (shown once the server reports each on).
+            foreach ((string label, string tab) in new[]
+            {
+                ("Character", "character"), ("Quests", "quests"), ("Pets", "pets"),
+                ("Banking", "banking"), ("Gear", "gear"), ("Games", "games"),
+            })
+            {
+                UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem(label, "/rc miniremote tab " + tab,
+                    $"The Mini Remote's {label} tab (RynthAi).", "tab:" + tab));
+            }
+            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Guardian", "/rc guardian toggle",
+                "Temple of Enlightenment guardians: riddle answers and Give (RynthAi)."));
+        }
+        if (rynthIlt)
+            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Bounties", "/rc bounties toggle",
+                "ACECustom bounties and your progress on each (RynthILT)."));
+        if (rynthAi)
+            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Progression", "/rc progression",
+                "XP planner, augmentations and enlightenment (the Skills panel's Progression tab)."));
+        UI.ServerMenus.PushToRynthAi = rynthAi;
+    }
+
     private static bool HasPluginDll(string dllFileName)
     {
         var paths = Plugins.EngineSettings.PluginPaths;
@@ -1074,6 +1112,7 @@ public static class EntryPoint
                     // RynthAiPanel: see the dispatcher invariant above ChatModel.EnsureSettingsLoaded.
                     RynthAiDashboardState.EnsureLoaded();
                 }
+                RegisterServerMenus(HasPluginDll("RynthCore.Plugin.RynthAi.dll"), HasPluginDll("RynthCore.Plugin.RynthILT.dll"));
                 if (trackerPresent)
                     TrackerSettings.EnsureLoaded();
                 // Hide the docked Avalonia bar before it is built if the ImGui bar stands in.
