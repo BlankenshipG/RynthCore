@@ -103,7 +103,7 @@ internal sealed partial class SkillsFace
             ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
             if (info == null || !info.Available)
             {
-                Message("Augmentations and Enlightenment need RynthAi's ILT Hub on an ILT world.", w);
+                Message("Augmentations and Enlightenment need RynthAi's ILT features on an ILT world.", w);
                 return;
             }
             DrawAttrRaiser(info.Attr, w);

@@ -300,6 +300,33 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
+        // /rc bounties|guardian [show|hide|toggle] : the ILT section's panels, like the bar's
+        // ILT button (Bounties: the RynthILT plugin's tracker; Guardian: RynthAi's Temple
+        // guardian tools). Only on Infinite Leaftide with the plugin installed.
+        if (IsVerb(sub, "bounties", out string panelArgs) || IsVerb(sub, "bounty", out panelArgs) || IsVerb(sub, "bountys", out panelArgs))
+        {
+            IltPanel(ImGuiBackend.Panels.BountiesFace.Title, "Bounties", "RynthILT", panelArgs);
+            return true;
+        }
+        if (IsVerb(sub, "guardian", out panelArgs) || IsVerb(sub, "guardians", out panelArgs))
+        {
+            IltPanel(ImGuiBackend.Panels.GuardianFace.Title, "Guardian", "RynthAi", panelArgs);
+            return true;
+        }
+
+        // /rc miniremote [show|hide|toggle] : the ImGui Mini Remote panel, like its bar button
+        // (RynthAi's dashboard and "/ra hub" use show / hide).
+        if (IsVerb(sub, "miniremote", out string remoteArgs) || IsVerb(sub, "remote", out remoteArgs))
+        {
+            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.MiniRemoteFace.Title))
+                Reply("The Mini Remote panel isn't available (the ImGui layer is off?).");
+            else if (!TryPanelMode(remoteArgs, out bool? show))
+                Reply("Usage: /rc miniremote [show|hide|toggle]");
+            else
+                SetPanelOpen(ImGuiBackend.Panels.MiniRemoteFace.Title, show);
+            return true;
+        }
+
         switch (sub.ToLowerInvariant())
         {
             case "rl":
@@ -335,28 +362,6 @@ internal static class RynthCoreChatCommands
                     Reply("The Item Count panel isn't available (the ImGui layer is off?).");
                 else
                     UI.PanelRouter.Toggle(ImGuiBackend.Panels.ItemCountFace.Title);
-                return true;
-
-            case "bounties":
-            case "bounty":
-            case "bountys":
-                // The ImGui Bounties panel (ILT section: ACECustom bounties, the RynthILT plugin's
-                // tracker), like the ILT bar button. Only on Infinite Leaftide with RynthILT installed.
-                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.BountiesFace.Title))
-                    Reply("The Bounties panel isn't available (the RynthILT plugin isn't installed, or the ImGui layer is off).");
-                else if (!IltInfo.IsIlt && !ImGuiBackend.ImGuiPanelHost.IsOpen(ImGuiBackend.Panels.BountiesFace.Title))
-                    Reply("Bounties are an Infinite Leaftide feature, and this isn't Infinite Leaftide (/rc ilt for why).");
-                else
-                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.BountiesFace.Title);
-                return true;
-
-            case "remote":
-            case "miniremote":
-                // The ImGui Mini Remote panel (open/close), like its bar button.
-                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.MiniRemoteFace.Title))
-                    Reply("The Mini Remote panel isn't available (the ImGui layer is off?).");
-                else
-                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.MiniRemoteFace.Title);
                 return true;
 
             case "resetbar":
@@ -614,9 +619,12 @@ internal static class RynthCoreChatCommands
         Reply($"ILT: {(v.IsIlt ? "Infinite Leaftide" : "not Infinite Leaftide")} - {v.Reason}.");
         Reply($"Signals: host {ServerInfo.HostDescription}; world name {AccountHooks.AnnouncedWorldName ?? "(not announced)"}; "
             + $"override {IltInfo.Override}. Lists: {IltInfo.ListsDescription}.");
-        Reply(ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.BountiesFace.Title)
-            ? "RynthILT: installed (Bounties: the ILT bar button or /rc bounties)."
-            : "RynthILT: not installed, so there is no ILT section.");
+        bool bounties = ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.BountiesFace.Title);
+        bool guardian = ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.GuardianFace.Title);
+        Reply(bounties ? "RynthILT: installed (Bounties: the ILT bar button or /rc bounties)."
+            : "RynthILT: not installed (no Bounties panel).");
+        Reply(guardian ? "RynthAi: installed (Guardian: the ILT bar button or /rc guardian; the ILT tabs: the Mini Remote)."
+            : "RynthAi: not installed (no Guardian panel or ILT tabs).");
     }
 
     private static void HandleMasteryCommand()
@@ -658,6 +666,42 @@ internal static class RynthCoreChatCommands
             Reply("Usage: /rc worldlayer [auto|uipass|transition|endscene]");
         Reply(D3D9.Nav3DRenderInjector.Describe());
         Reply(ImGuiBackend.UnderUiLayer.Describe());
+    }
+
+    /// <summary>
+    /// "" / "toggle" → null (flip), "show" / "on" / "open" → true, "hide" / "off" / "close" →
+    /// false. False for anything else.
+    /// </summary>
+    private static bool TryPanelMode(string args, out bool? show)
+    {
+        show = null;
+        switch (args.Trim().ToLowerInvariant())
+        {
+            case "": case "toggle": return true;
+            case "show": case "on": case "open": show = true; return true;
+            case "hide": case "off": case "close": show = false; return true;
+            default: return false;
+        }
+    }
+
+    /// <summary>Opens (true), closes (false) or toggles (null) an ImGui panel, like its bar button.</summary>
+    private static void SetPanelOpen(string title, bool? show)
+    {
+        if (show == null || show.Value != ImGuiBackend.ImGuiPanelHost.IsOpen(title))
+            UI.PanelRouter.Toggle(title);
+    }
+
+    /// <summary>"/rc bounties|guardian [show|hide|toggle]": one of the ILT section's panels.</summary>
+    private static void IltPanel(string title, string label, string plugin, string args)
+    {
+        if (!ImGuiBackend.ImGuiPanelHost.HasFace(title))
+            Reply($"The {label} panel isn't available (the {plugin} plugin isn't installed, or the ImGui layer is off).");
+        else if (!TryPanelMode(args, out bool? show))
+            Reply($"Usage: /rc {label.ToLowerInvariant()} [show|hide|toggle]");
+        else if (show != false && !IltInfo.IsIlt && !ImGuiBackend.ImGuiPanelHost.IsOpen(title))
+            Reply($"{label} is an Infinite Leaftide feature, and this isn't Infinite Leaftide (/rc ilt for why).");
+        else
+            SetPanelOpen(title, show);
     }
 
     private static bool IsVerb(string sub, string verb, out string args)

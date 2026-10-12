@@ -55,10 +55,11 @@ internal static class ImGuiBar
     private static readonly string[] ImGuiOnlyBarPanels =
         { Panels.InventoryFace.Title, Panels.SkillsFace.Title, Panels.SenseFace.Title, Panels.ItemCountFace.Title, Panels.MiniRemoteFace.Title };
 
-    // The ILT section: the RynthILT plugin's ImGui-only panels. They never get buttons of their
-    // own; one ILT button stands for them, shown only on Infinite Leaftide (IltInfo.IsIlt) and
-    // only for the ones registered (EntryPoint registers them when RynthILT is installed).
-    private static readonly string[] IltPanels = { Panels.BountiesFace.Title };
+    // The ILT section: ImGui-only Infinite Leaftide panels (Bounties from RynthILT, Guardian from
+    // RynthAi). They never get buttons of their own; one ILT button stands for them, shown only
+    // on Infinite Leaftide (IltInfo.IsIlt) and only for the ones registered (EntryPoint registers
+    // each when its plugin is installed).
+    private static readonly string[] IltPanels = { Panels.BountiesFace.Title, Panels.GuardianFace.Title };
 
     // Known panels' icons (DrakBot's where the same window exists); others show their first letter.
     private static readonly Dictionary<string, string> PanelIcons = new(StringComparer.OrdinalIgnoreCase)
@@ -374,8 +375,8 @@ internal static class ImGuiBar
             FacePopup(b.PopupId, b.Title, ImGuiPanelHost.HasFace(b.Title));
         }
 
-        // The ILT section: one button, only on Infinite Leaftide with RynthILT's panels
-        // registered. With one panel it toggles that panel; with more it opens a menu.
+        // The ILT section: one button, only on Infinite Leaftide with ILT panels registered
+        // (Bounties, Guardian). With one panel it toggles that panel; with more it opens a menu.
         int iltCount = IltPanelCount();
         if (iltCount > 0)
         {

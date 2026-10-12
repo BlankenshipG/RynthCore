@@ -537,12 +537,11 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         }
         x += bw + LauncherGap;
 
-        // Char and Hub open RynthAi's own ImGui overlay windows (Mini Remote, which is the ILT
-        // Hub, its section windows, Inventory HUDs). They draw only when the engine hands plugins
-        // its ImGui context.
+        // Char and Hub open the Mini Remote window (MiniRemoteFace, hosting RynthAi's remote): Char
+        // on its Character tab (an ILT tab; elsewhere the remote shows), Hub as it was left.
         Launcher("##l_char", PhosphorIcons.User, "Char",
-            "Char. Left-click: ILT Hub / Mini Remote (/ra hub show).  Right-click: Hub windows, Progression (Skills panel).",
-            x, y, bw, labels, () => RynthAiCommands.ApplyRemoteCommand("hub", "show"));
+            "Char. Left-click: the Mini Remote on its Character tab (ILT worlds).  Right-click: the Mini Remote's tabs, Guardian, Progression (Skills panel).",
+            x, y, bw, labels, () => ShowMiniRemoteTab("character"));
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
         {
             ImGuiNET.ImGui.SetNextWindowPos(ImGuiNET.ImGui.GetItemRectMin(), ImGuiCond.Always, new Vector2(0, 1));
@@ -756,12 +755,22 @@ internal sealed partial class RynthAiFace : IImGuiPanel
 
     // ── Char menu (right-click Char): RynthAi's character windows ──────────
 
-    /// <summary>ILT Hub section windows: menu label and the "/ra hub open" section name RynthAi parses.</summary>
+    /// <summary>The Mini Remote's ILT tabs: menu label and the "/ra hub tab" name RynthAi parses.</summary>
     private static readonly (string Label, string Section)[] HubSections =
     {
         ("Character", "character"), ("Quests", "quests"), ("Pets", "pets"),
-        ("Banking", "banking"), ("Gear", "gear"), ("Games", "games"), ("Guardian", "guardian"),
+        ("Banking", "banking"), ("Gear", "gear"), ("Games", "games"),
     };
+
+    /// <summary>
+    /// Opens the Mini Remote window on one of its tabs ("" = the remote). RynthAi shows the tab
+    /// once the server reports that ILT feature on; until then the window shows the remote.
+    /// </summary>
+    private static void ShowMiniRemoteTab(string section)
+    {
+        ImGuiPanelHost.Open(MiniRemoteFace.Title);
+        RynthAiCommands.ApplyRemoteCommand("hub", section.Length > 0 ? "tab " + section : "tab");
+    }
 
     private static void CharMenu()
     {
@@ -774,15 +783,19 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         if (!open) return;
         try
         {
-            // The Mini Remote is the ILT Hub; each former Hub tab is its own window (toggled).
-            if (ImGuiNET.ImGui.MenuItem("Mini Remote (ILT Hub)", "/ra hub"))
-                RynthAiCommands.ApplyRemoteCommand("hub", "toggle");
+            // The ILT sections are tabs of the one Mini Remote window; Guardian is an ILT panel.
+            if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote"))
+                ShowMiniRemoteTab("");
             ImGuiNET.ImGui.Separator();
+            ImGuiNET.ImGui.TextDisabled("Mini Remote tabs (ILT worlds)");
             foreach ((string label, string section) in HubSections)
             {
                 if (ImGuiNET.ImGui.MenuItem(label, "/ra hub open " + section))
-                    RynthAiCommands.ApplyRemoteCommand("hub", "open " + section + " toggle");
+                    ShowMiniRemoteTab(section);
             }
+            if (ImGuiPanelHost.HasFace(GuardianFace.Title)
+                && ImGuiNET.ImGui.MenuItem("Guardian", "/rc guardian", ImGuiPanelHost.IsOpen(GuardianFace.Title)))
+                PanelRouter.Toggle(GuardianFace.Title);
             ImGuiNET.ImGui.Separator();
             if (ImGuiNET.ImGui.MenuItem("Progression (Skills panel)"))
                 SkillsFace.ShowProgression();

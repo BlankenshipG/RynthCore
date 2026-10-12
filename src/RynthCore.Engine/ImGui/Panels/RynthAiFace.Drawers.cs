@@ -167,7 +167,7 @@ internal sealed partial class RynthAiFace
 
         public override string TabTooltip(bool right) =>
             "Mini Remote: session rates, attack target, summon, item slots, toggles, bank, rebuff, Translate.\n" +
-            "Its Options button picks the sections and opens the ILT Hub windows (also: right-click Hub).\n" +
+            "Its Options button picks the sections (also: right-click Hub). The ILT tabs are in the Mini Remote window.\n" +
             (right ? "Click to slide it out (to the right: there's no room on the left)." : "Click to slide it out.");
 
         public override float Width(float k) =>

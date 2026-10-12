@@ -1043,10 +1043,13 @@ public static class EntryPoint
                     ImGuiBackend.Panels.VisionFace.Register();
                 if (HasPluginDll("RynthCore.Plugin.RynthNav.dll"))
                     ImGuiBackend.Panels.RynthNavFace.Register();
-                // The ILT section (Infinite Leaftide): its faces exist only with RynthILT
-                // installed, and the bar's ILT button shows them only on ILT (IltInfo).
+                // The ILT section (Infinite Leaftide): each face exists only with its plugin
+                // installed (Bounties: RynthILT, Guardian: RynthAi), and the bar's ILT button
+                // shows them only on ILT (IltInfo).
                 if (HasPluginDll("RynthCore.Plugin.RynthILT.dll"))
                     ImGuiBackend.Panels.BountiesFace.Register();
+                if (HasPluginDll("RynthCore.Plugin.RynthAi.dll"))
+                    ImGuiBackend.Panels.GuardianFace.Register();
                 if (HasPluginDll("RynthCore.Plugin.RynthChat.dll"))
                 {
                     ImGuiBackend.Panels.ChatFace.Register();

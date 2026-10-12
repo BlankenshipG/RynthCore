@@ -4,9 +4,11 @@
 //
 //  With RynthAi loaded it hosts RynthAi's Mini Remote (session rates, target,
 //  summon, item slots, toggles, bank, rebuff, Translate, Guardian and its
-//  Options menu), drawn by the plugin through RynthPluginRenderEmbed
-//  ("miniremote-window"). The window fits itself to what the plugin asks for
-//  whenever that changes (a section shown or hidden, bigger or smaller boxes);
+//  Options menu, plus on ILT worlds the tabs Character, Quests, Pets, Banking,
+//  Gear and Games that were the ILT Hub), drawn by the plugin through
+//  RynthPluginRenderEmbed ("miniremote-window"). The window fits itself to what
+//  the plugin asks for whenever that changes (another tab, a section shown or
+//  hidden, bigger or smaller boxes);
 //  a resize by hand holds until then. While this window shows it, RynthAi keeps
 //  its own floating copy hidden, so there is one Mini Remote, not two.
 //
