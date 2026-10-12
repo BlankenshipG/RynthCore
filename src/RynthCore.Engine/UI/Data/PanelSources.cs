@@ -33,10 +33,13 @@ internal sealed class LogSource : UiSource<LogSnapshot>
     }
 }
 
-/// <summary>The Tracker panel's rows, formatted: nine, plus two Radiance rows on Aelrynth once earned.</summary>
+/// <summary>
+/// The Tracker panel's rows, formatted: ten (Lum/5m from RynthTracker 0.4.0), plus two pass-up rows
+/// on ACECustom (the bank is read) and two Radiance rows on Aelrynth once earned.
+/// </summary>
 internal sealed record TrackerSnapshot(string[] Labels, string[] Values)
 {
-    public static readonly string[] DefaultLabels = { "Session", "XP/hr", "Lum/hr", "Kls/hr", "XP", "Lum", "Kills", "XP/kl", "Deaths" };
+    public static readonly string[] DefaultLabels = { "Session", "XP/hr", "Lum/hr", "Lum/5m", "Kls/hr", "XP", "Lum", "Kills", "XP/kl", "Deaths" };
 }
 
 /// <summary>
@@ -82,11 +85,17 @@ internal sealed unsafe class TrackerSource : UiSource<TrackerSnapshot>
         string Xp(long v) => maxLevel ? "max level" : FormatNum(v);
         var labels = new List<string> { "Session", "XP/hr", "Lum/hr" };
         var values = new List<string> { FormatTime(Num("ss")), Xp((long)Num("xh")), FormatNum((long)Num("lh")) };
+        // Luminance of the last five minutes (RynthTracker 0.4.0; an older one doesn't send it).
+        if (r.TryGetProperty("l5", out _)) { labels.Add("Lum/5m"); values.Add(FormatNum((long)Num("l5"))); }
+        // Allegiance pass-up: only where the plugin can tell it apart (ACECustom's bank is read).
+        bool passUp = Num("pk") > 0;
+        if (passUp) { labels.Add("Pass/hr"); values.Add(FormatNum((long)Num("ph"))); }
         // Radiance (Aelrynth's Bank session total): rows only once some has been earned.
         long rad = (long)Num("rt");
         if (rad > 0) { labels.Add("Rad/hr"); values.Add(FormatNum((long)Num("rh"))); }
         labels.AddRange(new[] { "Kls/hr", "XP", "Lum" });
         values.AddRange(new[] { Num("kh").ToString("F1", ic), Xp((long)Num("xt")), FormatNum((long)Num("lt")) });
+        if (passUp) { labels.Add("Pass-up"); values.Add(FormatNum((long)Num("pt"))); }
         if (rad > 0) { labels.Add("Rad"); values.Add(FormatNum(rad)); }
         labels.AddRange(new[] { "Kills", "XP/kl", "Deaths" });
         values.AddRange(new[] { ((long)Num("kt")).ToString(ic), Xp((long)Num("xk")), ((long)Num("dt")).ToString(ic) });

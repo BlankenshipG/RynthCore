@@ -210,7 +210,7 @@ internal sealed unsafe class LogFace : IImGuiPanel
     }
 }
 
-/// <summary>Tracker: nine session-stat rows over an adjustable-opacity background.</summary>
+/// <summary>Tracker: the session-stat rows (TrackerSource) over an adjustable-opacity background.</summary>
 internal sealed class TrackerFace : IImGuiPanel
 {
     private static readonly Vector4 TitleColor = RynthTheme.Vec(0xFFE6B450);
@@ -275,6 +275,10 @@ internal sealed class TrackerFace : IImGuiPanel
             float rowRight = ImGuiNET.ImGui.GetCursorPosX() + ImGuiNET.ImGui.GetContentRegionAvail().X;
             if (ImGuiNET.ImGui.GetCursorScreenPos().Y + rowH > gripTop) rowRight -= grip;
             ImGuiNET.ImGui.TextColored(LabelColor, labels[i]);
+            if (labels[i].StartsWith("Pass", StringComparison.Ordinal))
+                ImGuiNET.ImGui.SetItemTooltip("Luminance that reached your bank without a \"You've banked\" line: your vassals' pass-up.\nFellowship and Zone Share splits arrive the same silent way and are included.");
+            else if (labels[i] == "Lum/5m")
+                ImGuiNET.ImGui.SetItemTooltip("Luminance earned in the last five minutes.");
             string value = values != null && i < values.Length ? values[i] : "—";
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Mono9));
             float w = ImGuiNET.ImGui.CalcTextSize(value).X;
