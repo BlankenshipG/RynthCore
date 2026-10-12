@@ -152,6 +152,9 @@ internal sealed class RynthAiSettings
     // Nav3D extras (RynthAi NavOverlay), both off by default: 0 off, 1 numbers, 2 numbers and names.
     public int NavLabelMode { get; set; }
     public bool NavGuideLine { get; set; }
+    // RynthAi NavResumeNearest: macro start, route loads and resuming after a pause that moved
+    // the character head for the closest waypoint. On by default; an older plugin ignores it.
+    public bool NavResumeNearest { get; set; } = true;
     public bool OpenDoors { get; set; }
     public float OpenDoorRange { get; set; } = 5f;
     public bool AutoUnlockDoors { get; set; }
@@ -820,6 +823,13 @@ internal static class SettingsSchema
             Float("Door Detection Range (yd)", s => s.OpenDoorRange, (s, v) => s.OpenDoorRange = v, 0.1f, 70f, 1f, when: s => s.OpenDoors),
             Bool("Auto-Unlock Doors", s => s.AutoUnlockDoors, (s, v) => s.AutoUnlockDoors = v,
                 "If a door is locked, try to use a lockpick from your Consumable Items list.", when: s => s.OpenDoors),
+            Spacer(),
+            Section("Getting Back On Route"),
+            Bool("Go To Closest Waypoint", s => s.NavResumeNearest, (s, v) => s.NavResumeNearest = v,
+                "On: starting the macro, loading a Circular or Linear route, and carrying on after a fight, loot, buff or door\n" +
+                "that moved you 10 yd or more all head for the closest waypoint on the route. A waypoint you have already\n" +
+                "walked past is skipped for the one after it, so nav doesn't turn back. Once routes only look ahead.\n" +
+                "Off: nav carries on to the waypoint it was heading for, and a loaded route starts at its first point."),
             Spacer(),
             Section("Steering"),
             Float("Stop & Turn Angle", s => s.NavStopTurnAngle, (s, v) => s.NavStopTurnAngle = v, 1f, 90f, 1f,
