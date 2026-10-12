@@ -50,6 +50,7 @@ namespace EngineSettingsTests
                 Run(nameof(SaveWithoutFileWritesOwnedKeys), SaveWithoutFileWritesOwnedKeys);
                 Run(nameof(SaveLeavesMalformedFileAlone), SaveLeavesMalformedFileAlone);
                 Run(nameof(MaxHotReloadsReadAndKept), MaxHotReloadsReadAndKept);
+                Run(nameof(CloseOnServerDisconnectDefaultOnAndSaved), CloseOnServerDisconnectDefaultOnAndSaved);
             }
             finally
             {
@@ -80,6 +81,8 @@ namespace EngineSettingsTests
                     case "hook-off": EngineSettings.SetUiHookEnabled(args[1], false); break;
                     case "add-plugin": EngineSettings.AddPluginPath(args[1]); break;
                     case "imgui-off": EngineSettings.EnableImGuiBackend = false; break;
+                    case "dcclose-off": EngineSettings.CloseOnServerDisconnect = false; break;
+                    case "dcclose-on": EngineSettings.CloseOnServerDisconnect = true; break;
                     case "dump":
                         Console.WriteLine("PluginPaths=" + string.Join("|", EngineSettings.PluginPaths));
                         Console.WriteLine("StartTooltip=" + EngineSettings.IsUiHookEnabled("StartTooltip"));
@@ -87,6 +90,7 @@ namespace EngineSettingsTests
                         Console.WriteLine("ImGuiBackend=" + EngineSettings.EnableImGuiBackend);
                         Console.WriteLine("ServerMessageStream=" + EngineSettings.ServerMessageStream);
                         Console.WriteLine("MaxHotReloads=" + EngineSettings.MaxHotReloads);
+                        Console.WriteLine("CloseOnServerDisconnect=" + EngineSettings.CloseOnServerDisconnect);
                         break;
                     default: throw new ArgumentException(args[0]);
                 }
@@ -286,6 +290,39 @@ namespace EngineSettingsTests
                 (exit, output) = RunChild(path, "dump");
                 Eq(exit, 0, $"{bad}: dump");
                 Eq(DumpValue(output, "MaxHotReloads"), "3", $"{bad}: ignored, the default");
+            }
+        }
+
+        // engine.json "CloseOnServerDisconnect" (close the client on AC's Disconnected screen):
+        // default on and not written while on; the Settings checkbox turning it off writes false,
+        // which a later start reads back; turning it on again drops it from the file; a value
+        // that isn't true/false is ignored.
+        private static void CloseOnServerDisconnectDefaultOnAndSaved()
+        {
+            string dir = NewDir("dcclose");
+            string path = Path.Combine(dir, "engine.json");
+
+            File.WriteAllText(path, LauncherFile);
+            Eq(DumpValue(RunChild(path, "dump").Out, "CloseOnServerDisconnect"), "True", "missing: on");
+            Eq(RunChild(path, "hook-off", "StartTooltip").Exit, 0, "save with the default");
+            Check(!ReadJson(path).TryGetProperty("CloseOnServerDisconnect", out _), "the default isn't written to the file");
+
+            var (exit, output) = RunChild(path, "dcclose-off");
+            Eq(exit, 0, "turn off (" + output.Trim() + ")");
+            Eq(ReadJson(path).GetProperty("CloseOnServerDisconnect").GetRawText(), "false", "off is saved");
+            Check(ReadJson(path).TryGetProperty("LauncherWindow", out _), "launcher keys kept");
+            Eq(DumpValue(RunChild(path, "dump").Out, "CloseOnServerDisconnect"), "False", "off read back at the next start");
+            Eq(RunChild(path, "hook-off", "CheckTooltip").Exit, 0, "another save");
+            Eq(ReadJson(path).GetProperty("CloseOnServerDisconnect").GetRawText(), "false", "off survives other saves");
+
+            Eq(RunChild(path, "dcclose-on").Exit, 0, "turn on");
+            Check(!ReadJson(path).TryGetProperty("CloseOnServerDisconnect", out _), "on again: dropped from the file");
+            Eq(DumpValue(RunChild(path, "dump").Out, "CloseOnServerDisconnect"), "True", "on read back");
+
+            foreach (string bad in new[] { "\"no\"", "0", "null" })
+            {
+                File.WriteAllText(path, LauncherFile.Replace("\"LoggingLevel\"", $"\"CloseOnServerDisconnect\": {bad}, \"LoggingLevel\""));
+                Eq(DumpValue(RunChild(path, "dump").Out, "CloseOnServerDisconnect"), "True", $"{bad}: ignored, on");
             }
         }
 

@@ -77,6 +77,7 @@ namespace RynthCore.Engine.Compatibility;
 ///         the last minutes of client/server messages and engine markers) to
 ///         Logs\flight-&lt;pid&gt;-&lt;time&gt;.txt; <c>/rc flightdump auto &lt;reason&gt;</c> is the rate-limited
 ///         automatic form. <c>/rc flight [status|mark &lt;text&gt;|on|off|auto on|off]</c>.</item>
+///   <item><c>/rc quit</c> / <c>/rc exit</c> - closes the client cleanly, as its close button does.</item>
 ///   <item><c>/rc report [text]</c> - "Report a problem" (<see cref="Report.ProblemReport"/>): alone it
 ///         opens the panel; with text it sends that report now, with the recent log attached
 ///         (the panel is where the log can be left out). One report a minute.</item>
@@ -251,6 +252,15 @@ internal static class RynthCoreChatCommands
                     Reply(l);
             }
             catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc flightdump failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc quit | /rc exit : close the client cleanly (as its close button; the character logs off)
+        if (IsVerb(sub, "quit", out _) || IsVerb(sub, "exit", out _))
+        {
+            Reply("Closing the client.");
+            try { ServerDisconnectClose.CloseClientNow("/rc quit"); }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc quit failed - {ex.GetType().Name}: {ex.Message}"); }
             return true;
         }
 

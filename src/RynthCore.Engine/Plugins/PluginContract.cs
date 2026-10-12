@@ -844,6 +844,26 @@ internal struct RynthCoreAPI
     /// must equal that price; 0 skips the comparison. Same results and threading as Raise.
     /// Requires API v79+.</summary>
     public IntPtr TrainSkillFn;
+
+    /// <summary>v80: <c>int GetContainerOrder(uint containerId, int slotKind, uint* ids, int maxIds)</c>:
+    /// the items in one of the player's containers in their real slot order, as the server keeps it
+    /// (Net/InventoryOrder: the login message, a pack's contents list and every item move), where
+    /// GetContainerContents is in object-id order. slotKind 0 = the ordinary items (slot 0 first);
+    /// 1 = the side packs and foci in the main pack (the pack column, top first). Writes at most
+    /// maxIds ids (ids may be null with maxIds 0 to ask the count) and returns how many there are,
+    /// or -1 when no full list for that container has been seen (a side pack the server hasn't
+    /// listed yet): then the order is unknown, never guessed. Any thread. Requires API v80+.</summary>
+    public IntPtr GetContainerOrderFn;
+
+    /// <summary>v80: <c>int PutItemInContainer(uint itemId, uint containerId, int placement)</c>: move an
+    /// item into a container at a slot (the 0x19 PutItemInContainer game action, the packet only:
+    /// CM_Inventory::Event_PutItemInContainer), as a drop on a cell of the pack grid does. Within one
+    /// container it reorders: placement is the index the item should end at, counted without it.
+    /// MoveItemInternal ignores its slot argument (first empty slot); this doesn't. The server decides
+    /// (full pack, busy) and answers as for any move. Queued to AC's main thread when called off it.
+    /// Returns 1 sent or queued, 0 refused before sending (bad ids, negative placement), -1 the
+    /// sender isn't bound on this client. Requires API v80+.</summary>
+    public IntPtr PutItemInContainerFn;
 }
 
 /// <summary>v79 <see cref="TrainingInfoNative.Flags"/> bits.</summary>
@@ -1664,3 +1684,9 @@ internal unsafe delegate int RaiseCallbackDelegate(uint kind, uint stype, uint r
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate int TrainSkillCallbackDelegate(uint stype, int expectedCredits);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetContainerOrderCallbackDelegate(uint containerId, int slotKind, uint* ids, int maxIds);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int PutItemInContainerCallbackDelegate(uint itemId, uint containerId, int placement);

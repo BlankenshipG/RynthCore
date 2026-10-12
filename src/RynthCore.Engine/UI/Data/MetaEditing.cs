@@ -141,9 +141,21 @@ internal static class MetaRuleEdit
     /// STATE: block per state that has rules), so this rule is what keeps an empty state.</summary>
     public static MetaRuleDto Placeholder(string state) => new() { State = state, Condition = Never, Action = NoAction };
 
+    /// <summary>The longest rule name the editor takes.</summary>
+    public const int MaxNameLength = 80;
+
+    /// <summary>A typed rule name: one line (RynthAi writes it as a "~~ @name" comment line), no longer
+    /// than <see cref="MaxNameLength"/>. The editor trims the ends when it sends the rule.</summary>
+    public static string CleanName(string? typed)
+    {
+        if (string.IsNullOrEmpty(typed)) return string.Empty;
+        string s = typed.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ');
+        return s.Length > MaxNameLength ? s.Substring(0, MaxNameLength) : s;
+    }
+
     public static bool IsPlaceholder(MetaRuleDto r) =>
         r.Condition == Never && r.Action == NoAction && r.ConditionData.Length == 0 && r.ActionData.Length == 0
-        && r.Children.Count == 0 && r.ActionChildren.Count == 0;
+        && r.Children.Count == 0 && r.ActionChildren.Count == 0 && r.Name.Length == 0;
 
     /// <summary>False for conditions with nothing to type: Never, Always, Character Death, Any Vendor Open,
     /// Vendor Closed, Need To Buff, Portalspace Entered / Exited, Navroute Empty (and the composites).</summary>
@@ -227,11 +239,11 @@ internal static class MetaRuleEdit
         r.ActionChildren.Add(new MetaRuleDto { State = r.State, Action = NoAction });
     }
 
-    /// <summary>Same state, condition, action, data, enabled flag and children (not LastFiredMs).</summary>
+    /// <summary>Same state, name, condition, action, data, enabled flag and children (not LastFiredMs).</summary>
     public static bool SameContent(MetaRuleDto a, MetaRuleDto b)
     {
         if (!string.Equals(a.State, b.State, StringComparison.Ordinal) || a.Condition != b.Condition || a.Action != b.Action
-            || a.Enabled != b.Enabled
+            || a.Enabled != b.Enabled || !string.Equals(a.Name, b.Name, StringComparison.Ordinal)
             || !string.Equals(a.ConditionData, b.ConditionData, StringComparison.Ordinal)
             || !string.Equals(a.ActionData, b.ActionData, StringComparison.Ordinal)
             || a.Children.Count != b.Children.Count || a.ActionChildren.Count != b.ActionChildren.Count)

@@ -115,6 +115,8 @@ internal sealed class MetaPayload
     public MetaApplyResult? ApplyResult { get; set; }
     /// <summary>The Meta Manager; null from a RynthAi without it.</summary>
     public SchedulePayload? Schedule { get; set; }
+    /// <summary>Seconds in state and the Watchdog; null from a RynthAi without it.</summary>
+    public MetaStateSnapshot? Snapshot { get; set; }
 
     /// <summary>Deep copy of the rules; the rest is shared (faces never change it).</summary>
     public MetaPayload Clone()
@@ -381,19 +383,53 @@ internal static class MetaVocabulary
         return states.ToArray();
     }
 
-    /// <summary>Embedded Nav's route picker: nav files, then "[emb] key" for embedded routes.</summary>
-    public static string[] RoutePicks(MetaPayload d)
+    /// <summary>Embedded Nav Route's "Patrol": RynthAi's dungeon patrol (/ra dunnav-patrol) when the
+    /// meta and NavProfiles have no route by that name (RynthAi MetaManager.IsPatrolRoute).</summary>
+    public const string PatrolRoute = "Patrol";
+
+    /// <summary>A route of the meta or NavProfiles called <paramref name="name"/> (any case).</summary>
+    public static bool HasRoute(MetaPayload d, string name)
     {
-        var routes = new List<string>();
-        foreach (string n in d.NavFiles) if (n != "None") routes.Add(n);
-        foreach (string k in d.EmbeddedNavKeys) if (!routes.Contains(k)) routes.Add($"[emb] {k}");
-        return routes.ToArray();
+        foreach (string n in d.NavFiles) if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) return true;
+        foreach (string k in d.EmbeddedNavKeys) if (string.Equals(k, name, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
-    /// <summary>Nav names for source completion (nav files and embedded keys, no duplicates).</summary>
+    /// <summary>
+    /// Embedded Nav Route's picker: Patrol (the dungeon patrol) first, nav files, then the meta's own
+    /// routes. Labels are what the list shows ("[emb] key" for embedded routes); values are what the
+    /// rule stores, the name RynthAi looks up (2026-10-11: the label was stored, so an embedded route
+    /// picked here was "Route missing").
+    /// </summary>
+    public static (string[] Labels, string[] Values) RoutePicks(MetaPayload d)
+    {
+        var labels = new List<string>();
+        var values = new List<string>();
+        if (!HasRoute(d, PatrolRoute))
+        {
+            labels.Add(PatrolRoute + "  (dungeon patrol, no nav file)");
+            values.Add(PatrolRoute);
+        }
+        foreach (string n in d.NavFiles)
+        {
+            if (n == "None") continue;
+            labels.Add(n);
+            values.Add(n);
+        }
+        foreach (string k in d.EmbeddedNavKeys)
+        {
+            if (values.Contains(k)) continue;
+            labels.Add($"[emb] {k}");
+            values.Add(k);
+        }
+        return (labels.ToArray(), values.ToArray());
+    }
+
+    /// <summary>Nav names for source completion (Patrol, nav files and embedded keys, no duplicates).</summary>
     public static IReadOnlyList<string> CompletionNavs(MetaPayload d)
     {
-        var combined = new List<string>(d.NavFiles.Count + d.EmbeddedNavKeys.Count);
+        var combined = new List<string>(d.NavFiles.Count + d.EmbeddedNavKeys.Count + 1);
+        if (!HasRoute(d, PatrolRoute)) combined.Add(PatrolRoute);
         combined.AddRange(d.NavFiles);
         foreach (string n in d.EmbeddedNavKeys) if (!combined.Contains(n)) combined.Add(n);
         return combined;

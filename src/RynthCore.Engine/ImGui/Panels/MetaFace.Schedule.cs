@@ -207,7 +207,7 @@ internal sealed partial class MetaFace
             ScheduleRuleDto r = sc.Rules[i];
             bool first = i == sc.FirstMatch && sc.Enabled;
             Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
-            dl.AddRectFilled(p, p + new Vector2(w, h), i % 2 == 0 ? PanelBg : RowAlt);
+            dl.AddRectFilled(p, p + new Vector2(w, h), i % 2 == 0 ? StripeA : StripeB);
             ImGuiNET.ImGui.PushID(1000 + i);
             bool changed = false;
             float x = p.X + 1;

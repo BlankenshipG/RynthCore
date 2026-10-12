@@ -63,6 +63,16 @@ internal static unsafe class FlightRecorder
 
     public static bool Enabled => _cap != null && !_paused;
 
+    /// <summary>An automatic dump is scheduled or a dump is being written right now.</summary>
+    public static bool DumpPendingOrRunning
+    {
+        get
+        {
+            if (Volatile.Read(ref _dumping) != 0) return true;
+            lock (ScheduleLock) return _scheduledReason != null;
+        }
+    }
+
     // ── setup ──────────────────────────────────────────────────────────────
 
     public static void Initialize()

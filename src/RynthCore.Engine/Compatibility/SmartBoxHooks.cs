@@ -131,6 +131,8 @@ internal static class SmartBoxHooks
 
         try
         {
+            if (info.Opcode == PositionUpdateOpcode && info.RawObjectId != 0)
+                NotePlayerMotionEcho(blob, info);
             TryQueueHealthUpdate(blob, info);
             TryQueueDamageEvent(blob, info);
 
@@ -669,6 +671,24 @@ internal static class SmartBoxHooks
         {
             return default;
         }
+    }
+
+    // UpdateMotion (0xF74C) for the player with the autonomous flag set: the server's answer to a
+    // MoveToState from this client (layout: opcode, guid, u16 instance, u16 movement seq, u16
+    // server-control seq, u8 autonomous at +14). Counted for the pre-cast stop (PreCastStopRules).
+    private static void NotePlayerMotionEcho(IntPtr blob, SmartBoxEventInfo info)
+    {
+        if (info.BlobSize < 16) return;
+        uint player = ClientHelperHooks.CachedPlayerId;
+        if (player == 0 || info.RawObjectId != player) return;
+        try
+        {
+            IntPtr payloadPtr = Marshal.ReadIntPtr(IntPtr.Add(blob, NetBlobBufPtrOffset));
+            if (payloadPtr == IntPtr.Zero) return;
+            if (Marshal.ReadByte(IntPtr.Add(payloadPtr, 14)) != 0)
+                AcMainThreadQueue.NotePlayerMotionEcho();
+        }
+        catch { }
     }
 
     private static void TryQueueHealthUpdate(IntPtr blob, SmartBoxEventInfo info)

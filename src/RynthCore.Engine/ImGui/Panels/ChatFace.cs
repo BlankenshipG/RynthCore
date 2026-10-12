@@ -17,7 +17,11 @@
 //  from it: move / copy lines like it to a tab, hide them, colour them. A line
 //  with map coordinates in it ("42.1N, 33.6E") also offers "Arrow to" and "Go
 //  to" them, sent to RynthNav (UI/Data/ChatCoords.cs finds them).
-//  Follows the newest line until you scroll up.
+//  Follows the newest line until you scroll up; the scroll for new lines is set
+//  in the same frame they're drawn (DrawLines; until 2026-10-11 it landed a frame
+//  late and the text bounced). Scrolled up, the view holds still. The history is
+//  as long as the "Chat history" setting (ChatHistory, up to 10,000 lines): no
+//  per-frame work walks all of it, and re-measuring after a resize is time-sliced.
 //
 //  The input line belongs to ChatModel (UI/Data/ChatData.cs): Win32Backend
 //  turns the chat keys into ChatModel edits on AC's thread, which is also
@@ -74,7 +78,11 @@ internal sealed class ChatFace : IImGuiPanel
     private readonly List<float> _h = new(512);
     private readonly List<SpanLayout?> _lay = new(512);
     private float[] _tops = new float[1];
-    private int _heightsFrom;           // first line whose height needs measuring
+    private int _heightsFrom;           // first new line: not measured at all yet
+    // Lines below this index were measured for another width or font, or not at all (a
+    // rebuild gives them one row each until then): MeasureLines catches up a few ms a frame.
+    private int _measuredFrom;
+    private float _rowH = 13f;          // one row of the chat font: an unmeasured line's height
     private bool _topsDirty = true;
     private long _seenLinesVersion = -1, _seenRoutes = -1, _lastId;
     private string _seenTab = "", _seenSearch = "";
@@ -88,6 +96,13 @@ internal sealed class ChatFace : IImGuiPanel
     // tail: the view is moved up by as much, so the lines being read stay put instead of
     // sliding away.
     private float _droppedAbove;
+    // The part of a dropped-lines move ImGui's whole-pixel scroll couldn't take, carried
+    // into the next one (heights can be fractional at some DPI scales).
+    private float _scrollCarry;
+    // The list's scrollbar width (always shown), and a correction to the list width
+    // DrawLines works out before its BeginChild, should the child ever report another.
+    private const float ListScrollbarW = 10f;
+    private float _wrapFix;
     private float _inputScroll;
 
     // Selection: indices into _vis.
@@ -100,12 +115,14 @@ internal sealed class ChatFace : IImGuiPanel
     // Unread lines per tab since it was last on screen (Id of the newest line seen there).
     private readonly Dictionary<string, long> _seenId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (int Count, bool Mention)> _unread = new(StringComparer.OrdinalIgnoreCase);
-    private long _unreadLines = -1, _unreadRoutes = -1, _unreadTabsVersion = -1;
+    private long _unreadLines = -1, _unreadRoutes = -1, _unreadTabsVersion = -1, _unreadCountedTo;
     private string _unreadTab = "";
 
     private bool _openSettings, _openNewTab, _focusNewTab, _openTabMenu, _openLineMenu, _openRename;
     /// <summary>A line colour changed and isn't saved yet (saved once the picker is let go).</summary>
     private bool _coloursDirty;
+    /// <summary>The Chat history slider's value while it's held (0: not held).</summary>
+    private int _historyEdit;
     private string? _ctxTab, _renameFrom;
     private ChatLine? _ctxLine;
     private string _ctxPattern = "";
@@ -129,7 +146,7 @@ internal sealed class ChatFace : IImGuiPanel
         _stick = true;
         _seenRoutes = -1;   // full rebuild on the first frame
         _seenId.Clear();    // every tab starts read
-        _unreadLines = -1;
+        _unreadLines = _unreadRoutes = -1;   // a full recount
     }
 
     public void OnHidden()
@@ -351,22 +368,30 @@ internal sealed class ChatFace : IImGuiPanel
         long newest = lines.Length > 0 ? lines[^1].Id : 0;
         _seenId[current] = newest;
         long routes = ChatModel.RoutesVersion, tabsVersion = ChatModel.FiltersVersion;
-        if (linesVersion == _unreadLines && routes == _unreadRoutes && tabsVersion == _unreadTabsVersion
-            && string.Equals(current, _unreadTab, StringComparison.Ordinal)) return;
+        bool recount = routes != _unreadRoutes || tabsVersion != _unreadTabsVersion
+            || !string.Equals(current, _unreadTab, StringComparison.Ordinal);
+        if (!recount && linesVersion == _unreadLines) return;
         _unreadLines = linesVersion;
         _unreadRoutes = routes;
         _unreadTabsVersion = tabsVersion;
         _unreadTab = current;
-        _unread.Clear();
+        // Only new lines arrived: count just those (lines past _unreadCountedTo). A full recount
+        // walks every unread line of every tab - up to the whole history per tab (3.7 ms at
+        // 10,000 lines, tools/ChatHistoryBench), which used to run on every new batch.
+        if (recount) _unread.Clear();
         foreach (string tab in ChatModel.AllTabs())
         {
             if (!_seenId.TryGetValue(tab, out long seen)) { _seenId[tab] = newest; continue; }   // a new tab starts read
+            long from = recount ? seen : Math.Max(seen, _unreadCountedTo);
             int count = 0;
             bool mention = false;
-            for (int i = lines.Length - 1; i >= 0 && lines[i].Id > seen; i--)
+            for (int i = lines.Length - 1; i >= 0 && lines[i].Id > from; i--)
                 if (ChatModel.LineInTab(lines[i], tab)) { count++; mention |= lines[i].Route.Mention; }
-            if (count > 0) _unread[tab] = (count, mention);
+            if (count == 0) continue;
+            _unread.TryGetValue(tab, out var had);
+            _unread[tab] = (had.Count + count, had.Mention || mention);
         }
+        _unreadCountedTo = newest;
     }
 
     private void DrawSearch(Vector2 p, float w)
@@ -399,9 +424,9 @@ internal sealed class ChatFace : IImGuiPanel
             _h.Clear();
             _lay.Clear();
             foreach (ChatLine line in lines)
-                if (ChatModel.LineVisible(line, tab, search)) { _vis.Add(line); _h.Add(0); _lay.Add(null); }
+                if (ChatModel.LineVisible(line, tab, search)) { _vis.Add(line); _h.Add(_rowH); _lay.Add(null); }
             _lastId = lines.Length > 0 ? lines[^1].Id : _lastId;
-            _heightsFrom = 0;
+            _heightsFrom = _measuredFrom = _vis.Count;   // all unmeasured: MeasureLines, newest first
             _topsDirty = true;
             ClearSelection();
             _stick = true;   // a rebuild re-pins to the newest line
@@ -423,6 +448,7 @@ internal sealed class ChatFace : IImGuiPanel
             _h.RemoveRange(0, drop);
             _lay.RemoveRange(0, drop);
             _heightsFrom = Math.Max(0, _heightsFrom - drop);
+            _measuredFrom = Math.Max(0, _measuredFrom - drop);
             if (_selAnchor >= 0) { _selAnchor -= drop; _selEnd -= drop; if (_selAnchor < 0 || _selEnd < 0) ClearSelection(); }
             _topsDirty = true;
         }
@@ -433,7 +459,7 @@ internal sealed class ChatFace : IImGuiPanel
             if (!ChatModel.LineVisible(line, tab, search)) continue;
             if (_heightsFrom > _vis.Count) _heightsFrom = _vis.Count;
             _vis.Add(line);
-            _h.Add(0);
+            _h.Add(_rowH);
             _lay.Add(null);
             _topsDirty = true;
         }
@@ -444,81 +470,85 @@ internal sealed class ChatFace : IImGuiPanel
 
     private void DrawLines(Vector2 size)
     {
-        // Lines left the top of a full buffer while not following: scroll up by as much
-        // in THIS frame's BeginChild. (SetScrollY only lands in the next frame's Begin,
-        // after this frame has drawn the shortened list at the old scroll - the text
-        // jumped up for a frame and a strip at the bottom went blank, several times a
-        // second in busy chat.) A frame with wheel input waits a frame: this would
-        // override the wheel's own scroll.
-        bool compensated = false;
-        if (_droppedAbove > 0f)
-        {
-            if (Following) _droppedAbove = 0f;
-            else if (ImGuiNET.ImGui.GetIO().MouseWheel == 0f)
-            {
-                ImGuiNET.ImGui.SetNextWindowScroll(new Vector2(-1f, Math.Max(0f, _lastScrollY - _droppedAbove)));
-                _droppedAbove = 0f;
-                compensated = true;
-            }
-        }
-        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ChildBg, 0u);
-        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ScrollbarBg, 0u);
-        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(0, 0));
-        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ScrollbarSize, 10f);
-        bool open = ImGuiNET.ImGui.BeginChild("##chat_lines", size, ImGuiChildFlags.None, ImGuiWindowFlags.AlwaysVerticalScrollbar);
-        ImGuiNET.ImGui.PopStyleVar(2);
-        ImGuiNET.ImGui.PopStyleColor(2);
-        if (!open) { ImGuiNET.ImGui.EndChild(); return; }
-
         float fontSize = ChatModel.FontSize;
         ImFontPtr font = ImGuiFonts.Chat(fontSize);
         ImGuiNET.ImGui.PushFont(font);
         bool showTs = ChatModel.ShowTimestamps;
-        float wrapW = Math.Max(20, ImGuiNET.ImGui.GetContentRegionAvail().X - 6);
-        // The text starts after the timestamp and wraps under itself.
+
+        // The lines are measured BEFORE the list's BeginChild, so this frame's scroll can be
+        // set for this frame's lines (see "Where the view goes" below). The width they wrap
+        // to is the child's: its width less its scrollbar (always shown) and a margin;
+        // _wrapFix corrects that guess if the child ever reports otherwise.
+        float wrapW = Math.Max(20, MathF.Floor(size.X) - ListScrollbarW - 6 + _wrapFix);
         float tsW = showTs ? ImGuiNET.ImGui.CalcTextSize("00:00:00 ").X : 0;
+        MeasureLines(font, wrapW, tsW, fontSize, showTs, MathF.Floor(size.Y));
+        float total = _tops[_vis.Count];
+
+        // Where the view goes this frame. (2026-10-11, the chat "bouncing": until now the
+        // view followed the newest line with SetScrollHereY at the end of the frame, which
+        // only lands in the NEXT frame's Begin. So every batch of new lines was first drawn
+        // at the old scroll: with the buffer full, lines leave the top as others arrive,
+        // and the text jumped by the difference - up and back down when a long line left
+        // and a short one came - then snapped into place a frame later. A popped-out chat
+        // redraws at 5 Hz while idle, so the wrong frame stayed up for 200 ms.) Now the
+        // content height and the scroll are both handed to this frame's BeginChild:
+        //  • the content size, so ImGui's scroll limit is this frame's and not last frame's
+        //    (it clamps any scroll set before Begin to the limit it knows);
+        //  • following: the bottom (the limit clamps 'total' to exactly the bottom);
+        //  • not following: only the lines dropped off a full buffer's top, so what is
+        //    being read stays put (fractions carried, so rounding can't creep the view).
+        // A frame with wheel input over the list leaves the scroll to the wheel (this would
+        // override it); a drag-select scrolls the list itself.
+        Vector2 listPos = ImGuiNET.ImGui.GetCursorScreenPos();
+        bool wheelHere = ImGuiNET.ImGui.GetIO().MouseWheel != 0f
+            && ImGuiNET.ImGui.IsMouseHoveringRect(listPos, listPos + size, false);
+        ImGuiNET.ImGui.SetNextWindowContentSize(new Vector2(0f, total));
+        bool compensated = false;
+        if (Following)
+        {
+            _droppedAbove = 0f;
+            _scrollCarry = 0f;
+            // Not counted as "our move": a scrollbar drag in this Begin overrides it, and the
+            // check below must see that to stop following.
+            if (!wheelHere && !_selDragging)
+                ImGuiNET.ImGui.SetNextWindowScroll(new Vector2(-1f, total));
+        }
+        else if (_droppedAbove != 0f && !wheelHere)
+        {
+            float target = _lastScrollY + _scrollCarry - _droppedAbove;
+            float applied = MathF.Round(Math.Max(0f, target));   // ImGui rounds scroll to whole pixels
+            _scrollCarry = target > 0f ? target - applied : 0f;
+            ImGuiNET.ImGui.SetNextWindowScroll(new Vector2(-1f, applied));
+            _droppedAbove = 0f;
+            compensated = true;
+        }
+
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ChildBg, 0u);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ScrollbarBg, 0u);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(0, 0));
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ScrollbarSize, ListScrollbarW);
+        bool open = ImGuiNET.ImGui.BeginChild("##chat_lines", size, ImGuiChildFlags.None, ImGuiWindowFlags.AlwaysVerticalScrollbar);
+        ImGuiNET.ImGui.PopStyleVar(2);
+        ImGuiNET.ImGui.PopStyleColor(2);
+        if (!open) { ImGuiNET.ImGui.EndChild(); ImGuiNET.ImGui.PopFont(); return; }
+
+        // The child's real width, should the guess above ever be off (a style change):
+        // measured again now, and the guess corrected from the next frame on.
+        float realWrapW = Math.Max(20, ImGuiNET.ImGui.GetContentRegionAvail().X - 6);
+        if (Math.Abs(realWrapW - wrapW) > 0.5f)
+        {
+            _wrapFix += realWrapW - wrapW;
+            wrapW = realWrapW;
+            MeasureLines(font, wrapW, tsW, fontSize, showTs, MathF.Floor(size.Y));
+            total = _tops[_vis.Count];
+        }
         float textW = Math.Max(20, wrapW - tsW);
-        if (wrapW != _seenWrap || fontSize != _seenFont || showTs != _seenTs)
-        {
-            _seenWrap = wrapW;
-            _seenFont = fontSize;
-            _seenTs = showTs;
-            _heightsFrom = 0;
-        }
-        if (_heightsFrom < _vis.Count)
-        {
-            for (int i = _heightsFrom; i < _vis.Count; i++)
-            {
-                ChatLine line = _vis[i];
-                ChatSpan[]? spans = line.Route.Spans;
-                if (spans != null)
-                {
-                    SpanLayout lay = LayoutSpans(font, line.Text, spans, textW);
-                    _lay[i] = lay;
-                    _h[i] = lay.Height;
-                }
-                else
-                {
-                    _lay[i] = null;
-                    _h[i] = ImGuiNET.ImGui.CalcTextSize(line.Text, false, textW).Y;
-                }
-            }
-            _heightsFrom = _vis.Count;
-            _topsDirty = true;
-        }
-        if (_topsDirty)
-        {
-            if (_tops.Length < _vis.Count + 1) _tops = new float[Math.Max(_vis.Count + 1, _tops.Length * 2)];
-            _tops[0] = 0;
-            for (int i = 0; i < _vis.Count; i++) _tops[i + 1] = _tops[i] + _h[i];
-            _topsDirty = false;
-        }
         int n = _vis.Count;
-        float total = _tops[n];
 
         // Following the tail until the user scrolls away from it.
         float scrollY = ImGuiNET.ImGui.GetScrollY(), maxY = ImGuiNET.ImGui.GetScrollMaxY();
         if (compensated) _lastScrollY = scrollY;   // our move, not the user's
+        else if (Math.Abs(scrollY - _lastScrollY) > 0.5f) _scrollCarry = 0f;   // the user's: start afresh
         // Wheel up over the chat stops following at once; reaching the bottom again resumes it.
         // Not while it has nothing to scroll: no scroll change would ever turn following back on.
         if (maxY > 0f && ImGuiNET.ImGui.IsWindowHovered() && ImGuiNET.ImGui.GetIO().MouseWheel > 0f)
@@ -555,8 +585,6 @@ internal sealed class ChatFace : IImGuiPanel
         HandleLineMenu(basePos, wrapW, n);
 
         _lastScrollY = scrollY;
-        if (ChatModel.AutoScroll && _stick && !_selDragging && total > viewH)
-            ImGuiNET.ImGui.SetScrollHereY(1f);
 
         // "Copied N lines" / "Rule added", top-right, for a moment.
         if (_flash != null)
@@ -574,8 +602,93 @@ internal sealed class ChatFace : IImGuiPanel
             }
         }
 
-        ImGuiNET.ImGui.PopFont();
         ImGuiNET.ImGui.EndChild();
+        ImGuiNET.ImGui.PopFont();   // pushed before the child, for MeasureLines
+    }
+
+    /// <summary>Time MeasureLines may spend a frame catching up on lines measured for another width.</summary>
+    private const double MeasureBudgetMs = 2.0;
+    private static readonly long MeasureBudgetTicks = (long)(System.Diagnostics.Stopwatch.Frequency * MeasureBudgetMs / 1000);
+
+    /// <summary>
+    /// Brings the line heights and tops up to date for this wrap width, font and timestamp
+    /// setting. Chat font pushed. New lines are measured at once. When the width, font or
+    /// timestamps change (or after a rebuild) every line needs measuring again: 16 ms at
+    /// 10,000 lines (tools/ChatHistoryBench), every frame of a resize drag. So that is done
+    /// a slice at a time: the lines in view first, then from the newest line up, for
+    /// MeasureBudgetMs a frame; the others keep their old height meanwhile. Scrolled up,
+    /// the view is moved by however much the lines above it grew or shrank, so what's being
+    /// read stays put (the same way as lines dropping off the top).
+    /// </summary>
+    private void MeasureLines(ImFontPtr font, float wrapW, float tsW, float fontSize, bool showTs, float viewH)
+    {
+        // The text starts after the timestamp and wraps under itself.
+        float textW = Math.Max(20, wrapW - tsW);
+        _rowH = font.FontSize;
+        if (wrapW != _seenWrap || fontSize != _seenFont || showTs != _seenTs)
+        {
+            _seenWrap = wrapW;
+            _seenFont = fontSize;
+            _seenTs = showTs;
+            _measuredFrom = Math.Min(_heightsFrom, _vis.Count);   // all measured so far is stale
+        }
+        bool changed = false;
+        for (int i = _heightsFrom; i < _vis.Count; i++) { MeasureLine(font, i, textW); changed = true; }
+        _heightsFrom = _vis.Count;
+
+        if (_measuredFrom > 0)
+        {
+            UpdateTops();
+            int n = _vis.Count;
+            bool following = Following;
+            // Where the view will be (last frame's scroll, less any move still to come).
+            float viewTop = _lastScrollY + _scrollCarry - _droppedAbove;
+            int firstVisible = following || n == 0 ? int.MaxValue : FirstAtOrBelow(Math.Max(0f, viewTop), n);
+            if (!following)
+                for (int i = firstVisible; i < Math.Min(n, _measuredFrom) && _tops[i] < viewTop + viewH; i++)
+                    MeasureLine(font, i, textW);
+            float grewAbove = 0f;
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+            int count = 0;
+            while (_measuredFrom > 0)
+            {
+                int i = --_measuredFrom;
+                float old = _h[i];
+                MeasureLine(font, i, textW);
+                if (i < firstVisible) grewAbove += _h[i] - old;
+                if ((++count & 15) == 0 && System.Diagnostics.Stopwatch.GetTimestamp() - t0 > MeasureBudgetTicks) break;
+            }
+            if (!following) _droppedAbove -= grewAbove;
+            changed = true;
+        }
+        if (changed) _topsDirty = true;
+        UpdateTops();
+    }
+
+    private void MeasureLine(ImFontPtr font, int i, float textW)
+    {
+        ChatLine line = _vis[i];
+        ChatSpan[]? spans = line.Route.Spans;
+        if (spans != null)
+        {
+            SpanLayout lay = LayoutSpans(font, line.Text, spans, textW);
+            _lay[i] = lay;
+            _h[i] = lay.Height;
+        }
+        else
+        {
+            _lay[i] = null;
+            _h[i] = ImGuiNET.ImGui.CalcTextSize(line.Text, false, textW).Y;
+        }
+    }
+
+    private void UpdateTops()
+    {
+        if (!_topsDirty && _tops.Length > _vis.Count) return;
+        if (_tops.Length < _vis.Count + 1) _tops = new float[Math.Max(_vis.Count + 1, _tops.Length * 2)];
+        _tops[0] = 0;
+        for (int i = 0; i < _vis.Count; i++) _tops[i + 1] = _tops[i] + _h[i];
+        _topsDirty = false;
     }
 
     private void Flash(string message, double seconds = 2.0)
@@ -871,6 +984,18 @@ internal sealed class ChatFace : IImGuiPanel
         if (ImGuiNET.ImGui.SliderInt("Background", ref pct, 0, 100, "%d%%"))
             ChatModel.BackgroundAlpha = (int)MathF.Round(pct * 2.55f);
         if (ImGuiNET.ImGui.IsItemDeactivatedAfterEdit()) ChatModel.SaveSettings();
+        // How many lines the chat keeps (ChatHistory): applied when the slider is let go, so
+        // dragging it down doesn't cut the history at every step on the way.
+        int history = _historyEdit > 0 ? _historyEdit : ChatModel.HistoryLines;
+        if (ImGuiNET.ImGui.SliderInt("Chat history", ref history, ChatHistory.MinLines, ChatHistory.MaxLines, "%d lines"))
+            _historyEdit = ChatHistory.Clamp(history);
+        if (ImGuiNET.ImGui.IsItemDeactivated() && _historyEdit > 0)
+        {
+            ChatModel.SetHistoryLines(_historyEdit);
+            _historyEdit = 0;
+        }
+        ImGuiNET.ImGui.SetItemTooltip("How many lines the chat keeps, all tabs together (default 2000).\n" +
+            "About 2 MB of memory per 1000 lines. Lowering it drops the oldest lines.");
         ImGuiNET.ImGui.PopItemWidth();
 
         bool ts = ChatModel.ShowTimestamps;

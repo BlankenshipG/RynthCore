@@ -25,6 +25,11 @@ internal static class Program
         TakesData();
         NoKillsMinutes();
         SameContentAndLocate();
+        RuleNames();
+        StateClock();
+        RowTextLeaves();
+        RowTextLists();
+        RowTextActions();
 
         Console.WriteLine();
         Console.WriteLine(_failed == 0 ? $"PASS ({_checks} checks)" : $"FAIL: {_failed} of {_checks} checks");
@@ -301,6 +306,168 @@ internal static class Program
     }
 
     // ── Checks ───────────────────────────────────────────────────────────
+
+    // ── Rule list text (MetaRowText) ─────────────────────────────────────
+
+    private static MetaRuleDto Cnd(int condition, string data = "", params MetaRuleDto[] kids)
+    {
+        var r = new MetaRuleDto { Condition = condition, ConditionData = data };
+        r.Children.AddRange(kids);
+        return r;
+    }
+
+    private static MetaRuleDto Act(int action, string data = "", params MetaRuleDto[] kids)
+    {
+        var r = new MetaRuleDto { Action = action, ActionData = data };
+        r.ActionChildren.AddRange(kids);
+        return r;
+    }
+
+    private static string CondLine(MetaRuleDto c, MetaTextContext? ctx = null) =>
+        MetaRowText.Plain(MetaRowText.ConditionCompact(c, ctx ?? new MetaTextContext()));
+
+    private static string ActLine(MetaRuleDto a, MetaTextContext? ctx = null) =>
+        MetaRowText.Plain(MetaRowText.ActionCompact(a, ctx ?? new MetaTextContext()));
+
+    private static string Lines(MetaLine[] lines)
+    {
+        var parts = new List<string>();
+        foreach (MetaLine l in lines)
+            parts.Add($"{l.Depth}{(l.Slot ? "s" : "")}:{l.Plain()}");
+        return string.Join(" | ", parts);
+    }
+
+    private static void RuleNames()
+    {
+        Case("rule names");
+        var a = new MetaRuleDto { State = "Hunt", Condition = 1, Action = 1, ActionData = "/x", Name = "Start" };
+        var b = a.Clone();
+        Eq(b.Name, "Start", "Clone keeps the name");
+        True(MetaRuleEdit.SameContent(a, b), "same name, same content");
+        b.Name = "Other";
+        False(MetaRuleEdit.SameContent(a, b), "a renamed rule is a different rule (Locate, delete confirm)");
+
+        var placeholder = MetaRuleEdit.Placeholder("Loot");
+        True(MetaRuleEdit.IsPlaceholder(placeholder), "an unnamed Never -> None is a placeholder");
+        placeholder.Name = "Parked";
+        False(MetaRuleEdit.IsPlaceholder(placeholder), "a named one isn't (delete asks first)");
+
+        Eq(MetaRuleEdit.CleanName("a\r\nb\tc"), "a  b c", "one line");
+        Eq(MetaRuleEdit.CleanName(" keep the space "), " keep the space ", "ends kept while typing (trimmed when sent)");
+        Eq(MetaRuleEdit.CleanName(new string('x', 200)).Length, MetaRuleEdit.MaxNameLength, "cut to the longest name");
+        Eq(MetaRuleEdit.CleanName(null), "", "null");
+    }
+
+    private static void StateClock()
+    {
+        Case("seconds in state / watchdog clock");
+        var clock = new MetaStateClock();
+        False(clock.Known, "nothing before a snapshot");
+        Eq(clock.WatchdogLeft(0, out _), -1.0, "no watchdog before a snapshot");
+        clock.Snapshot(new MetaStateSnapshot { SecondsInState = 10, WatchdogActive = true, WatchdogState = "Default", WatchdogSecondsRemaining = 30 }, 1000);
+        True(clock.Known, "known");
+        Eq(clock.SecondsInState(1000), 10.0, "as snapshotted");
+        Eq(clock.SecondsInState(3500), 12.5, "counted on between snapshots");
+        Eq(clock.SecondsInState(500), 10.0, "a clock that went back doesn't count down");
+        Eq(clock.WatchdogLeft(3500, out string wdState), 27.5, "watchdog counts down");
+        Eq(wdState, "Default", "and says where it goes");
+        Eq(clock.WatchdogLeft(100_000, out _), 0.0, "never below 0");
+        clock.StateSet(4000);
+        Eq(clock.SecondsInState(4000), 0.0, "a state picked in the panel starts at 0");
+        Eq(clock.WatchdogLeft(4000, out _), -1.0, "...and drops the old state's watchdog");
+        clock.Snapshot(new MetaStateSnapshot { SecondsInState = 3 }, 5000);
+        Eq(clock.WatchdogLeft(5000, out _), -1.0, "no watchdog set");
+        clock.Snapshot(null, 6000);
+        False(clock.Known, "a RynthAi without the snapshot");
+
+        Eq(MetaStateClock.Format(42.9), "42 s", "whole seconds");
+        Eq(MetaStateClock.Format(3599), "3599 s", "seconds under an hour (rules count seconds)");
+        Eq(MetaStateClock.Format(3723), "1:02:03", "h:mm:ss from an hour");
+        Eq(MetaStateClock.Format(-5), "0 s", "never negative");
+    }
+
+    private static void RowTextLeaves()
+    {
+        Case("row text: conditions");
+        Eq(CondLine(Cnd(10, "Prismatic Taper,50")), "Count Prismatic Taper ≤ 50", "item count <=");
+        Eq(CondLine(Cnd(11, "Prismatic Taper, 50")), "Count Prismatic Taper ≥ 50", "item count >=, spaces trimmed");
+        Eq(CondLine(Cnd(10, "Foo, Bar,3")), "Count Foo, Bar ≤ 3", "a comma in the item name: the count is after the last one");
+        Eq(CondLine(Cnd(16, "5c45")), "Landblock 5C45", "landblock upper-cased");
+        Eq(CondLine(Cnd(26, "getcharintprop[25]<30")), "Expr getcharintprop[25]<30", "expression");
+        Eq(CondLine(Cnd(4, "")), "Chat matches (not set)", "an empty pattern says so");
+        Eq(CondLine(Cnd(12, "Drudge|Mite{1,2},20,3")), "Mobs Drudge|Mite{1,2} ≥ 3 within 20", "mob name regex with a comma");
+        Eq(CondLine(Cnd(13, "1,20")), "Priority mobs ≥ 1 within 20", "priority mobs");
+        Eq(CondLine(Cnd(15, "")), "No mobs within 20 (default)", "no mobs: RynthAi's default distance");
+        Eq(CondLine(Cnd(24, "250")), "Burden ≥ 250%", "burden");
+        Eq(CondLine(Cnd(35, "2.5")), "No kill for 2.5 min", "no kills");
+        Eq(CondLine(Cnd(6, "10")), "In state ≥ 10 s", "seconds in state");
+        Eq(CondLine(Cnd(99, "x")), "Condition 99 x", "an unknown condition shows its number and data");
+
+        var ctx = new MetaTextContext { SpellName = id => id == 2293 ? "Strength Other VI" : null };
+        Eq(CondLine(Cnd(22, "2293,30"), ctx), "Spell Strength Other VI ≥ 30 s left", "spell by name");
+        False(ctx.MissedSpellName, "no name missed yet");
+        Eq(CondLine(Cnd(23, "512,305"), ctx), "Spell 512 ≤ 305 s left", "unknown spell: its id");
+        True(ctx.MissedSpellName, "a missed name is noted (rebuild once the spell table loads)");
+    }
+
+    private static void RowTextLists()
+    {
+        Case("row text: all / any / not");
+        var ctx = new MetaTextContext();
+        MetaRuleDto one = Cnd(2, "", Cnd(16, "5C45"));
+        Eq(CondLine(one), "Landblock 5C45", "an All of one is that condition");
+        Eq(Lines(MetaRowText.ConditionLines(one, ctx)), "0:Landblock 5C45", "...on one line, no slot");
+
+        MetaRuleDto andNot = Cnd(2, "", Cnd(26, "a<1"), Cnd(20, "", Cnd(22, "512,305")));
+        Eq(CondLine(andNot), "Expr a<1 and not Spell 512 ≥ 305 s left", "compact: and, not");
+        Eq(Lines(MetaRowText.ConditionLines(andNot, ctx)), "0s:Expr a<1 | 0s:and not Spell 512 ≥ 305 s left",
+            "full: one line per condition, the second joined by and");
+
+        MetaRuleDto anyAll = Cnd(3, "", Cnd(1), Cnd(2, "", Cnd(8), Cnd(9)));
+        Eq(CondLine(anyAll), "Always or (Vendor open and Vendor closed)", "compact: nested list in brackets");
+        Eq(Lines(MetaRowText.ConditionLines(anyAll, ctx)),
+            "0s:Always | 0s:or all of | 1s:Vendor open | 1s:and Vendor closed", "full: nested list under an 'or all of' line");
+
+        MetaRuleDto notAll = Cnd(20, "", Cnd(2, "", Cnd(8), Cnd(9)));
+        Eq(CondLine(notAll), "not (Vendor open and Vendor closed)", "compact: not of a list");
+        Eq(Lines(MetaRowText.ConditionLines(notAll, ctx)), "0:not all of | 1s:Vendor open | 1s:and Vendor closed", "full: not all of");
+
+        Eq(CondLine(Cnd(3)), "any of (nothing)", "an empty Any says so");
+        Eq(CondLine(Cnd(20)), "not (nothing)", "an empty Not says so");
+        Eq(CondLine(Cnd(20, "", Cnd(20, "", Cnd(1)))), "not not Always", "not not");
+
+        MetaRuleDto deep = Cnd(1);
+        for (int i = 0; i < 20; i++) deep = Cnd(20, "", deep);
+        True(MetaRowText.ConditionLines(deep, ctx).Length == 1, "a very deep chain stops (no runaway recursion)");
+    }
+
+    private static void RowTextActions()
+    {
+        Case("row text: actions");
+        var ctx = new MetaTextContext { States = new[] { "Default", "ReBuff" } };
+        Eq(ActLine(Act(1, "/vt opt set enablecombat true"), ctx), "/vt opt set enablecombat true", "a command reads as itself");
+        Eq(ActLine(Act(1, "hello"), ctx), "Chat hello", "plain chat text");
+        Eq(ActLine(Act(1, ""), ctx), "Chat (empty)", "an empty chat command says so");
+        Eq(ActLine(Act(2, "rebuff"), ctx), "→ rebuff", "set state (a state in any case exists)");
+        MetaSeg[] missing = MetaRowText.ActionLeaf(Act(2, "ReBuf"), ctx);
+        Eq(MetaRowText.Plain(missing), "→ ReBuf (no such state)", "set state to a missing state");
+        True(Array.Exists(missing, s => s.Tone == MetaTone.Warn), "...in the warning colour");
+        Eq(ActLine(Act(5, "ReBuff"), ctx), "Call → ReBuff", "call state");
+        Eq(ActLine(Act(9, "Default;5;30"), ctx), "Watchdog 5 m in 30 s → Default", "watchdog");
+        Eq(ActLine(Act(3, "Tusker_Abode;205"), ctx), "Nav Tusker_Abode", "embedded nav: the name before ';'");
+        Eq(ActLine(Act(3, "Patrol"), ctx), "Nav Patrol (dungeon patrol)", "Patrol: RynthAi's dungeon patrol");
+        var withPatrolRoute = new MetaTextContext { RouteExists = n => n.Equals("patrol", StringComparison.OrdinalIgnoreCase) };
+        Eq(ActLine(Act(3, "Patrol"), withPatrolRoute), "Nav Patrol", "...unless a route is called Patrol");
+        Eq(ActLine(Act(12, "EnableBuffing;False"), ctx), "Set EnableBuffing = False", "set option");
+        Eq(ActLine(Act(11, "doors;OpenDoors"), ctx), "Get option OpenDoors → doors", "get option (variable;option)");
+        Eq(ActLine(Act(0), ctx), "None", "none");
+
+        MetaRuleDto all = Act(4, "", Act(1, "/a"), Act(4, "", Act(2, "Default")), Act(6));
+        Eq(Lines(MetaRowText.ActionLines(all, ctx)), "0:/a | 0:→ Default | 0:Return from call", "DoAll: one line per action, nested DoAll flattened");
+        Eq(ActLine(all, ctx), "/a  ·  → Default  ·  Return from call", "compact: joined by a dot");
+        Eq(ActLine(Act(4), ctx), "do all (nothing)", "an empty DoAll says so");
+    }
+
 
     private static void Case(string name)
     {

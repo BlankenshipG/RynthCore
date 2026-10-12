@@ -928,6 +928,9 @@ internal static class ClientHelperHooks
     // refreshed every EndScene by EngineFrameController, 0 = no player / not ready.
     private static int _cachedPlayerId;
 
+    /// <summary>The player id last read on the main thread (0 = none yet); no native call.</summary>
+    public static uint CachedPlayerId => unchecked((uint)Volatile.Read(ref _cachedPlayerId));
+
     public static uint GetPlayerId()
     {
         if (_getPlayerId == null)

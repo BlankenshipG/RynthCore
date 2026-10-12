@@ -62,6 +62,8 @@ internal sealed class RynthChatSettingsDto
     // 2026-10-08: per-kind line colours (ChatLineColors), { "say": "#RRGGBB", "chan:General": ..., "tab:Chat": ... };
     // only the colours the user set, and absent while none is.
     [JsonPropertyName("lineColors")]      public Dictionary<string, string>? LineColors { get; set; }
+    // 2026-10-11: how many lines the scrollback keeps (ChatHistory); absent at the default (2000).
+    [JsonPropertyName("historyLines")]    public int?   HistoryLines    { get; set; }
     [JsonPropertyName("customTabs")]      public string[]? CustomTabs   { get; set; }
     [JsonPropertyName("filters")]         public RynthChatFilterDto[]? Filters { get; set; }
 }

@@ -6,7 +6,7 @@
     one .bak per session, placeholder rule, Add condition / action, finding a rule again by
     content), MetaLocation.cs ("Set current" text for landblock / landcell, against a copy of
     RynthAi's MetaManager reading; RynthSuite's RynthAiHostTests check the real one) and
-    MetaRuleDto.cs. Nothing native: no AC, no ImGui, no files.
+    MetaRuleDto.cs, the rule list's text (MetaRowText.cs) and its timers (MetaStateClock.cs). Nothing native: no AC, no ImGui, no files.
     Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
   -->
   <PropertyGroup>
@@ -22,6 +22,8 @@
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\MetaEditing.cs" Link="Engine\MetaEditing.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\MetaLocation.cs" Link="Engine\MetaLocation.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\MetaRuleDto.cs" Link="Engine\MetaRuleDto.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Data\MetaRowText.cs" Link="Engine\MetaRowText.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Data\MetaStateClock.cs" Link="Engine\MetaStateClock.cs" />
   </ItemGroup>
 
 </Project>

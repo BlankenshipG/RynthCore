@@ -196,7 +196,13 @@ internal static class WindowFlags
     public const uint HasError = 1u << 9;
     /// <summary>RequestPos is a FirstUseEver default position (used only when nothing is saved).</summary>
     public const uint PosIsDefault = 1u << 10;
-    public const uint Known = (1u << 11) - 1;
+    /// <summary>
+    /// With ShowInBar: the window gets a button of its own on the bar (icon, tooltip = title)
+    /// instead of a line in the Scripts menu. For plugin windows; engines before 2026-10-11
+    /// mask it off and list the window in the Scripts menu as before.
+    /// </summary>
+    public const uint BarButton = 1u << 11;
+    public const uint Known = (1u << 12) - 1;
 }
 
 internal static class DisplayListParser

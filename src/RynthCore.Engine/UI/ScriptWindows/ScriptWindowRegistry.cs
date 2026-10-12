@@ -460,14 +460,26 @@ internal static class ScriptWindowRegistry
     private static readonly Dictionary<string, ScriptWindow> ByPanelKey = new(StringComparer.OrdinalIgnoreCase);
     private static long _lastRejectLogTicks;
 
-    // The bar's Scripts menu: a copy-on-write snapshot of the ShowInBar windows, republished
-    // (under Sync) when the window set, a title or a ShowInBar flag changed. AC's thread
-    // reads it without taking Sync.
+    // The bar's Scripts menu and the windows with a bar button of their own: copy-on-write
+    // snapshots of the ShowInBar windows, republished (under Sync) when the window set, a
+    // title or a ShowInBar/BarButton flag changed. AC's thread reads them without taking Sync.
     private static ScriptBarItem[] _barItems = Array.Empty<ScriptBarItem>();
+    private static ScriptBarItem[] _barButtons = Array.Empty<ScriptBarItem>();
     private static bool _barDirty;
 
     /// <summary>The Scripts menu's items, grouped (empty = no Scripts button). Any thread.</summary>
     public static ScriptBarItem[] BarItems => Volatile.Read(ref _barItems);
+
+    /// <summary>
+    /// The windows that asked for a bar button of their own (ShowInBar + BarButton), sorted
+    /// like the menu. A new array whenever the set or a title changes, so the bar can compare
+    /// references to know when to rebuild its buttons. Any thread.
+    /// </summary>
+    public static ScriptBarItem[] BarButtons => Volatile.Read(ref _barButtons);
+
+    /// <summary>True when a window with these flags gets a bar button of its own (not a Scripts menu line).</summary>
+    public static bool HasOwnBarButton(uint flags) =>
+        (flags & (WindowFlags.ShowInBar | WindowFlags.BarButton)) == (WindowFlags.ShowInBar | WindowFlags.BarButton);
 
     // ── Host functions ───────────────────────────────────────────────────
 
@@ -629,28 +641,36 @@ internal static class ScriptWindowRegistry
             ByPanelKey.Clear();
             _barDirty = false;
             Volatile.Write(ref _barItems, Array.Empty<ScriptBarItem>());
+            Volatile.Write(ref _barButtons, Array.Empty<ScriptBarItem>());
         }
     }
 
-    /// <summary>Rebuilds the Scripts menu snapshot when something it shows changed. Caller holds Sync.</summary>
+    /// <summary>
+    /// Rebuilds the Scripts menu and bar button snapshots when something they show changed.
+    /// A ShowInBar window goes in the menu, or on a button of its own with BarButton set.
+    /// Caller holds Sync.
+    /// </summary>
     private static void PublishBarLocked()
     {
         if (!_barDirty) return;
         _barDirty = false;
-        var rows = new List<(string Group, ScriptWindow W)>();
+        var menu = new List<(string Group, ScriptWindow W)>();
+        var buttons = new List<(string Group, ScriptWindow W)>();
         foreach (ScriptWindowOwner o in Owners.Values)
             foreach (ScriptWindow w in o.Windows.Values)
             {
                 if ((w.Flags & WindowFlags.ShowInBar) == 0) continue;
                 int slash = w.Key.LastIndexOf('/');
                 string group = slash > 0 ? w.Key[..slash] : o.Plugin.DisplayName;
-                rows.Add((group, w));
+                (HasOwnBarButton(w.Flags) ? buttons : menu).Add((group, w));
             }
-        if (rows.Count == 0)
-        {
-            Volatile.Write(ref _barItems, Array.Empty<ScriptBarItem>());
-            return;
-        }
+        Volatile.Write(ref _barItems, Snapshot(menu));
+        Volatile.Write(ref _barButtons, Snapshot(buttons));
+    }
+
+    private static ScriptBarItem[] Snapshot(List<(string Group, ScriptWindow W)> rows)
+    {
+        if (rows.Count == 0) return Array.Empty<ScriptBarItem>();
         rows.Sort(static (a, b) =>
         {
             int c = string.Compare(a.Group, b.Group, StringComparison.OrdinalIgnoreCase);
@@ -662,7 +682,7 @@ internal static class ScriptWindowRegistry
         for (int i = 0; i < rows.Count; i++)
             items[i] = new ScriptBarItem(rows[i].W, rows[i].Group,
                 groupStart: i == 0 || !string.Equals(rows[i].Group, rows[i - 1].Group, StringComparison.Ordinal));
-        Volatile.Write(ref _barItems, items);
+        return items;
     }
 
     // ── Windows ──────────────────────────────────────────────────────────
@@ -677,7 +697,7 @@ internal static class ScriptWindowRegistry
         bool specChanged = isNew || ((w.Flags ^ pw.Flags) & SpecFlags) != 0
             || w.DefaultSize != pw.DefaultSize || w.MinSize != pw.MinSize || w.DefaultPos != defaultPos;
         bool titleChanged = w.Title != pw.Title;
-        if (isNew || titleChanged || ((w.Flags ^ pw.Flags) & WindowFlags.ShowInBar) != 0)
+        if (isNew || titleChanged || ((w.Flags ^ pw.Flags) & (WindowFlags.ShowInBar | WindowFlags.BarButton)) != 0)
             _barDirty = true;
         w.Flags = pw.Flags;
         w.Title = pw.Title;
@@ -862,7 +882,7 @@ internal static class ScriptWindowRegistry
                         + $" flags=0x{w.Flags:X3}({DescribeFlags(w.Flags)}) error={(w.ErrorUtf8 != null ? "shown" : "none")}"
                         + $" ops={w.List.OpCount} listSeq={w.List.ListSeq} playerSeq={w.PlayerVisibilitySeq}");
         }
-        lines.Add($"script windows: {BarItems.Length} in the bar's Scripts menu");
+        lines.Add($"script windows: {BarItems.Length} in the bar's Scripts menu, {BarButtons.Length} with a bar button");
         return lines;
     }
 
@@ -881,6 +901,7 @@ internal static class ScriptWindowRegistry
         Add(WindowFlags.NoPopOut, "NoPopOut");
         Add(WindowFlags.HasError, "HasError");
         Add(WindowFlags.PosIsDefault, "PosIsDefault");
+        Add(WindowFlags.BarButton, "BarButton");
         return sb.Length > 0 ? sb.ToString() : "none";
     }
 }

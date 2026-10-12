@@ -162,6 +162,9 @@ public struct RynthCoreApiNative
     public IntPtr GetTrainingInfoFn;         // int GetTrainingInfo(TrainingInfoNative* info, TrainingEntryNative* entries, int max) -> entries there are
     public IntPtr RaiseFn;                   // int Raise(uint kind, uint stype, uint ranks, long expectedXp, long* xpSent) -> RaiseResult
     public IntPtr TrainSkillFn;              // int TrainSkill(uint stype, int expectedCredits) -> RaiseResult
+    // v80: real slot order of a container's items, and moves that land at a slot
+    public IntPtr GetContainerOrderFn;       // int GetContainerOrder(uint container, int slotKind, uint* ids, int max) -> count, -1 unknown
+    public IntPtr PutItemInContainerFn;      // int PutItemInContainer(uint item, uint container, int placement) -> 1 sent, 0 refused, -1 unbound
 }
 
 /// <summary>

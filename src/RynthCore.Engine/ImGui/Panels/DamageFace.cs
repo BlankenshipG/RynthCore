@@ -87,6 +87,8 @@ internal sealed class DamageFace : IImGuiPanel
     private sealed class RowText
     {
         public string Wcid = "", Tier = "", Crit = "", NonCrit = "", Casts = "", Kills = "";
+        /// <summary>The name as shown: "Rampager (2 kinds)" for a row of several wcids.</summary>
+        public string NameShown = "", NameTip = "";
         public string Weapon = "", Offhand = "", Pet = "", WeakTop = "", Sec = "", SecTip = "";
         public bool CritSet, NonCritSet, WeaponGold, OffhandGold, PetGold;
         public string[] TierLines = Array.Empty<string>();
@@ -250,7 +252,8 @@ internal sealed class DamageFace : IImGuiPanel
                 if (_filterWid != 0 && r.Wid != _filterWid) continue;
                 if (_searchText.Length > 0
                     && r.Name.IndexOf(_searchText, StringComparison.OrdinalIgnoreCase) < 0
-                    && !r.Wcid.ToString(CultureInfo.InvariantCulture).Contains(_searchText, StringComparison.Ordinal))
+                    && !r.Wcid.ToString(CultureInfo.InvariantCulture).Contains(_searchText, StringComparison.Ordinal)
+                    && !Array.Exists(r.Wcids, w => w.ToString(CultureInfo.InvariantCulture).Contains(_searchText, StringComparison.Ordinal)))
                     continue;
             }
             _shown.Add(r);
@@ -306,6 +309,20 @@ internal sealed class DamageFace : IImGuiPanel
         }
         BuildPrio(r.Name, t);
         t.Wcid = r.Wcid.ToString(inv);
+        const string DetailTip = "Details: weaknesses, accuracy, damage, summons, damage taken and spell settings (wcid ";
+        if (r.Wcids.Length > 1)
+        {
+            // Monsters of one name with several weenies (retail has five Rampagers): one row.
+            t.NameShown = r.Name + " (" + r.Wcids.Length.ToString(inv) + " kinds)";
+            t.NameTip = r.Wcids.Length.ToString(inv) + " kinds of " + r.Name + ": wcids " + string.Join(", ", r.Wcids) + ".\n"
+                + "Kills and fights are added up; a weapon, offhand, pet or HP set here applies to all of them.\n"
+                + DetailTip + t.Wcid + ", the one with the most kills).";
+        }
+        else
+        {
+            t.NameShown = r.Name;
+            t.NameTip = DetailTip + t.Wcid + ").";
+        }
         t.Tier = DamageSource.FormatTier(r.Tier);
         t.CritSet = r.CritN > 0;
         t.Crit = t.CritSet ? r.Crit.ToString("0", inv) : "—";
@@ -762,10 +779,10 @@ internal sealed class DamageFace : IImGuiPanel
             }
         }
         ImGuiNET.ImGui.SetItemTooltip("Follow the Default config (spells, weapon). Uncheck to customize this monster.");
-        if (NameLink("##name", r.Name, new Vector2(p.X + ColX[ColMonster] + 22, p.Y), ColW[ColMonster] - 24, custom ? Gold : White,
+        if (NameLink("##name", t.NameShown, new Vector2(p.X + ColX[ColMonster] + 22, p.Y), ColW[ColMonster] - 24, custom ? Gold : White,
                 ImGuiFonts.Get(UiFont.Ui11)))
             DamageDetailFace.Show(r.Wcid, r.Name);
-        ImGuiNET.ImGui.SetItemTooltip("Details: weaknesses, accuracy, damage, summons, damage taken and spell settings (wcid " + t.Wcid + ").");
+        ImGuiNET.ImGui.SetItemTooltip(t.NameTip);
 
         PrioCell(r.Key, r.Name, t.PrioCopyFrom, t, p);
         HpCell(r, p);

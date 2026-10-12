@@ -30,6 +30,7 @@ internal static class EngineSettings
     private static bool _enableImGuiBackend = true;
     private static bool _enableHangMinidump = true;
     private static bool _preventIdleLogoff = true;
+    private static bool _closeOnServerDisconnect = true;
     private static DecalBridgeMode _decalBridgeMode = DecalBridgeMode.Auto;
     private static bool _decalInGameImGui = true;
     private static bool _decalStandDown = true;
@@ -228,6 +229,27 @@ internal static class EngineSettings
         {
             EnsureLoaded();
             return _preventIdleLogoff;
+        }
+    }
+
+    /// <summary>"CloseOnServerDisconnect" in engine.json (default true, 2026-10-11): when AC shows
+    /// its "The server has disconnected" screen (UIFlow mode Disconnected, only a Quit Game
+    /// button), the engine closes the client a few seconds later the way the window's close
+    /// button does (Compatibility/ServerDisconnectClose.cs), so a launcher's auto-relaunch can
+    /// bring it back. Off: the client stays on that screen. Set in game in Settings > Misc.</summary>
+    public static bool CloseOnServerDisconnect
+    {
+        get
+        {
+            EnsureLoaded();
+            return _closeOnServerDisconnect;
+        }
+        set
+        {
+            EnsureLoaded();   // populate _pluginPaths before Save() rewrites the file
+            if (_closeOnServerDisconnect == value) return;
+            _closeOnServerDisconnect = value;
+            Save();
         }
     }
 
@@ -552,6 +574,10 @@ internal static class EngineSettings
                 _preventIdleLogoff = pilEl.GetBoolean();
             }
 
+            if (doc.RootElement.TryGetProperty("CloseOnServerDisconnect", out var cosdEl) &&
+                (cosdEl.ValueKind == JsonValueKind.True || cosdEl.ValueKind == JsonValueKind.False))
+                _closeOnServerDisconnect = cosdEl.GetBoolean();
+
             if (doc.RootElement.TryGetProperty("IltServerNames", out var ilnEl) &&
                 ilnEl.ValueKind == JsonValueKind.Array)
                 _iltServerNames = ReadStringList(ilnEl);
@@ -601,7 +627,7 @@ internal static class EngineSettings
         "EnableImGuiBackend", "EnableHangMinidump", "PreventIdleLogoff", "DecalBridge",
         "DecalInGameImGui", "DecalStandDown", "DisabledUiHooks", "ServerMessageStream",
         "FlightRecorder", "InsertReleasesUi", "IltServerNames", "IltHosts", "EnableLargeAddressAlignmentFix",
-        "MaxHotReloads", "ReportEndpoint",
+        "MaxHotReloads", "ReportEndpoint", "CloseOnServerDisconnect",
     };
 
     private static void Save()
@@ -650,6 +676,8 @@ internal static class EngineSettings
                     w.WriteBoolean("EnableLargeAddressAlignmentFix", false);
                 if (_insertReleasesUi)     // default false: leave the file as it was
                     w.WriteBoolean("InsertReleasesUi", true);
+                if (!_closeOnServerDisconnect)   // default true: leave the file as it was
+                    w.WriteBoolean("CloseOnServerDisconnect", false);
                 if (_maxHotReloads != ReloadCapNotice.DefaultMaxHotReloads)   // only a hand-set value is written
                     w.WriteNumber("MaxHotReloads", _maxHotReloads);
                 if (_reportEndpoint != null)   // only a hand-set value is written

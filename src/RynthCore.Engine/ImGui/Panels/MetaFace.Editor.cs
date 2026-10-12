@@ -4,6 +4,7 @@
 //
 //    [<- Back]  Edit rule                                    Saved
 //    State: [Combat                                       v]
+//    Name:  [Optional: a name to find this rule by         ]
 //    +- Conditions ------ [+ Add] -+  +- Actions --------- [+ Add] -+
 //    | [Landblock ==            v] |  | [Chat Command           v] |
 //    | [A9B40000     ][Set current] |  | [/say hello               ] |
@@ -14,6 +15,13 @@
 //  SideBySideMinWidth they stack. "+ Add" turns a single condition into the
 //  first of an All (a single action into the first of a DoAll), or adds one
 //  more to an All / Any / DoAll.
+//
+//  Groups (2026-10-11): an All / Any / Not, nested or the column's own, and a
+//  DoAll is a box (tint, border and left bar in its colour: All teal, Any
+//  amber, Not rose) around its picker and everything in it, so a box inside
+//  a box shows what belongs where; a nested group's line says what it means
+//  ("any of the conditions inside"). Rows alternate a light shade; a DoAll's
+//  actions are numbered in the order they run.
 //
 //  Saving: every change marks the rule dirty (MetaAutosave); 0.75 s after the
 //  last change, and never while a text box is being typed in, the rule goes
@@ -68,6 +76,11 @@ internal sealed partial class MetaFace
     private string? _nameProblem;
     private const string NewStateEntry = PhosphorIcons.Plus + " New state...";
 
+    // The rule's Name box (MetaRuleDto.Name; one line, MaxNameLength bytes of UTF-8).
+    private readonly byte[] _ruleNameBytes = new byte[MetaRuleEdit.MaxNameLength + 1];
+    private string? _ruleNameShown;     // the name the box was last filled from
+    private bool _ruleNameActive, _focusRuleName;
+
     private const string BackLabel = PhosphorIcons.ArrowLeft + " Back";
     private const string AddLabel = PhosphorIcons.Plus + " Add";
     private const string SetCurrentLabel = PhosphorIcons.MapPin + " Set current";
@@ -86,6 +99,7 @@ internal sealed partial class MetaFace
         _lastSaved = index >= 0 ? rule.Clone() : null;
         _autosave.Clear();
         _fields.Clear();
+        _ruleNameShown = null;
         _editConfirmDelete = false;
         _editTyping = false;
         CancelNaming();
@@ -136,6 +150,7 @@ internal sealed partial class MetaFace
         }
         if (!_autosave.Take()) return;
         MetaRuleDto send = _editRule.Clone();
+        send.Name = send.Name.Trim();   // the box keeps a space you just typed; the rule doesn't
         if (_editIndex < 0)
         {
             _editIndex = _data.Rules.Count;   // add_rule appends
@@ -163,7 +178,6 @@ internal sealed partial class MetaFace
             {
                 SendEdit(new MetaCmd { Op = "delete_rule", Index = index });
                 _data.Rules.RemoveAt(index);
-                _expanded.Clear();
                 RebuildCaches();
             }
         }
@@ -195,7 +209,7 @@ internal sealed partial class MetaFace
         float indW = SaveIndicatorWidth(editor: true);
         ImFontPtr bold = ImGuiFonts.Get(UiFont.UiBold11);
         float tx = top.X + backW + 8;
-        string title = _editIndex < 0 ? "New rule" : "Edit rule";
+        string title = _editIndex < 0 ? "New rule" : r.Name.Trim().Length > 0 ? r.Name.Trim() : "Edit rule";
         ImGuiNET.ImGui.PushFont(bold);
         dl.AddText(new Vector2(tx, top.Y + (22 - bold.FontSize) * 0.5f), Teal, Fit(title, Math.Max(10, top.X + w - indW - 8 - tx)));
         ImGuiNET.ImGui.PopFont();
@@ -203,7 +217,7 @@ internal sealed partial class MetaFace
 
         // State: [picker]
         float y = top.Y + 26;
-        float lw = ImGuiNET.ImGui.CalcTextSize("State:").X + 6;
+        float lw = Math.Max(ImGuiNET.ImGui.CalcTextSize("State:").X, ImGuiNET.ImGui.CalcTextSize("Name:").X) + 6;
         dl.AddText(new Vector2(top.X, y + (22 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Mute, "State:");
         string? state = StatePicker("##ed_state", r.State, _statePicks, IndexOf(_statePicks, r.State),
             new Vector2(top.X + lw, y), w - lw, out _);
@@ -212,7 +226,12 @@ internal sealed partial class MetaFace
             r.State = state;   // a new state is made by moving this rule into it
             _editChanged = true;
         }
-        y += 22 + ProblemLine("##ed_state", new Vector2(top.X + lw, y + 22), w - lw) + 6;
+        y += 22 + ProblemLine("##ed_state", new Vector2(top.X + lw, y + 22), w - lw) + 4;
+
+        // Name: [optional]
+        dl.AddText(new Vector2(top.X, y + (22 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Mute, "Name:");
+        NameBox(new Vector2(top.X + lw, y), w - lw);
+        y += 22 + 6;
 
         // Conditions | Actions
         const float footerH = 24;
@@ -279,44 +298,191 @@ internal sealed partial class MetaFace
 
     private void ConditionsBody(MetaRuleDto r, float w)
     {
-        int picked = FlowPicker("##ed_cond", MetaVocabulary.ConditionName(r.Condition), MetaVocabulary.ConditionNames, r.Condition, w);
-        if (picked >= 0 && picked != r.Condition)
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
+        BeginBacks(dl);
+        try
         {
-            SetCondition(r, picked);
-            _editChanged = true;
+            // An All / Any / Not is a box around its picker and everything in it.
+            bool card = MetaVocabulary.IsCompositeCondition(r.Condition);
+            Vector2 top = CardOpen(card);
+            float iw = card ? w - CardInset - CardPadR : w;
+            int picked = FlowPicker("##ed_cond", MetaVocabulary.ConditionName(r.Condition), MetaVocabulary.ConditionNames, r.Condition, iw);
+            if (picked >= 0 && picked != r.Condition)
+            {
+                SetCondition(r, picked);
+                _editChanged = true;
+            }
+            if (!card || !MetaVocabulary.IsCompositeCondition(r.Condition))
+            {
+                if (!MetaVocabulary.IsCompositeCondition(r.Condition)) ConditionField("##ed_cdata", r, iw, 22);
+                CardClose(card, top, w, GroupColor(r.Condition, false), GroupTint(r.Condition, false), 0);
+                return;
+            }
+            GroupLabel(r.Condition switch
+            {
+                MetaRuleEdit.Not => "Not: true while the condition inside is false",
+                MetaRuleEdit.All => "All of these:",
+                _ => "Any of these:",
+            }, GroupColor(r.Condition, false));
+            if (r.Children.Count == 0) Note("None yet: + Add (top right).");
+            SubRules(r.Children, action: false, 0, r.Condition == MetaRuleEdit.Not ? 1 : int.MaxValue, iw);
+            CardClose(card, top, w, GroupColor(r.Condition, false), GroupTint(r.Condition, false), 0);
         }
-        if (!MetaVocabulary.IsCompositeCondition(r.Condition))
+        finally
         {
-            ConditionField("##ed_cdata", r, w, 22);
-            return;
+            EndBacks(dl);
         }
-        SmallLabel(r.Condition switch
-        {
-            MetaRuleEdit.Not => "Not: true while this one is false",
-            MetaRuleEdit.All => "All of these:",
-            _ => "Any of these:",
-        });
-        if (r.Children.Count == 0) Note("None yet: + Add (top right).");
-        SubRules(r.Children, action: false, 0, r.Condition == MetaRuleEdit.Not ? 1 : int.MaxValue, w);
     }
 
     private void ActionsBody(MetaRuleDto r, float w)
     {
-        int picked = FlowPicker("##ed_act", MetaVocabulary.ActionName(r.Action), MetaVocabulary.ActionNames, r.Action, w);
-        if (picked >= 0 && picked != r.Action)
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
+        BeginBacks(dl);
+        try
         {
-            r.Action = picked;
-            if (!MetaVocabulary.IsAllAction(picked)) r.ActionChildren.Clear();
+            bool card = MetaVocabulary.IsAllAction(r.Action);   // a DoAll is a box around its actions
+            Vector2 top = CardOpen(card);
+            float iw = card ? w - CardInset - CardPadR : w;
+            int picked = FlowPicker("##ed_act", MetaVocabulary.ActionName(r.Action), MetaVocabulary.ActionNames, r.Action, iw);
+            if (picked >= 0 && picked != r.Action)
+            {
+                r.Action = picked;
+                if (!MetaVocabulary.IsAllAction(picked)) r.ActionChildren.Clear();
+                _editChanged = true;
+            }
+            if (!card || !MetaVocabulary.IsAllAction(r.Action))
+            {
+                if (!MetaVocabulary.IsAllAction(r.Action)) ActionField("##ed_adata", r, iw, 22, problemLine: true);
+                CardClose(card, top, w, GroupColor(MetaRuleEdit.DoAll, true), GroupTint(MetaRuleEdit.DoAll, true), 0);
+                return;
+            }
+            GroupLabel("All of these, in order:", GroupColor(MetaRuleEdit.DoAll, true));
+            if (r.ActionChildren.Count == 0) Note("None yet: + Add (top right).");
+            SubRules(r.ActionChildren, action: true, 0, int.MaxValue, iw);
+            CardClose(card, top, w, GroupColor(MetaRuleEdit.DoAll, true), GroupTint(MetaRuleEdit.DoAll, true), 0);
+        }
+        finally
+        {
+            EndBacks(dl);
+        }
+    }
+
+    // =====================================================================
+    //  Group boxes and row stripes (2026-10-11: "hard to see what's what in All and Any")
+    // =====================================================================
+    //
+    //  An All / Any / Not (and a DoAll) is a box: a tint and a border in the group's colour (All
+    //  teal, Any amber, Not rose), an accent bar down its left, around its picker and everything in
+    //  it; a box inside a box is another, so what belongs where shows at a glance. Rows of a list
+    //  alternate a light shade. A box's height is known only after its contents are laid out, so
+    //  boxes and stripes are recorded while the rows are placed and drawn at the end on a channel
+    //  under them (outer boxes first, each list's stripes over its box).
+
+    private const float CardInset = 9, CardPadR = 5, CardPadT = 5, CardPadB = 4;
+    private static readonly uint Rose = C(0xFFE07A9A), StripeOver = C(0x12FFFFFF);
+    private readonly List<(Vector2 Min, Vector2 Max, uint Fill, uint Border, uint Accent, int Order)> _backs = new();
+
+    private void BeginBacks(ImDrawListPtr dl)
+    {
+        _backs.Clear();
+        dl.ChannelsSplit(2);
+        dl.ChannelsSetCurrent(1);   // widgets over the boxes
+    }
+
+    private void EndBacks(ImDrawListPtr dl)
+    {
+        dl.ChannelsSetCurrent(0);
+        // Outer before inner (Order = 2 x depth for a box, + 1 for its list's stripes).
+        _backs.Sort((x, y) => x.Order.CompareTo(y.Order));
+        foreach (var b in _backs)
+        {
+            if (b.Fill != 0) dl.AddRectFilled(b.Min, b.Max, b.Fill, b.Border != 0 ? 4f : 0f);
+            if (b.Accent != 0) dl.AddRectFilled(b.Min, new Vector2(b.Min.X + 3, b.Max.Y), b.Accent, 2f);
+            if (b.Border != 0) dl.AddRect(b.Min, b.Max, b.Border, 4f);
+        }
+        _backs.Clear();
+        dl.ChannelsMerge();
+    }
+
+    /// <summary>Starts a box at the cursor when <paramref name="card"/> (its contents indented); returns its top-left.</summary>
+    private static Vector2 CardOpen(bool card)
+    {
+        Vector2 top = ImGuiNET.ImGui.GetCursorScreenPos();
+        if (!card) return top;
+        ImGuiNET.ImGui.Indent(CardInset);   // moves the cursor in; the box's rows keep to it
+        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(ImGuiNET.ImGui.GetCursorScreenPos().X, top.Y + CardPadT));
+        return top;
+    }
+
+    /// <summary>Ends a box opened at <paramref name="top"/>, <paramref name="w"/> wide, and records it.</summary>
+    private void CardClose(bool card, Vector2 top, float w, uint color, uint tint, int depth)
+    {
+        if (!card) return;
+        float endY = ImGuiNET.ImGui.GetCursorScreenPos().Y - ImGuiNET.ImGui.GetStyle().ItemSpacing.Y + CardPadB;
+        ImGuiNET.ImGui.Unindent(CardInset);
+        _backs.Add((top, new Vector2(top.X + w, endY), tint, (color & 0x00FFFFFF) | 0x80000000u, color, depth * 2));
+        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(top.X, endY + 3));
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 0));
+    }
+
+    /// <summary>A group's colour: All (and DoAll) teal, Any amber, Not rose.</summary>
+    private static uint GroupColor(int kind, bool action) => action ? Teal : kind switch
+    {
+        MetaRuleEdit.Any => Amber,
+        MetaRuleEdit.Not => Rose,
+        _ => Teal,
+    };
+
+    /// <summary>A group box's fill: its colour, faint, over the column.</summary>
+    private static uint GroupTint(int kind, bool action) => action ? C(0xFF10262E) : kind switch
+    {
+        MetaRuleEdit.Any => C(0xFF2A2412),
+        MetaRuleEdit.Not => C(0xFF2C1622),
+        _ => C(0xFF10262E),
+    };
+
+    /// <summary>What a nested group's line says after its picker.</summary>
+    private static string GroupWords(int kind) => kind switch
+    {
+        MetaRuleEdit.All => "all of the conditions inside",
+        MetaRuleEdit.Any => "any of the conditions inside",
+        _ => "true while the condition inside is false",
+    };
+
+    private static void GroupLabel(string text, uint color)
+    {
+        ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, color);
+        ImGuiNET.ImGui.TextUnformatted(text);
+        ImGuiNET.ImGui.PopStyleColor();
+        ImGuiNET.ImGui.PopFont();
+    }
+
+    /// <summary>The rule's name: optional, one line; saves like every other change.</summary>
+    private void NameBox(Vector2 pos, float width)
+    {
+        if (!_ruleNameActive && !ReferenceEquals(_ruleNameShown, _editRule.Name))
+        {
+            WriteUtf8(_ruleNameBytes, _editRule.Name);
+            _ruleNameShown = _editRule.Name;
+        }
+        ImGuiNET.ImGui.SetCursorScreenPos(pos);
+        if (_focusRuleName)
+        {
+            ImGuiNET.ImGui.SetKeyboardFocusHere();
+            _focusRuleName = false;
+        }
+        bool edited = TextBox("##ed_name", _ruleNameBytes, width, "Optional: a name to find this rule by",
+            ImGuiInputTextFlags.None, out _ruleNameActive);
+        ImGuiNET.ImGui.SetItemTooltip("Shown in bold over the rule in the list (and instead of its condition in Compact).");
+        _typingNow |= _ruleNameActive;   // autosave waits until the box is left
+        if (edited)
+        {
+            string typed = MetaRuleEdit.CleanName(Utf8(_ruleNameBytes));
+            _editRule.Name = typed;
+            _ruleNameShown = typed;
             _editChanged = true;
         }
-        if (!MetaVocabulary.IsAllAction(r.Action))
-        {
-            ActionField("##ed_adata", r, w, 22, problemLine: true);
-            return;
-        }
-        SmallLabel("All of these, in order:");
-        if (r.ActionChildren.Count == 0) Note("None yet: + Add (top right).");
-        SubRules(r.ActionChildren, action: true, 0, int.MaxValue, w);
     }
 
     private static void SetCondition(MetaRuleDto c, int picked)
@@ -385,15 +551,21 @@ internal sealed partial class MetaFace
             }
             if (problemLine) extra = ProblemLine(id, new Vector2(p.X, p.Y + height), width);
         }
-        else if (a.Action == 3)   // Embedded Nav Route
+        else if (a.Action == 3)   // Embedded Nav Route: Patrol, nav files, the meta's routes
         {
-            int picked = Picker(id, a.ActionData.Length == 0 ? "Select route..." : a.ActionData, _routePicks,
-                Array.IndexOf(_routePicks, a.ActionData), p, width, height);
-            if (picked >= 0 && _routePicks[picked] != a.ActionData)
+            int sel = IndexOf(_routeValues, a.ActionData);
+            string shown = a.ActionData.Length == 0 ? "Select route..." : sel >= 0 ? _routeLabels[sel] : a.ActionData;
+            int picked = Picker(id, shown, _routeLabels, sel, p, width, height);
+            if (picked >= 0 && _routeValues[picked] != a.ActionData)
             {
-                a.ActionData = _routePicks[picked];
+                a.ActionData = _routeValues[picked];   // the name RynthAi looks up, not the list's label
                 _editChanged = true;
             }
+            // (The picker's last item is a spacer, so the hover is checked on its rectangle.)
+            if (MetaVocabulary.PatrolRoute.Equals(a.ActionData, StringComparison.OrdinalIgnoreCase)
+                    && !MetaVocabulary.HasRoute(_data, a.ActionData)
+                    && ImGuiNET.ImGui.IsWindowHovered() && ImGuiNET.ImGui.IsMouseHoveringRect(p, p + new Vector2(width, height)))
+                ImGuiNET.ImGui.SetTooltip("RynthAi's dungeon patrol (/ra dunnav-patrol): a circular hunt through every room of the dungeon you're in. Needs no nav file; only works inside a dungeon.");
         }
         else if (!MetaRuleEdit.ActionTakesData(a.Action) && a.ActionData.Length == 0)
             NoteAt(p, "Nothing to set.", height);
@@ -407,64 +579,99 @@ internal sealed partial class MetaFace
     }
 
     // Sub-conditions nest (All/Any/Not under All/Any/Not, MaxSubConditionDepth levels; a Not takes
-    // one); DoAll's sub-actions are a flat list. Each row: [type][value][x]; in a narrow column the
-    // value goes on a second line. The top level's "+ Add" is in the column header.
+    // one); DoAll's sub-actions are a flat list that runs in order, so each is numbered and has up /
+    // down. A row: [type][value]([up][down])[x]; every other row a light shade; in a narrow column the
+    // value goes on a second line. A nested All / Any / Not is a box (its picker, what it means, then
+    // its conditions inside, indented). The top level's "+ Add" is in the column header.
     private void SubRules(List<MetaRuleDto> subs, bool action, int depth, int maxCount, float w)
     {
         string[] names = action ? MetaVocabulary.ActionNames : MetaVocabulary.ConditionNames;
         bool narrow = w < 300;
-        const float rh = 20, xw = 20;
+        const float rh = 20, xw = 20, aw = 16, childIndent = 10;
         for (int i = 0; i < subs.Count; i++)
         {
             MetaRuleDto sub = subs[i];
             ImGuiNET.ImGui.PushID(i);
+            bool nests = !action && MetaVocabulary.IsCompositeCondition(sub.Condition) && depth < MetaVocabulary.MaxSubConditionDepth;
+            Vector2 cardTop = CardOpen(nests);
+            float rw = nests ? w - CardInset - CardPadR : w;   // the row's width (inside its box)
+            float tools = xw + (action ? 2 * (aw + 2) : 0);    // [up][down][x] or [x]
+            float lead = action ? 16 : 0;                      // a DoAll's step number
             Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
-            float pickW = narrow ? w - xw - 4 : (w - xw - 8) * 0.45f;
+            float pickW = narrow ? rw - tools - lead - 4 : (rw - tools - lead - 8) * 0.45f;
 
+            if (action)
+            {
+                string step = (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                ImGuiNET.ImGui.GetWindowDrawList().AddText(
+                    new Vector2(p.X + lead - 4 - ImGuiNET.ImGui.CalcTextSize(step).X, p.Y + (rh - ImGuiNET.ImGui.GetFontSize()) * 0.5f),
+                    Faded(Mute), step);
+            }
             int current = action ? sub.Action : sub.Condition;
             string shown = action ? MetaVocabulary.ActionName(sub.Action) : MetaVocabulary.ConditionName(sub.Condition);
-            int picked = Picker("##type", shown, names, current, p, pickW, rh);
+            int picked = Picker("##type", shown, names, current, new Vector2(p.X + lead, p.Y), pickW, rh);
             if (picked >= 0 && picked != current)
             {
                 if (action) sub.Action = picked; else SetCondition(sub, picked);
                 _editChanged = true;
             }
 
-            bool nests = !action && MetaVocabulary.IsCompositeCondition(sub.Condition) && depth < MetaVocabulary.MaxSubConditionDepth;
-            bool removed = IconButton("##rm", PhosphorIcons.X, new Vector2(p.X + w - xw, p.Y), new Vector2(xw, rh), TextDim, DelFill, BtnBord);
-            ImGuiNET.ImGui.SetItemTooltip(action ? "Remove this action" : "Remove this condition");
+            bool removed = IconButton("##rm", PhosphorIcons.X, new Vector2(p.X + rw - xw, p.Y), new Vector2(xw, rh), TextDim, DelFill, BtnBord);
+            ImGuiNET.ImGui.SetItemTooltip(action ? "Remove this action" : nests ? "Remove this group and what is in it" : "Remove this condition");
+            int moveTo = -1;
+            if (action)
+            {
+                float ax = p.X + rw - xw - 2 - 2 * (aw + 2);
+                if (IconButton("##sub_up", PhosphorIcons.ArrowUp, new Vector2(ax, p.Y), new Vector2(aw, rh), Mute, BtnFill, BtnBord, enabled: i > 0))
+                    moveTo = i - 1;
+                ImGuiNET.ImGui.SetItemTooltip("Run this action earlier");
+                if (IconButton("##sub_dn", PhosphorIcons.ArrowDown, new Vector2(ax + aw + 2, p.Y), new Vector2(aw, rh), Mute, BtnFill, BtnBord,
+                        enabled: i < subs.Count - 1))
+                    moveTo = i + 1;
+                ImGuiNET.ImGui.SetItemTooltip("Run this action later");
+            }
 
             float rowH = rh;
             if (nests)
             {
                 if (!narrow)
-                    NoteAt(new Vector2(p.X + pickW + 6, p.Y), sub.Condition == MetaRuleEdit.Not ? "(the condition below)" : "(the conditions below)", rh);
+                    NoteAt(new Vector2(p.X + pickW + 6, p.Y), GroupWords(sub.Condition), rh, GroupColor(sub.Condition, false));
             }
             else
             {
-                Vector2 vp = narrow ? new Vector2(p.X + 12, p.Y + rh + 2) : new Vector2(p.X + pickW + 4, p.Y);
-                float vw = narrow ? w - 12 : w - pickW - 4 - xw - 4;
+                Vector2 vp = narrow ? new Vector2(p.X + lead + 12, p.Y + rh + 2) : new Vector2(p.X + lead + pickW + 4, p.Y);
+                float vw = narrow ? rw - lead - 12 : rw - lead - pickW - 4 - tools - 4;
                 ImGuiNET.ImGui.SetCursorScreenPos(vp);
                 if (action) ActionField("##data", sub, vw, rh, problemLine: false);
                 else ConditionField("##data", sub, vw, rh);
                 if (narrow) rowH = rh * 2 + 2;
+                // Every other row a light shade, reaching halfway into the gaps so the shades meet.
+                if (i % 2 == 1)
+                    _backs.Add((new Vector2(p.X - 4, p.Y - 4.5f), new Vector2(p.X + rw + 3, p.Y + rowH + 4.5f), StripeOver, 0, 0, depth * 2 + 1));
             }
-            ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + rowH + 2));
+            ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + rowH + 5));
             ImGuiNET.ImGui.Dummy(new Vector2(0, 0));
 
             if (!removed && nests)
             {
-                ImGuiNET.ImGui.Indent(14);
-                SmallLabel(sub.Condition switch { MetaRuleEdit.Not => "Not:", MetaRuleEdit.All => "All of:", _ => "Any of:" });
-                SubRules(sub.Children, action: false, depth + 1, sub.Condition == MetaRuleEdit.Not ? 1 : int.MaxValue, w - 14);
-                ImGuiNET.ImGui.Unindent(14);
+                ImGuiNET.ImGui.Indent(childIndent);
+                if (sub.Children.Count == 0) Note("None yet: + Add below.");
+                SubRules(sub.Children, action: false, depth + 1, sub.Condition == MetaRuleEdit.Not ? 1 : int.MaxValue, rw - childIndent);
+                ImGuiNET.ImGui.Unindent(childIndent);
             }
+            CardClose(nests, cardTop, w, GroupColor(sub.Condition, false), GroupTint(sub.Condition, false), depth + 1);
             ImGuiNET.ImGui.PopID();
             if (removed)
             {
                 subs.RemoveAt(i);
                 _editChanged = true;
                 break;   // indices shifted: the rest draws next frame
+            }
+            if (moveTo >= 0)
+            {
+                (subs[i], subs[moveTo]) = (subs[moveTo], subs[i]);
+                _editChanged = true;
+                break;
             }
         }
 
@@ -539,12 +746,12 @@ internal sealed partial class MetaFace
     /// (<paramref name="isNew"/> true) once its name box is confirmed; else null.
     /// </summary>
     private string? StatePicker(string id, string shown, string[] items, int selected, Vector2 pos, float width, out bool isNew,
-        float height = 22)
+        float height = 22, string? badge = null)
     {
         isNew = false;
         uint key = ImGuiNET.ImGui.GetID(id);
         if (_namingKey == key) return NamingBox(id, pos, width, height, out isNew);
-        int picked = Picker(id, shown, items, selected, pos, width, height, NewStateEntry);
+        int picked = Picker(id, shown, items, selected, pos, width, height, NewStateEntry, badge);
         if (picked == items.Length)
         {
             _namingKey = key;
@@ -650,12 +857,6 @@ internal sealed partial class MetaFace
         return -1;
     }
 
-    private static void SmallLabel(string text)
-    {
-        ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFE8B333), text);
-        ImGuiNET.ImGui.PopFont();
-    }
 
     private static void Note(string text)
     {
@@ -664,8 +865,9 @@ internal sealed partial class MetaFace
         ImGuiNET.ImGui.PopFont();
     }
 
-    private static void NoteAt(Vector2 p, string text, float height)
+    private static void NoteAt(Vector2 p, string text, float height, uint color = 0)
     {
-        ImGuiNET.ImGui.GetWindowDrawList().AddText(new Vector2(p.X + 4, p.Y + (height - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Faded(Mute), text);
+        ImGuiNET.ImGui.GetWindowDrawList().AddText(new Vector2(p.X + 4, p.Y + (height - ImGuiNET.ImGui.GetFontSize()) * 0.5f),
+            color != 0 ? color : Faded(Mute), text);
     }
 }

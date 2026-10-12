@@ -155,6 +155,14 @@ public readonly unsafe struct RynthCoreHost
     /// (spend unassigned XP and skill credits like the character window).</summary>
     public bool HasTraining => _api.Version >= 79 && _api.GetTrainingInfoFn != IntPtr.Zero
                                && _api.RaiseFn != IntPtr.Zero && _api.TrainSkillFn != IntPtr.Zero;
+
+    /// <summary>v80: <see cref="TryGetContainerOrder"/> (a container's items in real slot order, and the
+    /// side packs' order in the pack column).</summary>
+    public bool HasContainerOrder => _api.Version >= 80 && _api.GetContainerOrderFn != IntPtr.Zero;
+
+    /// <summary>v80: <see cref="PutItemInContainer"/> (a move that lands at a slot; a reorder within a
+    /// pack). The sender can still be unbound on an odd client: the call then answers -1.</summary>
+    public bool HasPutItemInContainer => _api.Version >= 80 && _api.PutItemInContainerFn != IntPtr.Zero;
     public bool HasGetPluginExportJson     => _api.Version >= 66 && _api.GetPluginExportJsonFn     != IntPtr.Zero;
     public bool HasGetPluginInterface      => _api.Version >= 68 && _api.GetPluginInterfaceFn      != IntPtr.Zero;
     public bool HasGetLiveObjectIds        => _api.Version >= 69 && _api.GetLiveObjectIdsFn        != IntPtr.Zero;
@@ -1783,6 +1791,47 @@ public readonly unsafe struct RynthCoreHost
         => HasTraining
             ? (RaiseResult)((delegate* unmanaged[Cdecl]<uint, int, int>)_api.TrainSkillFn)(stype, expectedCredits)
             : RaiseResult.EngineTooOld;
+
+    // ─── Slot order and placed moves (API v80) ─────────────────────────────
+    // The server keeps every container's items in an order (the pack grid on screen); the engine
+    // follows it from the login message, a pack's contents list and every item move. A container
+    // is only known once a full list for it was seen: then and only then is there an order.
+
+    /// <summary>
+    /// v80: the items in <paramref name="containerId"/> in real slot order (slot 0 first), or with
+    /// <paramref name="slotKind"/> the side packs and foci in the main pack (the pack column, top
+    /// first). <paramref name="count"/> = how many there are; the buffer grows to fit. False on an
+    /// engine before v80 or when the order isn't known (no full list for that container yet).
+    /// Any thread.
+    /// </summary>
+    public bool TryGetContainerOrder(uint containerId, bool slotKind, ref uint[] buffer, out int count)
+    {
+        count = 0;
+        if (!HasContainerOrder || containerId == 0) return false;
+        buffer ??= new uint[64];
+        var fn = (delegate* unmanaged[Cdecl]<uint, int, uint*, int, int>)_api.GetContainerOrderFn;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            int n;
+            fixed (uint* p = buffer) n = fn(containerId, slotKind ? 1 : 0, buffer.Length > 0 ? p : null, buffer.Length);
+            if (n < 0) return false;
+            if (n <= buffer.Length) { count = n; return true; }
+            buffer = new uint[Math.Max(n, buffer.Length * 2)];
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// v80: moves <paramref name="itemId"/> into <paramref name="containerId"/> at slot
+    /// <paramref name="placement"/> (the index it should end at, counted without it), like a drop on
+    /// a cell of the pack grid; within one container it reorders. The server decides and answers as
+    /// for any move. 1 sent or queued, 0 refused before sending, -1 the sender isn't bound on this
+    /// client, -2 an engine before v80. Any thread (queued to AC's main thread).
+    /// </summary>
+    public int PutItemInContainer(uint itemId, uint containerId, int placement)
+        => HasPutItemInContainer
+            ? ((delegate* unmanaged[Cdecl]<uint, uint, int, int>)_api.PutItemInContainerFn)(itemId, containerId, placement)
+            : -2;
 
     /// <summary>
     /// v78: which reassembled server messages this plugin wants on its

@@ -15,5 +15,5 @@ namespace RynthCore.Engine.Plugins;
 /// <summary>Current API version. Bump when adding fields to RynthCoreAPI (and the SDK's RynthCoreApiNative).</summary>
 internal static class PluginContractVersion
 {
-    public const uint Current = 79;
+    public const uint Current = 80;
 }

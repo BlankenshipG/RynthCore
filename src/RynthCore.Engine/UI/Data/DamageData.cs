@@ -40,6 +40,10 @@ internal sealed class DamageRow
     public bool HpEst;
     public double Crit; public int CritN; public double NonCrit; public int NonCritN;
     public double Casts; public int Kills; public string Key = "";
+    /// <summary>Every wcid of a row of several kinds (monsters of one name, e.g. retail's five
+    /// Rampagers), ascending; empty for one kind. Wcid is the one edits and details go to; the
+    /// plugin applies an edit to all of them.</summary>
+    public uint[] Wcids = Array.Empty<uint>();
     /// <summary>Per-monster (wcid) weapon state, the same on every row of a wcid.</summary>
     public uint AssignedWid; public string AssignedWeapon = "";
     public uint BestWid; public string BestWeapon = "";
@@ -288,6 +292,12 @@ internal sealed unsafe class DamageSource : UiSource<DamageView>
                 if (e.TryGetProperty("assignedOffName", out var aon)) row.AssignedOffName = aon.GetString() ?? "";
                 if (e.TryGetProperty("isDefault", out var idf)) row.IsDefault = idf.GetBoolean();
                 if (e.TryGetProperty("hpEst", out var he)) row.HpEst = he.ValueKind == JsonValueKind.True;
+                if (e.TryGetProperty("wcids", out var wa) && wa.ValueKind == JsonValueKind.Array)
+                {
+                    var kinds = new List<uint>();
+                    foreach (var w in wa.EnumerateArray()) if (w.TryGetInt64(out long wl)) kinds.Add((uint)wl);
+                    if (kinds.Count > 1) row.Wcids = kinds.ToArray();
+                }
                 if (e.TryGetProperty("pet", out var pc)) row.Pet = pc.GetString() ?? "";
                 if (e.TryGetProperty("petLabel", out var pl)) row.PetLabel = pl.GetString() ?? "Auto";
                 if (e.TryGetProperty("weak", out var wk)) row.Weak = wk.GetString() ?? "";

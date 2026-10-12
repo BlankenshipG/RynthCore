@@ -526,6 +526,12 @@ internal static class SettingsSchema
                 "While the 3D world isn't drawn the client runs at most this many frames a second, so the\n" +
                 "saved time is slept (0 = no extra cap). Saved for this PC. Also: /rc video fps <n>.",
                 when: _ => D3D9.VideoPatch.Mode != D3D9.VideoPatchMode.Off),
+            // Stored in engine.json for every client (EngineSettings), not in the RynthAi profile.
+            Bool("Close Client on Server Disconnect", _ => Plugins.EngineSettings.CloseOnServerDisconnect,
+                (_, v) => Plugins.EngineSettings.CloseOnServerDisconnect = v,
+                "On (default): when the game shows \"The server has disconnected\" (only a Quit Game button),\n" +
+                "the client closes itself 5 seconds later, so the launcher's auto-relaunch can start it again.\n" +
+                "A logout or a quit never shows that screen. Applies to all your clients; others pick it up when they start."),
             Spacer(),
             Bool("Auto Cram", s => s.EnableAutocram, (s, v) => s.EnableAutocram = v,
                 "Automatically moves items from your main pack into side packs.\nNote: recently used weapons stay in the main pack."),

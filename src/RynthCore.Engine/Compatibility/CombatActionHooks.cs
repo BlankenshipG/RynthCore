@@ -474,7 +474,14 @@ internal static class CombatActionHooks
         }
     }
 
-    public static bool CastSpell(uint targetId, int spellId)
+    public static bool CastSpell(uint targetId, int spellId) => CastSpell(targetId, spellId, suppressMoveStop: false);
+
+    /// <param name="suppressMoveStop">
+    /// The engine already sent this cast's stop and the server answered it (AcMainThreadQueue
+    /// DrainCasts, PreCastStopRules): FreeHandsAndCastSpell's MaybeStopCompletely is made to send
+    /// nothing for the length of the call, so no stop rides in the cast's frame.
+    /// </param>
+    internal static bool CastSpell(uint targetId, int spellId, bool suppressMoveStop)
     {
         if (spellId <= 0) return false;
         if (_castSpellClient == null) return false;
@@ -543,7 +550,11 @@ internal static class CombatActionHooks
                         // busy leak. BusyCountHooks reconciles the delta once the cast
                         // gesture completes.
                         int busyBefore = BusyCountHooks.CaptureRealBusyForCast();
-                        bool okCast = SehTrampoline.FreeHandsCast(_freeHandsCastPtr, mgr, (uint)spellId, targetId);
+                        int savedCtl = 0;
+                        IntPtr suppressed = suppressMoveStop ? CommandInterpreterHooks.BeginCastStopSuppression(out savedCtl) : IntPtr.Zero;
+                        bool okCast;
+                        try { okCast = SehTrampoline.FreeHandsCast(_freeHandsCastPtr, mgr, (uint)spellId, targetId); }
+                        finally { if (suppressed != IntPtr.Zero) CommandInterpreterHooks.EndCastStopSuppression(suppressed, savedCtl); }
                         BusyCountHooks.NoteDirectCastIssued(busyBefore);
                         if (!okCast && System.Threading.Interlocked.Increment(ref _sehAvLogCount) <= 20)
                             RynthLog.Compat($"[SEH] AV in FreeHandsAndCastSpell spell={spellId} target=0x{targetId:X8} — caught");
@@ -560,7 +571,11 @@ internal static class CombatActionHooks
                     // buff self-casts were the dominant leak source (4322 plugin
                     // clears / 10h soak, nearly all on buffs).
                     int busyBefore = BusyCountHooks.CaptureRealBusyForCast();
-                    bool ok = SehTrampoline.CdeclVoidUintByte(_castSpellClientPtr, (uint)spellId, 0);
+                    int savedCtl = 0;
+                    IntPtr suppressed = suppressMoveStop ? CommandInterpreterHooks.BeginCastStopSuppression(out savedCtl) : IntPtr.Zero;
+                    bool ok;
+                    try { ok = SehTrampoline.CdeclVoidUintByte(_castSpellClientPtr, (uint)spellId, 0); }
+                    finally { if (suppressed != IntPtr.Zero) CommandInterpreterHooks.EndCastStopSuppression(suppressed, savedCtl); }
                     BusyCountHooks.NoteDirectCastIssued(busyBefore);
                     if (!ok && System.Threading.Interlocked.Increment(ref _sehAvLogCount) <= 20)
                         RynthLog.Compat($"[SEH] AV in self-CastSpell spell={spellId} — caught");

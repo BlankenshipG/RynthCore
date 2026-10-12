@@ -5,7 +5,9 @@
 //  Same content as the Avalonia bar, as square Phosphor icon buttons with
 //  the names in tooltips: the grip (RC: build stamp tooltip), one button per
 //  registered panel except the ones the RynthAi launcher opens (PanelIcons;
-//  an unknown panel shows its first letter), reload (RL) and pop out.
+//  an unknown panel shows its first letter), one per plugin script window that
+//  asked for a button (WindowFlags.BarButton: RynthSort, Oracle, ...; tooltip =
+//  its title; the set is rebuilt as plugins come and go), reload (RL) and pop out.
 //  Dragging the grip moves the bar; the position is the shared bar= row in
 //  panel_state.txt. Right-click a panel button (or the grip for the bar
 //  itself) to choose which face shows it docked; the grip's menu also has the
@@ -48,8 +50,10 @@ internal static class ImGuiBar
     private static readonly PanelFace[] Faces = { PanelFace.Avalonia, PanelFace.ImGui, PanelFace.Both };
     private static readonly string[] FaceNames = { "Avalonia", "ImGui", "Both (side by side)" };
 
+    // Window: a plugin's script window with a bar button of its own (WindowFlags.BarButton);
+    // the button toggles it through ScriptWindowRegistry, like the Scripts menu does.
     private sealed record ButtonInfo(string Title, string Id, string PopupId, string Icon, bool Letter, string Tooltip,
-        bool ImGuiOnly = false);
+        bool ImGuiOnly = false, ScriptWindow? Window = null);
 
     // Engine panels with an ImGui face only (no OverlayHost entry) that get a bar button.
     private static readonly string[] ImGuiOnlyBarPanels =
@@ -84,6 +88,10 @@ internal static class ImGuiBar
         ["Log"] = PhosphorIcons.TerminalWindow,
         ["Item Count"] = PhosphorIcons.Bag,
         ["Mini Remote"] = PhosphorIcons.SquaresFour,
+        // Plugin windows with a bar button of their own (script windows, by title).
+        ["RynthSort"] = PhosphorIcons.SortAscending,
+        ["Oracle"] = PhosphorIcons.Sparkle,
+        ["Global Inventory"] = PhosphorIcons.GlobeHemisphereWest,
     };
 
     /// <summary>A panel's bar icon: its Phosphor icon, else its first letter (letter = true).</summary>
@@ -111,6 +119,10 @@ internal static class ImGuiBar
     }
 
     private static ButtonInfo[]? _buttons;
+    // What _buttons was built from: the plugin windows' snapshot (a new array on every change)
+    // and which ImGui-only panels had a face. Either changing rebuilds the buttons.
+    private static ScriptBarItem[]? _builtScriptButtons;
+    private static int _builtImGuiOnlyMask;
     private static string _tooltip = "";
     private static bool _placed;
     private static Vector2 _pos, _persistedPos;
@@ -366,8 +378,11 @@ internal static class ImGuiBar
         {
             ImGuiNET.ImGui.SameLine();
             if (IconButton(b.Id, b.Letter ? letterFont : iconFont, b.Icon, square, RynthTheme.BarText))
-                PanelRouter.Toggle(b.Title);
-            ImGuiNET.ImGui.SetItemTooltip(b.Tooltip);
+            {
+                if (b.Window != null) ScriptWindowRegistry.PlayerSetVisible(b.Window, !ImGuiPanelHost.IsOpen(b.Window.PanelKey));
+                else PanelRouter.Toggle(b.Title);
+            }
+            ImGuiNET.ImGui.SetItemTooltip(b.Tooltip);   // a plugin window's title arrives with '%' doubled (EnsureButtons)
             if (b.ImGuiOnly) continue;   // no Avalonia face: no face to choose
             if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
                 ImGuiNET.ImGui.OpenPopup(b.PopupId);
@@ -390,8 +405,8 @@ internal static class ImGuiBar
         }
 
         // Script windows (decision 2): one button with a menu, only while a ShowInBar
-        // script window exists. They never get buttons of their own (EnsureButtons
-        // lists OverlayHost's engine panels only; script windows are dynamic entries).
+        // script window exists. A window that also sets BarButton (plugin windows such as
+        // RynthSort's) has a button of its own instead (EnsureButtons) and isn't listed here.
         ScriptBarItem[] scripts = ScriptWindowRegistry.BarItems;
         if (scripts.Length > 0)
         {
@@ -591,9 +606,27 @@ internal static class ImGuiBar
         ImGuiNET.ImGui.PopStyleVar(3);
     }
 
+    /// <summary>Bit i set: ImGuiOnlyBarPanels[i] has a face now.</summary>
+    private static int ImGuiOnlyMask()
+    {
+        int mask = 0;
+        for (int i = 0; i < ImGuiOnlyBarPanels.Length; i++)
+            if (ImGuiPanelHost.HasFace(ImGuiOnlyBarPanels[i])) mask |= 1 << i;
+        return mask;
+    }
+
+    /// <summary>
+    /// The bar's buttons, rebuilt when the set changes: a plugin window with a bar button
+    /// appeared, went (plugin unloaded, window dropped) or was renamed, or an ImGui-only
+    /// panel's face was registered or removed. AC thread, every frame (two cheap checks).
+    /// </summary>
     private static void EnsureButtons()
     {
-        if (_buttons != null) return;
+        ScriptBarItem[] scriptButtons = ScriptWindowRegistry.BarButtons;
+        int mask = ImGuiOnlyMask();
+        if (_buttons != null && ReferenceEquals(scriptButtons, _builtScriptButtons) && mask == _builtImGuiOnlyMask) return;
+        _builtScriptButtons = scriptButtons;
+        _builtImGuiOnlyMask = mask;
         var list = new List<ButtonInfo>();
         foreach (var (title, _) in OverlayHost.GetPanels())
             if (!LauncherOnly.Contains(title))
@@ -608,6 +641,17 @@ internal static class ImGuiBar
                 string icon = IconFor(title, out bool letter);
                 list.Add(new ButtonInfo(title, "##bar_" + title, "##face_" + title, icon, letter, title, ImGuiOnly: true));
             }
+        // Plugin script windows that asked for a button (RynthSort, Oracle, ...): after the
+        // engine's own. Only while the plugin is loaded and has submitted the window.
+        foreach (ScriptBarItem item in scriptButtons)
+        {
+            ScriptWindow w = item.Window;
+            string title = w.Title.Length > 0 ? w.Title : w.Key;
+            string icon = IconFor(title, out bool letter);
+            string id = "##bar_sw" + w.Hash.ToString("X8");
+            // The tooltip goes through SetItemTooltip, a format function: the plugin's text with '%' doubled.
+            list.Add(new ButtonInfo(title, id, id + "_face", icon, letter, title.Replace("%", "%%"), ImGuiOnly: true, Window: w));
+        }
         _buttons = list.ToArray();
         _tooltip = $"RynthCore {EntryPoint.BuildStamp}\nDrag here to move the bar. Right-click: bar face and size. Ctrl+wheel over the bar: size.";
     }

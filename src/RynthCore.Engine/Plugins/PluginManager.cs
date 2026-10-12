@@ -264,6 +264,8 @@ internal static partial class PluginManager
     private static GetTrainingInfoCallbackDelegate? _getTrainingInfoCallback;       // v79
     private static RaiseCallbackDelegate? _raiseCallback;                           // v79
     private static TrainSkillCallbackDelegate? _trainSkillCallback;                 // v79
+    private static GetContainerOrderCallbackDelegate? _getContainerOrderCallback;   // v80
+    private static PutItemInContainerCallbackDelegate? _putItemInContainerCallback; // v80
     private static GetVendorInfoCallbackDelegate? _getVendorInfoCallback;
     private static GetVendorItemsCallbackDelegate? _getVendorItemsCallback;
     private static VendorBuyCallbackDelegate? _vendorBuyCallback;
@@ -2787,6 +2789,8 @@ internal static partial class PluginManager
         unsafe { _getTrainingInfoCallback ??= GetTrainingInfoAction; }   // v79
         unsafe { _raiseCallback ??= RaiseAction; }
         _trainSkillCallback ??= TrainSkillAction;
+        unsafe { _getContainerOrderCallback ??= GetContainerOrderAction; }   // v80
+        _putItemInContainerCallback ??= PutItemInContainerAction;
         _getVendorInfoCallback ??= GetVendorInfoAction;
         _getVendorItemsCallback ??= GetVendorItemsAction;
         _vendorBuyCallback ??= VendorBuyAction;
@@ -2930,6 +2934,8 @@ internal static partial class PluginManager
         _api.GetTrainingInfoFn = Marshal.GetFunctionPointerForDelegate(_getTrainingInfoCallback);
         _api.RaiseFn = Marshal.GetFunctionPointerForDelegate(_raiseCallback);
         _api.TrainSkillFn = Marshal.GetFunctionPointerForDelegate(_trainSkillCallback);
+        _api.GetContainerOrderFn = Marshal.GetFunctionPointerForDelegate(_getContainerOrderCallback);
+        _api.PutItemInContainerFn = Marshal.GetFunctionPointerForDelegate(_putItemInContainerCallback);
         _api.GetVendorInfoFn = Marshal.GetFunctionPointerForDelegate(_getVendorInfoCallback);
         _api.GetVendorItemsFn = Marshal.GetFunctionPointerForDelegate(_getVendorItemsCallback);
         _api.VendorBuyFn = Marshal.GetFunctionPointerForDelegate(_vendorBuyCallback);
@@ -4038,6 +4044,41 @@ internal static partial class PluginManager
         {
             RynthLog.Compat($"TrainSkill failed - {ex.GetType().Name}: {ex.Message}");
             return (int)RaiseStatus.SendFailed;
+        }
+    }
+
+    // ── v80: slot order and placed moves (Net/InventoryOrder, ClientHelperHooks) ──
+
+    /// <summary>v80: see PluginContract.GetContainerOrderFn.</summary>
+    private static unsafe int GetContainerOrderAction(uint containerId, int slotKind, uint* ids, int maxIds)
+    {
+        try
+        {
+            if (containerId == 0 || slotKind is < 0 or > 1 || maxIds < 0 || (ids == null && maxIds > 0)) return -1;
+            if (!Net.InventoryOrder.TryGetOrder(containerId, slotKind == 1, out uint[] order)) return -1;
+            int n = Math.Min(order.Length, maxIds);
+            for (int i = 0; i < n; i++) ids[i] = order[i];
+            return order.Length;
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    /// <summary>v80: see PluginContract.PutItemInContainerFn.</summary>
+    private static int PutItemInContainerAction(uint itemId, uint containerId, int placement)
+    {
+        try
+        {
+            if (!ClientHelperHooks.HasPutItemInContainer) return -1;
+            Compatibility.AcActionTrace.Record("PutItemInContainer", itemId, containerId);
+            return ToAbiBool(ClientHelperHooks.PutItemInContainerAt(itemId, containerId, placement));
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"PutItemInContainer failed - {ex.GetType().Name}: {ex.Message}");
+            return 0;
         }
     }
 

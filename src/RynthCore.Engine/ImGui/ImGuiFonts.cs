@@ -65,6 +65,7 @@ internal static unsafe class ImGuiFonts
     // dashes are in MainRanges.
     private static readonly ushort[] SymbolCodepoints =
     {
+        0x2264, 0x2265,           // ≤ ≥ (Meta rule list: "Prismatic Taper ≤ 50")
         0x25CF,                   // ● (Meta source: unapplied edits)
     };
 

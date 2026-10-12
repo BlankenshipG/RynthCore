@@ -59,6 +59,9 @@ internal static class GameTickHooks
 
     public static bool IsInstalled => Volatile.Read(ref _installed) != 0;
 
+    /// <summary>Client::UseTime returned 0: AC's game loop is exiting (any exit path).</summary>
+    public static bool GameLoopExiting => Volatile.Read(ref _exitLatch) != 0;
+
     public static void Initialize()
     {
         if (Interlocked.CompareExchange(ref _installed, 1, 0) != 0)
@@ -202,6 +205,10 @@ internal static class GameTickHooks
         catch { }
         // Flight recorder: per-second summary, stall detectors, scheduled automatic dump.
         try { Net.FlightRecorder.MainTick(); }
+        catch { }
+        // AC's "server has disconnected" screen: close the client after a short wait so a
+        // launcher can relaunch it (EngineSettings.CloseOnServerDisconnect).
+        try { ServerDisconnectClose.MainTick(); }
         catch { }
 
         // MUST return Client::UseTime's own bool — AC loops do/while on it.

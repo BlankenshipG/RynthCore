@@ -61,6 +61,12 @@ internal static class ItemsPanel
         [JsonPropertyName("manaTapMinMana")]    public int                   ManaTapMinMana    { get; set; } = 2500;
         [JsonPropertyName("manaStoneKeepCount")]public int                   ManaStoneKeepCount{ get; set; } = 5;
         [JsonPropertyName("currentTargetName")] public string                CurrentTargetName { get; set; } = string.Empty;
+        /// <summary>
+        /// Listed weapons the character no longer carries (not in the pack, not wielded), by id
+        /// (RynthAi from 2026-10-11; empty from older plugins). Display only: RynthAi ignores
+        /// it when the payload is saved back.
+        /// </summary>
+        [JsonPropertyName("missingIds")]        public List<int>             MissingIds        { get; set; } = new();
     }
 
     internal sealed class WeaponEntry

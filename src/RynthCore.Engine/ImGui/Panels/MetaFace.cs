@@ -3,11 +3,13 @@
 //  ImGui face of the Meta panel (docs/IMGUI_PARITY_PLAN.md §2.13), with the
 //  Avalonia face's look and three views:
 //
-//   List    file picker / refresh / Save As / "Saved" indicator; Visual|Source;
-//           Meta, Debug; rules grouped by state (collapsible, red while
-//           firing), rows with enable, expand, up/down within the state,
-//           duplicate, and delete on the far right (click twice); click a row
-//           to edit it; State picker and New Rule at the bottom.
+//   List    (MetaFace.List.cs) file picker / refresh / Save As / "Saved"
+//           indicator; Visual|Source; Meta, Debug; a filter; rules grouped
+//           by state, each rule in full (every condition and action on its
+//           own line, or one line in Compact) with lines between rules and
+//           columns; move / duplicate / delete on the hovered row and on
+//           right-click; click a row to edit it; State picker and New Rule
+//           at the bottom.
 //   Editor  (MetaFace.Editor.cs) state; Conditions and Actions side by side
 //           (stacked when the panel is narrow), each with "+ Add"; Set current
 //           for landblock / landcell; every change saves on its own.
@@ -55,7 +57,7 @@ internal sealed partial class MetaFace : IImGuiPanel
     private static readonly uint Teal = C(0xFF26D9E6), Amber = C(0xFFE8B333), Green = C(0xFF33CC66),
         Red = C(0xFFE04848), Mute = C(0xFFC8D6E4), TextDim = C(0xFFF2F7FC), ShellBg = C(0xFF0A0F14),
         PanelBg = C(0xFF141F29), RowAlt = C(0xFF101822), BtnFill = C(0xFF16283A), BtnBord = C(0xFF34587A),
-        Fired = C(0xFF3A1212), BtnOn = C(0xFF0E2E3A), StateHdrA = C(0xFF0E1E30), StateHdrB = C(0xFF162A40),
+        Fired = C(0xFF3A1212), BtnOn = C(0xFF0E2E3A), StateHdrA = C(0xFF0E1E30),
         DelFill = C(0xFF7A1414), NewFill = C(0xFF0E2E1A), PickSel = C(0xFF1A2E42);
     private static uint C(uint argb) => RynthTheme.Argb(argb);
     private static uint Faded(uint abgr) => (abgr & 0x00FFFFFF) | ((abgr >> 25) << 24);   // half alpha
@@ -66,11 +68,9 @@ internal sealed partial class MetaFace : IImGuiPanel
     private MetaPayload _data = new();
     private long _seenVersion = -1;
     private List<(string State, List<int> Rules)> _groups = new();
-    private string[] _condText = Array.Empty<string>(), _actText = Array.Empty<string>();
-    private string[] _groupLabel = Array.Empty<string>();
     private bool[] _groupFiring = Array.Empty<bool>();
     private string[] _statePicks = Array.Empty<string>(), _statesOnly = Array.Empty<string>();
-    private string[] _routePicks = Array.Empty<string>(), _fileDisplays = Array.Empty<string>();
+    private string[] _routeLabels = Array.Empty<string>(), _routeValues = Array.Empty<string>(), _fileDisplays = Array.Empty<string>();
     private string _fileDisplay = "-- None --", _sourceFileLabel = "File: Unsaved";
     private IReadOnlyList<string> _completionNavs = Array.Empty<string>();
 
@@ -78,8 +78,8 @@ internal sealed partial class MetaFace : IImGuiPanel
     private readonly Dictionary<(string Text, int Width), string> _fit = new();
 
     private View _view = View.List;
+    private readonly MetaStateClock _stateClock = new();
     private readonly HashSet<string> _collapsed = new();
-    private readonly HashSet<int> _expanded = new();
     private bool _saveAs, _saveAsFocus;
     private readonly byte[] _saveName = new byte[128];
 
@@ -195,6 +195,7 @@ internal sealed partial class MetaFace : IImGuiPanel
         if (snap == null || snap.Version == _seenVersion) return;
         _seenVersion = snap.Version;
         MetaPayload fresh = snap.Value;
+        _stateClock.Snapshot(fresh.Snapshot, NowMs);
         CheckApplyResult(fresh);
         _data = fresh.Clone();
         RebuildCaches();
@@ -211,21 +212,12 @@ internal sealed partial class MetaFace : IImGuiPanel
     {
         List<MetaRuleDto> rules = _data.Rules;
         _groups = MetaVocabulary.GroupByState(rules);
-        _condText = new string[rules.Count];
-        _actText = new string[rules.Count];
-        for (int i = 0; i < rules.Count; i++)
-        {
-            _condText[i] = MetaVocabulary.RowConditionText(rules[i]);
-            _actText[i] = MetaVocabulary.RowActionText(rules[i]);
-        }
-        _groupLabel = new string[_groups.Count];
         _groupFiring = new bool[_groups.Count];
         for (int g = 0; g < _groups.Count; g++)
         {
             bool firing = false;
             foreach (int i in _groups[g].Rules) firing |= rules[i].LastFiredMs < 1500;
             _groupFiring[g] = firing;
-            _groupLabel[g] = firing ? $"{_groups[g].State}  ({_groups[g].Rules.Count})  — firing" : $"{_groups[g].State}  ({_groups[g].Rules.Count})";
         }
         // States made here that the snapshot doesn't list yet (dropped once it does, or on a meta switch).
         if (!string.Equals(_statesPath, _data.CurrentMetaPath, StringComparison.OrdinalIgnoreCase))
@@ -241,46 +233,19 @@ internal sealed partial class MetaFace : IImGuiPanel
             _statePicks = With(_statePicks, s);
             _statesOnly = With(_statesOnly, s);
         }
-        _routePicks = MetaVocabulary.RoutePicks(_data);
+        (_routeLabels, _routeValues) = MetaVocabulary.RoutePicks(_data);
         _fileDisplays = new string[_data.Files.Count];
         for (int i = 0; i < _fileDisplays.Length; i++) _fileDisplays[i] = _data.Files[i].Display;
         _fileDisplay = MetaVocabulary.CurrentFileDisplay(_data);
         _sourceFileLabel = "File: " + (string.IsNullOrEmpty(_data.CurrentMetaPath) ? "Unsaved" : System.IO.Path.GetFileName(_data.CurrentMetaPath));
         _completionNavs = MetaVocabulary.CompletionNavs(_data);
         _fit.Clear();
+        RebuildListText(rules);   // after the states: a Set State to a missing state shows in red
     }
 
     // =====================================================================
-    //  List view
+    //  File bar and mode row (the list itself: MetaFace.List.cs)
     // =====================================================================
-
-    private void ListView(Vector2 origin, Vector2 size)
-    {
-        float w = size.X;
-        LoadSaveBar(w);
-        Separator(w);
-        ModeRow(w, source: false);
-        Separator(w);
-        if (_listNote.Length > 0 && NowMs - _listNoteAt < 8000)
-        {
-            ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFE8B333), Fit(_listNote, w));
-            ImGuiNET.ImGui.PopFont();
-        }
-
-        const float bottomH = 24;
-        float listH = Math.Max(40, origin.Y + size.Y - ImGuiNET.ImGui.GetCursorScreenPos().Y - bottomH - 9);
-        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ChildBg, 0);
-        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(0, 0));
-        ImGuiNET.ImGui.BeginChild("##meta_rules", new Vector2(w, listH));
-        RuleList(ImGuiNET.ImGui.GetContentRegionAvail().X);
-        ImGuiNET.ImGui.EndChild();
-        ImGuiNET.ImGui.PopStyleVar();
-        ImGuiNET.ImGui.PopStyleColor();
-
-        Separator(w);
-        BottomBar(w);
-    }
 
     private void LoadSaveBar(float w)
     {
@@ -458,255 +423,8 @@ internal sealed partial class MetaFace : IImGuiPanel
         _editor.RequestFocus();
     }
 
-    // Condition/action split of the rule list (dragged in its header) and where
-    // the text starts within a row (from the last row drawn).
+    // Condition/action split of the rule list (dragged in its header; saved per PC).
     private static float _condFrac = Math.Clamp(RynthCore.Engine.UI.PanelColumnStore.Get("Meta.condFrac", 0.5f), 0.15f, 0.85f);
-    private float _textStartOff;
-    /// <summary>The far-right delete button and the gap before it: the row text ends this far from the edge.</summary>
-    private const float DeleteColumnW = 30;
-
-    private void RuleList(float w)
-    {
-        var dl = ImGuiNET.ImGui.GetWindowDrawList();
-        if (_groups.Count == 0)
-        {
-            ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), "  No rules. Click New Rule to add one.");
-            return;
-        }
-
-        ImFontPtr bold = ImGuiFonts.Get(UiFont.UiBold11);
-        List<MetaRuleDto> rules = _data.Rules;
-
-        // Condition | Action header; drag the divider to move the split (saved per PC).
-        if (_textStartOff > 0)
-        {
-            Vector2 hp = ImGuiNET.ImGui.GetCursorScreenPos();
-            const float hh = 16;
-            float tx = hp.X + _textStartOff, tw = Math.Max(1, hp.X + w - DeleteColumnW - tx);
-            float split = tw * _condFrac;
-            float hy = hp.Y + (hh - bold.FontSize) * 0.5f;
-            dl.AddText(bold, bold.FontSize, new Vector2(tx + 3, hy), C(0xFFC8D6E4), "Condition");
-            dl.AddText(bold, bold.FontSize, new Vector2(tx + split + 4, hy), C(0xFFC8D6E4), "Action");
-            if (FaceKit.ColumnDivider("##meta_split", tx + split, hp.Y, hh, ref split, 40,
-                    _ => RynthCore.Engine.UI.PanelColumnStore.Set("Meta.condFrac", _condFrac)))
-                _condFrac = Math.Clamp(split / tw, 0.15f, 0.85f);
-            ImGuiNET.ImGui.Dummy(new Vector2(w, hh));
-        }
-
-        for (int g = 0; g < _groups.Count; g++)
-        {
-            (string state, List<int> members) = _groups[g];
-            bool collapsed = _collapsed.Contains(state);
-            bool firing = _groupFiring[g];
-
-            // Header: caret, State (n) [— firing]; click toggles.
-            ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
-            Vector2 hp = ImGuiNET.ImGui.GetCursorScreenPos();
-            float hh = bold.FontSize + 6;
-            ImGuiNET.ImGui.PushID(g);
-            if (ImGuiNET.ImGui.InvisibleButton("##hdr", new Vector2(w, hh)))
-            {
-                if (collapsed) _collapsed.Remove(state); else _collapsed.Add(state);
-            }
-            if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-            ImGuiNET.ImGui.PopID();
-            uint hc = firing ? Red : Amber;
-            dl.AddRectFilled(hp, hp + new Vector2(w, hh), g % 2 == 0 ? StateHdrA : StateHdrB);
-            dl.AddText(bold, bold.FontSize, hp + new Vector2(3, 3), hc, collapsed ? PhosphorIcons.CaretRight : PhosphorIcons.CaretDown);
-            dl.AddText(bold, bold.FontSize, hp + new Vector2(18, 3), hc, _groupLabel[g]);
-            if (collapsed) continue;
-
-            for (int gi = 0; gi < members.Count; gi++)
-            {
-                int index = members[gi];
-                if (index >= rules.Count) break;
-                if (RuleRow(rules[index], index, gi, members.Count, w)) return;   // the list changed: redraw next frame
-            }
-        }
-    }
-
-    /// <summary>One rule row plus its expanded children. True when a click changed the list.</summary>
-    private bool RuleRow(MetaRuleDto rule, int index, int gi, int groupCount, float w)
-    {
-        var dl = ImGuiNET.ImGui.GetWindowDrawList();
-        bool firing = rule.LastFiredMs < 1500;
-        bool hasChildren = (MetaVocabulary.IsCompositeCondition(rule.Condition) && rule.Children.Count > 0)
-                        || (MetaVocabulary.IsAllAction(rule.Action) && rule.ActionChildren.Count > 0);
-        bool expanded = _expanded.Contains(index);
-
-        const float h = 20;
-        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
-        dl.AddRectFilled(p, p + new Vector2(w, h), firing ? Fired : gi % 2 == 0 ? PanelBg : RowAlt);
-        ImGuiNET.ImGui.PushID(index);
-        bool changed = false;
-
-        // Enable
-        float x = p.X + 1;
-        if (IconButton("##en", rule.Enabled ? PhosphorIcons.CheckSquare : PhosphorIcons.Square, new Vector2(x, p.Y + 2), new Vector2(14, 16),
-                rule.Enabled ? Green : Mute, BtnFill, BtnBord))
-        {
-            rule.Enabled = !rule.Enabled;
-            SendEdit(new MetaCmd { Op = "set_rule_enabled", Index = index, Value = rule.Enabled ? "true" : "false" });
-        }
-        ImGuiNET.ImGui.SetItemTooltip(rule.Enabled ? "Enabled — click to disable" : "Disabled — click to enable");
-        x += 16;
-
-        // Expand (only with children)
-        if (hasChildren && IconButton("##exp", expanded ? PhosphorIcons.Minus : PhosphorIcons.Plus, new Vector2(x + 2, p.Y + 3), new Vector2(14, 14),
-                Teal, BtnFill, BtnBord))
-        {
-            if (expanded) _expanded.Remove(index); else _expanded.Add(index);
-        }
-        x += 18;
-
-        // Up / down within the state (Appendix A3: the plugin now swaps within the state too)
-        if (IconButton("##up", PhosphorIcons.ArrowUp, new Vector2(x + 1, p.Y + 2), new Vector2(16, 16), Mute, BtnFill, BtnBord, enabled: gi > 0))
-            changed |= Move(index, -1);
-        ImGuiNET.ImGui.SetItemTooltip("Move up");
-        x += 18;
-        if (IconButton("##dn", PhosphorIcons.ArrowDown, new Vector2(x + 1, p.Y + 2), new Vector2(16, 16), Mute, BtnFill, BtnBord,
-                enabled: gi < groupCount - 1))
-            changed |= Move(index, +1);
-        ImGuiNET.ImGui.SetItemTooltip("Move down");
-        x += 18;
-
-        // Duplicate
-        if (IconButton("##dup", PhosphorIcons.Copy, new Vector2(x + 1, p.Y + 2), new Vector2(16, 16), Mute, BtnFill, BtnBord))
-        {
-            SendEdit(new MetaCmd { Op = "duplicate_rule", Index = index, Rule = rule.Clone() });
-            _data.Rules.Insert(Math.Min(index + 1, _data.Rules.Count), rule.Clone());
-            changed = true;
-        }
-        ImGuiNET.ImGui.SetItemTooltip("Duplicate rule");
-        x += 20;
-
-        // Delete: on its own at the far right, away from the other buttons (2026-10-05). A rule
-        // with anything in it takes a second click within 3 s; an empty Never -> None one goes at once.
-        bool arming = _confirmDeleteIndex == index && _confirmDelete != null && NowMs < _confirmDeleteUntil
-                      && MetaRuleEdit.SameContent(_confirmDelete, rule);
-        float delW = arming ? BtnW("Delete?", 50) : 20;
-        float delX = p.X + w - delW - 2;
-        if (arming
-                ? Button("Delete?##del", new Vector2(delX, p.Y + 2), new Vector2(delW, 16), TextDim, DelFill, Red)
-                : IconButton("##del", PhosphorIcons.Trash, new Vector2(delX, p.Y + 2), new Vector2(delW, 16), TextDim, DelFill, BtnBord))
-        {
-            if (arming || MetaRuleEdit.IsPlaceholder(rule))
-            {
-                SendEdit(new MetaCmd { Op = "delete_rule", Index = index });
-                _data.Rules.RemoveAt(index);
-                _expanded.Clear();
-                _confirmDelete = null;
-                changed = true;
-            }
-            else
-            {
-                _confirmDelete = rule.Clone();
-                _confirmDeleteIndex = index;
-                _confirmDeleteUntil = NowMs + 3000;
-            }
-        }
-        ImGuiNET.ImGui.SetItemTooltip(arming ? "Click again to delete this rule" : "Delete rule");
-
-        // Condition | action text; clicking it edits the rule.
-        float textW = Math.Max(1, p.X + w - DeleteColumnW - x);
-        _textStartOff = x - p.X;
-        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, p.Y));
-        if (ImGuiNET.ImGui.InvisibleButton("##edit", new Vector2(textW, h)))
-            OpenEditor(index, rule);
-        if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-        ImGuiNET.ImGui.PopID();
-
-        if (!changed)
-        {
-            float col = textW * _condFrac;
-            float ty = p.Y + (h - ImGuiNET.ImGui.GetFontSize()) * 0.5f;
-            uint condCol = firing ? Red : TextDim, actCol = firing ? Amber : C(0xFFC8D8E8);
-            if (!rule.Enabled) { condCol = Faded(condCol); actCol = Faded(actCol); }
-            dl.AddText(new Vector2(x + 3, ty), condCol, Fit(_condText[index], col - 5));
-            // The armed "Delete?" button is wider than the column gap: the action text stops short of it.
-            float actW = Math.Min(textW - col - 4, delX - 6 - (x + col + 2));
-            dl.AddText(new Vector2(x + col + 2, ty), actCol, Fit(_actText[index], actW));
-        }
-
-        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + h));
-        ImGuiNET.ImGui.Dummy(new Vector2(0, 0));
-
-        if (changed)
-        {
-            RebuildCaches();
-            return true;
-        }
-
-        if (hasChildren && expanded) ExpandedChildren(rule);
-        return false;
-    }
-
-    private void ExpandedChildren(MetaRuleDto rule)
-    {
-        ImFontPtr f9 = ImGuiFonts.Get(UiFont.Ui9);
-        ImGuiNET.ImGui.PushFont(f9);
-        Vector4 amber = RynthTheme.Vec(0xFFE8B333), mute = RynthTheme.Vec(0xFFC8D6E4);
-        ImGuiNET.ImGui.Indent(22);
-        if (MetaVocabulary.IsCompositeCondition(rule.Condition) && rule.Children.Count > 0)
-        {
-            ImGuiNET.ImGui.TextColored(amber, "  " + MetaVocabulary.ConditionName(rule.Condition) + ":");
-            foreach (MetaRuleDto child in rule.Children)
-                ImGuiNET.ImGui.TextColored(mute, "     • " + MetaVocabulary.CondText(child));
-        }
-        if (MetaVocabulary.IsAllAction(rule.Action) && rule.ActionChildren.Count > 0)
-        {
-            ImGuiNET.ImGui.TextColored(amber, "  All (actions):");
-            foreach (MetaRuleDto child in rule.ActionChildren)
-                ImGuiNET.ImGui.TextColored(mute, "     • " + MetaVocabulary.ActText(child));
-        }
-        ImGuiNET.ImGui.Unindent(22);
-        ImGuiNET.ImGui.PopFont();
-    }
-
-    private bool Move(int index, int direction)
-    {
-        int other = MetaVocabulary.SwapPartner(_data.Rules, index, direction);
-        if (other < 0) return false;
-        SendEdit(new MetaCmd { Op = direction < 0 ? "move_up" : "move_down", Index = index });
-        (_data.Rules[index], _data.Rules[other]) = (_data.Rules[other], _data.Rules[index]);
-        _expanded.Clear();
-        return true;
-    }
-
-    private void BottomBar(float w)
-    {
-        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
-        var dl = ImGuiNET.ImGui.GetWindowDrawList();
-        float labelW = ImGuiNET.ImGui.CalcTextSize("State:").X;
-        dl.AddText(new Vector2(p.X, p.Y + (24 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Mute, "State:");
-        // Buttons sized from their text, so a larger panel text size can't overflow them
-        // (2026-10-05: "+ New Rule" spilled past its fixed 72 px button).
-        string ruleLabel = PhosphorIcons.Plus + " New Rule";
-        float newW = ImGuiNET.ImGui.CalcTextSize(ruleLabel).X + 18;
-        // The bar sits on the body's bottom edge: it stops short of the resize grip (GripInBody).
-        float grip = ImGuiPanelHost.BodyGripReserve;
-        float ruleX = p.X + w - grip - newW;
-        float pickX = p.X + labelW + 4;
-        float pickW = Math.Max(40, ruleX - 4 - pickX);
-
-        // The meta's current state. "+ New state..." at the end of the list makes one: it starts
-        // with an empty Never -> None rule (that rule is what keeps it), becomes the current state
-        // like any state picked here, and that rule opens in the editor.
-        string? chosen = StatePicker("##cur_state", _data.CurrentState, _statePicks, Array.IndexOf(_statePicks, _data.CurrentState),
-            new Vector2(pickX, p.Y + 1), pickW, out bool isNew);
-        if (chosen != null)
-        {
-            if (isNew) CreateState(chosen, openIt: true);
-            _data.CurrentState = chosen;
-            MetaCommands.Simple("set_state", value: chosen);
-        }
-        if (Button(ruleLabel + "##new", new Vector2(ruleX, p.Y), new Vector2(newW, 24), TextDim, NewFill, Green))
-            OpenEditor(-1, new MetaRuleDto { State = _data.CurrentState, Action = 1 });
-        ImGuiNET.ImGui.SetItemTooltip("A new rule in the current state (added once its condition and action are filled in)");
-        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + 24));
-        ImGuiNET.ImGui.Dummy(new Vector2(0, 0));
-    }
 
     // =====================================================================
     //  Source view
@@ -1125,7 +843,7 @@ internal sealed partial class MetaFace : IImGuiPanel
     /// picked index or -1.
     /// </summary>
     private int Picker(string id, string shown, string[] items, int selected, Vector2 pos, float width, float height = 22,
-        string? extra = null)
+        string? extra = null, string? badge = null)
     {
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         ImGuiNET.ImGui.PushID(id);
@@ -1146,7 +864,16 @@ internal sealed partial class MetaFace : IImGuiPanel
         const float caretW = 14;
         PhosphorIcons.DrawCentered(dl, ImGuiFonts.Get(UiFont.Ui11), PhosphorIcons.CaretDown,
             new Vector2(pos.X + width - caretW - 3, pos.Y), new Vector2(caretW, height), Mute);
-        dl.AddText(pos + new Vector2(6, (height - ImGuiNET.ImGui.GetFontSize()) * 0.5f), TextDim, Fit(shown, width - 6 - caretW - 6));
+        // A badge (seconds in state) sits right-aligned before the arrow; the text is cut before it.
+        float badgeW = 0;
+        if (!string.IsNullOrEmpty(badge))
+        {
+            badgeW = ImGuiNET.ImGui.CalcTextSize(badge).X + 8;
+            if (badgeW > width * 0.5f) badgeW = 0;
+            else dl.AddText(new Vector2(pos.X + width - caretW - 3 - badgeW + 2, pos.Y + (height - ImGuiNET.ImGui.GetFontSize()) * 0.5f),
+                Faded(Teal), badge);
+        }
+        dl.AddText(pos + new Vector2(6, (height - ImGuiNET.ImGui.GetFontSize()) * 0.5f), TextDim, Fit(shown, width - 6 - caretW - 6 - badgeW));
 
         int picked = -1;
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.PopupBg, ShellBg);
@@ -1278,9 +1005,15 @@ internal sealed partial class MetaFace : IImGuiPanel
         string shown = text;
         if (ImGuiNET.ImGui.CalcTextSize(text).X > width)
         {
-            int n = text.Length;
-            while (n > 0 && ImGuiNET.ImGui.CalcTextSize(text.AsSpan(0, n).ToString() + "…").X > width) n--;
-            shown = text.Substring(0, n) + "…";
+            // The longest start that fits with "…" (binary search: long expressions are cut often,
+            // and the cache empties with every snapshot while rules fire).
+            int lo = 0, hi = text.Length - 1;
+            while (lo < hi)
+            {
+                int mid = (lo + hi + 1) / 2;
+                if (ImGuiNET.ImGui.CalcTextSize(text.Substring(0, mid) + "…").X <= width) lo = mid; else hi = mid - 1;
+            }
+            shown = text.Substring(0, lo) + "…";
         }
         if (_fit.Count > 4000) _fit.Clear();   // widths change while a panel is resized
         _fit[key] = shown;

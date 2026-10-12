@@ -984,9 +984,44 @@ internal static class AcMainThreadQueue
             _castTargetId = targetId;
             _castSpellId = spellId;
             _castQueuedAt = NowMs;
+            _castStopWaitNoted = false;
             _castPending = 1;
             return true;
         }
+    }
+
+    // Casts that waited for a movement stop queued ahead of them (counted once per cast).
+    private static long _castStopWaits;
+    private static bool _castStopWaitNoted;
+
+    /// <summary>Casts that waited one or more ticks for a stop queued ahead of them.</summary>
+    public static long CastStopWaitCount => Interlocked.Read(ref _castStopWaits);
+
+    /// <summary>A movement stop (autorun off, a motion off, StopMovement, StopCompletely).</summary>
+    private static bool IsMovementStop(in Entry e) => e.Kind switch
+    {
+        ActionKind.SetAutoRun => e.A == 0,
+        ActionKind.SetMotion => e.B == 0,
+        ActionKind.StopMovement or ActionKind.StopCompletely => true,
+        _ => false,
+    };
+
+    /// <summary>
+    /// True when the action ring holds a movement stop queued at or before <paramref name="castQueuedAt"/>.
+    /// Main thread only (the ring's sole consumer). Entries are stamped under the producer lock, so
+    /// their times rise from head to tail and the walk stops at the first newer one.
+    /// </summary>
+    private static bool StopQueuedAtOrBefore(long castQueuedAt)
+    {
+        int head = _head;
+        int tail = Volatile.Read(ref _tail);
+        for (int i = head; i != tail; i++)
+        {
+            ref readonly Entry e = ref _slots[i & Mask];
+            if (e.At > castQueuedAt) return false;
+            if (IsMovementStop(e)) return true;
+        }
+        return false;
     }
 
     // Drained on AC's MAIN thread from the Client::UseTime detour (game-logic tick).
@@ -1028,6 +1063,62 @@ internal static class AcMainThreadQueue
             return;
         }
 
+        // ── A stop queued before the cast goes first (2026-10-12) ─────────────
+        // Casts drain here (Client::UseTime, before the tick), the action ring at EndScene,
+        // so an autorun-off or a motion-off the bot queued BEFORE its cast used to run AFTER
+        // it: the cast's FreeHandsAndCastSpell -> MaybeStopCompletely sent its stop with AC's
+        // locomotion still on, and the queued stops followed as extra MoveToStates. Wait (at
+        // most until EndScene drains the ring, about one frame; the ring's own gesture defer
+        // is shorter than CastDeferMaxMs) while one is queued; past the limit cast anyway.
+        if (StopQueuedAtOrBefore(Volatile.Read(ref _castQueuedAt)))
+        {
+            if (castAge <= CastDeferMaxMs)
+            {
+                if (!_castStopWaitNoted)
+                {
+                    _castStopWaitNoted = true;
+                    Interlocked.Increment(ref _castStopWaits);
+                    try { Net.FlightRecorder.Mark(Net.FlightMark.Note, text: "cast waits for a movement stop queued before it"); } catch { }
+                }
+                return;                                      // retry next tick, after the ring drains
+            }
+        }
+
+        // ── The stop goes a server answer ahead of the cast (2026-10-12, PreCastStopRules) ──
+        long castStamp = Volatile.Read(ref _castQueuedAt);
+        if (_preStopFor != castStamp) { _preStopFor = castStamp; _preStopSent = false; }
+        long nowMs = NowMs;
+        PreCastStep step = PreCastStopRules.Decide(
+            _preStopSent ? 0 : CommandInterpreterHooks.ReadControlledByServer(),
+            _preStopSent,
+            Interlocked.Read(ref _playerMotionEchoes) - _preStopEchoBase,
+            nowMs - _preStopAt);
+        if (step == PreCastStep.SendStop)
+        {
+            if (castAge <= CastDeferMaxMs)
+            {
+                _preStopEchoBase = Interlocked.Read(ref _playerMotionEchoes);
+                if (CommandInterpreterHooks.StopCompletely())
+                {
+                    _preStopSent = true;
+                    _preStopAt = nowMs;
+                    Interlocked.Increment(ref _preCastStops);
+                    try { Net.FlightRecorder.Mark(Net.FlightMark.Note, text: "pre-cast stop sent; the cast waits for the server's answer"); } catch { }
+                    return;                                  // cast on a later tick, after the answer
+                }
+            }
+            step = PreCastStep.CastNow;                      // couldn't send it: cast as before
+        }
+        else if (step == PreCastStep.Wait)
+        {
+            if (castAge <= CastDeferMaxMs + PreCastStopRules.EchoMaxMs)
+                return;
+            step = PreCastStep.CastWithoutStop;
+        }
+        bool withoutStop = step == PreCastStep.CastWithoutStop;
+        if (withoutStop && Interlocked.Read(ref _playerMotionEchoes) == _preStopEchoBase)
+            Interlocked.Increment(ref _preCastEchoTimeouts);
+
         uint target, spell;
         lock (_castLock)
         {
@@ -1038,6 +1129,23 @@ internal static class AcMainThreadQueue
         }
         if (castAge > LateActionLogMs)
             NoteStale($"CastSpell({spell})", castAge, dropped: false);
-        CombatActionHooks.CastSpell(target, unchecked((int)spell));
+        CombatActionHooks.CastSpell(target, unchecked((int)spell), suppressMoveStop: withoutStop);
     }
+
+    // Pre-cast stop state (main thread only).
+    private static long _preStopFor = long.MinValue;
+    private static bool _preStopSent;
+    private static long _preStopAt;
+    private static long _preStopEchoBase;
+    private static long _playerMotionEchoes;
+    private static long _preCastStops;
+    private static long _preCastEchoTimeouts;
+
+    /// <summary>Casts whose stop the engine sent ahead of them.</summary>
+    public static long PreCastStopCount => Interlocked.Read(ref _preCastStops);
+    /// <summary>Of those, casts that went without seeing the server's answer (EchoMaxMs ran out).</summary>
+    public static long PreCastEchoTimeoutCount => Interlocked.Read(ref _preCastEchoTimeouts);
+
+    /// <summary>An autonomous UpdateMotion for the player arrived (SmartBoxHooks, main thread).</summary>
+    public static void NotePlayerMotionEcho() => Interlocked.Increment(ref _playerMotionEchoes);
 }
