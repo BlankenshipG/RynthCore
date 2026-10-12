@@ -69,7 +69,7 @@ internal sealed class ItemsFace : IImGuiPanel
             {
                 ItemsPanel.WeaponEntry wpn = _data.Weapons[i];
                 ImGuiNET.ImGui.PushID("w" + i);
-                int r = Row(wpn.Name, wpn.Element, i, bw);
+                int r = Row(wpn.Name, wpn.Element, i, bw, DamageTypeColors.For(wpn.Element, Text));
                 ImGuiNET.ImGui.PopID();
                 if (r == 1)
                 {
@@ -101,7 +101,7 @@ internal sealed class ItemsFace : IImGuiPanel
             {
                 ItemsPanel.ConsumableEntry c = _data.Consumables[i];
                 ImGuiNET.ImGui.PushID("c" + i);
-                int r = Row(c.Name, c.Type, i, bw);
+                int r = Row(c.Name, c.Type, i, bw, Text);
                 ImGuiNET.ImGui.PopID();
                 if (r == 1)
                 {
@@ -207,18 +207,21 @@ internal sealed class ItemsFace : IImGuiPanel
         ImGuiNET.ImGui.Dummy(new Vector2(w, 22));
     }
 
-    /// <summary>Name | [value picker] | Del. Returns 1 when the picker was clicked, 2 for Del, else 0.</summary>
-    private static int Row(string name, string value, int index, float w)
+    /// <summary>
+    /// Name | [value picker] | Del, the name and value drawn in <paramref name="tint"/> (a weapon's
+    /// damage-type colour, as UB-ILT's Items tab). Returns 1 when the picker was clicked, 2 for Del, else 0.
+    /// </summary>
+    private static int Row(string name, string value, int index, float w, uint tint)
     {
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         dl.AddRectFilled(p, p + new Vector2(w, 24), index % 2 == 0 ? RowAlt : PanelBg);
         float nameW = w - 146;
         dl.PushClipRect(p, p + new Vector2(nameW, 24), true);
-        dl.AddText(new Vector2(p.X + 6, p.Y + (24 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Text, name);
+        dl.AddText(new Vector2(p.X + 6, p.Y + (24 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), tint, name);
         dl.PopClipRect();
         int result = 0;
-        if (Button("##pick", value, new Vector2(p.X + nameW + 2, p.Y + 2), new Vector2(96, 20), Text, BtnFill)) result = 1;
+        if (Button("##pick", value, new Vector2(p.X + nameW + 2, p.Y + 2), new Vector2(96, 20), tint, BtnFill)) result = 1;
         if (IconButton("##del", PhosphorIcons.Trash, new Vector2(p.X + nameW + 102, p.Y + 2), new Vector2(42, 20), Red, BtnFill)) result = 2;
         ImGuiNET.ImGui.SetItemTooltip("Remove");
         NextLine(p, 24);
