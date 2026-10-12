@@ -43,3 +43,10 @@ EndSceneDetour -> EngineFrameController.OnEndScene -> ImGuiPopOuts.RenderAll
 - The engine builds in Release, and ItemHudTests pass.
 - Not yet checked in game: the popped-out Mini Remote, with RynthAi 0.5.39 and with an older
   RynthAi.
+
+## Installed
+
+- 2026-10-11: published 2026.10.5.30 to `C:\Games\RynthCore\Runtime`
+  (`Publish-EngineCoreClr.ps1 -EngineOnly`), with RynthAi 0.5.39.
+- 2026.10.5.29 is saved in `C:\Games\Rynthcore\PreviousReleases\2026.10.5.29-engine` and
+  `C:\Games\_rynth-backups\20261011-pre-popout-fix\Runtime`.
