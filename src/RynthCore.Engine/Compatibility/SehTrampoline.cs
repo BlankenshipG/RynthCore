@@ -82,6 +82,32 @@ internal static class SehTrampoline
     /// </summary>
     public static bool IsAvailable => _available;
 
+    private static int _nativeVersion = -1;
+
+    /// <summary>
+    /// Version of the loaded native DLL (0 when unavailable, 1 when it predates the version
+    /// export). A running client keeps the DLL it started with, so a newer engine can meet
+    /// an older trampoline; gate newer exports on this.
+    /// </summary>
+    public static uint NativeVersion
+    {
+        get
+        {
+            int cached = System.Threading.Volatile.Read(ref _nativeVersion);
+            if (cached >= 0)
+                return (uint)cached;
+            uint version = 0;
+            if (_available)
+            {
+                try { version = _SehTrampolineVersion(); }
+                catch (EntryPointNotFoundException) { version = 1; }
+                catch { version = 0; }
+            }
+            System.Threading.Volatile.Write(ref _nativeVersion, (int)version);
+            return version;
+        }
+    }
+
     // ── P/Invoke declarations ──────────────────────────────────────────────
 
     [DllImport("RynthCore.SehTrampoline.dll", EntryPoint = "SEH_CdeclPtrUint",
@@ -111,6 +137,11 @@ internal static class SehTrampoline
     [DllImport("RynthCore.SehTrampoline.dll", EntryPoint = "SEH_ThiscallIntUintPtr",
                CallingConvention = CallingConvention.Cdecl)]
     private static extern unsafe int _ThiscallIntUintPtr(IntPtr fn, IntPtr thisPtr, uint arg1, void* arg2, int* outResult);
+
+    [DllImport("RynthCore.SehTrampoline.dll", EntryPoint = "SEH_GameTickThiscall",
+               CallingConvention = CallingConvention.Cdecl)]
+    private static extern unsafe int _GameTickThiscall(IntPtr fn, IntPtr thisPtr, int* outResult,
+        uint* outExAddr, uint* outDataAddr, byte* module, int moduleCap);
 
     [DllImport("RynthCore.SehTrampoline.dll", EntryPoint = "RC_InstallCrashLogger",
                CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
@@ -205,6 +236,26 @@ internal static class SehTrampoline
     {
         int result;
         avCaught = _ThiscallIntUintPtr(fn, thisPtr, arg1, outStruct, &result) == 0;
+        return result;
+    }
+
+    /// <summary>
+    /// int __thiscall fn(this) — Client::UseTime. Requires <see cref="NativeVersion"/> &gt;= 4.
+    /// On a caught AV: avCaught=true, result 0, and the fault location; <paramref name="exAddr"/>
+    /// is relative to <paramref name="module"/> when that is non-empty, else absolute.
+    /// The native side also writes the full record to native-crash.log.
+    /// </summary>
+    public static unsafe int GameTickThiscall(IntPtr fn, IntPtr thisPtr, out bool avCaught,
+        out uint exAddr, out uint dataAddr, out string module)
+    {
+        const int ModuleCap = 64;
+        byte* name = stackalloc byte[ModuleCap];
+        int result;
+        uint ex, data;
+        avCaught = _GameTickThiscall(fn, thisPtr, &result, &ex, &data, name, ModuleCap) == 0;
+        exAddr = ex;
+        dataAddr = data;
+        module = avCaught ? (Marshal.PtrToStringAnsi((IntPtr)name) ?? string.Empty) : string.Empty;
         return result;
     }
 }

@@ -49,9 +49,20 @@ internal static class GameTickHooks
 
     private static ThisCallBoolDelegate? _originalUseTime;
     private static ThisCallBoolDelegate? _useTimeDetour;
+    private static IntPtr _originalUseTimePtr;
     private static IntPtr _targetAddress;
     private static int _installed;
     private static int _exitLatch;
+
+    // Native SEH guard around AC's tick (SehTrampoline v4+). A native AV that unwinds into
+    // this managed detour is fatal under CoreCLR; caught natively, it drops one tick instead.
+    // More than MaxTickFaults within TickFaultWindowMs means AC's state is broken rather than
+    // one bad message, so the guard turns itself off and the next fault ends the client.
+    private const int MaxTickFaults = 5;
+    private const long TickFaultWindowMs = 30_000;
+    private static bool _tickGuard;
+    private static int _tickFaults;
+    private static long _tickFaultWindowStart;
 
     // Verified unique + lands exactly at UseTimeVa offline (tools/pe_pattern.py).
     // Replaces the prior warn-only prologue check; null = wildcard (rel32 call operand).
@@ -84,12 +95,14 @@ internal static class GameTickHooks
             _targetAddress = resolved.Address;
             _useTimeDetour = UseTimeDetour;
             IntPtr detourPtr = Marshal.GetFunctionPointerForDelegate(_useTimeDetour);
-            _originalUseTime = Marshal.GetDelegateForFunctionPointer<ThisCallBoolDelegate>(
-                MinHook.HookCreate(_targetAddress, detourPtr));
+            _originalUseTimePtr = MinHook.HookCreate(_targetAddress, detourPtr);
+            _originalUseTime = Marshal.GetDelegateForFunctionPointer<ThisCallBoolDelegate>(_originalUseTimePtr);
+            _tickGuard = SehTrampoline.IsAvailable && SehTrampoline.NativeVersion >= 4;
             Thread.MemoryBarrier();
             MinHook.Enable(_targetAddress);
             Volatile.Write(ref _installed, 1);
-            RynthLog.Compat($"GameTickHooks: Client::UseTime hooked @ 0x{_targetAddress.ToInt32():X8} ({resolved.Detail}) — cast drain on game-logic tick.");
+            RynthLog.Compat($"GameTickHooks: Client::UseTime hooked @ 0x{_targetAddress.ToInt32():X8} ({resolved.Detail}) — cast drain on game-logic tick; " +
+                (_tickGuard ? "native AV guard on." : $"native AV guard OFF (SehTrampoline v{SehTrampoline.NativeVersion}, needs v4)."));
         }
         catch (Exception ex)
         {
@@ -133,8 +146,19 @@ internal static class GameTickHooks
 
         // Run AC's own game-logic + physics + animation pass.
         int result;
-        try { result = _originalUseTime!(thisPtr); }
-        catch { result = 0; }
+        if (_tickGuard)
+        {
+            result = SehTrampoline.GameTickThiscall(_originalUseTimePtr, thisPtr, out bool avCaught,
+                out uint exAddr, out uint dataAddr, out string module);
+            // 0 would end AC's game loop; a dropped tick must keep it running.
+            if (avCaught)
+                result = OnTickFault(exAddr, dataAddr, module);
+        }
+        else
+        {
+            try { result = _originalUseTime!(thisPtr); }
+            catch { result = 0; }
+        }
 
         // ── Game loop is exiting — quiesce BEFORE AC's teardown ──────────────
         // AC's main loop is `do { } while (UseTime() != 0)`; a 0 return means
@@ -206,5 +230,35 @@ internal static class GameTickHooks
 
         // MUST return Client::UseTime's own bool — AC loops do/while on it.
         return result;
+    }
+
+    /// <summary>
+    /// Logs a native AV caught inside Client::UseTime and returns the value the detour hands
+    /// back to AC's loop (always 1: keep running). Turns the guard off once faults exceed
+    /// the budget, so a client with corrupted state still dies instead of spinning.
+    /// </summary>
+    private static int OnTickFault(uint exAddr, uint dataAddr, string module)
+    {
+        long now = Environment.TickCount64;
+        if (_tickFaults == 0 || now - _tickFaultWindowStart > TickFaultWindowMs)
+        {
+            _tickFaultWindowStart = now;
+            _tickFaults = 0;
+        }
+        _tickFaults++;
+
+        string where = module.Length > 0 ? $"{module}+0x{exAddr:X}" : $"0x{exAddr:X8}";
+        try
+        {
+            RynthLog.Error($"GameTickHooks: access violation inside Client::UseTime at {where} (data 0x{dataAddr:X8}); " +
+                $"tick dropped, client kept running (fault {_tickFaults}/{MaxTickFaults} in {TickFaultWindowMs / 1000}s). Full record in native-crash.log.");
+            if (_tickFaults >= MaxTickFaults)
+            {
+                _tickGuard = false;
+                RynthLog.Error("GameTickHooks: Client::UseTime fault budget exhausted; native AV guard OFF for this session.");
+            }
+        }
+        catch { }
+        return 1;
     }
 }

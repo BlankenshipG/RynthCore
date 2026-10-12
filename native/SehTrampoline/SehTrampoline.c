@@ -27,7 +27,7 @@
 #include <windows.h>
 
 /* File version of this native module (bump with every behavioural change). */
-#define RC_SEH_TRAMPOLINE_VERSION 3   /* v3: CoreCLR-hosted engine AVs logged immediately */
+#define RC_SEH_TRAMPOLINE_VERSION 4   /* v4: SEH_GameTickThiscall (Client::UseTime guard) */
 
 /* Crash-logger state that the SEH_* wrappers and DllMain also touch (defined below). */
 static __declspec(thread) int t_sehDepth;       /* >0 while inside an SEH_* wrapper call   */
@@ -779,4 +779,93 @@ __declspec(dllexport) void __cdecl RC_SetTagParserOriginal(void* original)
 __declspec(dllexport) unsigned int __cdecl RC_TagParserSkipCount(void)
 {
     return (unsigned int)g_tagParserSkips;
+}
+
+/* ── Game-tick guard (v4) ─────────────────────────────────────────────────
+ * Client::UseTime (0x00411FA0) is detoured by a MANAGED hook. An AV inside AC's tick
+ * (e.g. chatclient.dll+0x1050 copying a ~2 MB chat-server message from a null buffer,
+ * 2026-10-11, two clients in the same second) unwinds into that managed frame, which
+ * CoreCLR treats as an unhandled exception and fail-fasts; AC's own handlers further
+ * up never run. This wrapper catches the AV in native code first.
+ *
+ * The filter runs on the faulting thread before unwinding, so it records the faulting
+ * address, the data address and the module name, and writes a full record (registers +
+ * stack sweep) to the crash log, capped at CL_MAX_GAMETICK records per process. */
+#define CL_MAX_GAMETICK 16
+static volatile LONG g_gameTickRecords = 0;
+
+typedef struct {
+    unsigned int exAddr;
+    unsigned int dataAddr;
+    char*        module;
+    int          moduleCap;
+} GT_FAULT;
+
+/* int __thiscall fn(this) — no stack args; EAX is returned whole, as AC's caller tests AL. */
+static int __cdecl _helper_thiscall_int_noarg(void* fn_ptr, void* this_ptr)
+{
+    int result = 0;
+    __asm {
+        mov  ecx, this_ptr
+        call fn_ptr
+        mov  result, eax
+    }
+    return result;
+}
+
+static int gt_filter(PEXCEPTION_POINTERS ep, GT_FAULT* f)
+{
+    HMODULE hm = NULL;
+    if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    f->exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
+    f->dataAddr = ep->ExceptionRecord->NumberParameters >= 2
+        ? (unsigned int)ep->ExceptionRecord->ExceptionInformation[1] : 0;
+    if (f->module && f->moduleCap > 0) {
+        f->module[0] = 0;
+        /* GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS(0x4) | UNCHANGED_REFCOUNT(0x2) */
+        if (GetModuleHandleExW(0x4 | 0x2, (LPCWSTR)(UINT_PTR)f->exAddr, &hm) && hm) {
+            cl_module_leaf(hm, f->module, f->moduleCap, 0);
+            f->exAddr -= (unsigned int)(UINT_PTR)hm;   /* module-relative when resolved */
+        }
+    }
+    if (!t_inLogger && InterlockedIncrement(&g_gameTickRecords) <= CL_MAX_GAMETICK) {
+        CL_SLOT* s;
+        t_inLogger = 1;
+        s = cl_claim_slot();
+        if (s) {
+            s->len = cl_format(s->text, CL_SLOT_BYTES, ep,
+                "AV CAUGHT IN GAME TICK (Client::UseTime guard; tick dropped, client kept running)");
+            cl_append_file(s->text, s->len);
+            InterlockedExchange(&s->state, CL_SLOT_DONE);
+        }
+        t_inLogger = 0;
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+/* Calls int __thiscall fn(this) under SEH. Returns 1 when the call completed, 0 when an
+ * AV was caught; on 0, *out_exAddr is module-relative if module[0] != 0, else absolute. */
+__declspec(dllexport) int __cdecl
+SEH_GameTickThiscall(void* fn, void* this_ptr, int* out_result,
+                     unsigned int* out_exAddr, unsigned int* out_dataAddr,
+                     char* module, int moduleCap)
+{
+    GT_FAULT f;
+    f.exAddr = 0; f.dataAddr = 0; f.module = module; f.moduleCap = moduleCap;
+    *out_result = 0; *out_exAddr = 0; *out_dataAddr = 0;
+    if (module && moduleCap > 0) { module[0] = 0; }
+    RC_SEH_ENTER();
+    __try {
+        *out_result = _helper_thiscall_int_noarg(fn, this_ptr);
+    }
+    __except(gt_filter(GetExceptionInformation(), &f)) {
+        RC_SEH_LEAVE();
+        *out_exAddr = f.exAddr;
+        *out_dataAddr = f.dataAddr;
+        return 0;
+    }
+    RC_SEH_LEAVE();
+    return 1;
 }
