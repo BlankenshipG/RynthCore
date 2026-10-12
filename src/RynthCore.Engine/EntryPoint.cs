@@ -582,11 +582,11 @@ public static class EntryPoint
         UI.ServerMenus.DefineServer("ilt", "Infinite Leaftide", static () => IltInfo.IsIlt, "/rc ilt on");
         if (rynthAi)
         {
-            // RynthAi's ILT features: the Mini Remote's tabs (shown once the server reports each on).
+            // RynthAi's ILT features: the Mini Remote's ILT tabs (shown once the server reports each
+            // on). Its Quests and Pets tabs are universal: the Character half of the menus.
             foreach ((string label, string tab) in new[]
             {
-                ("Character", "character"), ("Quests", "quests"), ("Pets", "pets"),
-                ("Banking", "banking"), ("Gear", "gear"), ("Games", "games"),
+                ("Character", "character"), ("Banking", "banking"), ("Gear", "gear"), ("Games", "games"),
             })
             {
                 UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem(label, "/rc miniremote tab " + tab,
