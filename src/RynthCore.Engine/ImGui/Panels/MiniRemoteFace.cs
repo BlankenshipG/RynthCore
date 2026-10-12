@@ -12,8 +12,9 @@
 //  a resize by hand holds until then. While this window shows it, RynthAi keeps
 //  its own floating copy hidden, so there is one Mini Remote, not two.
 //
-//  Without RynthAi (not loaded, too old for the surface, not logged in yet, or
-//  its embed failed) it is the engine's own grid (an idea from Silentkelpie's
+//  Without RynthAi (not loaded, too old for the surface, not logged in yet,
+//  popped out with a RynthAi older than 0.5.38, which can't draw in a pop-out's
+//  context, or its embed failed) it is the engine's own grid (an idea from Silentkelpie's
 //  rynth PR #1, done as an engine face):
 //    slots     the item's icon and carried count; an empty slot shows +
 //    click     uses the slot's item (the same object if still carried, else a

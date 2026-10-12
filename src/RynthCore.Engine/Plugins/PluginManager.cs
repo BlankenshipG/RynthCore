@@ -1248,20 +1248,55 @@ internal static partial class PluginManager
     internal const int EmbedDrawn = 1, EmbedNotReady = 0, EmbedNoPlugin = -1, EmbedFailed = -2;
 
     /// <summary>
+    /// Appended to an embed surface's name when the caller draws in another ImGui context than
+    /// the one plugins were given (a popped-out panel's own context). Only a plugin that knows
+    /// the suffix draws then, into the current context; an older one switches to the main
+    /// context, which is not mid-frame there, and faults inside cimgui (an access violation no
+    /// try/catch stops: 2026-10-11, the popped-out Mini Remote), so it must see a surface name
+    /// it doesn't know and decline.
+    /// </summary>
+    private static ReadOnlySpan<byte> PopOutSurfaceSuffix => ":popout"u8;
+
+    /// <summary>
     /// Lets the plugin named <paramref name="pluginName"/> (display name contains it) draw the
     /// surface <paramref name="surfaceUtf8"/> (NUL-terminated) into the current ImGui window,
     /// through its optional RynthPluginRenderEmbed export. The caller has begun a child of
-    /// <paramref name="size"/> in the main ImGui context; the plugin draws only inside it and
-    /// reports the content size it wants in <paramref name="want"/> (zero when it didn't say).
+    /// <paramref name="size"/>; the plugin draws only inside it and reports the content size it
+    /// wants in <paramref name="want"/> (zero when it didn't say). In a context other than the
+    /// plugins' (a pop-out), the surface goes out as "name:popout" (see
+    /// <see cref="PopOutSurfaceSuffix"/>).
     /// Render thread only. Returns <see cref="EmbedDrawn"/>, <see cref="EmbedNotReady"/> (the
-    /// plugin isn't ready: before login, no ImGui context), <see cref="EmbedNoPlugin"/> (not
-    /// loaded, or too old to have the export) or <see cref="EmbedFailed"/> (it threw: the export
-    /// is switched off for this session; the plugin keeps running).
+    /// plugin isn't ready: before login, no ImGui context, or too old to draw in a pop-out),
+    /// <see cref="EmbedNoPlugin"/> (not loaded, or too old to have the export) or
+    /// <see cref="EmbedFailed"/> (it threw: the export is switched off for this session; the
+    /// plugin keeps running).
     /// </summary>
     internal static unsafe int RenderEmbed(string pluginName, ReadOnlySpan<byte> surfaceUtf8, System.Numerics.Vector2 size, out System.Numerics.Vector2 want)
     {
         want = System.Numerics.Vector2.Zero;
         if (!_loginCompleteObserved) return EmbedNotReady;   // same not-in-world guard as RenderAll
+        IntPtr current = ImGuiNET.ImGui.GetCurrentContext();
+        if (current == IntPtr.Zero) return EmbedNotReady;
+        if (current != _api.ImGuiContext)
+        {
+            // "name\0" -> "name:popout\0" on the stack; surface names are a few bytes.
+            int nameLen = surfaceUtf8.IndexOf((byte)0);
+            if (nameLen < 0) nameLen = surfaceUtf8.Length;
+            int total = nameLen + PopOutSurfaceSuffix.Length + 1;
+            if (total > 128) return EmbedNotReady;
+            Span<byte> popOut = stackalloc byte[total];
+            surfaceUtf8[..nameLen].CopyTo(popOut);
+            PopOutSurfaceSuffix.CopyTo(popOut[nameLen..]);
+            popOut[^1] = 0;
+            return RenderEmbedCore(pluginName, popOut, size, out want);
+        }
+        return RenderEmbedCore(pluginName, surfaceUtf8, size, out want);
+    }
+
+    /// <summary>The export call behind <see cref="RenderEmbed"/>, with the surface name already final.</summary>
+    private static unsafe int RenderEmbedCore(string pluginName, ReadOnlySpan<byte> surfaceUtf8, System.Numerics.Vector2 size, out System.Numerics.Vector2 want)
+    {
+        want = System.Numerics.Vector2.Zero;
         LoadedPlugin[] plugins = System.Threading.Volatile.Read(ref _pluginsRenderSnapshot);
         for (int i = 0; i < plugins.Length; i++)
         {
