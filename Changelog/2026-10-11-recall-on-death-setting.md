@@ -20,3 +20,8 @@ Engine 2026.10.5.35 (previous: 2026.10.5.34). Pairs with RynthAi 0.5.44-legacy-u
 - An older RynthAi ignores the new fields.
 
 The engine builds in Release. Not yet tested in game.
+
+## Installed
+
+- Published to `C:\Games\RynthCore\Runtime` (file version 2026.10.5.35). Both running clients (pids 33684 and 61616) hot-reloaded to build 2026.10.5.35 cleanly. That was hot reload 3 of 3 for each, so the next engine update needs a client restart.
+- Previous engine: `C:\Games\Rynthcore\PreviousReleases\2026.10.5.34-engine` and `C:\Games\_rynth-backups\20261011-pre-death-recall\Runtime`.
