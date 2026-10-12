@@ -104,6 +104,11 @@ internal sealed class RynthAiSettings
     public int StaminaToHealthAt { get; set; } = 30;
     public int StaminaToHealthMinStamina { get; set; } = 20;
     public bool StopMacroOnDeath { get; set; }
+    // RynthAi Recall On Death: 0 off, 1 cast DeathRecallSpellId, 2 use the item named DeathRecallItem.
+    // An older RynthAi ignores them.
+    public int DeathRecallMode { get; set; }
+    public int DeathRecallSpellId { get; set; } = 48;   // Primary Portal Recall
+    public string DeathRecallItem { get; set; } = string.Empty;
     public bool StopMacroOnNoComponents { get; set; }
     public bool StopLootingWhenPackFull { get; set; } = true;
     public bool StopMacroWhenPackFull { get; set; }
@@ -431,6 +436,23 @@ internal static class SettingsSchema
     public static readonly string[] AttackHeights = { "Low", "Medium", "High" };
     public static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
     public static readonly string[] NavLabelModes = { "Off", "Numbers", "Numbers and names" };
+    public static readonly string[] DeathRecallModes = { "Off", "Cast a recall spell", "Use a recall item" };
+
+    // The nav editor's recall spells. Filled with "Spell N (N)" and named from the client's spell
+    // table as it loads: the combo reads this array every frame, and RecallSpellIndex refreshes it.
+    private static readonly string[] RecallSpellItems = Array.ConvertAll(NavCommands.RecallIds, id => $"Spell {id} ({id})");
+    private static bool _recallSpellItemsNamed;
+
+    private static int RecallSpellIndex(RynthAiSettings s)
+    {
+        if (!_recallSpellItemsNamed)
+        {
+            string[] labels = NavCommands.RecallLabels;
+            Array.Copy(labels, RecallSpellItems, Math.Min(labels.Length, RecallSpellItems.Length));
+            _recallSpellItemsNamed = Array.TrueForAll(RecallSpellItems, l => !l.StartsWith("Spell ", StringComparison.Ordinal));
+        }
+        return Math.Max(0, Array.IndexOf(NavCommands.RecallIds, s.DeathRecallSpellId));
+    }
 
     private static SettingRow Bool(string label, Func<RynthAiSettings, bool> get, Action<RynthAiSettings, bool> set,
         string? tip = null, Func<RynthAiSettings, bool>? when = null, bool gates = false) =>
@@ -723,6 +745,22 @@ internal static class SettingsSchema
                 "Stop the macro after 3 \"missing components\" failures within a minute."),
             Bool("Stop Macro When Pack Full", s => s.StopMacroWhenPackFull, (s, v) => s.StopMacroWhenPackFull = v,
                 "Stop the macro when no pack has a free slot."),
+            Spacer(),
+            Section("On Death"),
+            Combo("Recall On Death", DeathRecallModes, s => Math.Clamp(s.DeathRecallMode, 0, DeathRecallModes.Length - 1), (s, v) => s.DeathRecallMode = v,
+                "After you die with the macro running, once you've respawned: cast a recall spell or use\n" +
+                "a recall item (a gem, scroll or token) from your pack. Nothing else runs until the teleport\n" +
+                "lands; a fizzle is retried (5 tries, 60 s at most). Then nav rejoins the route at the closest\n" +
+                "waypoint, and Travel Back To My Corpse walks to the corpse from there. Stop Macro On Death\n" +
+                "still recalls first. Off by default: most metas handle a death themselves."),
+            Combo("Recall Spell", RecallSpellItems, RecallSpellIndex, (s, v) => s.DeathRecallSpellId = NavCommands.RecallIds[Math.Clamp(v, 0, NavCommands.RecallIds.Length - 1)],
+                "The recall spell to cast after a death (you must know it). Primary Portal Recall takes you\n" +
+                "to where you last tied a primary portal, often next to your hunting ground.")
+                with { VisibleWhen = s => s.DeathRecallMode == 1 },
+            Text("Recall Item", s => s.DeathRecallItem, (s, v) => s.DeathRecallItem = v.Trim(),
+                "Name of the item to use after a death, as it shows in your inventory. An exact match wins;\n" +
+                "otherwise the first item whose name contains it.", hint: "item name, as in your inventory")
+                with { VisibleWhen = s => s.DeathRecallMode == 2 },
             Spacer(),
             Section("Helper Settings (%) — NOT WIRED YET"),
             Int("Heal Others", s => s.HealOthersAt, (s, v) => s.HealOthersAt = v, 0, 100, 1,
