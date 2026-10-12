@@ -73,4 +73,9 @@ Engine 2026.10.5.36 (previous: 2026.10.5.35). Pairs with RynthAi 0.5.45-legacy-u
 The engine builds in Release. The filter has 5 new host tests in RynthSuite
 (`InventoryAttributeFilterTests`), and all of them pass. Not yet tested in game.
 
-Installing needs a client restart: the running clients have used all 3 hot reloads.
+## Installed
+
+- Published to `C:\Games\RynthCore\Runtime` (file version 2026.10.5.36). No client was running; it
+  loads on the next client start.
+- Previous engine: `C:\Games\RynthCore\PreviousReleases\2026.10.5.35-engine` and
+  `C:\Games\_rynth-backups\20261011-pre-attr-filter\Runtime`.
