@@ -403,6 +403,7 @@ internal static partial class InventoryModel
                 SampleTarget();
             }
             HoverTick(now);
+            IdentifyQueueTick(now);
         }
         catch (Exception ex)
         {
@@ -431,6 +432,7 @@ internal static partial class InventoryModel
         {
             _items.Clear();       // another character: nothing carries over
             _identified.Clear();
+            ClearIdentifyQueue();
             _lastPlayer = player;
             _lastSignature = 0;
             _playerName = string.Empty;
@@ -1136,6 +1138,70 @@ internal static partial class InventoryModel
         if (tip != null && tip.Id == id && now - _lastTooltip < TooltipRefreshTicks) return;
         _lastTooltip = now;
         Volatile.Write(ref _tooltip, BuildTooltip(id, appraised, !appraised && sentRecently));
+    }
+
+    // ── Identify queue (the attribute filter's "Identify N") ────────────
+
+    private static readonly long QueuedIdentifyGapTicks = Freq / 4;   // 4 a second
+    private const int MaxQueuedIdentifies = 1024;
+    private static readonly object IdQueueSync = new();
+    private static readonly Queue<uint> _idQueue = new();               // guarded by IdQueueSync
+    private static readonly HashSet<uint> _idQueued = new();            // guarded by IdQueueSync
+    private static long _lastQueuedIdentify;
+
+    /// <summary>Items still waiting in the identify queue. Any thread.</summary>
+    public static int IdentifyQueueCount
+    {
+        get { lock (IdQueueSync) return _idQueue.Count; }
+    }
+
+    /// <summary>
+    /// Asks the server to identify <paramref name="ids"/>, a few a second on AC's main thread
+    /// while the panel is open. Items already appraised, sent in the last minute, already
+    /// queued or no longer carried are skipped. Any thread.
+    /// </summary>
+    public static void QueueIdentify(IReadOnlyList<uint> ids)
+    {
+        lock (IdQueueSync)
+        {
+            foreach (uint id in ids)
+            {
+                if (id == 0 || _idQueue.Count >= MaxQueuedIdentifies) continue;
+                if (_idQueued.Add(id)) _idQueue.Enqueue(id);
+            }
+        }
+    }
+
+    /// <summary>Drops every queued identify. Any thread.</summary>
+    public static void ClearIdentifyQueue()
+    {
+        lock (IdQueueSync)
+        {
+            _idQueue.Clear();
+            _idQueued.Clear();
+        }
+    }
+
+    /// <summary>Main thread: sends the next queued identify that still needs sending.</summary>
+    private static void IdentifyQueueTick(long now)
+    {
+        if (now - _lastQueuedIdentify < QueuedIdentifyGapTicks) return;
+        while (true)
+        {
+            uint id;
+            lock (IdQueueSync)
+            {
+                if (!_idQueue.TryDequeue(out id)) return;
+                _idQueued.Remove(id);
+            }
+            if (AppraisalHooks.HasAppraisalData(id) || !_items.ContainsKey(id)) continue;
+            if (_identified.TryGetValue(id, out long sentAt) && now - sentAt < IdentifyRepeatTicks) continue;
+            if (_identified.Count > 2048) _identified.Clear();
+            _identified[id] = now;
+            _lastQueuedIdentify = now;
+            ClientActionHooks.RequestId(id);   // main thread: the 0xC8 is sent now
+            return;
+        }
     }
 
     private static InventoryTooltip BuildTooltip(uint id, bool appraised, bool identifying)

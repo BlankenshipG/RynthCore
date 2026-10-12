@@ -17,7 +17,6 @@ internal static class UiSources
     public static readonly RynthAiSource RynthAi = new();
     public static readonly PatrolSource Patrol = new();
     public static readonly ProgressionSource Progression = new();
-    public static readonly CharmsSource Charms = new();
     public static readonly RadarSource Radar = new();
     public static readonly SettingsSource Settings = new();
     public static readonly MetaSource Meta = new();
@@ -57,7 +56,6 @@ internal static class UiSources
         UiDataHub.Register(RynthAi);
         UiDataHub.Register(Patrol);
         UiDataHub.Register(Progression);
-        UiDataHub.Register(Charms);
         UiDataHub.Register(PluginStatus);
         UiDataHub.Register(Log);
         UiDataHub.Register(Tracker);

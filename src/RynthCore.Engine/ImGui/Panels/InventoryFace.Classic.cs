@@ -160,7 +160,7 @@ internal sealed partial class InventoryFace
         // The open pack: a real pack (Classic has no "All" or "Worn" entry; the paperdoll is Worn).
         if (_pack == AllPacks || _pack == WornPacks || view.PackOf(_pack) == null)
             _pack = view.Packs.Length > 0 ? view.Packs[0].Id : AllPacks;
-        bool filtered = _category != 0 || _searchText.Length > 0;
+        bool filtered = FiltersOn;
         RebuildIfNeeded(view, filtered ? AllPacks : _pack);
 
         Backdrop(dl, o, w, bottom - o.Y, s);
@@ -964,8 +964,9 @@ internal sealed partial class InventoryFace
 }
 
 /// <summary>
-/// The Inventory panel's remembered choices: Classic or Modern look, and whether the
-/// Classic view shows its tools row. %LOCALAPPDATA%\RynthCore\inventory_settings.txt,
+/// The Inventory panel's remembered choices: Classic or Modern look, whether the
+/// Classic view shows its tools row, its size, and the attribute filter's rules.
+/// %LOCALAPPDATA%\RynthCore\inventory_settings.txt,
 /// read once when the panel opens, written in the background when a choice changes.
 /// </summary>
 internal static class InventorySettingsStore
@@ -980,6 +981,8 @@ internal static class InventorySettingsStore
     /// <summary>The panel's size in percent of the UI scale (50-150, steps of 5); text follows it.</summary>
     public static int SizePct { get; private set; } = 80;
     public static float SizeFactor => SizePct / 100f;
+    /// <summary>The attribute filter's rules (InventoryAttributeFilter.Serialize); "" = none.</summary>
+    public static string AttrFilter { get; private set; } = string.Empty;
 
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RynthCore", "inventory_settings.txt");
@@ -1003,6 +1006,7 @@ internal static class InventorySettingsStore
                     if (key == "classic") Classic = val == "1";
                     else if (key == "tools") ShowTools = val == "1";
                     else if (key == "size" && int.TryParse(val, out int pct)) SizePct = Math.Clamp(pct, 50, 150);
+                    else if (key == "attrfilter") AttrFilter = val;
                 }
             }
             catch { /* defaults stay */ }
@@ -1031,13 +1035,22 @@ internal static class InventorySettingsStore
         Save();
     }
 
+    public static void SetAttrFilter(string line)
+    {
+        line ??= string.Empty;
+        if (AttrFilter == line) return;
+        AttrFilter = line;
+        Save();
+    }
+
     /// <summary>Writes the settings in the background (the caller is AC's render thread).</summary>
     private static void Save()
     {
         string text = "# RynthCore inventory panel settings - auto-generated, hand-edits OK.\n"
             + "classic=" + (Classic ? "1" : "0") + "\n"
             + "tools=" + (ShowTools ? "1" : "0") + "\n"
-            + "size=" + SizePct + "\n";
+            + "size=" + SizePct + "\n"
+            + "attrfilter=" + AttrFilter + "\n";
         UiBackgroundWriter.Enqueue("inventory settings", () =>
         {
             lock (Sync)

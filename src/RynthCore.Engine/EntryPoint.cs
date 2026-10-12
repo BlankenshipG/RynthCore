@@ -586,7 +586,7 @@ public static class EntryPoint
             // on). Its Quests and Pets tabs are universal: the Character half of the menus.
             foreach ((string label, string tab) in new[]
             {
-                ("Character", "character"), ("Banking", "banking"), ("Gear", "gear"), ("Games", "games"),
+                ("Character", "character"), ("Banking", "banking"), ("Gear", "gear"), ("Charms", "charms"), ("Games", "games"),
             })
             {
                 UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem(label, "/rc miniremote tab " + tab,

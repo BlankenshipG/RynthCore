@@ -7,7 +7,8 @@
 //    Modern    the Phase 1 layout, below
 //
 //    header    burden (percent of capacity) and pyreals; item count
-//    tools     search box, sort picker; category chips
+//    tools     search box, attribute filter (InventoryFace.AttrFilter.cs), sort
+//              picker; category chips
 //    packs     All, Main pack, each side pack (its icon and fill), Worn
 //    grid      the chosen pack's items as icons with stack counts; hover for a
 //              tooltip (asks the server to identify an unknown item, throttled);
@@ -125,6 +126,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
     public void OnShown()
     {
         InventorySettingsStore.Load();
+        LoadAttrFilter();
         InventoryModel.Subscribe();
     }
 
@@ -174,6 +176,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         ContextMenu(view);
         SplitDialog(view);
         ConfirmDialog();
+        AttrFilterDialog();
         _lootAdd.Draw();
         _picker.Draw();
     }
@@ -260,7 +263,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
     {
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
         float sortW = 118;
-        float boxW = Math.Max(80, w - sortW - 26 - 8);
+        float boxW = Math.Max(80, w - sortW - 26 - 26 - 8);
         if (TextBox("##inv_search", _search, p, boxW, PhosphorIcons.MagnifyingGlass + " Search names", out _))
             _searchText = Utf8(_search).Trim().ToLowerInvariant();
         if (IconButton("##inv_clear", PhosphorIcons.X, new Vector2(p.X + boxW + 2, p.Y), new Vector2(22, 22), Mute, BtnFill,
@@ -270,6 +273,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
             _searchText = string.Empty;
         }
         ImGuiNET.ImGui.SetItemTooltip("Clear the search");
+        AttrFilterButton(new Vector2(p.X + boxW + 26, p.Y));
         Vector2 sp = new(p.X + w - sortW, p.Y);
         if (Button("##inv_sortbtn", SortLabels[_sort], sp, new Vector2(sortW, 22), Text, BtnFill,
                 leftAlign: true))
@@ -322,12 +326,16 @@ internal sealed partial class InventoryFace : IImGuiPanel
     private void RebuildIfNeeded(InventoryView view, uint pack)
     {
         bool classic = InventorySettingsStore.Classic;
+        bool attrOn = AttrOn;
+        int attrKey = attrOn ? _attr.Version : -1;
         if (ReferenceEquals(view, _builtFor) && _builtPack == pack && _builtSort == _sort
             && _builtCategory == _category && ReferenceEquals(_builtSearch, _searchText) && _builtClassic == classic
-            && _builtOrderVersion == Net.InventoryOrder.Version)
+            && _builtOrderVersion == Net.InventoryOrder.Version && _builtAttrKey == attrKey && !AttrRefreshDue(attrOn))
             return;
-        if (_builtPack != pack || !ReferenceEquals(_builtSearch, _searchText) || _builtCategory != _category)
+        if (_builtPack != pack || !ReferenceEquals(_builtSearch, _searchText) || _builtCategory != _category || _builtAttrKey != attrKey)
             _gridFirstRow = 0;   // another pack or filter: back to the top (Classic grid)
+        _builtAttrKey = attrKey;
+        BeginAttrPass(attrOn);
         if (!ReferenceEquals(view, _builtFor)) PruneSelection(view);
         _builtFor = view;
         _builtPack = pack;
@@ -363,6 +371,8 @@ internal sealed partial class InventoryFace : IImGuiPanel
         _countText = _shown.Count == total
             ? total.ToString(CultureInfo.InvariantCulture) + " items"
             : _shown.Count.ToString(CultureInfo.InvariantCulture) + " of " + total.ToString(CultureInfo.InvariantCulture);
+        if (_unidentified.Count > 0)
+            _countText += ", " + _unidentified.Count.ToString(CultureInfo.InvariantCulture) + " not ID'd";
         _selectAllLabel = "Select all shown (" + _shown.Count.ToString(CultureInfo.InvariantCulture) + ")";
         // The Classic grid's caption, retail's "Contents of <pack>".
         _captionText = pack == WornPacks ? "Worn"
@@ -396,7 +406,10 @@ internal sealed partial class InventoryFace : IImGuiPanel
 
     /// <summary>A grid cell is a slot only while the list is the server's, whole and in pack order, and the item is an ordinary one.</summary>
     private bool CellsAreSlots(InventoryItem item) =>
-        _orderKnown && _sort == 0 && _category == 0 && _searchText.Length == 0 && !item.RequiresPackSlot && !item.IsPack;
+        _orderKnown && _sort == 0 && !FiltersOn && !item.RequiresPackSlot && !item.IsPack;
+
+    /// <summary>Some filter hides items: a category, search text or the attribute filter.</summary>
+    private bool FiltersOn => _category != 0 || _searchText.Length > 0 || AttrOn;
 
     /// <summary>The slot an item holds now among its pack's ordinary items, or -1 when unknown.</summary>
     private static int SlotOf(InventoryItem item)
@@ -419,6 +432,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
             if (_skipSlotItems && it.RequiresPackSlot) continue;
             if (_category != 0 && it.Category != cat) continue;
             if (_searchText.Length > 0 && !it.SearchName.Contains(_searchText, StringComparison.Ordinal)) continue;
+            if (_attrPass && !AttrKeeps(it)) continue;
             _shown.Add(it);
         }
     }
@@ -521,7 +535,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
 
         if (_shown.Count == 0)
         {
-            dl.AddText(o + new Vector2(4, 4), Mute, _searchText.Length > 0 || _category != 0 ? "Nothing matches." : "Empty.");
+            dl.AddText(o + new Vector2(4, 4), Mute, FiltersOn ? "Nothing matches." : "Empty.");
             ImGuiNET.ImGui.Dummy(new Vector2(avail, 20));
         }
         else
@@ -758,7 +772,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
             case DropKind.Pack:
                 if (slot == -2)
                 {
-                    Refuse(_sort != 0 || _category != 0 || _searchText.Length > 0
+                    Refuse(_sort != 0 || FiltersOn
                         ? "To reorder, set Sort to Pack order and clear the search and filter."
                         : "The pack's order isn't known yet: log in again so the panel can learn it.");
                     return;
@@ -810,12 +824,13 @@ internal sealed partial class InventoryFace : IImGuiPanel
         }
     }
 
-    /// <summary>Back to everything: no search text, no category.</summary>
+    /// <summary>Back to everything: no search text, no category, the attribute filter off (its rules kept).</summary>
     private void ClearFilters()
     {
         Array.Clear(_search);
         _searchText = string.Empty;
         _category = 0;
+        SetAttrEnabled(false);
     }
 
     private void Refuse(string why)
