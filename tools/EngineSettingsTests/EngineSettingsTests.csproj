@@ -23,6 +23,9 @@
     <Compile Include="..\..\src\RynthCore.Engine\Plugins\EngineSettings.cs" Link="Engine\EngineSettings.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Plugins\EngineSettingsFile.cs" Link="Engine\EngineSettingsFile.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\ReloadCapNotice.cs" Link="Engine\ReloadCapNotice.cs" />
+    <!-- EditIltServerName starts from IltDetect's defaults (IltDetect shares a parser with AelrynthWire). -->
+    <Compile Include="..\..\src\RynthCore.Engine\Compatibility\IltDetect.cs" Link="Engine\IltDetect.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\Compatibility\AelrynthWire.cs" Link="Engine\AelrynthWire.cs" />
   </ItemGroup>
 
 </Project>

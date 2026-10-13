@@ -1326,6 +1326,37 @@ internal static partial class PluginManager
         return EmbedNoPlugin;
     }
 
+    /// <summary>
+    /// Each running plugin's Mini Remote sections manifest (its optional
+    /// RynthPluginGetSectionsJson export), copied out as (display name, JSON). A plugin whose
+    /// export throws has it switched off for the session. Render thread (UI/Sections).
+    /// </summary>
+    internal static unsafe List<(string Plugin, string Json)> CollectSectionManifests()
+    {
+        var result = new List<(string, string)>();
+        if (!_loginCompleteObserved) return result;   // plugins build these from in-world state
+        LoadedPlugin[] plugins = System.Threading.Volatile.Read(ref _pluginsRenderSnapshot);
+        for (int i = 0; i < plugins.Length; i++)
+        {
+            LoadedPlugin p = plugins[i];
+            IntPtr fn = p.SectionsJsonPtr;
+            if (!p.Initialized || p.Failed || fn == IntPtr.Zero) continue;
+            try
+            {
+                IntPtr text = ((delegate* unmanaged[Cdecl]<IntPtr>)fn)();
+                if (text == IntPtr.Zero) continue;
+                string? json = Marshal.PtrToStringUTF8(text);
+                if (!string.IsNullOrEmpty(json)) result.Add((p.DisplayName, json));
+            }
+            catch (Exception ex)
+            {
+                p.SectionsJsonPtr = IntPtr.Zero;
+                RynthLog.Error($"PluginManager: {p.DisplayName} RynthPluginGetSectionsJson threw {ex.GetType().Name}: {ex.Message} - its sections are off for this session.");
+            }
+        }
+        return result;
+    }
+
     public static void ShutdownAll()
     {
         RynthLog.Plugin($"PluginManager: Shutting down {_plugins.Count} plugin(s)...");

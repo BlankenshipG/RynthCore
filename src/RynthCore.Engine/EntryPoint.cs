@@ -582,38 +582,37 @@ public static class EntryPoint
     private static bool _serverMenusRegistered;
 
     /// <summary>
-    /// The server sections of the Char and Mini Remote menus (UI.ServerMenus): each server once,
-    /// then the items of the installed plugins that have windows for it. A server whose plugins
-    /// are all missing gets no items, so its section never shows.
+    /// The engine's own server items for the Mini Remote's sections and the menus
+    /// (UI/Sections/SectionRegistry): its windows that belong to one server, added only when
+    /// the plugin behind each is installed. Plugins add their own through their manifests.
     /// </summary>
     private static void RegisterServerMenus(bool rynthAi, bool rynthIlt)
     {
         if (_serverMenusRegistered) return;
         _serverMenusRegistered = true;
 
-        // Infinite Leaftide: IltInfo (host / world name lists, or "/rc ilt on" for the session).
-        UI.ServerMenus.DefineServer("ilt", "Infinite Leaftide", static () => IltInfo.IsIlt, "/rc ilt on");
+        const string ilt = IltInfo.ServerId;
         if (rynthAi)
         {
-            // RynthAi's ILT features: the Mini Remote's ILT tabs (shown once the server reports each
-            // on). Its Quests and Pets tabs are universal: the Character half of the menus.
-            foreach ((string label, string tab) in new[]
+            // RynthAi 0.5.54 and older don't publish sections: its Mini Remote's ILT tabs stand in
+            // (left out once RynthAi's own manifest arrives).
+            foreach ((string label, string tab, string section) in new[]
             {
-                ("Character", "character"), ("Banking", "banking"), ("Gear", "gear"), ("Charms", "charms"), ("Games", "games"),
+                ("Character", "character", "char"), ("Banking", "banking", "inventory"), ("Gear", "gear", "inventory"),
+                ("Charms", "charms", "char"), ("Games", "games", "char"),
             })
             {
-                UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem(label, "/rc miniremote tab " + tab,
-                    $"The Mini Remote's {label} tab (RynthAi).", "tab:" + tab));
+                UI.Sections.SectionRegistry.AddEngineItem(section, ilt, label, "/rc miniremote tab " + tab,
+                    $"The Mini Remote's {label} tab (RynthAi).", unlessPlugin: "RynthAi");
             }
-            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Guardian", "/rc guardian toggle",
-                "Temple of Enlightenment guardians: riddle answers and Give (RynthAi)."));
+            UI.Sections.SectionRegistry.AddEngineItem("char", ilt, "Guardian", "/rc guardian toggle",
+                "Temple of Enlightenment guardians: riddle answers and Give (RynthAi).");
+            UI.Sections.SectionRegistry.AddEngineItem("skills", ilt, "Progression", "/rc progression",
+                "XP planner, augmentations and enlightenment (the Skills panel's Progression tab).");
         }
         if (rynthIlt)
-            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Bounties", "/rc bounties toggle",
-                "ACECustom bounties and your progress on each (RynthILT)."));
-        if (rynthAi)
-            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Progression", "/rc progression",
-                "XP planner, augmentations and enlightenment (the Skills panel's Progression tab)."));
+            UI.Sections.SectionRegistry.AddEngineItem("combat", ilt, "Bounties", "/rc bounties toggle",
+                "ACECustom bounties and your progress on each (RynthILT).");
         UI.ServerMenus.PushToRynthAi = rynthAi;
     }
 

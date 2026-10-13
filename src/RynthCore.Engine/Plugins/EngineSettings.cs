@@ -402,7 +402,8 @@ internal static class EngineSettings
 
     /// <summary>"IltServerNames" in engine.json: world-name patterns ('*' wildcard, case-insensitive)
     /// treated as Infinite Leaftide; null when the file has none (IltDetect.DefaultServerNames).
-    /// An empty array turns the world-name signal off. Read only: edited in the file.</summary>
+    /// An empty array turns the world-name signal off. Edited in the file, or with
+    /// "/rc server names ilt add|remove" (EditIltServerName).</summary>
     public static IReadOnlyList<string>? IltServerNames
     {
         get
@@ -410,6 +411,31 @@ internal static class EngineSettings
             EnsureLoaded();
             return _iltServerNames;
         }
+    }
+
+    /// <summary>Longest world-name pattern EditIltServerName takes.</summary>
+    public const int MaxIltServerNameLength = 64;
+
+    /// <summary>
+    /// Adds (<paramref name="add"/>) or removes a world-name pattern in "IltServerNames" and saves
+    /// engine.json. With none in the file the list starts from IltDetect.DefaultServerNames, so
+    /// adding one keeps the defaults. False when nothing changed (already there, not there, or
+    /// an empty / too long pattern).
+    /// </summary>
+    public static bool EditIltServerName(string pattern, bool add)
+    {
+        EnsureLoaded();
+        string p = (pattern ?? string.Empty).Trim();
+        if (p.Length == 0 || p.Length > MaxIltServerNameLength) return false;
+        var list = new List<string>(_iltServerNames ?? (IEnumerable<string>)Compatibility.IltDetect.DefaultServerNames);
+        int at = list.FindIndex(x => x.Equals(p, StringComparison.OrdinalIgnoreCase));
+        if (add == (at >= 0)) return false;
+        if (add) list.Add(p);
+        else list.RemoveAt(at);
+        // Replaced, never edited in place: IltInfo reads the old list on other threads.
+        _iltServerNames = list;
+        Save();
+        return true;
     }
 
     /// <summary>"IltHosts" in engine.json: launch hosts (a domain covers its subdomains, '*' allowed)

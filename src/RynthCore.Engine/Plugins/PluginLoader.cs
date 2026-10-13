@@ -515,6 +515,7 @@ internal static class PluginLoader
 
         // Called through a function pointer (PluginManager.RenderEmbed), so no delegate here.
         plugin.RenderEmbedPtr = GetProcAddress(handle, "RynthPluginRenderEmbed");
+        plugin.SectionsJsonPtr = GetProcAddress(handle, "RynthPluginGetSectionsJson");
 
         // Read name/version from the plugin if available
         if (plugin.GetName != null)

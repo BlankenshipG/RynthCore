@@ -67,6 +67,13 @@ internal sealed class LoadedPlugin
     /// </summary>
     public IntPtr RenderEmbedPtr { get; set; }
 
+    /// <summary>
+    /// Optional <c>const char* RynthPluginGetSectionsJson(void)</c>, Cdecl: the plugin's Mini
+    /// Remote sections manifest, UTF-8 JSON (UI/Sections/SectionManifest.cs). The buffer is the
+    /// plugin's, valid until its next call. Zeroed after it throws.
+    /// </summary>
+    public IntPtr SectionsJsonPtr { get; set; }
+
     // ─── v77 UI exports (resolved lazily by PluginManager.ResolveUiExports) ───
     public bool UiExportsResolved { get; set; }
     public IntPtr OnScreenChangedPtr { get; set; }
@@ -137,5 +144,6 @@ internal sealed class LoadedPlugin
         Render = null;
         RenderOverlay = null;
         RenderEmbedPtr = IntPtr.Zero;
+        SectionsJsonPtr = IntPtr.Zero;
     }
 }
