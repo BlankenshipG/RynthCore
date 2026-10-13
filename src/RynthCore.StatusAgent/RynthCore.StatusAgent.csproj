@@ -19,7 +19,8 @@
     <RootNamespace>RynthCore.StatusAgent</RootNamespace>
     <AssemblyName>RynthCore.StatusAgent</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>1.0.0</Version>
+    <!-- Previous release: 1.0.0. -->
+    <Version>1.0.1</Version>
   </PropertyGroup>
 
   <ItemGroup>
