@@ -191,7 +191,7 @@ Extract this zip into C:\Games - it creates:
   C:\Games\RynthSuite\RynthOracle\   RynthOracle plugin (quests, character, titles; based on Oracle of Dereth by Advis Eveldan)
   C:\Games\RynthSuite\RynthInventory\ RynthInventory plugin (search every character's items)
   C:\Games\RynthSuite\RynthSort\     RynthSort plugin (keeps your packs sorted; replaces the RynthSort Lua script)
-  C:\Games\RynthSuite\RynthILT\      RynthILT plugin (Infinite Leaftide's server plugin: the Bounties window's tracker)
+  C:\Games\RynthSuite\RynthILT\      RynthILT plugin (Infinite Leaftide's server plugin: the Bounties window's tracker, ILT settings, /fship fellowship commands)
   C:\Games\RynthSuite\Rynth<Server>\ One server plugin per server (RynthColdeve, RynthAelrynth,
                                      RynthPortalStorm, ...): the server's facts, rules and commands.
                                      RynthCore loads only the one for the server you connect to.
@@ -282,7 +282,7 @@ $pluginDescriptions = @{
     RynthOracle    = "Quests, character, titles and leaderboards."
     RynthInventory = "Search every character's items."
     RynthSort      = "Keeps your packs sorted: new loot goes to the pack its rule names."
-    RynthILT       = "Infinite Leaftide's server plugin: tracks your ACECustom bounties for the Bounties window."
+    RynthILT       = "Infinite Leaftide's server plugin: tracks your ACECustom bounties for the Bounties window, and adds the /fship fellowship commands to the Fellowship section."
     # Server plugins: only the one for the server you connect to loads.
     RynthAChard       = "AChard's server plugin: server facts, PvP rules and commands. Loads only on AChard."
     RynthAelrynth     = "Aelrynth's server plugin: server facts, mods and commands. Loads only on Aelrynth."
