@@ -16,12 +16,14 @@
 //
 //  Push (Tick: when it changes, and every ResendMs in case RynthAi missed one),
 //  tab-separated lines:
-//    V  id  name  active 0/1  force auto|on|off  detected 0/1   every server
+//    V  id  name  active 0/1  force auto|on|off  detected 0/1  reason   every server
 //    X  id  label                                               every section, rail order
 //    S  id  name  active 0/1  force command                     a server with items
 //    I  label  command  tooltip  feature                        its items
-//  RynthAi 0.5.54 and older read only S and I (unknown kinds are skipped); a
-//  "section:<id>" feature is a surface it may show in its own Mini Remote.
+//    N  id  pattern  default|engine.json                        a server's world names
+//  RynthAi 0.5.54 and older read only S and I (unknown kinds and extra fields are
+//  skipped); a "section:<id>" feature is a surface it may show in its own Mini Remote.
+//  RynthILT (0.1.1+) gets the same push for its copy of the ILT settings (V and N).
 // ============================================================================
 
 using System;
@@ -42,12 +44,23 @@ internal static class ServerMenus
     /// <summary>Feature prefix of an item that is a plugin surface (its section in the Mini Remote).</summary>
     public const string SectionFeaturePrefix = "section:";
 
+    /// <summary>How often RynthILT gets the list again: it may load (or hot-reload) after the last change.</summary>
+    private const long IltResendMs = 10_000;
+
+    /// <summary>The plugin that keeps a copy of the ILT settings.</summary>
+    private const string RynthIltPlugin = "RynthILT";
+
     private static long _nextCheckMs;
     private static long _lastPushMs;
     private static string _lastPayload = string.Empty;
+    private static long _lastIltPushMs;
+    private static string _lastIltPayload = string.Empty;
 
     /// <summary>RynthAi is installed: Tick pushes it the list.</summary>
     public static bool PushToRynthAi { get; set; }
+
+    /// <summary>RynthILT is installed: Tick pushes it the list too (its ILT settings view).</summary>
+    public static bool PushToRynthIlt { get; set; }
 
     /// <summary>One menu item: a command, with the section it belongs to.</summary>
     internal sealed record MenuItem(string Label, string Command, string Tooltip, string Feature, bool Enabled, string Note);
@@ -107,26 +120,53 @@ internal static class ServerMenus
     public static void Tick()
     {
         SectionRegistry.Tick();
-        if (!PushToRynthAi) return;
+        if (!PushToRynthAi && !PushToRynthIlt) return;
         long now = Environment.TickCount64;
         if (now < _nextCheckMs) return;
         _nextCheckMs = now + CheckMs;
 
-        string payload = BuildPayload(SectionRegistry.Current);
-        if (payload == _lastPayload && now - _lastPushMs < ResendMs) return;
-        _lastPayload = payload;
-        _lastPushMs = now;
-        RynthAiCommands.ApplyRemoteCommand("servermenu", payload);
+        string payload = BuildPayload(SectionRegistry.Current, IltWorldNames());
+        if (PushToRynthAi && (payload != _lastPayload || now - _lastPushMs >= ResendMs))
+        {
+            _lastPayload = payload;
+            _lastPushMs = now;
+            RynthAiCommands.ApplyRemoteCommand("servermenu", payload);
+        }
+        // Not delivered (RynthILT not loaded yet, or an older one without the export): try again next check.
+        if (PushToRynthIlt && (payload != _lastIltPayload || now - _lastIltPushMs >= IltResendMs)
+            && Plugins.PluginManager.SendPluginCommand(RynthIltPlugin, "servermenu", payload))
+        {
+            _lastIltPayload = payload;
+            _lastIltPushMs = now;
+        }
     }
 
-    /// <summary>The push text for <paramref name="snap"/>. Pure apart from reading it.</summary>
-    internal static string BuildPayload(SectionRegistry.Snapshot snap)
+    /// <summary>The ILT world-name patterns in force, and whether they are the built-in defaults.</summary>
+    private static (string Server, string Pattern, bool Default)[] IltWorldNames()
+    {
+        IReadOnlyList<string>? names = Plugins.EngineSettings.IltServerNames;
+        IReadOnlyList<string> list = names ?? Compatibility.IltDetect.DefaultServerNames;
+        var result = new (string, string, bool)[list.Count];
+        for (int i = 0; i < list.Count; i++) result[i] = ("ilt", list[i], names == null);
+        return result;
+    }
+
+    /// <summary>
+    /// The push text for <paramref name="snap"/> and the servers' <paramref name="worldNames"/>.
+    /// Pure apart from reading them.
+    /// </summary>
+    internal static string BuildPayload(SectionRegistry.Snapshot snap,
+                                        IReadOnlyList<(string Server, string Pattern, bool Default)>? worldNames = null)
     {
         var sb = new StringBuilder(512);
         foreach (ServerState s in snap.Servers)
             sb.Append('V').Append('\t').Append(Clean(s.Id)).Append('\t').Append(Clean(s.Name)).Append('\t')
               .Append(s.Active ? '1' : '0').Append('\t').Append(ServerForceText.Name(s.Force)).Append('\t')
-              .Append(s.Detected ? '1' : '0').Append('\n');
+              .Append(s.Detected ? '1' : '0').Append('\t').Append(Clean(s.Reason ?? string.Empty)).Append('\n');
+        if (worldNames != null)
+            foreach (var n in worldNames)
+                sb.Append('N').Append('\t').Append(Clean(n.Server)).Append('\t').Append(Clean(n.Pattern)).Append('\t')
+                  .Append(n.Default ? "default" : "engine.json").Append('\n');
         foreach (SectionView v in snap.Sections)
             sb.Append('X').Append('\t').Append(Clean(v.Id)).Append('\t').Append(Clean(v.Label)).Append('\n');
         foreach (MenuGroup g in Groups(snap))

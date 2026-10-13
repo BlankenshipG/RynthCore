@@ -4432,6 +4432,33 @@ internal static partial class PluginManager
         return ToAbiBool(ClientHelperHooks.WieldItem(objectId, equipMask));
     }
 
+    /// <summary>
+    /// The engine's own (action, value) to a loaded plugin's optional RynthPluginApplyRemoteCommand
+    /// (the plugin copies the strings and queues them). False when the plugin isn't loaded and
+    /// ready or has no such export. Same thread rules as ResolvePluginExport.
+    /// </summary>
+    internal static unsafe bool SendPluginCommand(string pluginName, string action, string value)
+    {
+        IntPtr export = ResolvePluginExport(pluginName, "RynthPluginApplyRemoteCommand");
+        if (export == IntPtr.Zero || string.IsNullOrEmpty(action)) return false;
+        IntPtr a = Marshal.StringToHGlobalAnsi(action);
+        IntPtr v = Marshal.StringToHGlobalAnsi(value ?? string.Empty);
+        try
+        {
+            ((delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void>)export)(a, v);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(a);
+            Marshal.FreeHGlobal(v);
+        }
+    }
+
     private static unsafe int SendPluginCommandAction(IntPtr pluginNameAnsi, IntPtr actionAnsi, IntPtr valueAnsi)
     {
         try

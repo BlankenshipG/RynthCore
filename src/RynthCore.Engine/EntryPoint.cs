@@ -614,6 +614,7 @@ public static class EntryPoint
             UI.Sections.SectionRegistry.AddEngineItem("combat", ilt, "Bounties", "/rc bounties toggle",
                 "ACECustom bounties and your progress on each (RynthILT).");
         UI.ServerMenus.PushToRynthAi = rynthAi;
+        UI.ServerMenus.PushToRynthIlt = rynthIlt;
     }
 
     private static bool HasPluginDll(string dllFileName)
