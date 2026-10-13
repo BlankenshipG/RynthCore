@@ -308,7 +308,7 @@ internal static class ChatCallbackHooks
         // Not inside our own reprint of a held line: that line was already offered here when
         // it first arrived (and wasn't ours, or it wouldn't have been held), so offering it
         // again could take a stale line for the answer to a request sent since.
-        if (line != null && _replayDepth == 0 && EatOwnReply(line))
+        if (line != null && _replayDepth == 0 && EatOwnReply(line, chatType))
             return 0;
 
         // 2. Hold the line until the plugins have heard it (IncomingChatHold.cs): AC prints it
@@ -349,8 +349,11 @@ internal static class ChatCallbackHooks
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool EatOwnReply(string line)
+    private static bool EatOwnReply(string line, uint chatType)
     {
+        // Server replies only: a line in a player's chat type is someone typing "~ael1 ..." or
+        // "Unknown command: ..." to feed the readers or hide their own chat.
+        if (Net.ChatOrigin.IsPlayerAuthored(chatType)) return false;
         try { return MasteryFeed.OnIncomingLine(line) || VaultFeed.OnIncomingLine(line); }
         catch { return false; }
     }

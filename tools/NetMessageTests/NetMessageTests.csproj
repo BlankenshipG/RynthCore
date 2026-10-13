@@ -36,6 +36,7 @@
     <Compile Include="..\..\src\RynthCore.Engine\Net\ServerMessageInterest.cs" Link="Engine\ServerMessageInterest.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Net\InventoryOrder.cs" Link="Engine\InventoryOrder.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Net\AelrynthVaultWire.cs" Link="Engine\AelrynthVaultWire.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\Net\ChatOrigin.cs" Link="Engine\ChatOrigin.cs" />
   </ItemGroup>
 
 </Project>
