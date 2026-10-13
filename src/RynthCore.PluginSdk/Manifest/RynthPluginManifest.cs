@@ -29,6 +29,74 @@ public sealed class RynthPluginDependency
     public bool Optional { get; set; }
 }
 
+/// <summary>
+/// The one game server a server plugin is for (RynthColdeve, RynthILT, ...). The engine loads such a
+/// plugin only where the client's connect host is this server's, or where no installed server
+/// plugin claims the host (PluginManifestGate). Older engines and launchers ignore it.
+/// </summary>
+public sealed class RynthPluginServer
+{
+    /// <summary>Lower-case id, the same one the plugin's Mini Remote sections use ("coldeve", "ilt").</summary>
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    /// <summary>Connect hosts: a name also matches hosts under it; an IP address matches only itself; '*' wildcards.</summary>
+    public List<string> Hosts { get; set; } = new();
+    /// <summary>World names the server announces ('*' wildcards, case-insensitive).</summary>
+    public List<string> WorldNames { get; set; } = new();
+
+    /// <summary>
+    /// True when <paramref name="host"/> is one of <see cref="Hosts"/>: the same name, a host under
+    /// it ("game.infiniteleaftide.online" for "infiniteleaftide.online"), or a '*' pattern match. An
+    /// IP address matches only itself. Case and a trailing dot are ignored (the engine's IltDetect
+    /// rules, kept BCL-only here for the manifest gate).
+    /// </summary>
+    public bool MatchesHost(string? host, out string matched)
+    {
+        matched = "";
+        if (string.IsNullOrWhiteSpace(host)) return false;
+        string h = host.Trim().TrimEnd('.').ToLowerInvariant();
+        foreach (string raw in Hosts)
+        {
+            string p = raw.Trim().TrimEnd('.').ToLowerInvariant();
+            if (p.Length == 0) continue;
+            bool hit = p.Contains('*')
+                ? Glob(h, p)
+                : h == p || (!IsIpv4(p) && h.EndsWith("." + p, StringComparison.Ordinal));
+            if (!hit) continue;
+            matched = raw.Trim();
+            return true;
+        }
+        return false;
+    }
+
+    private static bool IsIpv4(string text) =>
+        System.Net.IPAddress.TryParse(text, out System.Net.IPAddress? ip) && ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork;
+
+    /// <summary>Case-insensitive match where '*' stands for any run of characters.</summary>
+    private static bool Glob(string text, string pattern)
+    {
+        string[] parts = pattern.Split('*');
+        int pos = 0;
+        for (int i = 0; i < parts.Length; i++)
+        {
+            string part = parts[i];
+            if (part.Length == 0) continue;
+            if (i == 0)
+            {
+                if (!text.StartsWith(part, StringComparison.OrdinalIgnoreCase)) return false;
+                pos = part.Length;
+                continue;
+            }
+            if (i == parts.Length - 1)
+                return text.Length - pos >= part.Length && text.EndsWith(part, StringComparison.OrdinalIgnoreCase);
+            int at = text.IndexOf(part, pos, StringComparison.OrdinalIgnoreCase);
+            if (at < 0) return false;
+            pos = at + part.Length;
+        }
+        return true;
+    }
+}
+
 /// <summary>A plugin's manifest (schema 1). Unknown JSON fields are ignored, so later schemas can add fields.</summary>
 public sealed class RynthPluginManifest
 {
@@ -50,6 +118,11 @@ public sealed class RynthPluginManifest
     public string Description { get; set; } = "";
     public string Homepage { get; set; } = "";
     public string License { get; set; } = "";
+    /// <summary>Set for a server plugin (one game server's features); null for every other plugin.</summary>
+    public RynthPluginServer? Server { get; set; }
+
+    /// <summary>Most hosts or world names a server block may list (a manifest is read before every load).</summary>
+    public const int MaxServerPatterns = 16;
 
     /// <summary>Parses a manifest; throws <see cref="InvalidDataException"/> with the reason when it isn't one.</summary>
     public static RynthPluginManifest Parse(string json)
@@ -118,8 +191,48 @@ public sealed class RynthPluginManifest
                     m.Dependencies.Add(dep);
                 }
             }
+
+            if (r.TryGetProperty("server", out JsonElement srv) && srv.ValueKind != JsonValueKind.Null)
+                m.Server = ParseServer(srv);
             return m;
         }
+    }
+
+    /// <summary>The "server" block: an object with an id; hosts and worldNames are string arrays.</summary>
+    private static RynthPluginServer ParseServer(JsonElement srv)
+    {
+        if (srv.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("the plugin manifest's server is not an object");
+        var s = new RynthPluginServer
+        {
+            Id = Str(srv, "id").Trim().ToLowerInvariant(),
+            Name = Str(srv, "name").Trim(),
+        };
+        if (s.Id.Length == 0 || s.Id.Length > 32)
+            throw new InvalidDataException("the plugin manifest's server has no id (or one over 32 characters)");
+        foreach (char c in s.Id)
+            if (!(c is >= 'a' and <= 'z' || c is >= '0' and <= '9' || c == '-'))
+                throw new InvalidDataException($"the plugin manifest's server id '{s.Id}' may only have a-z, 0-9 and '-'");
+        if (s.Name.Length == 0) s.Name = s.Id;
+        s.Hosts = Patterns(srv, "hosts");
+        s.WorldNames = Patterns(srv, "worldNames");
+        return s;
+    }
+
+    private static List<string> Patterns(JsonElement o, string name)
+    {
+        var list = new List<string>();
+        if (!o.TryGetProperty(name, out JsonElement a) || a.ValueKind == JsonValueKind.Null) return list;
+        if (a.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException($"the plugin manifest's server {name} is not an array");
+        foreach (JsonElement e in a.EnumerateArray())
+        {
+            string p = e.ValueKind == JsonValueKind.String ? (e.GetString() ?? "").Trim() : "";
+            if (p.Length == 0 || p.Length > 128) continue;
+            if (list.Count >= MaxServerPatterns) break;
+            list.Add(p);
+        }
+        return list;
     }
 
     /// <summary>Parses, or returns null with the reason in <paramref name="error"/>.</summary>
@@ -155,6 +268,19 @@ public sealed class RynthPluginManifest
             if (Description.Length > 0) w.WriteString("description", Description);
             if (Homepage.Length > 0) w.WriteString("homepage", Homepage);
             if (License.Length > 0) w.WriteString("license", License);
+            if (Server != null)
+            {
+                w.WriteStartObject("server");
+                w.WriteString("id", Server.Id);
+                w.WriteString("name", Server.Name);
+                w.WriteStartArray("hosts");
+                foreach (string h in Server.Hosts) w.WriteStringValue(h);
+                w.WriteEndArray();
+                w.WriteStartArray("worldNames");
+                foreach (string n in Server.WorldNames) w.WriteStringValue(n);
+                w.WriteEndArray();
+                w.WriteEndObject();
+            }
             w.WriteEndObject();
         }
         return Encoding.UTF8.GetString(ms.ToArray());

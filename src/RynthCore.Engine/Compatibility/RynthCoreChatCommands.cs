@@ -175,7 +175,7 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
-        // /rc server [auto|aelrynth|other] : which server the engine thinks this is (testing override)
+        // /rc server [<server> auto|on|off | names ilt ...] : the servers, why each is active, per-character overrides
         if (IsVerb(sub, "server", out string serverArgs))
         {
             try { HandleServerCommand(serverArgs); }
@@ -183,7 +183,7 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
-        // /rc ilt [auto|on|off] : is this Infinite Leaftide (the ILT section), with a testing override
+        // /rc ilt [auto|on|off] : is this Infinite Leaftide (the ILT section), with a per-character override
         if (IsVerb(sub, "ilt", out string iltArgs))
         {
             try { HandleIltCommand(iltArgs); }
@@ -342,21 +342,45 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
-        // /rc miniremote [show|hide|toggle|tab <tab>] : the ImGui Mini Remote panel, like its bar
-        // button (RynthAi's dashboard and "/ra hub" use show / hide). "tab" opens it on one of its
-        // tabs (RynthAi's pets, crafting; RynthILT's character, banking, gear, charms, games; none =
+        // /rc miniremote [show|hide|toggle|tab <tab>|section <id>] : the ImGui Mini Remote panel, like
+        // its bar button (RynthAi's dashboard and "/ra hub" use show / hide). "tab" opens it on one of
+        // its tabs (RynthAi's pets, crafting; RynthILT's character, banking, gear, charms, games; none =
         // the remote). Quests are RynthOracle's window (/ro) since 2026-10-13.
+        // "section" opens it on one of its sections (char, map, skills, ...; "remote" = the remote).
         if (IsVerb(sub, "miniremote", out string remoteArgs) || IsVerb(sub, "remote", out remoteArgs))
         {
             if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.MiniRemoteFace.Title))
                 Reply("The Mini Remote panel isn't available (the ImGui layer is off?).");
-            else if (IsVerb(remoteArgs, "tab", out string tab))
+            else if (IsVerb(remoteArgs, "tab", out string tab)
+                     && tab.Length > 0 && ImGuiBackend.Panels.MiniRemoteFace.TryRequestSurface("section:" + tab.Trim().ToLowerInvariant()))
             {
+                // A RynthAi that publishes sections: its tabs are sections here.
+                ImGuiBackend.ImGuiPanelHost.Open(ImGuiBackend.Panels.MiniRemoteFace.Title);
+            }
+            else if (IsVerb(remoteArgs, "tab", out tab))
+            {
+                ImGuiBackend.Panels.MiniRemoteFace.RequestSection(UI.Sections.SectionCatalog.RemoteId);
                 ImGuiBackend.ImGuiPanelHost.Open(ImGuiBackend.Panels.MiniRemoteFace.Title);
                 UI.Data.RynthAiCommands.ApplyRemoteCommand("hub", tab.Length > 0 ? "tab " + tab : "tab");
             }
+            else if (IsVerb(remoteArgs, "section", out string section))
+            {
+                string id = UI.Sections.SectionManifestParser.Id(section);
+                var snap = UI.Sections.SectionRegistry.Current;
+                if (id != UI.Sections.SectionCatalog.RemoteId && snap.Find(id) == null)
+                {
+                    var names = new System.Collections.Generic.List<string> { UI.Sections.SectionCatalog.RemoteId };
+                    foreach (UI.Sections.SectionView v in snap.Sections) names.Add(v.Id);
+                    Reply($"Usage: /rc miniremote section <{string.Join("|", names)}>");
+                }
+                else
+                {
+                    ImGuiBackend.Panels.MiniRemoteFace.RequestSection(id);
+                    ImGuiBackend.ImGuiPanelHost.Open(ImGuiBackend.Panels.MiniRemoteFace.Title);
+                }
+            }
             else if (!TryPanelMode(remoteArgs, out bool? show))
-                Reply("Usage: /rc miniremote [show|hide|toggle|tab <tab>]");
+                Reply("Usage: /rc miniremote [show|hide|toggle|tab <tab>|section <id>]");
             else
                 SetPanelOpen(ImGuiBackend.Panels.MiniRemoteFace.Title, show);
             return true;
@@ -677,42 +701,147 @@ internal static class RynthCoreChatCommands
     }
 
     /// <summary>"verb" or "verb args..." (case-insensitive); args trimmed.</summary>
+    private const string ServerUsage =
+        "Usage: /rc server [<server> auto|on|off] | [aelrynth|other|auto] | names ilt [add|remove <pattern>]";
+
     /// <summary>
-    /// /rc server: the detection verdict and its signals. "aelrynth" / "other" force it
-    /// for this session (to test the Aelrynth-only features anywhere, or to see a
-    /// non-Aelrynth client on Aelrynth); "auto" goes back to detecting. Never saved.
+    /// /rc server: every server the engine and the plugins know, whether each is active and why.
+    /// "&lt;server&gt; on|off|auto" forces one on or off, or back to detecting, saved for this
+    /// character (this session only before login). "aelrynth" / "other" / "auto" alone are the
+    /// older Aelrynth override. "names ilt" lists, adds or removes Infinite Leaftide's world-name
+    /// patterns (engine.json IltServerNames).
     /// </summary>
     private static void HandleServerCommand(string args)
     {
-        switch (args.Trim().ToLowerInvariant())
+        string[] words = args.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        string first = words.Length > 0 ? words[0].ToLowerInvariant() : string.Empty;
+
+        if (first == "names")
         {
-            case "aelrynth": case "on": ServerInfo.Override = ServerInfo.Mode.ForceAelrynth; break;
-            case "other": case "off": ServerInfo.Override = ServerInfo.Mode.ForceOther; break;
-            case "auto": ServerInfo.Override = ServerInfo.Mode.Auto; break;
-            case "": break;
-            default:
-                Reply("Usage: /rc server [auto|aelrynth|other]");
-                return;
+            HandleServerNames(words);
+            return;
         }
+        if (words.Length == 1)
+        {
+            // The older single-word form: the Aelrynth override.
+            ServerInfo.Mode? legacy = first switch
+            {
+                "aelrynth" or "on" => ServerInfo.Mode.ForceAelrynth,
+                "other" or "off" => ServerInfo.Mode.ForceOther,
+                "auto" => ServerInfo.Mode.Auto,
+                _ => null,
+            };
+            if (legacy == null) { Reply(ServerUsage); return; }
+            SetServerForce(ServerInfo.ServerId, legacy switch
+            {
+                ServerInfo.Mode.ForceAelrynth => UI.Sections.ServerForce.On,
+                ServerInfo.Mode.ForceOther => UI.Sections.ServerForce.Off,
+                _ => UI.Sections.ServerForce.Auto,
+            });
+        }
+        else if (words.Length == 2)
+        {
+            if (!UI.Sections.ServerForceText.TryParse(words[1], out UI.Sections.ServerForce mode)) { Reply(ServerUsage); return; }
+            if (!SetServerForce(first, mode)) return;
+        }
+        else if (words.Length > 2)
+        {
+            Reply(ServerUsage);
+            return;
+        }
+
+        ReplyServers();
         ServerVerdict v = ServerInfo.Current;
-        Reply($"Server: {(v.IsAelrynth ? (v.IsStaging ? "Aelrynth (staging)" : "Aelrynth") : "not Aelrynth")} - {v.Reason}.");
-        Reply($"Signals: host {ServerInfo.HostDescription}; world name {AccountHooks.AnnouncedWorldName ?? "(not announced)"}; "
-            + $"override {ServerInfo.Override}.");
+        Reply($"Aelrynth signals: host {ServerInfo.HostDescription}; world name {AccountHooks.AnnouncedWorldName ?? "(not announced)"}"
+            + (v.IsStaging ? "; staging" : "") + ".");
         Reply($"Titles (plugin API v75): {CharacterTitles.Describe()}.");
+    }
+
+    /// <summary>Saves a server override (per character) and says where it went. False for an unknown server.</summary>
+    private static bool SetServerForce(string serverId, UI.Sections.ServerForce mode)
+    {
+        string id = UI.Sections.SectionManifestParser.Id(serverId);
+        if (id.Length == 0 || (!UI.Sections.SectionRegistry.IsBuiltInServer(id)
+                               && UI.Sections.SectionRegistry.Current.Server(id) == null))
+        {
+            Reply($"No server called '{serverId}'. /rc server lists them.");
+            return false;
+        }
+        if (!UI.Sections.ServerForceStore.Set(id, mode, out string where))
+        {
+            Reply($"Server override not changed: {where}.");
+            return false;
+        }
+        UI.Sections.SectionRegistry.Invalidate();
+        Reply($"Server override {id} = {UI.Sections.ServerForceText.Name(mode)} ({where}).");
+        return true;
+    }
+
+    /// <summary>One line per server: active or not, detected or not, the override, why.</summary>
+    private static void ReplyServers()
+    {
+        var snap = UI.Sections.SectionRegistry.Current;
+        if (snap.Servers.Count == 0)
+        {
+            // Before the first frame built a snapshot: the built-in verdicts directly.
+            IltVerdict ilt = IltInfo.Current;
+            ServerVerdict ael = ServerInfo.Current;
+            Reply($"Server ilt (Infinite Leaftide): {(ilt.IsIlt ? "active" : "not active")} - {ilt.Reason}.");
+            Reply($"Server aelrynth (Aelrynth): {(ael.IsAelrynth ? "active" : "not active")} - {ael.Reason}.");
+            return;
+        }
+        foreach (UI.Sections.ServerState s in snap.Servers)
+        {
+            string force = s.Force == UI.Sections.ServerForce.Auto ? "auto"
+                : $"forced {UI.Sections.ServerForceText.Name(s.Force)} (detected: {(s.Detected ? "yes" : "no")})";
+            Reply($"Server {s.Id} ({s.Name}): {(s.Active ? "active" : "not active")}, {force} - {s.Reason}.");
+        }
+    }
+
+    /// <summary>/rc server names ilt [add|remove &lt;pattern&gt;]: Infinite Leaftide's world-name patterns.</summary>
+    private static void HandleServerNames(string[] words)
+    {
+        if (words.Length < 2 || !words[1].Equals(IltInfo.ServerId, StringComparison.OrdinalIgnoreCase))
+        {
+            Reply("Usage: /rc server names ilt [add|remove <pattern>] (other servers' lists come from their plugins).");
+            return;
+        }
+        if (words.Length >= 4)
+        {
+            bool add = words[2].Equals("add", StringComparison.OrdinalIgnoreCase);
+            if (!add && !words[2].Equals("remove", StringComparison.OrdinalIgnoreCase))
+            {
+                Reply("Usage: /rc server names ilt [add|remove <pattern>]");
+                return;
+            }
+            string pattern = string.Join(' ', words, 3, words.Length - 3);
+            bool changed = Plugins.EngineSettings.EditIltServerName(pattern, add);
+            Reply(changed
+                ? $"Infinite Leaftide world names: {(add ? "added" : "removed")} \"{pattern}\" (engine.json)."
+                : $"Infinite Leaftide world names: \"{pattern}\" was {(add ? "already there (or too long)" : "not there")}.");
+            IltInfo.Invalidate();
+            UI.Sections.SectionRegistry.Invalidate();
+        }
+        else if (words.Length == 3)
+        {
+            Reply("Usage: /rc server names ilt [add|remove <pattern>]");
+            return;
+        }
+        Reply($"Infinite Leaftide lists: {IltInfo.ListsDescription}.");
     }
 
     /// <summary>
     /// /rc ilt: the Infinite Leaftide verdict, its signals and the lists in force. "on" /
-    /// "off" force it for this session (testing the ILT section anywhere); "auto" goes back
-    /// to detecting. Never saved; the lists are engine.json's IltServerNames / IltHosts.
+    /// "off" force it, saved for this character (this session only before login); "auto" goes
+    /// back to detecting. The lists are engine.json's IltServerNames / IltHosts.
     /// </summary>
     private static void HandleIltCommand(string args)
     {
         switch (args.Trim().ToLowerInvariant())
         {
-            case "on": case "ilt": IltInfo.Override = IltInfo.Mode.ForceIlt; break;
-            case "off": case "other": IltInfo.Override = IltInfo.Mode.ForceOther; break;
-            case "auto": IltInfo.Override = IltInfo.Mode.Auto; break;
+            case "on": case "ilt": SetServerForce(IltInfo.ServerId, UI.Sections.ServerForce.On); break;
+            case "off": case "other": SetServerForce(IltInfo.ServerId, UI.Sections.ServerForce.Off); break;
+            case "auto": SetServerForce(IltInfo.ServerId, UI.Sections.ServerForce.Auto); break;
             case "": break;
             default:
                 Reply("Usage: /rc ilt [auto|on|off]");

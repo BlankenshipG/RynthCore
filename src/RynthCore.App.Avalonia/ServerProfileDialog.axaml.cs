@@ -61,12 +61,12 @@ internal partial class ServerProfileDialog : Window
         ValidationText.Text = string.Empty;
     }
 
-    /// <summary>The picked server's description and its RynthSuite server plugin.</summary>
+    /// <summary>The picked server's description and the RynthSuite plugin RynthCore loads for it.</summary>
     private void ShowKnownServerNote(KnownServer? server)
     {
         KnownServerNote.Text = server == null
             ? "Any server works. Known servers fill in the connection details and have a RynthSuite server plugin."
-            : $"{server.Note}  RynthSuite server plugin: {server.PluginName}.";
+            : $"{server.Note}  Server plugin: {server.PluginName} (RynthCore loads it when you connect to {server.Host}).";
     }
 
     private void SaveAndClose()

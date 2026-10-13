@@ -10,8 +10,9 @@
 //    - the world name the server announced at login (AccountHooks, the
 //      SendNotice_WorldName hook; not the launcher's own profile name);
 //    - the Bank mod's custom player properties 9101-9103 (PropertyCaches).
-//  Unknown means not Aelrynth. "/rc server aelrynth|other|auto" overrides it
-//  for this session (testing), never saved.
+//  Unknown means not Aelrynth. "/rc server aelrynth|other|auto" (or the Mini
+//  Remote's Char section) overrides it, saved per character
+//  (UI/Sections/ServerForceStore).
 //
 //  Threads: any. Re-evaluated at most once a second; each read in between is a
 //  volatile load and a compare. Never touches AC (dictionary reads only).
@@ -29,9 +30,11 @@ internal static class ServerInfo
 
     private const int RefreshMs = 1000;
 
+    /// <summary>The server id the override is saved under (UI/Sections).</summary>
+    public const string ServerId = "aelrynth";
+
     private static volatile ServerVerdict _verdict = ServerVerdict.Unknown;
     private static long _nextRefreshMs;
-    private static int _mode;                      // Mode
     private static int _hostRead;
     private static readonly object HostLock = new();
     private static string _host = "";
@@ -49,13 +52,41 @@ internal static class ServerInfo
     /// <summary>Aelrynth's staging world (port 9030 / "Staging" world name). Any thread.</summary>
     public static bool IsStaging => Current.IsStaging;
 
+    /// <summary>The current character's saved override (session-only before login).</summary>
     public static Mode Override
     {
-        get => (Mode)Volatile.Read(ref _mode);
-        set
+        get => UI.Sections.ServerForceStore.Get(ServerId) switch
         {
-            Volatile.Write(ref _mode, (int)value);
-            Volatile.Write(ref _nextRefreshMs, 0);
+            UI.Sections.ServerForce.On => Mode.ForceAelrynth,
+            UI.Sections.ServerForce.Off => Mode.ForceOther,
+            _ => Mode.Auto,
+        };
+    }
+
+    /// <summary>Sets the override (saved per character); <paramref name="where"/> says where it went.</summary>
+    public static bool SetOverride(Mode mode, out string where)
+    {
+        var force = mode switch
+        {
+            Mode.ForceAelrynth => UI.Sections.ServerForce.On,
+            Mode.ForceOther => UI.Sections.ServerForce.Off,
+            _ => UI.Sections.ServerForce.Auto,
+        };
+        bool ok = UI.Sections.ServerForceStore.Set(ServerId, force, out where);
+        Volatile.Write(ref _nextRefreshMs, 0);
+        return ok;
+    }
+
+    /// <summary>Re-evaluates on the next read (the character or an override changed).</summary>
+    public static void Invalidate() => Volatile.Write(ref _nextRefreshMs, 0);
+
+    /// <summary>What detection alone says (no override), for the Char section and /rc server.</summary>
+    public static ServerVerdict Detected
+    {
+        get
+        {
+            ReadHostOnce();
+            return ServerDetect.Decide(_hostKind, _host, _port, AccountHooks.AnnouncedWorldName, _bankSeen);
         }
     }
 
@@ -104,8 +135,8 @@ internal static class ServerInfo
 
             ServerVerdict v = Override switch
             {
-                Mode.ForceAelrynth => new ServerVerdict { IsAelrynth = true, Reason = "forced on with /rc server aelrynth (testing)" },
-                Mode.ForceOther => new ServerVerdict { Reason = "forced off with /rc server other (testing)" },
+                Mode.ForceAelrynth => new ServerVerdict { IsAelrynth = true, Reason = "forced on for this character (/rc server aelrynth auto undoes it)" },
+                Mode.ForceOther => new ServerVerdict { Reason = "forced off for this character (/rc server aelrynth auto undoes it)" },
                 _ => ServerDetect.Decide(_hostKind, _host, _port, AccountHooks.AnnouncedWorldName, _bankSeen),
             };
             _verdict = v;

@@ -41,6 +41,8 @@ internal static class EngineSettings
     private static bool _serverMessageStream = true;
     private static bool _flightRecorder = true;
     private static bool _insertReleasesUi;
+    // "LoadAllServerPlugins": hand-set only, written back only when true (PluginManifestGate).
+    private static bool _loadAllServerPlugins;
     // Read-only, like EnableLargeAddressAlignmentFix: only a hand-set value is written back.
     private static int _maxHotReloads = ReloadCapNotice.DefaultMaxHotReloads;
     // "IltServerNames" / "IltHosts": what counts as Infinite Leaftide (Compatibility/IltInfo.cs).
@@ -107,6 +109,21 @@ internal static class EngineSettings
         {
             EnsureLoaded();
             return _enableLargeAddressAlignmentFix;
+        }
+    }
+
+    /// <summary>
+    /// True: every installed server plugin (RynthColdeve, RynthILT, ...) loads, whatever server the
+    /// client connects to; each still shows only on its own server. Default false: the connect host
+    /// picks the one plugin for this server (PluginManifestGate.SelectServerPlugins). Set
+    /// "LoadAllServerPlugins": true in engine.json by hand (testing a plugin with /rc server ... on).
+    /// </summary>
+    public static bool LoadAllServerPlugins
+    {
+        get
+        {
+            EnsureLoaded();
+            return _loadAllServerPlugins;
         }
     }
 
@@ -425,7 +442,8 @@ internal static class EngineSettings
 
     /// <summary>"IltServerNames" in engine.json: world-name patterns ('*' wildcard, case-insensitive)
     /// treated as Infinite Leaftide; null when the file has none (IltDetect.DefaultServerNames).
-    /// An empty array turns the world-name signal off. Read only: edited in the file.</summary>
+    /// An empty array turns the world-name signal off. Edited in the file, or with
+    /// "/rc server names ilt add|remove" (EditIltServerName).</summary>
     public static IReadOnlyList<string>? IltServerNames
     {
         get
@@ -433,6 +451,31 @@ internal static class EngineSettings
             EnsureLoaded();
             return _iltServerNames;
         }
+    }
+
+    /// <summary>Longest world-name pattern EditIltServerName takes.</summary>
+    public const int MaxIltServerNameLength = 64;
+
+    /// <summary>
+    /// Adds (<paramref name="add"/>) or removes a world-name pattern in "IltServerNames" and saves
+    /// engine.json. With none in the file the list starts from IltDetect.DefaultServerNames, so
+    /// adding one keeps the defaults. False when nothing changed (already there, not there, or
+    /// an empty / too long pattern).
+    /// </summary>
+    public static bool EditIltServerName(string pattern, bool add)
+    {
+        EnsureLoaded();
+        string p = (pattern ?? string.Empty).Trim();
+        if (p.Length == 0 || p.Length > MaxIltServerNameLength) return false;
+        var list = new List<string>(_iltServerNames ?? (IEnumerable<string>)Compatibility.IltDetect.DefaultServerNames);
+        int at = list.FindIndex(x => x.Equals(p, StringComparison.OrdinalIgnoreCase));
+        if (add == (at >= 0)) return false;
+        if (add) list.Add(p);
+        else list.RemoveAt(at);
+        // Replaced, never edited in place: IltInfo reads the old list on other threads.
+        _iltServerNames = list;
+        Save();
+        return true;
     }
 
     /// <summary>"IltHosts" in engine.json: launch hosts (a domain covers its subdomains, '*' allowed)
@@ -536,6 +579,12 @@ internal static class EngineSettings
                 (laaEl.ValueKind == JsonValueKind.True || laaEl.ValueKind == JsonValueKind.False))
             {
                 _enableLargeAddressAlignmentFix = laaEl.GetBoolean();
+            }
+
+            if (doc.RootElement.TryGetProperty("LoadAllServerPlugins", out var lasEl) &&
+                (lasEl.ValueKind == JsonValueKind.True || lasEl.ValueKind == JsonValueKind.False))
+            {
+                _loadAllServerPlugins = lasEl.GetBoolean();
             }
 
             if (doc.RootElement.TryGetProperty("EnableAvaloniaOverlay", out var avEl) &&
@@ -694,6 +743,7 @@ internal static class EngineSettings
         "DecalInGameImGui", "DecalStandDown", "DisabledUiHooks", "ServerMessageStream",
         "FlightRecorder", "InsertReleasesUi", "IltServerNames", "IltHosts", "EnableLargeAddressAlignmentFix",
         "MaxHotReloads", "ReportEndpoint", "CloseOnServerDisconnect", "AutoIdMode", "EnablePluginOverlayWindows", "LoggingLevel",
+        "LoadAllServerPlugins",
     };
 
     private static void Save()
@@ -747,6 +797,8 @@ internal static class EngineSettings
                     w.WriteBoolean("InsertReleasesUi", true);
                 if (!_closeOnServerDisconnect)   // default true: leave the file as it was
                     w.WriteBoolean("CloseOnServerDisconnect", false);
+                if (_loadAllServerPlugins) // default false: only a hand-set true is written
+                    w.WriteBoolean("LoadAllServerPlugins", true);
                 if (_maxHotReloads != ReloadCapNotice.DefaultMaxHotReloads)   // only a hand-set value is written
                     w.WriteNumber("MaxHotReloads", _maxHotReloads);
                 if (_reportEndpoint != null)   // only a hand-set value is written

@@ -665,7 +665,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         // button (/rc miniremote) and "Mini Remote" in Char's right-click menu; its drawer is the
         // drawer tab on the dashboard's edge.
         Launcher("##l_char", PhosphorIcons.User, "Char",
-            "Char. Left-click: the Mini Remote on its Character tab (ILT worlds).  Right-click: Character windows (Mini Remote, Spells, Quests, Pets, Crafting, Skills, Inventory...), then Server: this server's plugin windows.",
+            "Char. Left-click: the Mini Remote on its Character tab (ILT worlds).  Right-click: Character windows (Mini Remote, Spells, Quests, Pets, Crafting, Fellowship, Skills, Inventory...), then Server: this server's plugin windows.",
             x, y, bw, labels, () => ShowMiniRemoteTab("character"));
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
         {
@@ -875,8 +875,9 @@ internal sealed partial class RynthAiFace : IImGuiPanel
 
     /// <summary>
     /// Opens the Mini Remote window on one of its tabs ("" = the remote). Pets and Crafting show on
-    /// every server (Quests moved to RynthOracle 2026-10-13); RynthILT's ILT tabs show once the server reports that feature on (and only with
-    /// RynthILT), and until then the window shows the remote.
+    /// every server (Quests and Fellowship are RynthOracle's windows since 2026-10-13); RynthILT's ILT
+    /// tabs show once the server reports that feature on (and only with RynthILT), and until then
+    /// the window shows the remote.
     /// </summary>
     private static void ShowMiniRemoteTab(string section)
     {
@@ -936,6 +937,12 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             ImGuiNET.ImGui.SetItemTooltip("The Mini Remote's Pets tab: summoning essences, priorities and the healing pet (RynthAi).");
             if (ImGuiNET.ImGui.MenuItem("Crafting", "/rc miniremote tab crafting")) ShowMiniRemoteTab("crafting");
             ImGuiNET.ImGui.SetItemTooltip("The Mini Remote's Crafting tab: armor, weapon, jewelry and item tinkering, chunking and arrows (RynthAi).");
+            // Fellowship is RynthOracle's Fellowship tab ("/ro fellowship" opens the window on it).
+            bool oracle = UI.ScriptWindows.ScriptWindowRegistry.Has(OracleMainKey);
+            if (ImGuiNET.ImGui.MenuItem("Fellowship", "/ro fellowship", false, oracle)) UI.ServerMenus.Run("/ro fellowship");
+            ImGuiNET.ImGui.SetItemTooltip(oracle
+                ? "RynthOracle's Fellowship tab: members, leader, open / locked, XP sharing and (Infinite Leaftide) the /fship commands."
+                : "RynthOracle's Fellowship tab (RynthOracle isn't loaded).");
             PanelMenuItem(SkillsFace.Title, "/rc skills");
             PanelMenuItem(InventoryFace.Title, "/rc inventory");
             PanelMenuItem(ItemCountFace.Title, "/rc itemcount");
