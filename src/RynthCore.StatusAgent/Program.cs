@@ -64,6 +64,7 @@ var navAtlas = new NavAtlasService(cfg.NavAtlasPath);
 LocalStatusServer? server = null;
 WebRtcVideoService? video = null;   // HD WebRTC video mode (opt-in); disposed in finally
 IconService? icons = null;          // item-icon decoder (GET /icon); disposed in finally
+string? serveTokenProblem = cfg.ServeHttp ? ServeGuard.TokenProblem(cfg.ServePrefix, cfg.ServeToken) : null;
 if (cfg.ServeHttp && string.IsNullOrWhiteSpace(cfg.ServeToken))
 {
     // Same rule as DrakBot's remote: no token, no server, loopback included. The server can show
@@ -72,8 +73,20 @@ if (cfg.ServeHttp && string.IsNullOrWhiteSpace(cfg.ServeToken))
     AgentLog.Warn($"Set \"ServeToken\" in {configPath} and restart the agent. Use the same token as your");
     AgentLog.Warn("DrakBot remote and one DrakRemote entry shows both.");
 }
+else if (serveTokenProblem != null)
+{
+    // A bind other PCs reach (LAN, Tailscale) needs a token that can't be guessed.
+    AgentLog.Warn($"ServeHttp is on but {serveTokenProblem}, so the status server stays off.");
+    AgentLog.Warn($"Put a longer \"ServeToken\" in {configPath} (a random 24+ characters) and restart the agent.");
+}
 else if (cfg.ServeHttp)
 {
+    if (!ServeGuard.IsLoopbackPrefix(cfg.ServePrefix))
+    {
+        // HttpListener here is plain HTTP: the token and the screens cross the network unencrypted.
+        AgentLog.Warn($"ServePrefix {cfg.ServePrefix} is reachable from other PCs over plain HTTP: use it only");
+        AgentLog.Warn("inside an encrypted network (Tailscale/WireGuard VPN), never forwarded to the internet.");
+    }
     string? commandDir = cfg.EnableRemoteControl ? Path.Combine(cfg.StatusDirectory, "commands") : null;
     VideoSocketService? videoSocket = null;
     if (cfg.EnableVideoStream)
