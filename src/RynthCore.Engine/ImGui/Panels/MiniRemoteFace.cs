@@ -66,10 +66,12 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
 
     /// <summary>
     /// The RynthAi surface for this window (NUL-terminated for the export): "miniremote-remote"
-    /// (the remote alone: its tabs are sections here) from a RynthAi that publishes sections,
-    /// else "miniremote-window" (the remote with its own tab bar).
+    /// (the remote alone: its tabs are sections here) from a RynthAi that publishes sections
+    /// while the sections rail shows, else "miniremote-window" (the remote with its own tab bar).
+    /// With the rail hidden the tab bar is the only way to RynthILT's tabs (Banking, Gear, ...).
     /// </summary>
-    private static ReadOnlySpan<byte> Surface => RynthAiPublishesSections() ? "miniremote-remote\0"u8 : "miniremote-window\0"u8;
+    private static ReadOnlySpan<byte> Surface =>
+        RailShown && RynthAiPublishesSections() ? "miniremote-remote\0"u8 : "miniremote-window\0"u8;
 
     private static bool RynthAiPublishesSections()
     {

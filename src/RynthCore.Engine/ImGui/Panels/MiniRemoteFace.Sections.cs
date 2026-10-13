@@ -571,6 +571,7 @@ internal sealed partial class MiniRemoteFace
         bool rail = RailShown;
         if (ImGuiNET.ImGui.MenuItem("Show the sections rail", "", rail))
             PanelColumnStore.Set(RailKey, rail ? 0f : 1f);
-        SafeImGui.SetItemTooltip("The column of sections down the left. Hidden, pick a section here or with /rc miniremote section <name>.");
+        SafeImGui.SetItemTooltip("The column of sections down the left. Hidden, RynthAi's remote shows its own tab bar again "
+            + "(Banking, Gear and the other ILT tabs), and a section is picked here or with /rc miniremote section <name>.");
     }
 }
