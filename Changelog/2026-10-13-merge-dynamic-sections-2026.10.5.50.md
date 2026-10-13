@@ -46,6 +46,17 @@ from the branch and were never shipped on this line. Everything they describe sh
 The 16 server plugins stay disabled in the launcher until this engine is installed. An older
 engine has no server gate, so it would load all of them at once.
 
+## Build and install
+
+- `installer\Output\RynthCore-Setup-2026.10.5.50.exe` and `RynthCore-2026.10.5.50-deploy.zip`
+  (126 MB, verified). 2026.10.5.49 is recorded as the previous release.
+- Installed silently on this machine. RynthOracle, RynthILT and the 16 server plugins aren't in
+  the installer and were copied in directly. Each replaced plugin DLL is saved in that plugin's
+  `PreviousReleases\<version>` folder.
+- The launcher's RynthLua entry now points at `C:\Games\RynthSuite\RynthLua`. The old settings
+  file is saved as `appsettings.json.pre-2026.10.5.50.bak`. The server plugins stay enabled,
+  because this engine has the server gate.
+
 ## Tests
 
 - `tools/EngineSettingsTests`: 207 passed.
