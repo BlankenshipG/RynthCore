@@ -1300,30 +1300,38 @@ internal static partial class PluginManager
     {
         want = System.Numerics.Vector2.Zero;
         LoadedPlugin[] plugins = System.Threading.Volatile.Read(ref _pluginsRenderSnapshot);
-        for (int i = 0; i < plugins.Length; i++)
+        LoadedPlugin? p = FindRenderPlugin(plugins, pluginName);
+        if (p == null) return EmbedNoPlugin;
+        IntPtr fn = p.RenderEmbedPtr;
+        if (fn == IntPtr.Zero) return EmbedNoPlugin;
+        float w = 0, h = 0;
+        try
         {
-            LoadedPlugin p = plugins[i];
-            if (!p.Initialized || p.Failed || !p.DisplayName.Contains(pluginName, StringComparison.OrdinalIgnoreCase))
-                continue;
-            IntPtr fn = p.RenderEmbedPtr;
-            if (fn == IntPtr.Zero) return EmbedNoPlugin;
-            float w = 0, h = 0;
-            try
-            {
-                int r;
-                fixed (byte* s = surfaceUtf8)
-                    r = ((delegate* unmanaged[Cdecl]<byte*, float, float, float*, float*, int>)fn)(s, size.X, size.Y, &w, &h);
-                want = new System.Numerics.Vector2(float.IsFinite(w) ? MathF.Max(0, w) : 0, float.IsFinite(h) ? MathF.Max(0, h) : 0);
-                return r == 1 ? EmbedDrawn : EmbedNotReady;
-            }
-            catch (Exception ex)
-            {
-                p.RenderEmbedPtr = IntPtr.Zero;
-                RynthLog.Error($"PluginManager: {p.DisplayName} RenderEmbed threw {ex.GetType().Name}: {ex.Message} - embedded surfaces off for this session (plugin keeps running).");
-                return EmbedFailed;
-            }
+            int r;
+            fixed (byte* s = surfaceUtf8)
+                r = ((delegate* unmanaged[Cdecl]<byte*, float, float, float*, float*, int>)fn)(s, size.X, size.Y, &w, &h);
+            want = new System.Numerics.Vector2(float.IsFinite(w) ? MathF.Max(0, w) : 0, float.IsFinite(h) ? MathF.Max(0, h) : 0);
+            return r == 1 ? EmbedDrawn : EmbedNotReady;
         }
-        return EmbedNoPlugin;
+        catch (Exception ex)
+        {
+            p.RenderEmbedPtr = IntPtr.Zero;
+            RynthLog.Error($"PluginManager: {p.DisplayName} RenderEmbed threw {ex.GetType().Name}: {ex.Message} - embedded surfaces off for this session (plugin keeps running).");
+            return EmbedFailed;
+        }
+    }
+
+    /// <summary>A running plugin in the render snapshot by name: exact first (see ResolvePluginExport), else contains.</summary>
+    private static LoadedPlugin? FindRenderPlugin(LoadedPlugin[] plugins, string pluginName)
+    {
+        for (int pass = 0; pass < 2; pass++)
+            for (int i = 0; i < plugins.Length; i++)
+            {
+                LoadedPlugin p = plugins[i];
+                if (p.Initialized && !p.Failed && NameMatches(p.DisplayName, pluginName, exact: pass == 0))
+                    return p;
+            }
+        return null;
     }
 
     /// <summary>
@@ -1445,17 +1453,26 @@ internal static partial class PluginManager
         if (string.IsNullOrEmpty(pluginName) || string.IsNullOrEmpty(exportName))
             return IntPtr.Zero;
 
-        for (int i = 0; i < _plugins.Count; i++)
+        // Exact name first: "RynthLeafDawn" is inside "RynthLeafdawning".
+        for (int pass = 0; pass < 2; pass++)
         {
-            var p = _plugins[i];
-            if (p.ModuleHandle == IntPtr.Zero || !p.Initialized || p.Failed)
-                continue;
-            if (!p.DisplayName.Contains(pluginName, StringComparison.OrdinalIgnoreCase))
-                continue;
-            return GetProcAddress(p.ModuleHandle, exportName);
+            for (int i = 0; i < _plugins.Count; i++)
+            {
+                var p = _plugins[i];
+                if (p.ModuleHandle == IntPtr.Zero || !p.Initialized || p.Failed)
+                    continue;
+                if (!NameMatches(p.DisplayName, pluginName, exact: pass == 0))
+                    continue;
+                return GetProcAddress(p.ModuleHandle, exportName);
+            }
         }
         return IntPtr.Zero;
     }
+
+    /// <summary>The plugin-name test of the by-name lookups: exact (any case), else "display name contains it".</summary>
+    private static bool NameMatches(string displayName, string pluginName, bool exact) =>
+        exact ? string.Equals(displayName, pluginName, StringComparison.OrdinalIgnoreCase)
+              : displayName.Contains(pluginName, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Reload deferral (2026-10-05, ReloadDeferral): asks every running plugin's optional
@@ -2593,10 +2610,14 @@ internal static partial class PluginManager
 
         // Manifests (embedded in the DLLs, read without loading them): refuse a plugin that needs
         // a newer engine API or a missing plugin, and put required plugins first. Without
-        // manifests the list loads exactly as before.
-        PluginManifestGate.LoadPlan plan = PluginManifestGate.Plan(candidates, PluginContractVersion.Current, RawFileVersion);
+        // manifests the list loads exactly as before. Server plugins: the connect host picks this
+        // server's (the others stay unloaded; their runtimes would only take address space).
+        PluginManifestGate.LoadPlan plan = PluginManifestGate.Plan(candidates, PluginContractVersion.Current, RawFileVersion,
+            Compatibility.ServerInfo.LaunchHost, EngineSettings.LoadAllServerPlugins);
         foreach (string line in plan.Log)
             RynthLog.Plugin($"PluginManager: {line}");
+        if (plan.SkippedForServer.Count > 0)
+            RynthLog.Info($"PluginManager: {plan.SkippedForServer.Count} server plugin(s) for other servers not loaded (host {Compatibility.ServerInfo.HostDescription}).");
         foreach (PluginRefusal refusal in plan.Refused)
             RefusePlugin(Path.GetFileName(refusal.Plugin.Key), refusal.Reason);
 

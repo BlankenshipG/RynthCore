@@ -29,14 +29,20 @@ internal static class PluginManifestGate
         public List<PluginRefusal> Refused { get; } = new();
         /// <summary>Log lines: manifests found, broken manifests, notes.</summary>
         public List<string> Log { get; } = new();
+        /// <summary>Server plugins for another server, left out on purpose (logged, never said in chat).</summary>
+        public List<string> SkippedForServer { get; } = new();
     }
 
     /// <summary>
     /// Reads the manifests of <paramref name="paths"/> and resolves them against
     /// <paramref name="engineApi"/>. <paramref name="fileVersion"/> gives a DLL's version resource
     /// (for dependency versions of plugins whose manifest has none); null skips it.
+    /// <paramref name="connectHost"/> (the client's -h host, "" when unknown) picks which server
+    /// plugins load (<see cref="SelectServerPlugins"/>); <paramref name="loadAllServerPlugins"/>
+    /// (engine.json LoadAllServerPlugins) turns that off.
     /// </summary>
-    public static LoadPlan Plan(IReadOnlyList<string> paths, uint engineApi, Func<string, string>? fileVersion = null)
+    public static LoadPlan Plan(IReadOnlyList<string> paths, uint engineApi, Func<string, string>? fileVersion = null,
+                                string? connectHost = null, bool loadAllServerPlugins = false)
     {
         var plan = new LoadPlan();
         var candidates = new List<PluginCandidate>(paths.Count);
@@ -71,6 +77,13 @@ internal static class PluginManifestGate
             candidates.Add(new PluginCandidate(path, manifest, fv));
         }
 
+        HashSet<string> skip = SelectServerPlugins(candidates, connectHost, loadAllServerPlugins, plan.Log);
+        if (skip.Count > 0)
+        {
+            candidates.RemoveAll(c => skip.Contains(c.Key));
+            plan.SkippedForServer.AddRange(skip);
+        }
+
         PluginResolution res = PluginManifestResolver.Resolve(candidates, engineApi);
         foreach (PluginCandidate c in res.Order)
             plan.Load.Add((c.Key, c.Manifest));
@@ -80,6 +93,51 @@ internal static class PluginManifestGate
         if (withManifest == 0 && paths.Count > 0)
             plan.Log.Add("no plugin has a manifest; loading them as listed.");
         return plan;
+    }
+
+    /// <summary>
+    /// The server plugins to leave out (their paths). Fail-open: a server plugin is left out only
+    /// when <paramref name="connectHost"/> is known and another installed server plugin claims it,
+    /// so a server that moved to a new host still gets its plugin (all of them load, each shows
+    /// only on its own server). Nothing is left out when <paramref name="loadAll"/> is set.
+    /// </summary>
+    internal static HashSet<string> SelectServerPlugins(IReadOnlyList<PluginCandidate> candidates, string? connectHost,
+                                                        bool loadAll, List<string> log)
+    {
+        var skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var servers = new List<PluginCandidate>();
+        foreach (PluginCandidate c in candidates)
+            if (c.Manifest?.Server != null) servers.Add(c);
+        if (servers.Count == 0) return skip;
+        if (loadAll)
+        {
+            log.Add($"{servers.Count} server plugin(s): all load (engine.json LoadAllServerPlugins).");
+            return skip;
+        }
+        string host = (connectHost ?? "").Trim();
+        if (host.Length == 0)
+        {
+            log.Add($"{servers.Count} server plugin(s): no connect host on the command line, so all load (each shows only on its own server).");
+            return skip;
+        }
+
+        var claimants = new List<string>();
+        foreach (PluginCandidate c in servers)
+            if (c.Manifest!.Server!.MatchesHost(host, out string hit))
+                claimants.Add($"{c.Manifest.Name} ({c.Manifest.Server.Id}, \"{hit}\")");
+        if (claimants.Count == 0)
+        {
+            log.Add($"{servers.Count} server plugin(s): none lists host {host}, so all load (each shows only on its own server).");
+            return skip;
+        }
+
+        foreach (PluginCandidate c in servers)
+        {
+            if (c.Manifest!.Server!.MatchesHost(host, out _)) continue;
+            skip.Add(c.Key);
+            log.Add($"{Path.GetFileName(c.Key)}: not loaded - it is for {c.Manifest.Server.Name}, and host {host} is {string.Join(", ", claimants)}.");
+        }
+        return skip;
     }
 
     /// <summary>
@@ -114,6 +172,7 @@ internal static class PluginManifestGate
                 parts.Add(d.Name + (d.MinVersion.Length > 0 ? " " + d.MinVersion + "+" : "") + (d.Optional ? " (optional)" : ""));
             s += ", needs " + string.Join(", ", parts);
         }
+        if (m.Server != null) s += $", server {m.Server.Id}";
         return s;
     }
 }

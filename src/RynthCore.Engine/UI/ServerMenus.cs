@@ -23,7 +23,9 @@
 //    N  id  pattern  default|engine.json                        a server's world names
 //  RynthAi 0.5.54 and older read only S and I (unknown kinds and extra fields are
 //  skipped); a "section:<id>" feature is a surface it may show in its own Mini Remote.
-//  RynthILT (0.1.1+) gets the same push for its copy of the ILT settings (V and N).
+//  RynthILT (0.1.1+) gets the same push for its copy of the ILT settings (V and N),
+//  and so does every server plugin whose sections manifest declares a server
+//  (RynthColdeve, RynthAelrynth, ...: their server card's verdict and override).
 // ============================================================================
 
 using System;
@@ -55,6 +57,8 @@ internal static class ServerMenus
     private static string _lastPayload = string.Empty;
     private static long _lastIltPushMs;
     private static string _lastIltPayload = string.Empty;
+    // Server plugins (sections manifests that declare a server): the last payload each took, and when.
+    private static readonly Dictionary<string, (string Payload, long AtMs)> _serverPluginPushes = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>RynthAi is installed: Tick pushes it the list.</summary>
     public static bool PushToRynthAi { get; set; }
@@ -120,12 +124,22 @@ internal static class ServerMenus
     public static void Tick()
     {
         SectionRegistry.Tick();
-        if (!PushToRynthAi && !PushToRynthIlt) return;
+        SectionRegistry.Snapshot snap = SectionRegistry.Current;
+        List<string> serverPlugins = ServerPluginTargets(snap);
+        if (!PushToRynthAi && !PushToRynthIlt && serverPlugins.Count == 0) return;
         long now = Environment.TickCount64;
         if (now < _nextCheckMs) return;
         _nextCheckMs = now + CheckMs;
 
-        string payload = BuildPayload(SectionRegistry.Current, IltWorldNames());
+        string payload = BuildPayload(snap, IltWorldNames());
+        // Same resend rule as RynthILT's: a plugin may (re)load after the last change.
+        foreach (string plugin in serverPlugins)
+        {
+            bool due = !_serverPluginPushes.TryGetValue(plugin, out var last)
+                       || last.Payload != payload || now - last.AtMs >= IltResendMs;
+            if (due && Plugins.PluginManager.SendPluginCommand(plugin, "servermenu", payload))
+                _serverPluginPushes[plugin] = (payload, now);
+        }
         if (PushToRynthAi && (payload != _lastPayload || now - _lastPushMs >= ResendMs))
         {
             _lastPayload = payload;
@@ -139,6 +153,24 @@ internal static class ServerMenus
             _lastIltPayload = payload;
             _lastIltPushMs = now;
         }
+    }
+
+    /// <summary>
+    /// The plugins to push to besides RynthAi and RynthILT (they have their own paths): each one
+    /// whose sections manifest declares a server. Pure apart from reading <paramref name="snap"/>.
+    /// </summary>
+    internal static List<string> ServerPluginTargets(SectionRegistry.Snapshot snap)
+    {
+        var list = new List<string>();
+        foreach (SectionManifest m in snap.Manifests)
+        {
+            if (m.Servers.Length == 0 || m.Plugin.Length == 0) continue;
+            if (m.Plugin.Equals("RynthAi", StringComparison.OrdinalIgnoreCase)
+                || (PushToRynthIlt && m.Plugin.Equals(RynthIltPlugin, StringComparison.OrdinalIgnoreCase)))
+                continue;
+            if (!list.Exists(p => p.Equals(m.Plugin, StringComparison.OrdinalIgnoreCase))) list.Add(m.Plugin);
+        }
+        return list;
     }
 
     /// <summary>The ILT world-name patterns in force, and whether they are the built-in defaults.</summary>

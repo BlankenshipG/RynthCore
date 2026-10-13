@@ -40,6 +40,8 @@ internal static class EngineSettings
     private static bool _serverMessageStream = true;
     private static bool _flightRecorder = true;
     private static bool _insertReleasesUi;
+    // "LoadAllServerPlugins": hand-set only, written back only when true (PluginManifestGate).
+    private static bool _loadAllServerPlugins;
     // Read-only, like EnableLargeAddressAlignmentFix: only a hand-set value is written back.
     private static int _maxHotReloads = ReloadCapNotice.DefaultMaxHotReloads;
     // "IltServerNames" / "IltHosts": what counts as Infinite Leaftide (Compatibility/IltInfo.cs).
@@ -105,6 +107,21 @@ internal static class EngineSettings
         {
             EnsureLoaded();
             return _enableLargeAddressAlignmentFix;
+        }
+    }
+
+    /// <summary>
+    /// True: every installed server plugin (RynthColdeve, RynthILT, ...) loads, whatever server the
+    /// client connects to; each still shows only on its own server. Default false: the connect host
+    /// picks the one plugin for this server (PluginManifestGate.SelectServerPlugins). Set
+    /// "LoadAllServerPlugins": true in engine.json by hand (testing a plugin with /rc server ... on).
+    /// </summary>
+    public static bool LoadAllServerPlugins
+    {
+        get
+        {
+            EnsureLoaded();
+            return _loadAllServerPlugins;
         }
     }
 
@@ -522,6 +539,12 @@ internal static class EngineSettings
                 _enableLargeAddressAlignmentFix = laaEl.GetBoolean();
             }
 
+            if (doc.RootElement.TryGetProperty("LoadAllServerPlugins", out var lasEl) &&
+                (lasEl.ValueKind == JsonValueKind.True || lasEl.ValueKind == JsonValueKind.False))
+            {
+                _loadAllServerPlugins = lasEl.GetBoolean();
+            }
+
             if (doc.RootElement.TryGetProperty("EnableAvaloniaOverlay", out var avEl) &&
                 (avEl.ValueKind == JsonValueKind.True || avEl.ValueKind == JsonValueKind.False))
             {
@@ -669,6 +692,7 @@ internal static class EngineSettings
         "DecalInGameImGui", "DecalStandDown", "DisabledUiHooks", "ServerMessageStream",
         "FlightRecorder", "InsertReleasesUi", "IltServerNames", "IltHosts", "EnableLargeAddressAlignmentFix",
         "MaxHotReloads", "ReportEndpoint", "EnablePluginOverlayWindows", "LoggingLevel",
+        "LoadAllServerPlugins",
     };
 
     private static void Save()
@@ -720,6 +744,8 @@ internal static class EngineSettings
                     w.WriteBoolean("EnableLargeAddressAlignmentFix", false);
                 if (_insertReleasesUi)     // default false: leave the file as it was
                     w.WriteBoolean("InsertReleasesUi", true);
+                if (_loadAllServerPlugins) // default false: only a hand-set true is written
+                    w.WriteBoolean("LoadAllServerPlugins", true);
                 if (_maxHotReloads != ReloadCapNotice.DefaultMaxHotReloads)   // only a hand-set value is written
                     w.WriteNumber("MaxHotReloads", _maxHotReloads);
                 if (_reportEndpoint != null)   // only a hand-set value is written

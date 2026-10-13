@@ -278,6 +278,37 @@ internal static class Program
                 AppSettingsStore.Save(loaded);
                 CheckNoPlainText("LEAK-CHECK-PW");
             });
+
+            Scenario("known servers: picking one fills the profile, saved profiles find theirs", root, () =>
+            {
+                var all = KnownServerCatalog.All;
+                Check(all.Count == 17, $"17 known servers (16 + ILT), got {all.Count}");
+                Check(all.Select(s => s.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() == all.Count, "ids unique");
+                Check(all.Select(s => s.Host).Distinct(StringComparer.OrdinalIgnoreCase).Count() == all.Count, "hosts unique");
+                Check(all.All(s => s.Port is > 0 and < 65536 && s.PluginName.StartsWith("Rynth", StringComparison.Ordinal)),
+                    "every entry has a port and a Rynth plugin");
+                Check(all.Select(s => s.Name).SequenceEqual(all.Select(s => s.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase)),
+                    "listed by name");
+
+                KnownServer? reef = KnownServerCatalog.FindById("REEFCULL");
+                Check(reef?.Emulator == AcEmulatorKind.Gdle, "Reefcull is GDLE (id lookup ignores case)");
+                Check(KnownServerCatalog.FindById("portalstorm")?.Port == 9020, "PortalStorm uses 9020");
+
+                var p = new LaunchServerProfile { Id = "keep", Alias = "Main", RodatEnabled = true, Host = "x", Port = 1 };
+                KnownServerCatalog.ApplyTo(KnownServerCatalog.FindById("ilt")!, p);
+                Check(p.Name == "Infinite Leaftide" && p.ConnectionString == "game.infiniteleaftide.online:9000" && p.Emulator == AcEmulatorKind.Ace,
+                    "ILT fills name, host, port, emulator: " + p.ConnectionString);
+                Check(p.Id == "keep" && p.Alias == "Main" && p.RodatEnabled, "id, alias and Rodat kept");
+
+                Check(KnownServerCatalog.FindByHost("PLAY.COLDEVE.AC.")?.Id == "coldeve", "exact host (case, trailing dot)");
+                Check(KnownServerCatalog.FindByHost("infiniteleaftide.online")?.Id == "ilt", "ILT's parent domain finds ILT");
+                Check(KnownServerCatalog.FindByHost("aelrynth.com")?.Id == "aelrynth", "Aelrynth");
+                Check(KnownServerCatalog.FindByHost("other.ddns.net") == null, "a shared dynamic-DNS domain matches nothing");
+                Check(KnownServerCatalog.FindByHost("harvestbud.gdleac.com") == null, "Reefcull's shared host domain isn't Reefcull");
+                Check(KnownServerCatalog.FindByHost("172.111.230.12") == null, "an IP matches only itself");
+                Check(KnownServerCatalog.FindByHost("172.111.230.127")?.Id == "frostace", "FrostACE by IP");
+                Check(KnownServerCatalog.FindByHost("") == null && KnownServerCatalog.FindByHost(null) == null, "empty host");
+            });
         }
         finally
         {

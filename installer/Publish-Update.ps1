@@ -139,6 +139,12 @@ Copy-Item (Join-Path $ScriptDir "Output\RynthCore-Setup-$Version.exe") "$rel\Ryn
 Copy-Item (Join-Path $ScriptDir "staging\suite\RynthAi\RynthCore.Plugin.RynthAi.dll") "$rel\plugins\"
 
 $suitePlugins = "RynthChat", "RynthTracker", "RynthNav", "RynthVision", "RynthLua", "RynthOracle", "RynthInventory", "RynthSort", "RynthILT"
+# One plugin per server (Plugins\Shared\ServerPack). RynthCore loads only the one whose manifest
+# hosts claim the client's connect host, so installing all of them costs disk, not memory.
+$serverPlugins = "RynthAChard", "RynthAelrynth", "RynthColdeve", "RynthConquest", "RynthDerptide", "RynthDreamWeave",
+                 "RynthEversong", "RynthFrostACE", "RynthFrostcull", "RynthLeafDawn", "RynthLeafdawning", "RynthLevistras",
+                 "RynthPortalStorm", "RynthReefcull", "RynthSundering", "RynthThistlecrown"
+$suitePlugins += $serverPlugins
 foreach ($name in $suitePlugins) {
     Step "Building $name"
     $proj = Join-Path $RynthSuiteRoot "Plugins\RynthCore.Plugin.$name\RynthCore.Plugin.$name.csproj"
@@ -185,7 +191,10 @@ Extract this zip into C:\Games - it creates:
   C:\Games\RynthSuite\RynthOracle\   RynthOracle plugin (quests, character, titles; based on Oracle of Dereth by Advis Eveldan)
   C:\Games\RynthSuite\RynthInventory\ RynthInventory plugin (search every character's items)
   C:\Games\RynthSuite\RynthSort\     RynthSort plugin (keeps your packs sorted; replaces the RynthSort Lua script)
-  C:\Games\RynthSuite\RynthILT\      RynthILT plugin (Infinite Leaftide only: the Bounties window's tracker)
+  C:\Games\RynthSuite\RynthILT\      RynthILT plugin (Infinite Leaftide's server plugin: the Bounties window's tracker)
+  C:\Games\RynthSuite\Rynth<Server>\ One server plugin per server (RynthColdeve, RynthAelrynth,
+                                     RynthPortalStorm, ...): the server's facts, rules and commands.
+                                     RynthCore loads only the one for the server you connect to.
   C:\Games\RynthCore\NavData\        RynthNav's portals and Atlas
 
 Then, in the RynthCore launcher's Plugins tab, add the full path of each
@@ -273,7 +282,24 @@ $pluginDescriptions = @{
     RynthOracle    = "Quests, character, titles and leaderboards."
     RynthInventory = "Search every character's items."
     RynthSort      = "Keeps your packs sorted: new loot goes to the pack its rule names."
-    RynthILT       = "Infinite Leaftide only: tracks your ACECustom bounties for the Bounties window."
+    RynthILT       = "Infinite Leaftide's server plugin: tracks your ACECustom bounties for the Bounties window."
+    # Server plugins: only the one for the server you connect to loads.
+    RynthAChard       = "AChard's server plugin: server facts, PvP rules and commands. Loads only on AChard."
+    RynthAelrynth     = "Aelrynth's server plugin: server facts, mods and commands. Loads only on Aelrynth."
+    RynthColdeve      = "Coldeve's server plugin: server facts, rules and commands. Loads only on Coldeve."
+    RynthConquest     = "Conquest's server plugin: server facts, rules and commands. Loads only on Conquest."
+    RynthDerptide     = "Derptide's server plugin: server facts, rules and commands. Loads only on Derptide."
+    RynthDreamWeave   = "DreamWeave's server plugin: server facts, rules, commands and wiki link. Loads only on DreamWeave."
+    RynthEversong     = "Eversong's server plugin: server facts, rules and commands. Loads only on Eversong."
+    RynthFrostACE     = "FrostACE's server plugin: server facts, rules and commands. Loads only on FrostACE."
+    RynthFrostcull    = "Frostcull's server plugin: server facts, rates and commands. Loads only on Frostcull."
+    RynthLeafDawn     = "LeafDawn's server plugin: server facts, rules and commands. Loads only on LeafDawn."
+    RynthLeafdawning  = "Leafdawning's server plugin: server facts, account limit and commands. Loads only on Leafdawning."
+    RynthLevistras    = "Levistras's server plugin: server facts and rules (botting is not allowed there). Loads only on Levistras."
+    RynthPortalStorm  = "PortalStorm's server plugin: server facts, rules and commands. Loads only on PortalStorm."
+    RynthReefcull     = "Reefcull's server plugin (GDLE): server facts, rules and commands. Loads only on Reefcull."
+    RynthSundering    = "Sundering's server plugin: server facts, character limit and commands. Loads only on Sundering."
+    RynthThistlecrown = "Thistlecrown's server plugin: server facts, account limit and commands. Loads only on Thistlecrown."
 }
 # Plugin manifests (embedded in each DLL by the SDK's build targets): each plugin's minEngineApi
 # goes into its feed entry, and the core entry says its engine's API ("engineApi"), so launchers

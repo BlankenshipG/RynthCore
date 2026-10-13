@@ -50,6 +50,12 @@ internal static class Program
             Run(nameof(ReadsResourceFromPe32AndPe32Plus), ReadsResourceFromPe32AndPe32Plus);
             Run(nameof(NoResourceAndNotAPe), NoResourceAndNotAPe);
             Run(nameof(GatePlanFromFiles), GatePlanFromFiles);
+            Run(nameof(ServerBlockParsesAndRoundTrips), ServerBlockParsesAndRoundTrips);
+            Run(nameof(ServerBlockRejectsBadIds), ServerBlockRejectsBadIds);
+            Run(nameof(ServerHostMatching), ServerHostMatching);
+            Run(nameof(ServerGateKeepsOnlyTheHostsPlugin), ServerGateKeepsOnlyTheHostsPlugin);
+            Run(nameof(ServerGateFailsOpen), ServerGateFailsOpen);
+            Run(nameof(ServerGatePlanFromFiles), ServerGatePlanFromFiles);
             Run(nameof(SdkApiVersionCannotDrift), SdkApiVersionCannotDrift);
             Run(nameof(TrainingStructsMirror), TrainingStructsMirror);
             Run(nameof(ManifestAttributeDrivesRuntimeMinimum), ManifestAttributeDrivesRuntimeMinimum);
@@ -438,6 +444,113 @@ internal static class Program
         PluginManifestGate.LoadPlan none = PluginManifestGate.Plan(new[] { P("RynthChat"), P("Broken") }, Api);
         Eq(none.Load.Count, 2, "no manifests: everything loads");
         Check(none.Log.Any(l => l.Contains("no plugin has a manifest")), "said once");
+    }
+
+    // ── Server plugins (the manifest's "server" block and the load gate) ────
+
+    private static RynthPluginManifest S(string name, string id, string[] hosts, params string[] worlds)
+    {
+        var m = M(name);
+        m.Server = new RynthPluginServer { Id = id, Name = name, Hosts = hosts.ToList(), WorldNames = worlds.ToList() };
+        return m;
+    }
+
+    private static void ServerBlockParsesAndRoundTrips()
+    {
+        var m = RynthPluginManifest.Parse("""
+            { "name": "RynthColdeve", "minEngineApi": 66,
+              "server": { "id": "Coldeve", "name": "Coldeve", "hosts": ["play.coldeve.ac", "", 5], "worldNames": ["Coldeve"] } }
+            """);
+        Check(m.Server != null, "server block read");
+        Eq(m.Server!.Id, "coldeve", "id lower-cased");
+        Eq(string.Join(",", m.Server.Hosts), "play.coldeve.ac", "blank and non-string hosts dropped");
+        Eq(string.Join(",", m.Server.WorldNames), "Coldeve", "world names");
+        var back = RynthPluginManifest.Parse(m.ToJson());
+        Eq(back.Server?.Id, "coldeve", "round trip id");
+        Eq(back.Server?.Hosts.Count, 1, "round trip hosts");
+        Check(RynthPluginManifest.Parse("""{ "name": "RynthAi" }""").Server == null, "no block, not a server plugin");
+        Check(!M("RynthAi").ToJson().Contains("\"server\""), "no server block written for other plugins");
+    }
+
+    private static void ServerBlockRejectsBadIds()
+    {
+        string[] bad =
+        {
+            """{ "name": "X", "server": "coldeve" }""",
+            """{ "name": "X", "server": { "name": "No id" } }""",
+            """{ "name": "X", "server": { "id": "has space" } }""",
+            """{ "name": "X", "server": { "id": "ok", "hosts": "not-an-array" } }""",
+        };
+        foreach (string json in bad)
+            Check(RynthPluginManifest.TryParse(json, out string err) == null && err.Length > 0, $"refused: {json}");
+    }
+
+    private static void ServerHostMatching()
+    {
+        var ilt = new RynthPluginServer { Id = "ilt", Hosts = { "infiniteleaftide.online" } };
+        Check(ilt.MatchesHost("game.infiniteleaftide.online", out string hit) && hit == "infiniteleaftide.online", "a host under the name");
+        Check(ilt.MatchesHost("INFINITELEAFTIDE.ONLINE.", out _), "case and trailing dot ignored");
+        Check(!ilt.MatchesHost("notinfiniteleaftide.online", out _), "not a suffix without the dot");
+        var ip = new RynthPluginServer { Id = "aelrynth", Hosts = { "144.217.84.148" } };
+        Check(ip.MatchesHost("144.217.84.148", out _), "an IP matches itself");
+        Check(!ip.MatchesHost("1.144.217.84.148", out _), "an IP never matches as a suffix");
+        var wild = new RynthPluginServer { Id = "x", Hosts = { "*.ddns.net" } };
+        Check(wild.MatchesHost("frostcull.ddns.net", out _), "wildcard");
+        Check(!wild.MatchesHost("", out _), "no host, no match");
+    }
+
+    private static void ServerGateKeepsOnlyTheHostsPlugin()
+    {
+        var list = new List<PluginCandidate>
+        {
+            C("RynthAi", M("RynthAi")),
+            C("RynthChat"),
+            C("RynthColdeve", S("RynthColdeve", "coldeve", new[] { "play.coldeve.ac" }, "Coldeve")),
+            C("RynthLeafDawn", S("RynthLeafDawn", "leafdawn", new[] { "leafdawn.hopto.org" }, "LeafDawn")),
+            C("RynthLeafdawning", S("RynthLeafdawning", "leafdawning", new[] { "leafdawning.duckdns.org" }, "Leafdawning")),
+        };
+        var log = new List<string>();
+        HashSet<string> skip = PluginManifestGate.SelectServerPlugins(list, "leafdawn.hopto.org", false, log);
+        Eq(skip.Count, 2, "the two other server plugins are left out");
+        Check(skip.Contains(list[2].Key) && skip.Contains(list[4].Key), "Coldeve and Leafdawning left out");
+        Check(!skip.Contains(list[0].Key) && !skip.Contains(list[1].Key), "other plugins always load");
+        Check(log.Any(l => l.Contains("RynthColdeve") && l.Contains("not loaded")), "logged why");
+        Eq(PluginManifestGate.SelectServerPlugins(list, "leafdawn.hopto.org", true, log).Count, 0, "LoadAllServerPlugins keeps every one");
+    }
+
+    private static void ServerGateFailsOpen()
+    {
+        var list = new List<PluginCandidate>
+        {
+            C("RynthColdeve", S("RynthColdeve", "coldeve", new[] { "play.coldeve.ac" })),
+            C("RynthFrostcull", S("RynthFrostcull", "frostcull", new[] { "frostcull.ddns.net" })),
+        };
+        var log = new List<string>();
+        Eq(PluginManifestGate.SelectServerPlugins(list, "", false, log).Count, 0, "no connect host: all load");
+        Eq(PluginManifestGate.SelectServerPlugins(list, "10.0.0.5", false, log).Count, 0, "a host nobody lists: all load");
+        Check(log.Any(l => l.Contains("none lists host 10.0.0.5")), "said why");
+    }
+
+    private static void ServerGatePlanFromFiles()
+    {
+        string dir = Path.Combine(_root, "servers");
+        Directory.CreateDirectory(dir);
+        string P(string name) => Path.Combine(dir, $"RynthCore.Plugin.{name}.dll");
+        File.Copy(ThisDll, P("RynthAi"));
+        Embed(P("RynthAi"), M("RynthAi").ToJson());
+        File.Copy(ThisDll, P("RynthILT"));
+        Embed(P("RynthILT"), S("RynthILT", "ilt", new[] { "infiniteleaftide.online" }, "*Leaftide*").ToJson());
+        File.Copy(ThisDll, P("RynthAelrynth"));
+        Embed(P("RynthAelrynth"), S("RynthAelrynth", "aelrynth", new[] { "144.217.84.148" }, "Aelrynth*").ToJson());
+
+        var paths = new[] { P("RynthAi"), P("RynthILT"), P("RynthAelrynth") };
+        PluginManifestGate.LoadPlan onIlt = PluginManifestGate.Plan(paths, Api, null, "game.infiniteleaftide.online");
+        Eq(string.Join(",", onIlt.Load.Select(l => RynthPluginManifest.NameFromFile(l.Path))), "RynthAi,RynthILT", "on ILT");
+        Eq(onIlt.SkippedForServer.Count, 1, "Aelrynth's plugin skipped");
+        Eq(onIlt.Refused.Count, 0, "skipping is not a refusal (no chat notice)");
+        Check(onIlt.Log.Any(l => l.Contains("server ilt")), "the manifest line names the server");
+        PluginManifestGate.LoadPlan onAelrynth = PluginManifestGate.Plan(paths, Api, null, "144.217.84.148");
+        Eq(string.Join(",", onAelrynth.Load.Select(l => RynthPluginManifest.NameFromFile(l.Path))), "RynthAi,RynthAelrynth", "on Aelrynth");
     }
 
     // ── The SDK's version ────────────────────────────────────────────────────
