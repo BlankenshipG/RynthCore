@@ -233,7 +233,7 @@ internal sealed class ItemsFace : IImGuiPanel
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos() + new Vector2(4, 4);
         float bw = ButtonWidth(label) + 4;
         if (Button(id, label, p, new Vector2(bw, 24), Teal, BtnFill)) onClick();
-        if (tooltip != null) ImGuiNET.ImGui.SetItemTooltip(tooltip);
+        if (tooltip != null) SafeImGui.SetItemTooltip(tooltip);
         ImFontPtr f9 = ImGuiFonts.Get(UiFont.Ui9);
         ImGuiNET.ImGui.GetWindowDrawList().AddText(f9, f9.FontSize, new Vector2(p.X + bw + 8, p.Y + (24 - f9.FontSize) * 0.5f), Mute, hint);
         NextLine(new Vector2(p.X - 4, p.Y - 4), 32);

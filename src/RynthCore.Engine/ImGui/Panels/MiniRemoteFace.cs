@@ -300,7 +300,7 @@ internal sealed class MiniRemoteFace : IImGuiPanel
                 dl.AddText(cp, id == 0 ? Amber : Text, count);
             }
             if (hot)
-                ImGuiNET.ImGui.SetItemTooltip(id == 0
+                SafeImGui.SetItemTooltip(id == 0
                     ? $"{s.Name}: none carried.\nRight-click for options."
                     : $"{s.Name} ({count switch { "" => "1", _ => count }} carried)\nClick to use. Right-click for options.");
         }

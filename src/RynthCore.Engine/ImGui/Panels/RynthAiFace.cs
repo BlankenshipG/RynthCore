@@ -205,7 +205,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             RynthAiDashboardState.SetShowTargetBar(!target);
             _fit = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(target
+        SafeImGui.SetItemTooltip(target
             ? "Target bar on: the target's name and health at the bottom. Click to hide it."
             : "Target bar off. Click to show the target's name and health at the bottom.");
         cx += chipW + chipGap;
@@ -215,14 +215,14 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             RynthAiDashboardState.SetShowVitals(!vitals);
             _fit = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(vitals
+        SafeImGui.SetItemTooltip(vitals
             ? "Player vitals on: your health, stamina and mana at the bottom. Click to hide them."
             : "Player vitals off. Click to show your health, stamina and mana at the bottom.");
         cx += chipW + chipGap;
         if (IconButton("##chip_lock", new Vector2(cx, cy), chip, raw.IsLocked ? PhosphorIcons.Lock : PhosphorIcons.LockOpen,
                 chipFont, BtnFill, raw.IsLocked ? Amber : Mute, BtnBord, 2))
             RynthAiCommands.TogglePanelLock();
-        ImGuiNET.ImGui.SetItemTooltip(raw.IsLocked ? "Locked. Click to unlock the dashboard." : "Click to lock the dashboard in place.");
+        SafeImGui.SetItemTooltip(raw.IsLocked ? "Locked. Click to unlock the dashboard." : "Click to lock the dashboard in place.");
         cx += chipW + chipGap;
         if (IconButton("##chip_minus", new Vector2(cx, cy), chip, PhosphorIcons.Minus, chipFont, BtnFill, Mute, BtnBord, 2))
             RynthAiCommands.AdjustOpacity(-0.1f);
@@ -238,13 +238,13 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             RynthAiDashboardState.SetMinimized(!minimized);
             _fit = true;   // the window fits the other mode's content next frame
         }
-        ImGuiNET.ImGui.SetItemTooltip(minimized ? "Expand" : "Minimize");
+        SafeImGui.SetItemTooltip(minimized ? "Expand" : "Minimize");
         cx += chipW + chipGap;
         if (PanelRouter.CanPopOut)
         {
             if (IconButton("##chip_dock", new Vector2(cx, cy), chip, ImGuiPanelHost.PopOutGlyph, chipFont, BtnFill, Mute, BtnBord, 2))
                 ImGuiPanelHost.TogglePopOut(Title);
-            ImGuiNET.ImGui.SetItemTooltip(ImGuiPanelHost.PopOutTooltip);
+            SafeImGui.SetItemTooltip(ImGuiPanelHost.PopOutTooltip);
         }
 
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y + rowH));
@@ -423,7 +423,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             if (IconButton("##macro", new Vector2(x, y), new Vector2(Square, Square), on ? PhosphorIcons.Stop : PhosphorIcons.Play,
                     UiFont.Dash14, on ? MacroRun : BarBg, on ? White : Mute, on ? Green : BtnBord, 3))
                 RynthAiCommands.ToggleMacro();
-            ImGuiNET.ImGui.SetItemTooltip(on ? "Macro running. Click to stop it." : "Macro stopped. Click to start it.");
+            SafeImGui.SetItemTooltip(on ? "Macro running. Click to stop it." : "Macro stopped. Click to start it.");
             x += SquareStep + 6;
         }
         Toggle("##t_combat", PhosphorIcons.Sword, raw.CombatEnabled, 0, new Vector2(x, y), "Combat");
@@ -447,7 +447,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             if (IconButton("##files_open", new Vector2(frX - 4 - caretW, y), new Vector2(caretW, Square), PhosphorIcons.CaretDown,
                     UiFont.Dash11, BtnFill, Teal, BtnBord, 2))
                 RynthAiDashboardState.SetFilesOpen(true);
-            ImGuiNET.ImGui.SetItemTooltip("Profile: " + (view?.ProfileText ?? "Default") + "\nNav: " + (view?.NavText ?? "None") +
+            SafeImGui.SetItemTooltip("Profile: " + (view?.ProfileText ?? "Default") + "\nNav: " + (view?.NavText ?? "None") +
                 "\nLoot: " + (view?.LootText ?? "None") + "\nMeta: " + (view?.MetaText ?? "None") +
                 "\nBuffs: " + (view?.BuffText ?? "Built-in") +
                 "\n\nClick to show the Profile, Nav, Loot, Meta and Buffs pickers.");
@@ -466,7 +466,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
                 dl.PopClipRect();
                 ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(ax, y));
                 ImGuiNET.ImGui.InvisibleButton("##activity", new Vector2(aRight - ax, Square));
-                ImGuiNET.ImGui.SetItemTooltip("Bot activity: " + activity + "\nMeta state: " + (view?.MetaStateText ?? "Default"));
+                SafeImGui.SetItemTooltip("Bot activity: " + activity + "\nMeta state: " + (view?.MetaStateText ?? "Default"));
             }
         }
 
@@ -486,7 +486,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     {
         if (IconButton(id, pos, new Vector2(Square, Square), icon, UiFont.Dash14, on ? TealSoft : BarBg, on ? Teal : Mute, on ? Teal : BtnBord, 3))
             RynthAiCommands.SetSubsystemEnabled(subsystem, !on);
-        ImGuiNET.ImGui.SetItemTooltip(on ? name + " on. Click to turn it off." : name + " off. Click to turn it on.");
+        SafeImGui.SetItemTooltip(on ? name + " on. Click to turn it off." : name + " off. Click to turn it on.");
     }
 
     // ── Launchers: one row of icon buttons ──────────────────────────────
@@ -572,7 +572,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         ImGuiNET.ImGui.SetCursorScreenPos(pos);
         bool clicked = ImGuiNET.ImGui.InvisibleButton(id, size);
-        ImGuiNET.ImGui.SetItemTooltip(tooltip);
+        SafeImGui.SetItemTooltip(tooltip);
         uint fill = ImGuiNET.ImGui.IsItemActive() ? Darken(BtnFill) : ImGuiNET.ImGui.IsItemHovered() ? Lighten(BtnFill) : BtnFill;
         dl.AddRectFilled(pos, pos + size, fill, 3);
         dl.AddRect(pos, pos + size, BtnBord, 3);
@@ -845,14 +845,14 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         if (withTitle)
         {
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Dash11));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), PatrolTitle);
+            SafeImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), PatrolTitle);
             ImGuiNET.ImGui.PopFont();
         }
 
         Section("THIS DUNGEON");
         if (info.InDungeon)
         {
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), $"0x{info.CurrentLandblock}  ·  {info.CurrentHazards} hazard cell(s)");
+            SafeImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), $"0x{info.CurrentLandblock}  ·  {info.CurrentHazards} hazard cell(s)");
             if (info.CurrentHazards > 0)
             {
                 ImGuiNET.ImGui.SameLine();
@@ -882,7 +882,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         {
             DungeonHazards d = info.Dungeons[i];
             ImGuiNET.ImGui.PushID(i);
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), $"0x{d.Landblock}  ·  {d.Cells} cell(s)");
+            SafeImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), $"0x{d.Landblock}  ·  {d.Cells} cell(s)");
             ImGuiNET.ImGui.SameLine();
             if (Mini("Clear"))
                 RynthAiCommands.SendNavCommand($"{{\"Cmd\":\"clearHazards\",\"NavName\":\"{d.Landblock}\"}}", refreshPatrol: true);
@@ -895,7 +895,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         if (info.Routes.Length == 0)
             ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFB8C8D8), "No .nav routes saved.");
         foreach (string name in info.Routes)
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), "• " + name);
+            SafeImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), "• " + name);
 
         ImGuiNET.ImGui.PopFont();
     }
@@ -907,7 +907,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     {
         ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Dash9));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFB8C8D8), text);
+        SafeImGui.TextColored(RynthTheme.Vec(0xFFB8C8D8), text);
         ImGuiNET.ImGui.PopFont();
     }
 

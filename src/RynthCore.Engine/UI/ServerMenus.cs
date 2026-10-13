@@ -191,12 +191,12 @@ internal static class ServerMenus
             installed = true;
             if (!s.IsActive) continue;
             any = true;
-            ImGuiNET.ImGui.TextDisabled("Server: " + s.Name);
+            SafeImGui.TextDisabled("Server: " + s.Name);
             foreach (ServerMenuItem item in s.Items)
             {
                 if (ImGuiNET.ImGui.MenuItem(item.Label + "##srv_" + s.Id, item.Command))
                     Run(item.Command);
-                if (item.Tooltip.Length > 0) ImGuiNET.ImGui.SetItemTooltip(item.Tooltip);
+                if (item.Tooltip.Length > 0) SafeImGui.SetItemTooltip(item.Tooltip);
             }
         }
         if (any || !installed) return any;

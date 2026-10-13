@@ -103,7 +103,7 @@ internal abstract class DashboardDrawer
         if (FaceKit.IconButton("##drawer_close", PhosphorIcons.X, new Vector2(x + w - closeSize.X, y + (th - closeSize.Y) * 0.5f),
                 closeSize, DMute, DBtnFill, border: DBtnBord, font: UiFont.Dash10))
             Close();
-        ImGuiNET.ImGui.SetItemTooltip(closeTip);
+        SafeImGui.SetItemTooltip(closeTip);
         return y + th + 4 * k;
     }
 }
@@ -306,7 +306,7 @@ internal sealed class DashboardDrawers
         bool hot = ImGuiNET.ImGui.IsItemHovered();
         // Like SetItemTooltip (same delay), but the closed tooltip is only built while it shows.
         if (ImGuiNET.ImGui.IsItemHovered(ImGuiHoveredFlags.ForTooltip))
-            ImGuiNET.ImGui.SetTooltip(open ? d.HideTip : d.TabTooltip(right));
+            SafeImGui.SetTooltip(open ? d.HideTip : d.TabTooltip(right));
         if (clicked) Toggle(d);
 
         uint fill = ImGuiNET.ImGui.IsItemActive() ? FaceKit.Darken(BtnFill) : hot ? FaceKit.Lighten(BtnFill) : BtnFill;

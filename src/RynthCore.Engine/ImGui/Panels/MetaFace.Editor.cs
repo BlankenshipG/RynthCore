@@ -262,7 +262,7 @@ internal sealed partial class MetaFace
             if (actions) MetaRuleEdit.AddAction(r); else MetaRuleEdit.AddCondition(r);
             _editChanged = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(actions
+        SafeImGui.SetItemTooltip(actions
             ? (r.Action == MetaRuleEdit.DoAll ? "Add one more action" : "Add another action: this one and the new one run in order (All)")
             : !canAdd ? "A Not has one condition"
             : r.Condition is MetaRuleEdit.All or MetaRuleEdit.Any or MetaRuleEdit.Not ? "Add one more condition"
@@ -349,7 +349,7 @@ internal sealed partial class MetaFace
                 c.ConditionData = here;
                 _editChanged = true;
             }
-            ImGuiNET.ImGui.SetItemTooltip(here != null
+            SafeImGui.SetItemTooltip(here != null
                 ? $"Set to where you are now: {here}"
                 : "Your position isn't known right now (portal space, or not in the world).");
         }
@@ -358,7 +358,7 @@ internal sealed partial class MetaFace
             ImGuiNET.ImGui.SetCursorScreenPos(p);
             DataBox(id, c, action: false, MetaVocabulary.ConditionHint(c.Condition), width, height);
             if (c.Condition == MetaRuleEdit.NoKillsWithinMinutes)
-                ImGuiNET.ImGui.SetItemTooltip(MetaRuleEdit.NoKillsTooltip(c.ConditionData).Replace("%", "%%"));   // a format string: typed text may hold %
+                SafeImGui.SetItemTooltip(MetaRuleEdit.NoKillsTooltip(c.ConditionData).Replace("%", "%%"));   // a format string: typed text may hold %
         }
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + height));
         ImGuiNET.ImGui.Dummy(new Vector2(0, 0));
@@ -432,7 +432,7 @@ internal sealed partial class MetaFace
 
             bool nests = !action && MetaVocabulary.IsCompositeCondition(sub.Condition) && depth < MetaVocabulary.MaxSubConditionDepth;
             bool removed = IconButton("##rm", PhosphorIcons.X, new Vector2(p.X + w - xw, p.Y), new Vector2(xw, rh), TextDim, DelFill, BtnBord);
-            ImGuiNET.ImGui.SetItemTooltip(action ? "Remove this action" : "Remove this condition");
+            SafeImGui.SetItemTooltip(action ? "Remove this action" : "Remove this condition");
 
             float rowH = rh;
             if (nests)
@@ -513,7 +513,7 @@ internal sealed partial class MetaFace
                 if (draft) { _autosave.Clear(); LeaveEditor(); }
                 else _editConfirmDelete = true;
             }
-            ImGuiNET.ImGui.SetItemTooltip(draft ? "Drop this new rule (it was never added)" : "Delete this rule (asks first)");
+            SafeImGui.SetItemTooltip(draft ? "Drop this new rule (it was never added)" : "Delete this rule (asks first)");
         }
         else
         {
@@ -580,7 +580,7 @@ internal sealed partial class MetaFace
             ImGuiNET.ImGui.GetWindowDrawList().AddRect(pos, pos + new Vector2(boxW, height), Red, 3);
         bool ok = IconButton(id + "_ok", PhosphorIcons.Check, new Vector2(pos.X + boxW + 3, pos.Y), new Vector2(bw, height), Green, NewFill, Green,
             enabled: _nameProblem == null);
-        ImGuiNET.ImGui.SetItemTooltip(_nameProblem ?? $"Make the state '{name}' (Enter)");
+        SafeImGui.SetItemTooltip(_nameProblem ?? $"Make the state '{name}' (Enter)");
         bool cancel = IconButton(id + "_cancel", PhosphorIcons.X, new Vector2(pos.X + boxW + bw + 6, pos.Y), new Vector2(bw, height),
             TextDim, BtnFill, BtnBord);
         ImGuiNET.ImGui.SetItemTooltip("Cancel (Esc)");
@@ -653,14 +653,14 @@ internal sealed partial class MetaFace
     private static void SmallLabel(string text)
     {
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFE8B333), text);
+        SafeImGui.TextColored(RynthTheme.Vec(0xFFE8B333), text);
         ImGuiNET.ImGui.PopFont();
     }
 
     private static void Note(string text)
     {
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), text);
+        SafeImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), text);
         ImGuiNET.ImGui.PopFont();
     }
 

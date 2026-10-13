@@ -264,7 +264,7 @@ internal sealed partial class MetaFace : IImGuiPanel
         if (_listNote.Length > 0 && NowMs - _listNoteAt < 8000)
         {
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFE8B333), Fit(_listNote, w));
+            SafeImGui.TextColored(RynthTheme.Vec(0xFFE8B333), Fit(_listNote, w));
             ImGuiNET.ImGui.PopFont();
         }
 
@@ -334,7 +334,7 @@ internal sealed partial class MetaFace : IImGuiPanel
         bool noFile = string.IsNullOrEmpty(_data.CurrentMetaPath);
         if (Button("Save As##save_as", new Vector2(x, p.Y), new Vector2(saveAsW, 22), TextDim, noFile ? NewFill : BtnFill, noFile ? Green : BtnBord))
             BeginSaveAs();
-        ImGuiNET.ImGui.SetItemTooltip(noFile ? "Name a file for this meta; after that every change saves on its own."
+        SafeImGui.SetItemTooltip(noFile ? "Name a file for this meta; after that every change saves on its own."
             : "Save a copy under a new name (and keep editing that one).");
         x += saveAsW + 4;
         SaveIndicator(new Vector2(x, p.Y), p.X + w - x, 22);
@@ -381,7 +381,7 @@ internal sealed partial class MetaFace : IImGuiPanel
         float tw = ImGuiNET.ImGui.CalcTextSize(text).X;
         ImGuiNET.ImGui.SetCursorScreenPos(pos);
         ImGuiNET.ImGui.InvisibleButton("##save_ind", new Vector2(width, height));
-        ImGuiNET.ImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);
         ImGuiNET.ImGui.GetWindowDrawList().AddText(new Vector2(pos.X + Math.Max(0, width - tw), pos.Y + (height - ImGuiNET.ImGui.GetFontSize()) * 0.5f),
             color, text);
     }
@@ -549,7 +549,7 @@ internal sealed partial class MetaFace : IImGuiPanel
             rule.Enabled = !rule.Enabled;
             SendEdit(new MetaCmd { Op = "set_rule_enabled", Index = index, Value = rule.Enabled ? "true" : "false" });
         }
-        ImGuiNET.ImGui.SetItemTooltip(rule.Enabled ? "Enabled — click to disable" : "Disabled — click to enable");
+        SafeImGui.SetItemTooltip(rule.Enabled ? "Enabled — click to disable" : "Disabled — click to enable");
         x += 16;
 
         // Expand (only with children)
@@ -606,7 +606,7 @@ internal sealed partial class MetaFace : IImGuiPanel
                 _confirmDeleteUntil = NowMs + 3000;
             }
         }
-        ImGuiNET.ImGui.SetItemTooltip(arming ? "Click again to delete this rule" : "Delete rule");
+        SafeImGui.SetItemTooltip(arming ? "Click again to delete this rule" : "Delete rule");
 
         // Condition | action text; clicking it edits the rule.
         float textW = Math.Max(1, p.X + w - DeleteColumnW - x);
@@ -650,15 +650,15 @@ internal sealed partial class MetaFace : IImGuiPanel
         ImGuiNET.ImGui.Indent(22);
         if (MetaVocabulary.IsCompositeCondition(rule.Condition) && rule.Children.Count > 0)
         {
-            ImGuiNET.ImGui.TextColored(amber, "  " + MetaVocabulary.ConditionName(rule.Condition) + ":");
+            SafeImGui.TextColored(amber, "  " + MetaVocabulary.ConditionName(rule.Condition) + ":");
             foreach (MetaRuleDto child in rule.Children)
-                ImGuiNET.ImGui.TextColored(mute, "     • " + MetaVocabulary.CondText(child));
+                SafeImGui.TextColored(mute, "     • " + MetaVocabulary.CondText(child));
         }
         if (MetaVocabulary.IsAllAction(rule.Action) && rule.ActionChildren.Count > 0)
         {
             ImGuiNET.ImGui.TextColored(amber, "  All (actions):");
             foreach (MetaRuleDto child in rule.ActionChildren)
-                ImGuiNET.ImGui.TextColored(mute, "     • " + MetaVocabulary.ActText(child));
+                SafeImGui.TextColored(mute, "     • " + MetaVocabulary.ActText(child));
         }
         ImGuiNET.ImGui.Unindent(22);
         ImGuiNET.ImGui.PopFont();
@@ -742,7 +742,7 @@ internal sealed partial class MetaFace : IImGuiPanel
         if (showMsg)
         {
             ImGuiNET.ImGui.PushTextWrapPos(ImGuiNET.ImGui.GetCursorPosX() + w);
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(_msgOk ? 0xFF33CC66 : 0xFFE04848), _msg);
+            SafeImGui.TextColored(RynthTheme.Vec(_msgOk ? 0xFF33CC66 : 0xFFE04848), _msg);
             ImGuiNET.ImGui.PopTextWrapPos();
         }
         if (_sourceStale)
@@ -1260,7 +1260,7 @@ internal sealed partial class MetaFace : IImGuiPanel
     private static void FieldLabel(string text)
     {
         ImGuiNET.ImGui.Dummy(new Vector2(0, 1));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), text);
+        SafeImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), text);
     }
 
     private static void Separator(float w)

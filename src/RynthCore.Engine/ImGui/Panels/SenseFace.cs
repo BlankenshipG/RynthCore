@@ -190,7 +190,7 @@ internal sealed class SenseFace : IImGuiPanel
             if (ImGuiNET.ImGui.InvisibleButton("##t", new Vector2(chipW - xW, ChipH))) toggle = i;
             bool hotT = ImGuiNET.ImGui.IsItemHovered();
             if (hotT)
-                ImGuiNET.ImGui.SetItemTooltip(t.Enabled
+                SafeImGui.SetItemTooltip(t.Enabled
                     ? (t.IsGlob ? "On: the whole name must match (wildcards). Click to switch off." : "On: names containing this match. Click to switch off.")
                     : "Off. Click to switch on.");
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x + chipW - xW, y));

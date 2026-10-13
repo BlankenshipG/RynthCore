@@ -1231,7 +1231,7 @@ internal static class ImGuiPanelHost
             if (ImGuiNET.ImGui.Button(PhosphorIcons.ArrowCounterClockwise + " Reset"))
                 PanelTextScale.ResetWindow(title);
             ImGuiNET.ImGui.EndDisabled();
-            ImGuiNET.ImGui.SetItemTooltip(all == 0 ? "Back to normal size" : "Back to the All Panels size (Settings > Display)");
+            SafeImGui.SetItemTooltip(all == 0 ? "Back to normal size" : "Back to the All Panels size (Settings > Display)");
             ImGuiNET.ImGui.SameLine();
             if (ImGuiNET.ImGui.Button("Use for all windows"))
                 PanelTextScale.UseForAll(step);

@@ -676,7 +676,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
             dl.AddText(new Vector2(x, y), _summaryColors[i], _summary[i]);
             if (i == _radiancePart && _masteryTip.Length > 0
                 && ImGuiNET.ImGui.IsMouseHoveringRect(new Vector2(x, y), new Vector2(x + tw, y + lineH)))
-                ImGuiNET.ImGui.SetTooltip(_masteryTip);
+                SafeImGui.SetTooltip(_masteryTip);
             x += tw + 14;
         }
         long now = Environment.TickCount64;
@@ -735,7 +735,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
             _descending = !_descending;
             _orderDirty = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(_descending ? "Highest first" : "Lowest first");
+        SafeImGui.SetItemTooltip(_descending ? "Highest first" : "Lowest first");
         NextLine(p, 26);
     }
 
@@ -910,7 +910,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
         if (ImGuiNET.ImGui.IsItemHovered() && !expanded)
             dl.AddRect(p, p + new Vector2(w, RowH), BtnBord);
         if (r.MasteryText.Length > 0 && _masteryTip.Length > 0 && ImGuiNET.ImGui.IsMouseHoveringRect(badgeMin, badgeMax))
-            ImGuiNET.ImGui.SetTooltip(r.MasteryHover);
+            SafeImGui.SetTooltip(r.MasteryHover);
 
         // The row's action buttons: "+1" (raise one rank now, no confirm) and a caret that
         // opens +10 / +100 / Max on trained rows, attributes and vitals; Train (skill
@@ -923,13 +923,13 @@ internal sealed partial class SkillsFace : IImGuiPanel
             if (Button("##raise1", r.Max ? "max" : "+1", btnMin, oneSize, Teal, BtnFill, canRaise, border: canRaise ? Teal : 0)
                 && _snap != null)
                 SendRaise(r, _snap, 1);
-            ImGuiNET.ImGui.SetItemTooltip(why);
+            SafeImGui.SetItemTooltip(why);
             bool canMore = !r.Max && PlayerTraining.Available && !_pending;
             var caretMin = new Vector2(btnMin.X + oneSize.X + 2, btnMin.Y);
             if (IconButton("##raiseN", PhosphorIcons.CaretDown, caretMin, new Vector2(CaretW, RowH - 2), Teal, BtnFill,
                     canMore, font: UiFont.Ui11))
                 OpenMulti(r, caretMin + new Vector2(CaretW - MultiW, RowH));
-            ImGuiNET.ImGui.SetItemTooltip(canMore ? "Raise more: +10, +100 or Max"
+            SafeImGui.SetItemTooltip(canMore ? "Raise more: +10, +100 or Max"
                 : r.Max ? "At the top rank" : _pending ? "Waiting for the last raise to land"
                 : "Raising isn't available on this client build");
         }
@@ -938,7 +938,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
             bool canTrain = CanTrain(r, out string why);
             if (Button("##train", "Train", btnMin, btnSize, Amber, BtnFill, canTrain, border: canTrain ? Amber : 0))
                 OpenConfirm(r, train: true);
-            ImGuiNET.ImGui.SetItemTooltip(why);
+            SafeImGui.SetItemTooltip(why);
         }
         ImGuiNET.ImGui.PopID();
         NextLine(p, RowH);
@@ -1063,7 +1063,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
         {
             float tw = ImGuiNET.ImGui.CalcTextSize(r.MasteryLine).X;
             if (ImGuiNET.ImGui.IsMouseHoveringRect(new Vector2(x, y), new Vector2(x + 18 + tw, y + lineH)))
-                ImGuiNET.ImGui.SetTooltip(_masteryTip);
+                SafeImGui.SetTooltip(_masteryTip);
         }
         y += lineH;
         if (r.MasteryLine2.Length > 0)
@@ -1083,7 +1083,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
             if (Button("##mastery_raise", PhosphorIcons.Crown + " Raise mastery", new Vector2(x + 18, y), new Vector2(130, 22),
                     MasteryColor, BtnFill, can, border: can ? MasteryColor : 0))
                 OpenMasteryConfirm(r);
-            ImGuiNET.ImGui.SetItemTooltip(can ? why + "\nAsks before it spends anything." : why);
+            SafeImGui.SetItemTooltip(can ? why + "\nAsks before it spends anything." : why);
             ImGuiNET.ImGui.PopID();
             y += 26;
         }
@@ -1263,7 +1263,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
                 SendRaise(r, s, n);
             ImGuiNET.ImGui.CloseCurrentPopup();
         }
-        ImGuiNET.ImGui.SetItemTooltip(why);
+        SafeImGui.SetItemTooltip(why);
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         float tw = ImGuiNET.ImGui.CalcTextSize(right).X;
         dl.AddText(new Vector2(x + size.X - 6 - tw, y + (h - ImGuiNET.ImGui.GetFontSize()) * 0.5f), ok ? Teal : Dim, right);

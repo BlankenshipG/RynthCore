@@ -393,7 +393,7 @@ internal sealed class LootEditorFace : IImGuiPanel
                 if (i >= 0 && i < s.Files.Count) RequestOpen(s.Files[i].Path);
             }, Math.Max(260, pickW));
         }
-        ImGuiNET.ImGui.SetItemTooltip(s.Path.Length == 0 ? "Pick a loot profile" : s.Path);
+        SafeImGui.SetItemTooltip(s.Path.Length == 0 ? "Pick a loot profile" : s.Path);
         PhosphorIcons.DrawCentered(ImGuiNET.ImGui.GetWindowDrawList(), ImGuiFonts.Get(UiFont.Ui11), PhosphorIcons.CaretDown,
             new Vector2(p.X + pickW - 18, p.Y), new Vector2(16, h), Mute);
 
@@ -410,12 +410,12 @@ internal sealed class LootEditorFace : IImGuiPanel
         if (Button("##save", PhosphorIcons.FloppyDisk + " Save", new Vector2(x, p.Y), new Vector2(saveW, h),
                 canSave ? Green : Mute, canSave ? StartBg : BtnFill, canSave))
             Save(force: false);
-        ImGuiNET.ImGui.SetItemTooltip(_saveTip);
+        SafeImGui.SetItemTooltip(_saveTip);
         x += saveW + 4;
 
         if (IconButton("##external", PhosphorIcons.ArrowSquareOut, new Vector2(x, p.Y), new Vector2(icon, h), Text, BtnFill))
             LaunchExternal(s.Path.Length > 0 ? s.Path : s.InUsePath);
-        ImGuiNET.ImGui.SetItemTooltip(s.Dirty
+        SafeImGui.SetItemTooltip(s.Dirty
             ? "Open external editor (it reads the file on disk: save first to take your edits)"
             : "Open external editor");
         NextLine(p, h + 4);
@@ -455,7 +455,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         var b = new Vector2(x + ts.X + 12, y + h - 1);
         dl.AddRect(a, b, color, 8);
         dl.AddText(new Vector2(x + 6, y + (h - ts.Y) * 0.5f), color, text);
-        if (ImGuiNET.ImGui.IsMouseHoveringRect(a, b) && tooltip.Length > 0) ImGuiNET.ImGui.SetTooltip(tooltip);
+        if (ImGuiNET.ImGui.IsMouseHoveringRect(a, b) && tooltip.Length > 0) SafeImGui.SetTooltip(tooltip);
         return b.X + 6;
     }
 
@@ -650,7 +650,7 @@ internal sealed class LootEditorFace : IImGuiPanel
             LootEditCommands.Simple("set_enabled", index, r.Enabled ? "false" : "true", expect: r.Name);
             changed = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(r.Enabled ? "Enabled: click to disable" : "Disabled: click to enable");
+        SafeImGui.SetItemTooltip(r.Enabled ? "Enabled: click to disable" : "Disabled: click to enable");
         x += 20;
 
         // Action badge
@@ -675,7 +675,7 @@ internal sealed class LootEditorFace : IImGuiPanel
             Expect(Await.ScrollFocus);
             changed = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(reorder ? "Move up" : Filtering ? "Clear the search and filter to reorder" : "Move up");
+        SafeImGui.SetItemTooltip(reorder ? "Move up" : Filtering ? "Clear the search and filter to reorder" : "Move up");
         bx += 18;
         if (IconButton("##dn", PhosphorIcons.ArrowDown, new Vector2(bx, p.Y + 2), new Vector2(16, 16), Mute, BtnFill,
                 reorder && index < s.Rules.Count - 1, font: UiFont.Ui11))
@@ -684,7 +684,7 @@ internal sealed class LootEditorFace : IImGuiPanel
             Expect(Await.ScrollFocus);
             changed = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(reorder ? "Move down" : Filtering ? "Clear the search and filter to reorder" : "Move down");
+        SafeImGui.SetItemTooltip(reorder ? "Move down" : Filtering ? "Clear the search and filter to reorder" : "Move down");
         bx += 18;
         if (IconButton("##dup", PhosphorIcons.Copy, new Vector2(bx, p.Y + 2), new Vector2(16, 16), Mute, BtnFill, !ro, font: UiFont.Ui11))
         {
@@ -710,7 +710,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         {
             ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
             dl.AddRect(new Vector2(x - 2, p.Y), new Vector2(x + textW, p.Y + RowH), BtnBord, 2);
-            ImGuiNET.ImGui.SetTooltip((r.Name.Length == 0 ? "(no name)" : r.Name) + "\n" + r.Summary);
+            SafeImGui.SetTooltip((r.Name.Length == 0 ? "(no name)" : r.Name) + "\n" + r.Summary);
         }
         ImGuiNET.ImGui.PopID();
 
@@ -754,7 +754,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         bool canItem = s.Path.Length > 0 && !s.Dirty && (!s.ReadOnly || s.Format == "json");
         if (Button("##add_item", itemLabel, new Vector2(p.X + addW + 6, p.Y), new Vector2(itemW, h), canItem ? Teal : Mute, BtnFill, canItem))
             _lootAdd.Open(0, string.Empty, toOpenProfile: true);
-        ImGuiNET.ImGui.SetItemTooltip(canItem
+        SafeImGui.SetItemTooltip(canItem
             ? "A rule for the item selected in the game (click it first): preview, then add it here"
             : s.Dirty ? "Save or discard your edits first" : "This profile is read-only here");
         addW += itemW + 6;
@@ -769,7 +769,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         dl.PushClipRect(at, new Vector2(Math.Max(at.X + 1, right), at.Y + h), true);
         dl.AddText(new Vector2(at.X, at.Y + (h - ImGuiNET.ImGui.GetFontSize()) * 0.5f), _msgOk ? Green : Red, _msg);
         dl.PopClipRect();
-        if (ImGuiNET.ImGui.IsMouseHoveringRect(at, new Vector2(right, at.Y + h))) ImGuiNET.ImGui.SetTooltip(_msg);
+        if (ImGuiNET.ImGui.IsMouseHoveringRect(at, new Vector2(right, at.Y + h))) SafeImGui.SetTooltip(_msg);
     }
 
     // =====================================================================
@@ -1017,7 +1017,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         {
             if (!_rawShown.Remove(i)) _rawShown.Add(i);
         }
-        ImGuiNET.ImGui.SetItemTooltip(rawToggle ? "Show the raw data lines (any key id, any value)" : "This condition is edited as raw lines");
+        SafeImGui.SetItemTooltip(rawToggle ? "Show the raw data lines (any key id, any value)" : "This condition is edited as raw lines");
         tx += 18;
         int result = 0;
         int prev = PrevVisible(r, i), next = NextVisible(r, i);
@@ -1105,7 +1105,7 @@ internal sealed class LootEditorFace : IImGuiPanel
                 string hint = node.Labels.Count > 0 ? node.Labels[0].ToLowerInvariant() : "value";
                 if (Field("##val", FieldFor(i, 0), c.Lines[0], new Vector2(p.X + kw + 2, p.Y), w - kw - 2, hint, ro, out string v, h))
                     c.Lines[0] = v;
-                ImGuiNET.ImGui.SetItemTooltip(node.Labels.Count > 0 ? node.Labels[0] : "Value");
+                SafeImGui.SetItemTooltip(node.Labels.Count > 0 ? node.Labels[0] : "Value");
                 break;
             }
             case "keypattern":
@@ -1153,7 +1153,7 @@ internal sealed class LootEditorFace : IImGuiPanel
                 ClearFields();
             }, Math.Max(220, w));
         }
-        ImGuiNET.ImGui.SetItemTooltip(sel >= 0 ? table.Names[sel] : "Not in the list: use the raw lines button to type any id");
+        SafeImGui.SetItemTooltip(sel >= 0 ? table.Names[sel] : "Not in the list: use the raw lines button to type any id");
     }
 
     /// <summary>The value names for this condition's long key, or null (no table, or a RynthAi that sends none).</summary>
@@ -1185,7 +1185,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         }
         string tip = sel >= 0 ? table.Items[sel] : "Not in the list: pick \"" + OtherNumber + "\" to type any number";
         if (table.Flags) tip += "\nFlags: other combinations are typed as a number";
-        ImGuiNET.ImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);
     }
 
     /// <summary>A whole number: "45", "45.0" (a buffed-long value written as a double).</summary>

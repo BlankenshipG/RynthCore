@@ -166,7 +166,7 @@ internal sealed partial class MetaFace
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, y));
         TextBox(id, buf, boxW, "", ImGuiInputTextFlags.CharsDecimal, out _);
         bool done = ImGuiNET.ImGui.IsItemDeactivatedAfterEdit();
-        ImGuiNET.ImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);
         if (done && int.TryParse(Utf8(buf).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int n))
             commit(n);
         x += boxW + 3;
@@ -183,9 +183,9 @@ internal sealed partial class MetaFace
             : sc.LastPollMs == 0 ? "Waiting for the first /myquests."
             : $"{sc.QuestCount} quest timer(s), /myquests {Span(now - sc.LastPollMs)} ago.";
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(sc.ServerDisabled ? 0xFFE8B333 : 0xFFC8D6E4), Fit(poll, w));
+        SafeImGui.TextColored(RynthTheme.Vec(sc.ServerDisabled ? 0xFFE8B333 : 0xFFC8D6E4), Fit(poll, w));
         if (sc.LastSwitch.Length > 0)
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6),
+            SafeImGui.TextColored(RynthTheme.Vec(0xFF26D9E6),
                 Fit($"Last: {sc.LastSwitch}{(sc.LastSwitchMs > 0 ? $", {Span(now - sc.LastSwitchMs)} ago" : "")}", w));
         ImGuiNET.ImGui.PopFont();
     }
@@ -220,7 +220,7 @@ internal sealed partial class MetaFace
                 r.Enabled = !r.Enabled;
                 MetaCommands.Simple("mm_rule_enabled", i, r.Enabled ? "true" : "false");
             }
-            ImGuiNET.ImGui.SetItemTooltip(r.Enabled ? "On - click to turn this rule off" : "Off - click to turn it on");
+            SafeImGui.SetItemTooltip(r.Enabled ? "On - click to turn this rule off" : "Off - click to turn it on");
             x += 16;
             if (IconButton("##up", PhosphorIcons.ArrowUp, new Vector2(x + 1, p.Y + 2), new Vector2(16, 16), Mute, BtnFill, BtnBord, enabled: i > 0))
             {
@@ -245,7 +245,7 @@ internal sealed partial class MetaFace
                 if (IconButton("##cd", running ? PhosphorIcons.Stop : PhosphorIcons.Play, new Vector2(x + 1, p.Y + 2), new Vector2(16, 16),
                         running ? Amber : Green, BtnFill, BtnBord))
                     MetaCommands.Simple(running ? "mm_countdown_stop" : "mm_countdown_start", i);
-                ImGuiNET.ImGui.SetItemTooltip(running ? "Stop the countdown" : $"Start the countdown ({Num(r.Minutes)} min)");
+                SafeImGui.SetItemTooltip(running ? "Stop the countdown" : $"Start the countdown ({Num(r.Minutes)} min)");
             }
             else if (r.Fired || (r.State ?? "").StartsWith("error", StringComparison.Ordinal) || (r.State ?? "").Contains("holding"))
             {
@@ -270,7 +270,7 @@ internal sealed partial class MetaFace
             if (ImGuiNET.ImGui.IsItemHovered())
             {
                 ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-                ImGuiNET.ImGui.SetTooltip(RuleTooltip(r, i, first));
+                SafeImGui.SetTooltip(RuleTooltip(r, i, first));
             }
             ImGuiNET.ImGui.PopID();
             if (changed) return;   // the list changed: draw it again next frame
@@ -367,7 +367,7 @@ internal sealed partial class MetaFace
         ScheduleRuleDto r = _schedRule;
 
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), _schedEdit == -1 ? "New rule" : $"Edit rule {_schedEdit + 1}");
+        SafeImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), _schedEdit == -1 ? "New rule" : $"Edit rule {_schedEdit + 1}");
         ImGuiNET.ImGui.PopFont();
 
         FieldLabel("When:");
@@ -428,7 +428,7 @@ internal sealed partial class MetaFace
             else MetaCommands.Send(new MetaCmd { Op = "mm_update", Index = _schedEdit, ScheduleRule = send });
             _schedEdit = -2;
         }
-        if (!valid) ImGuiNET.ImGui.SetItemTooltip(r.Meta.Length == 0 ? "Pick a meta to load" : "Name the quest");
+        if (!valid) SafeImGui.SetItemTooltip(r.Meta.Length == 0 ? "Pick a meta to load" : "Name the quest");
         if (Button("Cancel##sched_cancel", new Vector2(b.X + sw + 6, b.Y), new Vector2(60, 22), Mute, BtnFill, BtnBord))
             _schedEdit = -2;
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(b.X, b.Y + 22));

@@ -210,7 +210,7 @@ internal sealed class VisionFace : IImGuiPanel
     {
         ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        ImGuiNET.ImGui.TextColored(HeaderColor, text);
+        SafeImGui.TextColored(HeaderColor, text);
         ImGuiNET.ImGui.PopFont();
     }
 
@@ -251,7 +251,7 @@ internal sealed class VisionFace : IImGuiPanel
             WriteUtf8(hex, argb.ToString("X8"));
         }
         if (ImGuiNET.ImGui.IsItemDeactivatedAfterEdit()) Save(f.Key);
-        ImGuiNET.ImGui.SetItemTooltip("0% = invisible, 100% = solid. Ctrl+click to type a value");
+        SafeImGui.SetItemTooltip("0% = invisible, 100% = solid. Ctrl+click to type a value");
         return ImGuiNET.ImGui.IsItemActive();
     }
 

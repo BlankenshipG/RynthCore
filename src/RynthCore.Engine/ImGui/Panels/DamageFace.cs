@@ -442,7 +442,7 @@ internal sealed class DamageFace : IImGuiPanel
             OpenPicker(new Vector2(x, y + 22), t.Following ? FollowTier : (uint)t.View, id =>
                 DamageCommands.SetViewTier(id == FollowTier ? -1 : (int)id));
         }
-        ImGuiNET.ImGui.SetItemTooltip(
+        SafeImGui.SetItemTooltip(
             "Aelrynth's awakened worlds and scaled dungeons have the same monsters, with " +
             $"{t.Percent.ToString("0.#", CultureInfo.InvariantCulture)}% more health, skills and damage per tier.\n" +
             "HP, kills, casts to kill, seconds per kill and hit rate here are this tier's; damage per cast,\n" +
@@ -504,7 +504,7 @@ internal sealed class DamageFace : IImGuiPanel
         if (all == null || count == 0)
         {
             ImGuiNET.ImGui.Dummy(new Vector2(0, 3));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), all == null
+            SafeImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), all == null
                 ? "  Monster rules not loaded yet." : "  No name rules yet: add one below.");
         }
         else
@@ -536,7 +536,7 @@ internal sealed class DamageFace : IImGuiPanel
         string name = r.Name;
         if (NameLink("##rn", name, new Vector2(p.X + 4, p.Y), nameW - 8, met ? White : Gold, ImGuiFonts.Get(UiFont.Ui11)))
             OpenRule(name);
-        ImGuiNET.ImGui.SetItemTooltip(met
+        SafeImGui.SetItemTooltip(met
             ? "This monster's own settings (wcid " + wcid.ToString(CultureInfo.InvariantCulture) + "). Click for its details."
             : "Click to edit this rule.");
         float x = p.X + nameW;
@@ -553,7 +553,7 @@ internal sealed class DamageFace : IImGuiPanel
         {
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, p.Y));
             ImGuiNET.ImGui.InvisibleButton("##rx", new Vector2(exprW, RowH));
-            ImGuiNET.ImGui.SetItemTooltip("Match expression: " + r.MatchExpression);
+            SafeImGui.SetItemTooltip("Match expression: " + r.MatchExpression);
         }
         x += exprW;
 
@@ -569,7 +569,7 @@ internal sealed class DamageFace : IImGuiPanel
             if (armed) { DamageCommands.ResetRule(name); _armedDelete = ""; }
             else _armedDelete = name;
         }
-        ImGuiNET.ImGui.SetItemTooltip(armed ? "Click again to delete " + name : "Delete this rule (click twice)");
+        SafeImGui.SetItemTooltip(armed ? "Click again to delete " + name : "Delete this rule (click twice)");
 
         ImGuiNET.ImGui.PopID();
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + RowH));
@@ -663,7 +663,7 @@ internal sealed class DamageFace : IImGuiPanel
                 SortShown();
             }
             if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-            ImGuiNET.ImGui.SetItemTooltip("Sort by " + Headers[c]);
+            SafeImGui.SetItemTooltip("Sort by " + Headers[c]);
             string label = Headers[c] + (_sortCol == c ? (_sortDesc ? SortDown : SortUp) : "");
             dl.AddText(bold, bold.FontSize, new Vector2(p.X + ColX[c] + 4, p.Y + (RowH - bold.FontSize) * 0.5f),
                 _sortCol == c ? Teal : White, label);
@@ -691,7 +691,7 @@ internal sealed class DamageFace : IImGuiPanel
             bool filtering = _filterWid != 0 || _searchText.Length > 0;
             bool anyData = _view.Rows.Exists(r => !r.IsDefault);
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), anyData && filtering
+            SafeImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), anyData && filtering
                 ? "  No monsters match the current filter."
                 : "  No monsters yet: fight some and they show up here.");
         }
@@ -765,7 +765,7 @@ internal sealed class DamageFace : IImGuiPanel
         if (NameLink("##name", r.Name, new Vector2(p.X + ColX[ColMonster] + 22, p.Y), ColW[ColMonster] - 24, custom ? Gold : White,
                 ImGuiFonts.Get(UiFont.Ui11)))
             DamageDetailFace.Show(r.Wcid, r.Name);
-        ImGuiNET.ImGui.SetItemTooltip("Details: weaknesses, accuracy, damage, summons, damage taken and spell settings (wcid " + t.Wcid + ").");
+        SafeImGui.SetItemTooltip("Details: weaknesses, accuracy, damage, summons, damage taken and spell settings (wcid " + t.Wcid + ").");
 
         PrioCell(r.Key, r.Name, t.PrioCopyFrom, t, p);
         HpCell(r, p);
@@ -775,7 +775,7 @@ internal sealed class DamageFace : IImGuiPanel
             dl.AddText(new Vector2(p.X + ColX[ColWeak] + 4, ty), White, Fit(t.WeakTop, ColW[ColWeak] - 8));
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + ColX[ColWeak], p.Y));
             ImGuiNET.ImGui.InvisibleButton("##weak", new Vector2(ColW[ColWeak], RowH));
-            ImGuiNET.ImGui.SetItemTooltip(r.Weak + "\nDamage taken: 1.0 = full, 0.5 = half. From " + r.WeakSrc
+            SafeImGui.SetItemTooltip(r.Weak + "\nDamage taken: 1.0 = full, 0.5 = half. From " + r.WeakSrc
                 + ".\nAuto spells, weapons and summons use the first element this character has.");
         }
         else
@@ -818,7 +818,7 @@ internal sealed class DamageFace : IImGuiPanel
         dl.AddText(new Vector2(p.X + ColX[ColSec] + 4, ty), r.SecKill > 0 ? White : Dim, t.Sec);
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + ColX[ColSec], p.Y));
         ImGuiNET.ImGui.InvisibleButton("##sec", new Vector2(ColW[ColSec], RowH));
-        ImGuiNET.ImGui.SetItemTooltip(t.SecTip);
+        SafeImGui.SetItemTooltip(t.SecTip);
 
         DebuffCell(r.Name, p, ty);
 
@@ -828,7 +828,7 @@ internal sealed class DamageFace : IImGuiPanel
             _removeName = r.Name;
             _removeOpen = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip("Remove " + r.Name + " from this list (asks first).");
+        SafeImGui.SetItemTooltip("Remove " + r.Name + " from this list (asks first).");
 
         ImGuiNET.ImGui.PopID();
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + RowH));
@@ -944,7 +944,7 @@ internal sealed class DamageFace : IImGuiPanel
             WriteUtf8(_customBuf, view.CustomDebuffs ?? "");
             _debuffOpen = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip("Debuffs to cast on " + name);
+        SafeImGui.SetItemTooltip("Debuffs to cast on " + name);
         if (view == null) return;
         string marks = DamageCommands.DebuffMarks(view);
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
@@ -953,7 +953,7 @@ internal sealed class DamageFace : IImGuiPanel
         {
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(bp.X + 22, p.Y));
             ImGuiNET.ImGui.InvisibleButton("##dmarks", new Vector2(Math.Max(1, ColW[ColDebuffs] - 26), RowH));
-            ImGuiNET.ImGui.SetItemTooltip(DebuffTip(view));
+            SafeImGui.SetItemTooltip(DebuffTip(view));
         }
     }
 
@@ -989,7 +989,7 @@ internal sealed class DamageFace : IImGuiPanel
         Rule? view = RuleFor(name, out bool custom);
         bool isDefault = name.Equals("Default", StringComparison.OrdinalIgnoreCase);
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), "Debuffs · " + name);
+        SafeImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), "Debuffs · " + name);
         ImGuiNET.ImGui.PopFont();
         if (view == null)
         {
@@ -998,7 +998,7 @@ internal sealed class DamageFace : IImGuiPanel
             return;
         }
         ImGuiNET.ImGui.PushTextWrapPos(0);
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(custom || isDefault ? 0xFFFFD16A : 0xFFC8D4E0),
+        SafeImGui.TextColored(RynthTheme.Vec(custom || isDefault ? 0xFFFFD16A : 0xFFC8D4E0),
             isDefault ? "Every monster set to Default uses these." : custom ? "This monster's own debuffs." : "Following Default: a change here gives it its own.");
         ImGuiNET.ImGui.PopTextWrapPos();
 
@@ -1011,7 +1011,7 @@ internal sealed class DamageFace : IImGuiPanel
                 string f = field;
                 DamageCommands.EditRule(name, rule => rule.SetToggle(f, v));
             }
-            ImGuiNET.ImGui.SetItemTooltip(tip);
+            SafeImGui.SetItemTooltip(tip);
         }
 
         ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), "Extra Vuln");
@@ -1150,7 +1150,7 @@ internal sealed class DamageFace : IImGuiPanel
         bool commit = enter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit();
         ImGuiNET.ImGui.PopStyleVar();
         ImGuiNET.ImGui.PopStyleColor(2);
-        ImGuiNET.ImGui.SetItemTooltip(t.PrioTip + "\nType a number, Enter to save.");
+        SafeImGui.SetItemTooltip(t.PrioTip + "\nType a number, Enter to save.");
         if (!commit) return;
 
         if (int.TryParse(Utf8(e.Buffer).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int typed))
@@ -1299,7 +1299,7 @@ internal sealed class DamageFace : IImGuiPanel
         if (ropen)
         {
             ImGuiNET.ImGui.PushTextWrapPos(0);
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), "Remove " + _removeName + "?");
+            SafeImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), "Remove " + _removeName + "?");
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
             ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC),
                 "Its learned numbers and your settings for it (weapon, offhand, pet, HP) are deleted. It comes back if you meet it again.");
