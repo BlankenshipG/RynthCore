@@ -35,11 +35,13 @@ internal static class UiSources
     public static readonly LootEditSource LootEdit = new();
     public static readonly SenseSource Sense = new();
     public static readonly BountiesSource Bounties = new();
+    public static readonly IltStatusSource IltStatus = new();
     public static readonly CharactersSource Characters = new();
 
     static UiSources()
     {
         UiDataHub.Register(Bounties);
+        UiDataHub.Register(IltStatus);
         UiDataHub.Register(Settings);
         UiDataHub.Register(Meta);
         UiDataHub.Register(LootEdit);

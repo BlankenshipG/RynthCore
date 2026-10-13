@@ -209,7 +209,7 @@ internal static class EngineSettings
     }
 
     /// <summary>When true (default) and the ImGui shell is off, plugins that export
-    /// RynthPluginRenderOverlay draw their extra ImGui windows (RynthAi: ILT Hub, Item Info)
+    /// RynthPluginRenderOverlay draw their extra ImGui windows (RynthAi: Mini Remote, Item Info; RynthILT: Games HUD)
     /// beside the Avalonia UI. engine.json "EnablePluginOverlayWindows": false hides them.
     /// Needs <see cref="EnableImGuiBackend"/>.</summary>
     public static bool EnablePluginOverlayWindows

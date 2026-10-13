@@ -495,7 +495,7 @@ internal static class EngineFrameController
         {
             // Plugins only get the ImGui context when they may draw with it: the
             // ImGui shell (EnableImGuiShell, FORCE-gated) or their own overlay
-            // windows (EnablePluginOverlayWindows: RynthAi's ILT Hub, HUDs, Item
+            // windows (EnablePluginOverlayWindows: RynthAi's Mini Remote, HUDs, Item
             // Info; RynthPluginRenderOverlay). RynthAi only reads the context for
             // those windows, so this does not switch it into a legacy-ImGui setup.
             bool pluginsDraw = Plugins.EngineSettings.EnableImGuiShell

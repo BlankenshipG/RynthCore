@@ -39,6 +39,7 @@ internal static class Program
             Run("CommandParsing", CommandParsing);
             Run("VTankActions", VTankActions);
             Run("MetaStateParam", MetaStateParam);
+            Run("IltPanelsOnlyOnIlt", IltPanelsOnlyOnIlt);
         }
         finally
         {
@@ -316,6 +317,37 @@ internal static class Program
         Check(wWarn.Count == 1 && wWarn[0].Contains("AC won't get that key"), "AC-key warning text");
     }
 
+    // RynthILT's panels (Bounties, Guardian) are hotkey actions only where the bar's ILT button is:
+    // Infinite Leaftide with RynthILT loaded (the engine sets IltAvailable from IltInfo).
+    private static void IltPanelsOnlyOnIlt()
+    {
+        Func<bool> saved = HotkeyActions.IltAvailable;
+        try
+        {
+            HotkeyAction? bounties = HotkeyActions.Find("panel:Bounties");
+            HotkeyAction? guardian = HotkeyActions.Find("panel:Guardian");
+            Check(bounties is { Ilt: true, Panel: "Bounties" } && guardian is { Ilt: true, Panel: "Guardian" }, "both ILT panels are built-ins, marked ILT");
+            int iltCount = 0;
+            foreach (HotkeyAction a in HotkeyActions.BuiltIns) if (a.Ilt) iltCount++;
+            Check(iltCount == 2, "only those two are ILT");
+
+            HotkeyActions.IltAvailable = static () => false;
+            Check(!HotkeyActions.Offered(bounties!) && !HotkeyActions.Offered(guardian!), "off ILT: not offered");
+            Check(HotkeyActions.Resolve("bounties") == null && HotkeyActions.Resolve("panel guardian") == null, "off ILT: can't be typed");
+            Check(HotkeyActions.Offered(HotkeyActions.Find("panel:Radar")!), "other panels are offered anywhere");
+            Check(HotkeyActions.Describe(new HotkeyBinding(new KeyCombo(VK_F5, 0), "panel:Bounties")).Contains("Bounties"),
+                "off ILT a saved binding still describes itself");
+
+            HotkeyActions.IltAvailable = static () => true;
+            Check(HotkeyActions.Offered(bounties!) && HotkeyActions.Resolve("bounties") == bounties, "on ILT: offered, typed by title");
+            Check(HotkeyActions.Resolve("panel guardian") == guardian, "on ILT: 'panel guardian'");
+
+            HotkeyActions.IltAvailable = static () => throw new InvalidOperationException("no engine");
+            Check(!HotkeyActions.Offered(bounties!), "a failing check counts as off ILT");
+        }
+        finally { HotkeyActions.IltAvailable = saved; }
+    }
+
     private static void ActionsResolve()
     {
         Check(HotkeyActions.Resolve("combat")?.Id == "combat", "id");
@@ -332,7 +364,7 @@ internal static class Program
         {
             Check(ids.Add(a.Id), $"unique id {a.Id}");
             Check(HotkeyActions.Find(a.Id) == a, $"Find({a.Id})");
-            Check(HotkeyActions.Resolve(a.Id) == a, $"Resolve({a.Id})");
+            Check(HotkeyActions.Resolve(a.Id) == (HotkeyActions.Offered(a) ? a : null), $"Resolve({a.Id})");
         }
         Check(HotkeyActions.Describe(new HotkeyBinding(new KeyCombo(VK_F1, 0), "command", "/ra start")) == "Chat: /ra start", "describe command");
         Check(HotkeyActions.Describe(new HotkeyBinding(new KeyCombo(VK_F1, 0), "gone")).Contains("Unknown"), "describe unknown");

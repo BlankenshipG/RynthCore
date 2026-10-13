@@ -804,7 +804,7 @@ internal static class SettingsPanel
     }
 
     /// <summary>
-    /// [All on] [All off] [ILT Hub on] over a 3-column grid of toggles, one per RynthAi trace
+    /// [All on] [All off] over a 3-column grid of toggles, one per RynthAi trace
     /// category. Each change edits DiagCategories, saves, and rebuilds the tab so the grid redraws.
     /// </summary>
     private static Control TraceCategoriesRow(PanelState state, SettingRow row)
@@ -835,7 +835,6 @@ internal static class SettingsPanel
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 0, 0, 4) };
         buttons.Children.Add(Bulk("All on", () => TraceCategoryLevels.Set(state.Data.DiagCategories, "", true)));
         buttons.Children.Add(Bulk("All off", () => TraceCategoryLevels.Set(state.Data.DiagCategories, "", false)));
-        buttons.Children.Add(Bulk("ILT Hub on", () => TraceCategoryLevels.Set(state.Data.DiagCategories, "", true, "Ilt")));
         if (row.Tooltip != null)
         {
             ToolTip.SetTip(buttons, row.Tooltip);

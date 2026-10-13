@@ -329,8 +329,8 @@ internal static class RynthCoreChatCommands
         }
 
         // /rc bounties|guardian [show|hide|toggle] : the ILT section's panels, like the bar's
-        // ILT button (Bounties: the RynthILT plugin's tracker; Guardian: RynthAi's Temple
-        // guardian tools). Only on Infinite Leaftide with the plugin installed.
+        // ILT button (the RynthILT plugin's bounty tracker and Temple guardian tools). Only on
+        // Infinite Leaftide with RynthILT installed.
         if (IsVerb(sub, "bounties", out string panelArgs) || IsVerb(sub, "bounty", out panelArgs) || IsVerb(sub, "bountys", out panelArgs))
         {
             IltPanel(ImGuiBackend.Panels.BountiesFace.Title, "Bounties", "RynthILT", panelArgs);
@@ -338,13 +338,14 @@ internal static class RynthCoreChatCommands
         }
         if (IsVerb(sub, "guardian", out panelArgs) || IsVerb(sub, "guardians", out panelArgs))
         {
-            IltPanel(ImGuiBackend.Panels.GuardianFace.Title, "Guardian", "RynthAi", panelArgs);
+            IltPanel(ImGuiBackend.Panels.GuardianFace.Title, "Guardian", "RynthILT", panelArgs);
             return true;
         }
 
         // /rc miniremote [show|hide|toggle|tab <tab>] : the ImGui Mini Remote panel, like its bar
-        // button (RynthAi's dashboard and "/ra hub" use show / hide). "tab" opens it on one of
-        // RynthAi's tabs (character, quests, pets, banking, gear, games; none = the remote).
+        // button (RynthAi's dashboard and "/ra hub" use show / hide). "tab" opens it on one of its
+        // tabs (RynthAi's quests, pets; RynthILT's character, banking, gear, charms, games; none =
+        // the remote).
         if (IsVerb(sub, "miniremote", out string remoteArgs) || IsVerb(sub, "remote", out remoteArgs))
         {
             if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.MiniRemoteFace.Title))
@@ -362,7 +363,7 @@ internal static class RynthCoreChatCommands
         }
 
         // /rc skills [show|hide|toggle] : the ImGui Skills panel; /rc progression opens it on its
-        // Progression tab (ILT worlds; the tab shows once RynthAi reports ILT features).
+        // Progression tab (ILT worlds; the tab shows once RynthILT reports ILT features).
         if (IsVerb(sub, "skills", out string skillsArgs))
         {
             if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SkillsFace.Title))
@@ -721,12 +722,10 @@ internal static class RynthCoreChatCommands
         Reply($"ILT: {(v.IsIlt ? "Infinite Leaftide" : "not Infinite Leaftide")} - {v.Reason}.");
         Reply($"Signals: host {ServerInfo.HostDescription}; world name {AccountHooks.AnnouncedWorldName ?? "(not announced)"}; "
             + $"override {IltInfo.Override}. Lists: {IltInfo.ListsDescription}.");
-        bool bounties = ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.BountiesFace.Title);
-        bool guardian = ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.GuardianFace.Title);
-        Reply(bounties ? "RynthILT: installed (Bounties: the ILT bar button or /rc bounties)."
-            : "RynthILT: not installed (no Bounties panel).");
-        Reply(guardian ? "RynthAi: installed (Guardian: the ILT bar button or /rc guardian; the ILT tabs: the Mini Remote)."
-            : "RynthAi: not installed (no Guardian panel or ILT tabs).");
+        bool installed = ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.BountiesFace.Title);
+        Reply(!installed ? "RynthILT: not installed (no ILT features: Bounties, Guardian, the Mini Remote's ILT tabs, Progression)."
+            : IltInfo.PluginLoaded ? "RynthILT: loaded (the ILT bar button: Bounties, Guardian; the Mini Remote's ILT tabs; /rc progression)."
+            : "RynthILT: installed but not loaded (yet).");
     }
 
     private static void HandleMasteryCommand()

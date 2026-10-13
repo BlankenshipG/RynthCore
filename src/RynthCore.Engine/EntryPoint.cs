@@ -578,29 +578,31 @@ public static class EntryPoint
         if (_serverMenusRegistered) return;
         _serverMenusRegistered = true;
 
-        // Infinite Leaftide: IltInfo (host / world name lists, or "/rc ilt on" for the session).
-        UI.ServerMenus.DefineServer("ilt", "Infinite Leaftide", static () => IltInfo.IsIlt, "/rc ilt on");
-        if (rynthAi)
+        // Infinite Leaftide: IltInfo (host / world name lists, RynthILT's own verdict, or "/rc ilt on"
+        // for the session), with RynthILT loaded: every ILT window is RynthILT's (since 2026-10-13).
+        UI.ServerMenus.DefineServer("ilt", "Infinite Leaftide", static () => IltInfo.IsIlt && IltInfo.PluginLoaded, "/rc ilt on");
+        if (rynthIlt && rynthAi)
         {
-            // RynthAi's ILT features: the Mini Remote's ILT tabs (shown once the server reports each
-            // on). Its Quests and Pets tabs are universal: the Character half of the menus.
+            // RynthILT's ILT tabs in RynthAi's Mini Remote (shown once the server reports each on).
+            // The Mini Remote's Quests and Pets tabs are universal: the Character half of the menus.
             foreach ((string label, string tab) in new[]
             {
                 ("Character", "character"), ("Banking", "banking"), ("Gear", "gear"), ("Charms", "charms"), ("Games", "games"),
             })
             {
                 UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem(label, "/rc miniremote tab " + tab,
-                    $"The Mini Remote's {label} tab (RynthAi).", "tab:" + tab));
+                    $"The Mini Remote's {label} tab (RynthILT).", "tab:" + tab));
             }
-            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Guardian", "/rc guardian toggle",
-                "Temple of Enlightenment guardians: riddle answers and Give (RynthAi)."));
         }
         if (rynthIlt)
+        {
+            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Guardian", "/rc guardian toggle",
+                "Temple of Enlightenment guardians: riddle answers and Give (RynthILT)."));
             UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Bounties", "/rc bounties toggle",
                 "ACECustom bounties and your progress on each (RynthILT)."));
-        if (rynthAi)
             UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Progression", "/rc progression",
-                "XP planner, augmentations and enlightenment (the Skills panel's Progression tab)."));
+                "XP planner, augmentations and enlightenment (the Skills panel's Progression tab; RynthILT)."));
+        }
         UI.ServerMenus.PushToRynthAi = rynthAi;
     }
 
@@ -1084,13 +1086,15 @@ public static class EntryPoint
                 // Characters (your other RynthCore clients, through RynthNet): only with RynthNet installed.
                 if (HasPluginDll("RynthCore.Plugin.RynthNet.dll"))
                     ImGuiBackend.Panels.CharactersFace.Register();
-                // The ILT section (Infinite Leaftide): each face exists only with its plugin
-                // installed (Bounties: RynthILT, Guardian: RynthAi), and the bar's ILT button
-                // shows them only on ILT (IltInfo).
+                // The ILT section (Infinite Leaftide): its faces exist only with RynthILT installed
+                // (Bounties, Guardian), and the bar's ILT button shows them only on ILT with RynthILT
+                // loaded (IltInfo; IltStatusSource asks RynthILT once a second).
                 if (HasPluginDll("RynthCore.Plugin.RynthILT.dll"))
+                {
                     ImGuiBackend.Panels.BountiesFace.Register();
-                if (HasPluginDll("RynthCore.Plugin.RynthAi.dll"))
                     ImGuiBackend.Panels.GuardianFace.Register();
+                    UI.Data.UiSources.IltStatus.Subscribe();
+                }
                 if (HasPluginDll("RynthCore.Plugin.RynthChat.dll"))
                 {
                     ImGuiBackend.Panels.ChatFace.Register();

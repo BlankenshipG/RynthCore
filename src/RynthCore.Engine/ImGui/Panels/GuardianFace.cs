@@ -1,12 +1,14 @@
 // ============================================================================
 //  RynthCore.Engine - ImGui/Panels/GuardianFace.cs
 //  Temple of Enlightenment guardians (riddle answers, Give, the phrasebook),
-//  drawn by RynthAi through RynthPluginRenderEmbed ("guardian"). Part of the
-//  ILT section: registered when RynthAi is installed, opened from the bar's ILT
-//  button or "/rc guardian" on Infinite Leaftide only. ImGui-only.
+//  drawn by RynthILT through RynthPluginRenderEmbed ("guardian"; RynthAi drew it
+//  until the ILT Hub moved to RynthILT, 2026-10-13, and an older RynthAi still
+//  answers when RynthILT has no Guardian). Part of the ILT section: registered
+//  when RynthILT is installed, opened from the bar's ILT button or "/rc guardian"
+//  on Infinite Leaftide only. ImGui-only.
 //
 //  The panel is user-sized: the plugin fills the body it is given. Until
-//  RynthAi can draw it (not logged in, too old for the surface, or its embed
+//  RynthILT can draw it (not logged in, too old for the surface, or its embed
 //  failed) the body says why.
 // ============================================================================
 
@@ -26,7 +28,7 @@ internal sealed class GuardianFace : IImGuiPanel
         new PanelSpec(new Vector2(540, 520), new Vector2(320, 220), EdgeToEdge: true, GripInBody: true),
         () => new GuardianFace());
 
-    /// <summary>The RynthAi surface for this panel (NUL-terminated for the export).</summary>
+    /// <summary>The plugin surface for this panel (NUL-terminated for the export).</summary>
     private static ReadOnlySpan<byte> Surface => "guardian\0"u8;
 
     // Its export failed this session: say so instead of calling it every frame.
@@ -45,7 +47,7 @@ internal sealed class GuardianFace : IImGuiPanel
         if (!_embedOff)
         {
             ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(6, 4));
-            bool open = ImGuiNET.ImGui.BeginChild("##guardian_rynthai", new Vector2(w, h), ImGuiChildFlags.AlwaysUseWindowPadding,
+            bool open = ImGuiNET.ImGui.BeginChild("##guardian_rynthilt", new Vector2(w, h), ImGuiChildFlags.AlwaysUseWindowPadding,
                 ImGuiWindowFlags.NoBackground);
             ImGuiNET.ImGui.PopStyleVar();
             try
@@ -54,7 +56,14 @@ internal sealed class GuardianFace : IImGuiPanel
                 {
                     // The plugin's widgets use the default UI font, as in its own windows.
                     ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
-                    try { result = PluginManager.RenderEmbed("RynthAi", Surface, ImGuiNET.ImGui.GetContentRegionAvail(), out _); }
+                    try
+                    {
+                        Vector2 avail = ImGuiNET.ImGui.GetContentRegionAvail();
+                        result = PluginManager.RenderEmbed("RynthILT", Surface, avail, out _);
+                        // RynthILT without the Guardian (older than the move): an older RynthAi may still draw it.
+                        if (result == PluginManager.EmbedNoPlugin)
+                            result = PluginManager.RenderEmbed("RynthAi", Surface, avail, out _);
+                    }
                     finally { ImGuiNET.ImGui.PopFont(); }
                 }
                 else result = PluginManager.EmbedDrawn;   // clipped: nothing to draw, nothing wrong
@@ -68,9 +77,9 @@ internal sealed class GuardianFace : IImGuiPanel
             ImGuiNET.ImGui.SetCursorScreenPos(start + new Vector2(0, 4));
             Label(result switch
             {
-                PluginManager.EmbedNoPlugin => "The Guardian tools come with RynthAi; it isn't loaded.",
-                PluginManager.EmbedFailed => "RynthAi couldn't draw the Guardian tools (this build may be too old). See the log.",
-                _ => "Waiting for RynthAi (log in; ILT features turn on once the server reports them).",
+                PluginManager.EmbedNoPlugin => "The Guardian tools come with RynthILT; it isn't loaded.",
+                PluginManager.EmbedFailed => "RynthILT couldn't draw the Guardian tools (this build may be too old). See the log.",
+                _ => "Waiting for RynthILT (log in; ILT features turn on once the server reports them).",
             }, Mute);
         }
         End(origin, size);

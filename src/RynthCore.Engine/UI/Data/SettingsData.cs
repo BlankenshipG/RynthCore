@@ -48,13 +48,6 @@ internal sealed class RynthAiSettings
     // Decal bridge: stop RynthAi's macro when VTank's starts (one bot per client). Default on;
     // an older RynthAi doesn't send it, and a missing field must not read as "off".
     public bool YieldToVTank { get; set; } = true;
-    // Server Features (RynthAi ServerFeatureGate): world names that turn on the ILT Hub, the
-    // Progression planners and the attribute raiser, plus a manual override. An older RynthAi
-    // doesn't send them; RynthAi lays a save over its current values, so these defaults are
-    // only ever shown, never applied. ServerFeaturesStatus is read-only (RynthAi ignores it).
-    public string FeatureServerNames { get; set; } = "InfiniteLeaftide, *Leaftide*";
-    public bool ForceServerFeatures { get; set; }
-    public string ServerFeaturesStatus { get; set; } = string.Empty;
     public bool EnableRaycasting { get; set; }
     public bool UseArcs { get; set; }
     public float BowArcVelocity { get; set; } = 25f;
@@ -79,6 +72,9 @@ internal sealed class RynthAiSettings
     // Not shown in the panel, but carried so a save doesn't send them missing.
     public int BlacklistCastSettleMs { get; set; } = 1500;
     public int MonsterDisengageRange { get; set; }
+    // Ranges > Combat Targeting. Null until RynthAi sends them; an older RynthAi leaves them alone.
+    public int? TargetSelection { get; set; }
+    public bool? TargetLock { get; set; }
     public int TargetNoProgressTimeoutSec { get; set; }
     public int GiveQueueIntervalMs { get; set; } = 150;
     // Recharge
@@ -691,17 +687,8 @@ internal static class SettingsSchema
             Bool("Yield to VTank", s => s.YieldToVTank, (s, v) => s.YieldToVTank = v,
                 "With Decal: when VTank's macro starts (/vt start), RynthAi's macro stops, and it won't start while VTank runs.\nOne bot per client. Without Decal this does nothing. Also: /ra vtankyield on|off."),
             Bool("Enable Raycasting", s => s.EnableRaycasting, (s, v) => s.EnableRaycasting = v),
-            Spacer(),
-            Section("Server Features (ILT / infinite attributes)"),
-            Status(s => s.ServerFeaturesStatus),
-            Text("Servers", s => s.FeatureServerNames, (s, v) => s.FeatureServerNames = v,
-                "Comma-separated world names that turn on the ILT Hub, the Skills panel's Progression planners\n" +
-                "and the attribute raiser. * is a wildcard (*Leaftide* matches any name containing Leaftide).\n" +
-                "Case does not matter. Saved with the RynthAi profile.",
-                hint: "InfiniteLeaftide, *Leaftide*"),
-            Bool("Force enable on this server (manual override)", s => s.ForceServerFeatures, (s, v) => s.ForceServerFeatures = v,
-                "Turn the features on for whatever world you are on, even if it is not in the list.\n" +
-                "Each feature still follows what the server reports (for example /xp off keeps the attribute raiser off)."),
+            // The Server Features (ILT) rows went with the ILT Hub to RynthILT (2026-10-13): its world
+            // list and "Treat this world as ILT" are on the Mini Remote's Character tab (/ra hub servers).
             Spacer(),
             Section("Missile Arc Velocities (m/s)"),
             Bool("Use Arcs for Missile LoS", s => s.UseArcs, (s, v) => s.UseArcs = v,
@@ -861,6 +848,17 @@ internal static class SettingsSchema
             Int("Monster Range", s => s.MonsterRange, (s, v) => s.MonsterRange = v, 1, 200, 1, MonsterRangeTip),
             Int("Ring Range", s => s.RingRange, (s, v) => s.RingRange = v, 1, 50, 1, RingRangeTip),
             Int("Approach Range", s => s.ApproachRange, (s, v) => s.ApproachRange = v, 1, 50, 1, ApproachRangeTip),
+            Int("Disengage Range", s => s.MonsterDisengageRange, (s, v) => s.MonsterDisengageRange = v, 0, 200, 1,
+                "Drop a locked target only once it is this far away (yards).\n0, or anything up to Monster Range, = automatic (Monster Range + 3)."),
+            Spacer(),
+            Section("Combat Targeting"),
+            Combo("Targeting", new[] { "Lowest health", "Closest", "Farthest", "Least turning" },
+                s => Math.Clamp(s.TargetSelection ?? 0, 0, 3), (s, v) => s.TargetSelection = Math.Clamp(v, 0, 3),
+                "Which monster to attack, among those of the highest priority inside Monster Range.\n" +
+                "Least turning: the one needing the smallest turn to face. Unknown health counts as full."),
+            Bool("Target Lock", s => s.TargetLock ?? true, (s, v) => s.TargetLock = v,
+                "On: keeps the target it picked until it dies, leaves range (Disengage Range), or a higher-priority monster shows up.\n" +
+                "Off: switches whenever another monster is clearly better by the Targeting rule."),
             Spacer(),
             Section("Corpse Acquisition (Yards)"),
             Double("Corpse Max (yd)", s => s.CorpseApproachRangeMax, (s, v) => s.CorpseApproachRangeMax = v, 0.5, 50.0, 0.5, CorpseMaxTip),

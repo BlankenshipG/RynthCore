@@ -20,12 +20,38 @@ internal static class Program
         ConfiguredLists();
         FromCommandLines();
         Wildcards();
+        PluginVerdict();
 
         Console.WriteLine();
         Console.WriteLine($"{_checks - _failed}/{_checks} checks passed.");
         if (_checks == 0) { Console.WriteLine("ABORT: no checks ran."); return 1; }
         Console.WriteLine(_failed == 0 ? "ALL ILT TESTS PASSED." : $"{_failed} FAILED.");
         return _failed == 0 ? 0 : 1;
+    }
+
+    // RynthILT's own verdict (2026-10-13: every ILT feature is RynthILT's, which keeps its own world
+    // list and a per-character "Treat this world as ILT"): read from RynthILTGetStatusJson, added to
+    // the engine's.
+    private static void PluginVerdict()
+    {
+        Case("RynthILT's verdict");
+        Check(IltDetect.ParsePluginStatus("{\"loaded\":true,\"ilt\":true,\"forced\":true,\"available\":false,\"world\":\"MyShard\"}",
+                  out bool loaded, out bool ilt, out bool forced, out bool available, out string world)
+              && loaded && ilt && forced && !available && world == "MyShard", "the status JSON parses");
+        Check(IltDetect.ParsePluginStatus("{\"loaded\":true}", out loaded, out ilt, out forced, out available, out world)
+              && loaded && !ilt && !forced && !available && world == "", "missing fields read false / empty");
+        Check(!IltDetect.ParsePluginStatus("not json", out _, out _, out _, out _, out _), "garbage is refused");
+        Check(!IltDetect.ParsePluginStatus("[]", out _, out _, out _, out _, out _), "not an object is refused");
+        Check(!IltDetect.ParsePluginStatus(null, out _, out _, out _, out _, out _), "nothing is refused");
+
+        var no = IltDetect.Decide(null, "Aeshnidae", null, null);
+        var yes = IltDetect.Decide("game.infiniteleaftide.online", null, null, null);
+        var forcedHere = IltDetect.Combine(no, true, "RynthILT: \"Treat this world as ILT\" is ticked for this character");
+        Check(forcedHere.IsIlt && forcedHere.Reason.Contains("Treat this world"), "RynthILT's override makes it ILT: " + forcedHere.Reason);
+        Check(!IltDetect.Combine(no, false, "x").IsIlt, "RynthILT saying no changes nothing");
+        Check(ReferenceEquals(IltDetect.Combine(yes, false, ""), yes), "RynthILT can't take ILT away from the engine's verdict");
+        Check(ReferenceEquals(IltDetect.Combine(yes, true, "x"), yes), "the engine's own reason is kept when both agree");
+        Check(IltDetect.Combine(no, true, null).Reason.Contains("RynthILT"), "a missing reason still names RynthILT");
     }
 
     private static void Hosts()

@@ -14,6 +14,9 @@
 //      name UtilityBelt's Leaftide tools and SilentKelpie's ILT Hub check for),
 //      or anything with "Leaftide" in it.
 //  Both lists can be replaced in engine.json ("IltServerNames", "IltHosts").
+//  A third signal is the RynthILT plugin's own verdict (its server list, or the
+//  character's "Treat this world as ILT"): Combine adds it, ParsePluginStatus
+//  reads RynthILTGetStatusJson (UI/Data/IltData.cs polls it).
 //
 //  Unlike Aelrynth detection nothing here unlocks a server-side action that
 //  could hurt another server: a false positive only shows the ILT bar button,
@@ -106,6 +109,47 @@ internal static class IltDetect
         if (byWorld)
             return new IltVerdict { IsIlt = true, Reason = $"Infinite Leaftide: {world} matches \"{worldHit}\" (host {where})" };
         return new IltVerdict { Reason = $"not Infinite Leaftide: {where}, {world}" };
+    }
+
+    /// <summary>
+    /// The engine's verdict, or ILT when RynthILT says so (<paramref name="pluginIlt"/>, with its
+    /// <paramref name="pluginReason"/>). The engine's own "is ILT" always stands; RynthILT can only
+    /// add worlds (its list, or a character's "Treat this world as ILT").
+    /// </summary>
+    public static IltVerdict Combine(IltVerdict engine, bool pluginIlt, string? pluginReason)
+    {
+        if (engine.IsIlt || !pluginIlt) return engine;
+        string why = string.IsNullOrWhiteSpace(pluginReason) ? "RynthILT says so" : pluginReason.Trim();
+        return new IltVerdict { IsIlt = true, Reason = $"Infinite Leaftide: {why} ({engine.Reason})" };
+    }
+
+    /// <summary>
+    /// RynthILTGetStatusJson: {"loaded":bool,"ilt":bool,"forced":bool,"available":bool,"world":"..."}.
+    /// Missing fields read false / "". False when the text isn't a JSON object.
+    /// </summary>
+    public static bool ParsePluginStatus(string? json, out bool loaded, out bool ilt, out bool forced, out bool available, out string world)
+    {
+        loaded = ilt = forced = available = false;
+        world = "";
+        if (string.IsNullOrWhiteSpace(json)) return false;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return false;
+            static bool B(System.Text.Json.JsonElement e, string name)
+                => e.TryGetProperty(name, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.True;
+            loaded = B(root, "loaded");
+            ilt = B(root, "ilt");
+            forced = B(root, "forced");
+            available = B(root, "available");
+            world = root.TryGetProperty("world", out var w) && w.ValueKind == System.Text.Json.JsonValueKind.String ? w.GetString() ?? "" : "";
+            return true;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>Case-insensitive match where '*' stands for any run of characters (anywhere in the pattern).</summary>

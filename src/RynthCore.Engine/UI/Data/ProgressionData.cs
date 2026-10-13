@@ -1,9 +1,10 @@
 // ============================================================================
 //  RynthCore.Engine - UI/Data/ProgressionData.cs
-//  RynthAi's ILT progression planners (augmentations, enlightenment) and the
-//  infinite-attribute raiser for the Skills panel's Progression tab. RynthAi owns the math and the persisted
-//  inputs; this side only shows the snapshot and sends "prog ..." remote
-//  commands (RynthAiCommands.ApplyRemoteCommand) for edits and actions.
+//  The ILT progression planners (augmentations, enlightenment) and the
+//  infinite-attribute raiser for the Skills panel's Progression tab: RynthILT's
+//  since the ILT Hub moved there (2026-10-13; RynthAi's before, still read from
+//  an older RynthAi). The plugin owns the math and the persisted inputs; this side
+//  only shows the snapshot and sends "prog ..." commands (IltCommands.Progression).
 // ============================================================================
 
 using System;
@@ -14,7 +15,7 @@ using RynthCore.Engine.Plugins;
 
 namespace RynthCore.Engine.UI.Data;
 
-/// <summary>RynthPluginGetProgressionJson's payload. Display strings arrive preformatted.</summary>
+/// <summary>RynthILTGetProgressionJson's payload (RynthAi's RynthPluginGetProgressionJson before). Display strings arrive preformatted.</summary>
 internal sealed class ProgressionInfo
 {
     /// <summary>False off ILT-like worlds (or before the ILT Hub exists): the tab is hidden.</summary>
@@ -22,11 +23,11 @@ internal sealed class ProgressionInfo
     [JsonPropertyName("world")]     public string World { get; set; } = "";
     [JsonPropertyName("aug")]       public AugPlanner Aug { get; set; } = new();
     [JsonPropertyName("enl")]       public EnlPlanner Enl { get; set; } = new();
-    /// <summary>Absent from an older RynthAi: stays empty and the section shows "update RynthAi".</summary>
+    /// <summary>Absent from a much older RynthAi: stays empty and the section shows "update".</summary>
     [JsonPropertyName("attr")]      public AttrRaiser? Attr { get; set; }
 }
 
-/// <summary>RynthAi's IltAttributeRaiser: server costs ("/xp all") and the raise settings.</summary>
+/// <summary>The ILT Hub's IltAttributeRaiser (RynthILT): server costs ("/xp all") and the raise settings.</summary>
 internal sealed class AttrRaiser
 {
     /// <summary>The raiser can't run here; <see cref="Reason"/> says why.</summary>
@@ -181,17 +182,25 @@ internal sealed partial class ProgressionJsonContext : JsonSerializerContext { }
 /// </summary>
 internal sealed unsafe class ProgressionSource : UiSource<ProgressionInfo>
 {
+    // RynthILT's RynthILTGetProgressionJson (UTF-8) since the ILT Hub moved there (2026-10-13);
+    // a RynthAi from before the move answers RynthPluginGetProgressionJson (ANSI) instead.
     private delegate* unmanaged[Cdecl]<IntPtr> _getProgressionJson;
+    private bool _utf8;
 
     public ProgressionSource() : base("Progression", periodMs: 1000) { }
 
     protected internal override void Poll()
     {
         if (_getProgressionJson == null)
-            _getProgressionJson = (delegate* unmanaged[Cdecl]<IntPtr>)PluginExportBinder.Resolve("RynthAi", "RynthPluginGetProgressionJson");
+        {
+            _getProgressionJson = (delegate* unmanaged[Cdecl]<IntPtr>)PluginExportBinder.Resolve("RynthILT", "RynthILTGetProgressionJson");
+            _utf8 = _getProgressionJson != null;
+            if (_getProgressionJson == null)
+                _getProgressionJson = (delegate* unmanaged[Cdecl]<IntPtr>)PluginExportBinder.Resolve("RynthAi", "RynthPluginGetProgressionJson");
+        }
         if (_getProgressionJson == null) return;
         IntPtr p = _getProgressionJson();
-        string json = p == IntPtr.Zero ? "{}" : Marshal.PtrToStringAnsi(p) ?? "{}";
+        string json = p == IntPtr.Zero ? "{}" : (_utf8 ? Marshal.PtrToStringUTF8(p) : Marshal.PtrToStringAnsi(p)) ?? "{}";
         ProgressionInfo info;
         try { info = JsonSerializer.Deserialize(json, ProgressionJsonContext.Default.ProgressionInfo) ?? new ProgressionInfo(); }
         catch (JsonException) { info = new ProgressionInfo(); }

@@ -60,10 +60,10 @@ internal static class ImGuiBar
         { Panels.InventoryFace.Title, Panels.SkillsFace.Title, Panels.SenseFace.Title, Panels.ItemCountFace.Title, Panels.MiniRemoteFace.Title,
           Panels.CharactersFace.Title };
 
-    // The ILT section: ImGui-only Infinite Leaftide panels (Bounties from RynthILT, Guardian from
-    // RynthAi). They never get buttons of their own; one ILT button stands for them, shown only
-    // on Infinite Leaftide (IltInfo.IsIlt) and only for the ones registered (EntryPoint registers
-    // each when its plugin is installed).
+    // The ILT section: ImGui-only Infinite Leaftide panels (Bounties and Guardian, both RynthILT's).
+    // They never get buttons of their own; one ILT button stands for them, shown only on Infinite
+    // Leaftide (IltInfo.IsIlt) with RynthILT loaded (IltInfo.PluginLoaded), and only for the ones
+    // registered (EntryPoint registers them when RynthILT is installed).
     private static readonly string[] IltPanels = { Panels.BountiesFace.Title, Panels.GuardianFace.Title };
 
     // Known panels' icons (DrakBot's where the same window exists); others show their first letter.
@@ -460,7 +460,7 @@ internal static class ImGuiBar
         int n = 0;
         foreach (string title in IltPanels)
             if (ImGuiPanelHost.HasFace(title)) n++;
-        return n > 0 && IltInfo.IsIlt ? n : 0;
+        return n > 0 && IltInfo.IsIlt && IltInfo.PluginLoaded ? n : 0;
     }
 
     private static string? FirstIltPanel()

@@ -258,6 +258,7 @@ internal sealed class HotkeysSettingsUi
             string group = string.Empty;
             foreach (HotkeyAction a in HotkeyActions.BuiltIns)
             {
+                if (!HotkeyActions.Offered(a)) continue;   // the ILT panels: only on Infinite Leaftide with RynthILT
                 if (a.Group != group || group.Length == 0 && a == HotkeyActions.BuiltIns[0])
                 {
                     ImGuiNET.ImGui.Separator();

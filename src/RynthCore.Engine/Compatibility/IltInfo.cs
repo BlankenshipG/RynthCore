@@ -3,13 +3,17 @@
 //
 //  Is this client on Infinite Leaftide (ILT, the ACECustom server)? IltInfo.IsIlt
 //  is the one flag the ILT section checks (the bar's ILT button, /rc bounties,
-//  the Bounties window's reads through the RynthILT plugin).
+//  /rc guardian, the ILT server menu, the Bounties window's reads through the
+//  RynthILT plugin). Every ILT feature is RynthILT's (since 2026-10-13), so the
+//  section also needs RynthILT loaded (PluginLoaded).
 //
 //  Signals (combined by IltDetect.Decide, IltDetect.cs):
 //    - the launch command line's -h host (ServerInfo reads it once);
 //    - the world name the server announced at login (AccountHooks);
 //    - the engine.json lists "IltServerNames" / "IltHosts" replace the
-//      defaults (InfiniteLeaftide / *Leaftide* and infiniteleaftide.online).
+//      defaults (InfiniteLeaftide / *Leaftide* and infiniteleaftide.online);
+//    - RynthILT's own verdict (its server list, or the character's "Treat this
+//      world as ILT"), read once a second by UI/Data/IltData.cs.
 //  Unknown means not ILT. "/rc ilt on|off|auto" overrides it for this session
 //  (testing), never saved.
 //
@@ -33,6 +37,25 @@ internal static class IltInfo
     private static long _nextRefreshMs;
     private static int _mode;                      // Mode
     private static volatile bool _lastIlt;
+    private static volatile bool _pluginLoaded;
+    private static volatile bool _pluginIlt;
+    private static volatile string _pluginReason = "";
+
+    /// <summary>RynthILT is loaded (its status export answered; IltStatusSource). Any thread.</summary>
+    public static bool PluginLoaded => _pluginLoaded;
+
+    /// <summary>
+    /// IltStatusSource (pump): RynthILT loaded, and whether it says this is ILT (with why). Picked
+    /// up by the next Refresh (at most a second later).
+    /// </summary>
+    public static void SetPluginStatus(bool loaded, bool ilt, string reason)
+    {
+        bool changed = _pluginIlt != (loaded && ilt);
+        _pluginLoaded = loaded;
+        _pluginIlt = loaded && ilt;
+        _pluginReason = reason ?? "";
+        if (changed) Volatile.Write(ref _nextRefreshMs, 0);
+    }
 
     /// <summary>True when the client is on Infinite Leaftide - or the override says so. Any thread.</summary>
     public static bool IsIlt => Current.IsIlt;
@@ -88,6 +111,8 @@ internal static class IltInfo
                 _ => IltDetect.Decide(ServerInfo.LaunchHost, AccountHooks.AnnouncedWorldName,
                                       EngineSettings.IltServerNames, EngineSettings.IltHosts),
             };
+            // RynthILT's own list / override counts too (its verdict, when the engine's says no).
+            if (Override == Mode.Auto) v = IltDetect.Combine(v, _pluginIlt, _pluginReason);
             _verdict = v;
             if (v.IsIlt != _lastIlt)
             {

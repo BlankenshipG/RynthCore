@@ -181,7 +181,7 @@ Extract this zip into C:\Games - it creates:
   C:\Games\RynthSuite\RynthOracle\   RynthOracle plugin (quests, character, titles; based on Oracle of Dereth by Advis Eveldan)
   C:\Games\RynthSuite\RynthInventory\ RynthInventory plugin (search every character's items)
   C:\Games\RynthSuite\RynthSort\     RynthSort plugin (keeps your packs sorted; replaces the RynthSort Lua script)
-  C:\Games\RynthSuite\RynthILT\      RynthILT plugin (Infinite Leaftide only: the Bounties window's tracker)
+  C:\Games\RynthSuite\RynthILT\      RynthILT plugin (Infinite Leaftide only: the ILT Hub, Guardian, bounties, progression)
   C:\Games\RynthSuite\RynthThreads\  RynthThreads plugin (DreamWeave only: Fragment Press results, what each component brings)
   C:\Games\RynthSuite\RynthNet\      RynthNet plugin (links your clients on this PC: /ub bc, shared vitals, the Characters panel)
   C:\Games\RynthCore\NavData\        RynthNav's portals and Atlas
@@ -271,7 +271,7 @@ $pluginDescriptions = @{
     RynthOracle    = "Quests, character, titles and leaderboards."
     RynthInventory = "Search every character's items."
     RynthSort      = "Keeps your packs sorted: new loot goes to the pack its rule names."
-    RynthILT       = "Infinite Leaftide only: tracks your ACECustom bounties for the Bounties window."
+    RynthILT       = "Infinite Leaftide only: the ILT Hub (the Mini Remote's banking, gear, charms and games tabs), the Guardian, bounty tracking and progression planning."
     RynthThreads   = "DreamWeave only: records Fragment Press results and works out what each component brings."
     RynthNet       = "Links your characters on this PC: broadcast commands (/ub bc), shared vitals and the Characters panel."
 }

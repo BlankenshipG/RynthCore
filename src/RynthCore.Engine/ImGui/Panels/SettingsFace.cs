@@ -219,7 +219,7 @@ internal sealed class SettingsFace : IImGuiPanel
         }
     }
 
-    // [All on] [All off] [ILT on], then a 3-column grid of square toggles, one per
+    // [All on] [All off], then a 3-column grid of square toggles, one per
     // RynthAi trace category. Edits the copy's DiagCategories and saves like any other row.
     private void TraceCategoriesRow(SettingRow row, float w)
     {
@@ -234,8 +234,6 @@ internal sealed class SettingsFace : IImGuiPanel
         if (ImGuiNET.ImGui.Button("All on")) SaveCategories(TraceCategoryLevels.Set(_data.DiagCategories, "", true));
         ImGuiNET.ImGui.SameLine(0, 6);
         if (ImGuiNET.ImGui.Button("All off")) SaveCategories(TraceCategoryLevels.Set(_data.DiagCategories, "", false));
-        ImGuiNET.ImGui.SameLine(0, 6);
-        if (ImGuiNET.ImGui.Button("ILT on")) SaveCategories(TraceCategoryLevels.Set(_data.DiagCategories, "", true, "Ilt"));
         Tooltip(row);
         ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
 

@@ -168,9 +168,10 @@ internal static class HotkeyKeys
 /// <see cref="Chat"/>: the chat command it runs ("/ra targetlock"); "{0}" is the binding's parameter
 /// (<see cref="HotkeyBinding.Command"/>), for an action with a <see cref="Param"/> (e.g. the meta state).
 /// <see cref="Group"/>: the dropdown section ("" = the RynthCore built-ins). <see cref="Tip"/>: a plain tooltip.
+/// <see cref="Ilt"/>: an Infinite Leaftide panel (RynthILT's), offered only while <see cref="HotkeyActions.IltAvailable"/>.
 /// </summary>
 internal sealed record HotkeyAction(string Id, string Name, string? Panel = null, string? Chat = null,
-    string Group = "", string Tip = "", string? Param = null)
+    string Group = "", string Tip = "", string? Param = null, bool Ilt = false)
 {
     public bool HasParam => Param != null;
 }
@@ -190,6 +191,26 @@ internal static class HotkeyActions
 
     private static HotkeyAction P(string title, string? name = null) =>
         new(PanelPrefix + title, "Open/close " + (name ?? title), title);
+
+    // The ILT section's panels (the bar's ILT button): listed, resolved and run only on Infinite
+    // Leaftide with RynthILT loaded, as the bar shows them (Compatibility/IltInfo.cs).
+    private static HotkeyAction PIlt(string title, string tip) =>
+        new(PanelPrefix + title, "Open/close " + title + " (Infinite Leaftide)", title, Tip: tip, Ilt: true);
+
+    /// <summary>
+    /// Whether the Infinite Leaftide panels are offered now: the engine sets it to "Infinite Leaftide
+    /// with RynthILT loaded" (HotkeyService); never anywhere else (and never in the tests unless set).
+    /// </summary>
+    public static Func<bool> IltAvailable = static () => false;
+
+    /// <summary>The action is listed and can be picked or typed now (ILT panels only on ILT).</summary>
+    public static bool Offered(HotkeyAction a) => !a.Ilt || SafeIlt();
+
+    private static bool SafeIlt()
+    {
+        try { return IltAvailable(); }
+        catch { return false; }
+    }
 
     /// <summary>Built-ins, in the order the Settings dropdown shows them.</summary>
     public static readonly HotkeyAction[] BuiltIns =
@@ -223,6 +244,8 @@ internal static class HotkeyActions
         P("Item Count"),
         P("Loot Editor"),
         P("RynthNav"),
+        PIlt("Bounties", "RynthILT's bounty tracker (/rc bounties)."),
+        PIlt("Guardian", "RynthILT's Temple guardian tools (/rc guardian)."),
 
         // VTank's hotkey actions, by VTank's names. Those RynthCore already had run the same code
         // as the built-ins above; the rest run a RynthAi /ra command (also usable as a chat command).
@@ -274,9 +297,9 @@ internal static class HotkeyActions
         if (t.StartsWith("panel ", StringComparison.OrdinalIgnoreCase)) t = PanelPrefix + t[6..];
         string n = Norm(t);
         foreach (HotkeyAction a in BuiltIns)
-            if (Norm(a.Id) == n || Norm(a.Name) == n) return a;
+            if (Offered(a) && (Norm(a.Id) == n || Norm(a.Name) == n)) return a;
         foreach (HotkeyAction a in BuiltIns)   // a panel's title alone
-            if (a.Panel != null && Norm(a.Panel) == n) return a;
+            if (Offered(a) && a.Panel != null && Norm(a.Panel) == n) return a;
         foreach (HotkeyAction a in BuiltIns)   // a VTank-style id without "vt:" ("startstop", "targetlock")
             if (a.Group == VTankGroup && Norm(a.Id) == VTankPrefix + n) return a;
         return null;

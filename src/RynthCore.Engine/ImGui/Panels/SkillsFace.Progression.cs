@@ -3,15 +3,16 @@
 //  The Skills panel's Progression tab, shown on ILT-like worlds only:
 //    - XP planner: exact XP for the next N raises of every attribute and vital,
 //      from the client's XP tables (raising stays on the Attributes & Vitals tab).
-//    - Attribute raiser: infinite attributes past the retail cap. RynthAi reads the
+//    - Attribute raiser: infinite attributes past the retail cap. RynthILT reads the
 //      server's costs ("/xp all") and raises with "/attr", by hand or on a timer from
 //      unassigned XP, in the order and mode set here. Laid out like UB's Leaftide XP
 //      tab: "+1 Level" / "+10 Levels" buttons labelled with their (projected) cost.
 //    - Augmentations: UB's Augs tab - Refresh current (/aug), Current / Target / Inc /
 //      Luminance / Coins with a totals row, Reset targets, Copy Discord / In-Game.
-//    - Augmentations / Enlightenment: RynthAi's ILT Hub planners. RynthAi owns the
-//      math and the saved inputs (UiSources.Progression snapshot); edits and
-//      actions go back as "prog ..." remote commands. /enl and arming
+//    - Augmentations / Enlightenment: the ILT Hub's planners (RynthILT's since
+//      2026-10-13; RynthAi's before). The plugin owns the math and the saved inputs
+//      (UiSources.Progression snapshot); edits and actions go back as "prog ..."
+//      commands (IltCommands.Progression). /enl and arming
 //      auto-enlighten ask here first; the server still shows its own dialog.
 // ============================================================================
 
@@ -37,11 +38,11 @@ internal sealed partial class SkillsFace
     private string _progConfirmTitle = "", _progConfirmText = "", _progConfirmYes = "", _progConfirmCommand = "";
     private bool _progConfirmOpenRequested;
 
-    // Set by ShowProgression (any panel, AC thread); the tab is selected once RynthAi's snapshot
+    // Set by ShowProgression (any panel, AC thread); the tab is selected once RynthILT's snapshot
     // says it exists (the first poll lands a step after the panel opens).
     private static bool _progressionRequested;
 
-    /// <summary>RynthAi reports an ILT-like world (its ILT Hub exists and the server has ILT features).</summary>
+    /// <summary>RynthILT reports an ILT-like world (its ILT Hub exists and the server has ILT features).</summary>
     private static bool ProgressionTabVisible => UiSources.Progression.Current?.Value.Available == true;
 
     /// <summary>Opens the Skills panel (if closed) on the Progression tab. AC thread.</summary>
@@ -75,10 +76,10 @@ internal sealed partial class SkillsFace
         UiSources.Progression.Unsubscribe();
     }
 
-    /// <summary>Sends "prog &lt;value&gt;" to RynthAi; the snapshot re-polls after its next tick applies it.</summary>
+    /// <summary>Sends "prog &lt;value&gt;" to RynthILT (an older RynthAi takes it too); the snapshot re-polls after.</summary>
     private static void SendProg(string value)
     {
-        RynthAiCommands.ApplyRemoteCommand("prog", value);
+        IltCommands.Progression(value);
         UiSources.Progression.RequestRefreshAfterPluginTick();
     }
 
@@ -103,7 +104,7 @@ internal sealed partial class SkillsFace
             ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
             if (info == null || !info.Available)
             {
-                Message("Augmentations and Enlightenment need RynthAi's ILT features on an ILT world.", w);
+                Message("Augmentations and Enlightenment need RynthILT's ILT features on an ILT world.", w);
                 return;
             }
             DrawAttrRaiser(info.Attr, w);

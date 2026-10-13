@@ -1189,7 +1189,7 @@ internal static partial class PluginManager
     /// <summary>
     /// ImGui-shell-off counterpart of <see cref="RenderAll"/>: calls the optional
     /// RynthPluginRenderOverlay export, where a plugin draws only the extra windows that have
-    /// no Avalonia panel (e.g. RynthAi's ILT Hub). They float beside the Avalonia UI and add to it.
+    /// no Avalonia panel (e.g. RynthAi's Mini Remote, RynthILT's Games HUD). They float beside the Avalonia UI and add to it.
     /// A throw switches off just that plugin's overlay windows; the plugin is NOT marked Failed,
     /// so its tick/automation and Avalonia panels keep running.
     /// </summary>

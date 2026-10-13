@@ -69,6 +69,9 @@ internal static class HotkeyService
     private static HotkeyGate _lastGate = HotkeyGate.Fire;
     private static readonly uint OurPid = (uint)Environment.ProcessId;
 
+    // The ILT section's panels are offered only where the bar shows its ILT button.
+    static HotkeyService() => HotkeyActions.IltAvailable = static () => IltInfo.IsIlt && IltInfo.PluginLoaded;
+
     // ── Bindings ───────────────────────────────────────────────────────────
 
     /// <summary>The bindings and master switch now (reloaded when another client changed the file). Any thread.</summary>
@@ -351,7 +354,11 @@ internal static class HotkeyService
         if (a.Panel != null)
         {
             string title = UI.PanelRouter.Canonical(a.Panel);
-            if (!ImGuiBackend.ImGuiPanelHost.HasFace(title))
+            // An ILT panel bound on Infinite Leaftide does nothing elsewhere, as the bar's ILT
+            // button isn't there (it can still close one left open).
+            if (a.Ilt && !HotkeyActions.Offered(a) && !ImGuiBackend.ImGuiPanelHost.IsOpen(title))
+                Reply($"Hotkey {b.Combo}: {a.Panel} is an Infinite Leaftide feature (RynthILT), and this isn't Infinite Leaftide (/rc ilt for why).");
+            else if (!ImGuiBackend.ImGuiPanelHost.HasFace(title))
                 Reply($"Hotkey {b.Combo}: the {a.Panel} panel isn't available (its plugin isn't loaded, or the ImGui layer is off).");
             else
                 UI.PanelRouter.Toggle(title);
@@ -430,7 +437,7 @@ internal static class HotkeyService
                     var sb = new System.Text.StringBuilder(group.Length > 0 ? "  " + group + ": " : "  ");
                     foreach (HotkeyAction a in HotkeyActions.BuiltIns)
                     {
-                        if (a.Group != group) continue;
+                        if (a.Group != group || !HotkeyActions.Offered(a)) continue;
                         if (sb.Length > 150) { lines.Add(sb.ToString().TrimEnd(',', ' ')); sb.Clear().Append("  "); }
                         sb.Append(a.Id);
                         if (a.HasParam) sb.Append(" <").Append(a.Param!.ToLowerInvariant()).Append('>');
