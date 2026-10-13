@@ -269,6 +269,7 @@ internal static partial class PluginManager
     private static SalvageDirectCallbackDelegate? _salvageDirectCallback;           // v82
     private static GetObjectServerAgeCallbackDelegate? _getObjectServerAgeCallback; // v83
     private static RemoveClientObjectCallbackDelegate? _removeClientObjectCallback; // v83
+    private static GetObjectPropertiesCallbackDelegate? _getObjectPropertiesCallback; // v84
     private static GetVendorInfoCallbackDelegate? _getVendorInfoCallback;
     private static GetVendorItemsCallbackDelegate? _getVendorItemsCallback;
     private static VendorBuyCallbackDelegate? _vendorBuyCallback;
@@ -3056,6 +3057,7 @@ internal static partial class PluginManager
         unsafe { _salvageDirectCallback ??= SalvageDirectAction; }   // v82
         _getObjectServerAgeCallback ??= GetObjectServerAgeAction;    // v83
         _removeClientObjectCallback ??= RemoveClientObjectAction;    // v83
+        unsafe { _getObjectPropertiesCallback ??= GetObjectPropertiesAction; }   // v84
         _getVendorInfoCallback ??= GetVendorInfoAction;
         _getVendorItemsCallback ??= GetVendorItemsAction;
         _vendorBuyCallback ??= VendorBuyAction;
@@ -3205,6 +3207,7 @@ internal static partial class PluginManager
         _api.SalvageDirectFn = Marshal.GetFunctionPointerForDelegate(_salvageDirectCallback);
         _api.GetObjectServerAgeFn = Marshal.GetFunctionPointerForDelegate(_getObjectServerAgeCallback);
         _api.RemoveClientObjectFn = Marshal.GetFunctionPointerForDelegate(_removeClientObjectCallback);
+        _api.GetObjectPropertiesFn = Marshal.GetFunctionPointerForDelegate(_getObjectPropertiesCallback);
         _api.GetVendorInfoFn = Marshal.GetFunctionPointerForDelegate(_getVendorInfoCallback);
         _api.GetVendorItemsFn = Marshal.GetFunctionPointerForDelegate(_getVendorItemsCallback);
         _api.VendorBuyFn = Marshal.GetFunctionPointerForDelegate(_vendorBuyCallback);
@@ -4390,6 +4393,27 @@ internal static partial class PluginManager
         {
             RynthLog.Compat($"PutItemInContainer failed - {ex.GetType().Name}: {ex.Message}");
             return 0;
+        }
+    }
+
+    // ── v84: every property of an object (ObjectPropertyDump) ──
+
+    /// <summary>v84: see PluginContract.GetObjectPropertiesFn.</summary>
+    private static unsafe int GetObjectPropertiesAction(uint objectId, byte* buffer, int bufferSize)
+    {
+        try
+        {
+            if (objectId == 0 || bufferSize < 0 || (buffer == null && bufferSize > 0)) return -1;
+            byte[]? rec = Compatibility.ObjectPropertyDump.Collect(objectId);
+            if (rec == null) return 0;
+            if (rec.Length <= bufferSize)
+                rec.AsSpan().CopyTo(new Span<byte>(buffer, bufferSize));
+            return rec.Length;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"GetObjectProperties 0x{objectId:X8} failed - {ex.GetType().Name}: {ex.Message}");
+            return -1;
         }
     }
 

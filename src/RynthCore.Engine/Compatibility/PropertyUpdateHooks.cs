@@ -145,6 +145,29 @@ internal static class PropertyUpdateHooks
             return _bags.TryGetValue(objectId, out PropertyBag? b) && b.InstanceIds.TryGetValue(stype, out value);
     }
 
+    /// <summary>v84 (GetObjectProperties): a copy of every public update the server sent for the object, or null. Any thread.</summary>
+    internal static PropertyBag? CopyPublicUpdates(uint objectId)
+    {
+        lock (_lock)
+        {
+            if (!_bags.TryGetValue(objectId, out PropertyBag? b)) return null;
+            var copy = new PropertyBag();
+            copy.MergeFrom(b);
+            return copy;
+        }
+    }
+
+    /// <summary>v84 (GetObjectProperties): a copy of the player's own record (PlayerDescription + private updates). Any thread.</summary>
+    internal static PropertyBag CopySelf()
+    {
+        lock (_lock)
+        {
+            var copy = new PropertyBag();
+            copy.MergeFrom(_self);
+            return copy;
+        }
+    }
+
     // The player's own record (PlayerDescription + private updates).
     public static bool TryGetSelfInt(uint stype, out int value) { lock (_lock) return _self.Ints.TryGetValue(stype, out value); }
     public static bool TryGetSelfInt64(uint stype, out long value) { lock (_lock) return _self.Int64s.TryGetValue(stype, out value); }
@@ -196,6 +219,7 @@ internal static class PropertyUpdateHooks
             _selfDescribed = false;
         }
         ClientObjectHooks.ClearPlayerQualitiesSnapshot();
+        ClientObjectHooks.ClearObjectQualities();
     }
 
     // --- Wire entry points (AC's main thread, SmartBoxHooks.ParseGameEvent) ---

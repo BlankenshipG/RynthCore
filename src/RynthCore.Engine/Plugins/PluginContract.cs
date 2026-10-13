@@ -911,6 +911,17 @@ internal struct RynthCoreAPI
     /// it (checked again there). Returns 1 removed, 2 queued, 0 refused, -1 the client's
     /// DeleteObject isn't bound yet (no delete seen since the hook went in). Requires API v83+.</summary>
     public IntPtr RemoveClientObjectFn;
+
+    /// <summary>v84: <c>int GetObjectProperties(uint objectId, byte* buffer, int bufferSize)</c>: every
+    /// property the engine knows for the object (int, int64, bool, float, string, data id, instance id
+    /// and the spell book), merged from the client's CreateObject copy, its qualities tables (read on
+    /// AC's main thread), the last identify and the server's property updates, as one record
+    /// (Compatibility/ObjectPropertyRecord.cs; the SDK's ObjectProperties.TryParse reads it). Returns the
+    /// record's size in bytes; it was copied only when that is &lt;= bufferSize (call again with a buffer
+    /// that big). 0 when the engine knows nothing about the object, -1 a zero id or a negative size.
+    /// Off AC's main thread a walk of the object's qualities tables is requested for the next tick
+    /// (flag QualitiesPending): ask again a moment later for the full set. Any thread. Requires API v84+.</summary>
+    public IntPtr GetObjectPropertiesFn;
 }
 
 /// <summary>v79 <see cref="TrainingInfoNative.Flags"/> bits.</summary>
@@ -1750,3 +1761,6 @@ internal delegate int GetObjectServerAgeCallbackDelegate(uint objectId);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate int RemoveClientObjectCallbackDelegate(uint objectId);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetObjectPropertiesCallbackDelegate(uint objectId, byte* buffer, int bufferSize);

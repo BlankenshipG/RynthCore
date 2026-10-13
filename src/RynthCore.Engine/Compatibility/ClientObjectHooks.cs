@@ -1438,8 +1438,25 @@ internal static class ClientObjectHooks
         if (!TryGetPlayerQualitiesPtr(out IntPtr qualities) || qualities == IntPtr.Zero)
             return;
         IntPtr bq = qualities + CBaseQualitiesOffset;
-        if (!IsReadableSpan(bq, 0x24))
+        PropertyBag? bag = WalkQualitiesBag(qualities, _qualitiesInt64Layout >= 0, _qualitiesFloatLayout >= 0);
+        if (bag == null)
             return;
+
+        VerifyQualitiesLayout(bq, bag);
+        if (_qualitiesInt64Layout < 0) bag.Int64s.Clear();
+        if (_qualitiesFloatLayout < 0) bag.Floats.Clear();
+        _playerQualities = new OwnedBag(playerId, bag);
+    }
+
+    // Every table of one CACQualities' CBaseQualities, copied (MAIN THREAD ONLY; every node is
+    // page-checked before it is read). The int64 and float tables (8-byte values) only when asked:
+    // their node layout is verified once against AC's own readers (VerifyQualitiesLayout).
+    // Null when the CBaseQualities header isn't readable.
+    private static PropertyBag? WalkQualitiesBag(IntPtr qualities, bool int64s, bool floats)
+    {
+        IntPtr bq = qualities + CBaseQualitiesOffset;
+        if (!IsReadableSpan(bq, 0x24))
+            return null;
 
         var bag = new PropertyBag();
         WalkQualitiesTable(Marshal.ReadIntPtr(bq + 0x08), 8, (k, n) => bag.Ints[k] = Marshal.ReadInt32(n + 4));
@@ -1454,19 +1471,127 @@ internal static class ClientObjectHooks
             if (len > 1 && len < 4096 && IsReadableSpan(buf + 20, len - 1))
                 bag.Strings[k] = Marshal.PtrToStringAnsi(buf + 20, len - 1) ?? string.Empty;
         });
-        if (_qualitiesInt64Layout >= 0)
+        if (int64s)
             WalkQualitiesTable(Marshal.ReadIntPtr(bq + 0x0C), 16, (k, n) => bag.Int64s[k] = Marshal.ReadInt64(n + 8));
-        if (_qualitiesFloatLayout >= 0)
+        if (floats)
             WalkQualitiesTable(Marshal.ReadIntPtr(bq + 0x14), 16, (k, n) =>
             {
                 double v = BitConverter.Int64BitsToDouble(Marshal.ReadInt64(n + 8));
                 if (double.IsFinite(v)) bag.Floats[k] = v;
             });
+        return bag;
+    }
 
-        VerifyQualitiesLayout(bq, bag);
-        if (_qualitiesInt64Layout < 0) bag.Int64s.Clear();
-        if (_qualitiesFloatLayout < 0) bag.Floats.Clear();
-        _playerQualities = new OwnedBag(playerId, bag);
+    // ── v84: every property of one object (GetObjectProperties, ObjectPropertyDump) ──
+    // The client's qualities tables of any object, read on AC's main thread: live when the call
+    // is made there, else the plugin's request is served at the next main-thread tick
+    // (ServeObjectQualitiesRequest, next to PrefetchPlayerStats) and the copy answers off-thread
+    // for a few seconds. One object at a time: it is a diagnostic (/ub propertydump).
+    private sealed record ObjectQualities(uint Owner, PropertyBag? Bag, long AtMs);
+    private static volatile ObjectQualities? _objectQualities;
+    private static uint _objectQualitiesRequest;
+    private const long ObjectQualitiesKeepMs = 5000, ObjectQualitiesRefreshMs = 500;
+
+    /// <summary>
+    /// v84: the client's qualities tables of <paramref name="objectId"/> (null: it has none, or
+    /// not read yet). Off AC's main thread a walk is requested and <paramref name="pending"/> is
+    /// set until the first copy for this object exists. Never touches AC memory off the main thread.
+    /// The bag returned is never changed afterwards (callers only read it).
+    /// </summary>
+    internal static PropertyBag? GetObjectQualitiesForDump(uint objectId, out bool pending, out bool read)
+    {
+        pending = false;
+        read = false;
+        if (objectId == 0)
+            return null;
+        if (MainThreadGuard.IsOnMainThread())
+        {
+            PropertyBag? live = TryWalkObjectQualitiesLive(objectId);
+            read = live != null;
+            return live;
+        }
+        long now = Environment.TickCount64;
+        ObjectQualities? q = _objectQualities;
+        if (q != null && q.Owner == objectId && now - q.AtMs <= ObjectQualitiesKeepMs)
+        {
+            if (now - q.AtMs > ObjectQualitiesRefreshMs)
+                System.Threading.Volatile.Write(ref _objectQualitiesRequest, objectId);
+            read = q.Bag != null;
+            return q.Bag;
+        }
+        System.Threading.Volatile.Write(ref _objectQualitiesRequest, objectId);
+        pending = true;
+        return null;
+    }
+
+    /// <summary>v84: serves a plugin's qualities request (MAIN THREAD; returns at once when there is none).</summary>
+    public static void ServeObjectQualitiesRequest()
+    {
+        if (System.Threading.Volatile.Read(ref _objectQualitiesRequest) == 0 || !MainThreadGuard.IsOnMainThread())
+            return;
+        uint id = System.Threading.Interlocked.Exchange(ref _objectQualitiesRequest, 0);
+        if (id == 0)
+            return;
+        PropertyBag? bag = null;
+        try { bag = TryWalkObjectQualitiesLive(id); }
+        catch (Exception ex) { RynthLog.Compat($"Compat: object qualities walk 0x{id:X8} failed - {ex.GetType().Name}: {ex.Message}"); }
+        _objectQualities = new ObjectQualities(id, bag, Environment.TickCount64);
+    }
+
+    /// <summary>Logout: the copy belongs to the session that ended.</summary>
+    internal static void ClearObjectQualities()
+    {
+        _objectQualities = null;
+        System.Threading.Volatile.Write(ref _objectQualitiesRequest, 0);
+    }
+
+    // MAIN THREAD ONLY: a freshly resolved weenie (never a cached pointer), its qualities pointer,
+    // then the page-checked table walk. Int64 / float tables only once their node layout was
+    // verified on the player's own tables.
+    private static PropertyBag? TryWalkObjectQualitiesLive(uint objectId)
+    {
+        if (!MainThreadGuard.IsOnMainThread())
+            return null;
+        if (_getWeenieObject == null)
+        {
+            if (!Probe() || _getWeenieObject == null)
+                return null;
+        }
+        try
+        {
+            IntPtr weeniePtr;
+            if (SehTrampoline.IsAvailable)
+            {
+                weeniePtr = SehTrampoline.CdeclPtrUint(_getWeenieObjectPtr, objectId, out bool av);
+                if (av)
+                    return null;
+            }
+            else
+            {
+                weeniePtr = _getWeenieObject(objectId);
+            }
+            if (weeniePtr == IntPtr.Zero || !TryGetQualitiesPtr(weeniePtr, out IntPtr qualities) || qualities == IntPtr.Zero)
+                return null;
+            // Only a real CACQualities (the vtable learned from the player's): no AC calls are made
+            // here, but a sibling object in the qualities slot would read as garbage properties.
+            if (!IsCacQualitiesObject(qualities))
+                return null;
+            return WalkQualitiesBag(qualities, _qualitiesInt64Layout == 1, _qualitiesFloatLayout == 1);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>v84: the CreateObject copy's fields of <paramref name="objectId"/> as properties (the ~0.1 s
+    /// old PublicWeenieDesc snapshot). False when the last walk didn't see it. Any thread; never touches AC.</summary>
+    internal static bool CopyCreateDataProperties(uint objectId, PropertyBag dst)
+    {
+        if (!TryGetPwdSnapshot(objectId, out PwdEntry e))
+            return false;
+        PwdLayout.FillBag(e.Bytes, dst);
+        return true;
     }
 
     // The 8-byte node layout is checked once against AC's own readers: a walked value must

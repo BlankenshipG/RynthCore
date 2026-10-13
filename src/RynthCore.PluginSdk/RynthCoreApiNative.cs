@@ -172,6 +172,8 @@ public struct RynthCoreApiNative
     // v83: ghost creatures (objects the client draws but the server no longer has for this player)
     public IntPtr GetObjectServerAgeFn;      // int GetObjectServerAge(uint id) -> ms since the server's last message about it, -1 none
     public IntPtr RemoveClientObjectFn;      // int RemoveClientObject(uint id) -> 1 removed, 2 queued, 0 refused, -1 unbound
+    // v84: every property of an object (/ub propertydump), one record (ObjectProperties.TryParse)
+    public IntPtr GetObjectPropertiesFn;     // int GetObjectProperties(uint id, byte* buf, int size) -> record size (copied if <= size), 0 unknown, -1 bad args
 }
 
 /// <summary>

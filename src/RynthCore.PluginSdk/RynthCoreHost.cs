@@ -176,6 +176,9 @@ public readonly unsafe struct RynthCoreHost
 
     /// <summary>v83: <see cref="RemoveClientObject"/> (drop a ghost creature from the client).</summary>
     public bool HasRemoveClientObject => _api.Version >= 83 && _api.RemoveClientObjectFn != IntPtr.Zero;
+
+    /// <summary>v84: <see cref="TryGetObjectProperties"/> (every property of an object at once).</summary>
+    public bool HasGetObjectProperties => _api.Version >= 84 && _api.GetObjectPropertiesFn != IntPtr.Zero;
     public bool HasGetPluginExportJson     => _api.Version >= 66 && _api.GetPluginExportJsonFn     != IntPtr.Zero;
     // Version-checked first: on an older engine the field lies past the end of its API table.
     public bool HasGetMergeStackResult     => _api.Version >= 81 && _api.GetMergeStackResultFn     != IntPtr.Zero;
@@ -1918,6 +1921,37 @@ public readonly unsafe struct RynthCoreHost
         => HasRemoveClientObject
             ? ((delegate* unmanaged[Cdecl]<uint, int>)_api.RemoveClientObjectFn)(objectId)
             : -2;
+
+    // ─── Every property of an object (API v84) ─────────────────────────────
+
+    /// <summary>
+    /// v84: every property the engine knows for <paramref name="objectId"/> (int, int64, bool,
+    /// float, string, data id, instance id and the spell book), merged from the client's
+    /// CreateObject copy, its qualities tables, the last identify and the server's property
+    /// updates, the way the per-key reads (TryGetObjectIntProperty, ...) answer. False on an
+    /// engine before v84 (fall back to per-key reads) or when the engine knows nothing about
+    /// the object. Item details need an identify first (<see cref="RequestId"/>, then
+    /// <see cref="ObjectProperties.HasIdData"/>). When <see cref="ObjectProperties.QualitiesPending"/>
+    /// is set, the client's qualities tables are read at AC's next main-thread tick: ask again
+    /// shortly. Any thread.
+    /// </summary>
+    public bool TryGetObjectProperties(uint objectId, out ObjectProperties? properties)
+    {
+        properties = null;
+        if (!HasGetObjectProperties || objectId == 0) return false;
+        var fn = (delegate* unmanaged[Cdecl]<uint, byte*, int, int>)_api.GetObjectPropertiesFn;
+        byte[] buffer = new byte[8192];
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            int n;
+            fixed (byte* p = buffer) n = fn(objectId, p, buffer.Length);
+            if (n <= 0) return false;
+            if (n <= buffer.Length)
+                return ObjectProperties.TryParse(new ReadOnlySpan<byte>(buffer, 0, n), out properties);
+            buffer = new byte[Math.Max(n + 1024, buffer.Length * 2)];   // grew between calls: some room
+        }
+        return false;
+    }
 
     public int SalvageDirect(uint toolId, ReadOnlySpan<uint> itemIds)
     {

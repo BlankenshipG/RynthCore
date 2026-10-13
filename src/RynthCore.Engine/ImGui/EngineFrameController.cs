@@ -329,6 +329,7 @@ internal static class EngineFrameController
             // Same main-thread guard: snapshot XP/luminance/deaths/vitae (main-thread-only
             // Inq* reads) so the GetEngineStatusJson host bridge can serve them off-thread (throttled).
             Compatibility.ClientObjectHooks.PrefetchPlayerStats();
+            Compatibility.ClientObjectHooks.ServeObjectQualitiesRequest();   // v84 GetObjectProperties (none asked: one read)
 
             // Cold-login object backfill on the SAME AC main thread as the
             // skill prefetch above: deliver objects already present at login
@@ -465,6 +466,7 @@ internal static class EngineFrameController
         Compatibility.ClientObjectHooks.PrefetchObjectIdentity();
         Compatibility.ClientObjectHooks.PrefetchPositions();
         Compatibility.ClientObjectHooks.PrefetchPlayerStats();
+        Compatibility.ClientObjectHooks.ServeObjectQualitiesRequest();   // v84 GetObjectProperties (none asked: one read)
         try { Plugins.PluginManager.TrySeedLiveObjectsFromCObjectMaintOnce(); }
         catch (Exception ex) { RynthLog.Plugin($"CObjectMaint seed threw {ex.GetType().Name}: {ex.Message}"); }
     }
