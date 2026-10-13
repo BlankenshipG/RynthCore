@@ -66,6 +66,16 @@ internal sealed class RynthChatSettingsDto
     [JsonPropertyName("historyLines")]    public int?   HistoryLines    { get; set; }
     [JsonPropertyName("customTabs")]      public string[]? CustomTabs   { get; set; }
     [JsonPropertyName("filters")]         public RynthChatFilterDto[]? Filters { get; set; }
+    /// <summary>Standard filters' user state (RynthChatPresets); absent while none was changed.</summary>
+    [JsonPropertyName("presets")]         public RynthChatPresetDto[]? Presets { get; set; }
+}
+
+/// <summary>A standard filter's user state (RynthChatPresets), by preset id.</summary>
+internal sealed class RynthChatPresetDto
+{
+    [JsonPropertyName("id")]      public string? Id      { get; set; }
+    [JsonPropertyName("enabled")] public bool    Enabled { get; set; }
+    [JsonPropertyName("tab")]     public string? Tab     { get; set; }
 }
 
 /// <summary>Export / import on the clipboard (the rule editor's Export and Import).</summary>

@@ -474,24 +474,37 @@ internal static class Program
             Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.TrainingEntryNative>(f.Name), (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.TrainingEntryNative>(f.Name), "TrainingEntryNative." + f.Name + " offset");
         Eq(RynthCore.PluginSdk.TrainingInfoFlags.Busy, RynthCore.Engine.Plugins.TrainingInfoFlags.Busy, "info flag bits");
         Eq(RynthCore.PluginSdk.TrainingEntryFlags.Trainable, RynthCore.Engine.Plugins.TrainingEntryFlags.Trainable, "entry flag bits");
-        // The three v79 slots follow v78's and come right before v80's, in this order.
-        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(2).TakeLast(3).ToArray();
-        Check(names.SequenceEqual(new[] { "GetTrainingInfoFn", "RaiseFn", "TrainSkillFn" }), "v79 slots before v80's: " + string.Join(",", names));
-        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(2).TakeLast(3).ToArray();
-        Check(sdkNames.SequenceEqual(names), "SDK v79 slots in the same order");
+        // The three v79 slots follow v78's, then v80's two and v81's GetMergeStackResultFn end the table.
+        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(3).TakeLast(6).ToArray();
+        Check(names.SequenceEqual(new[] { "GetTrainingInfoFn", "RaiseFn", "TrainSkillFn", "GetContainerOrderFn", "PutItemInContainerFn", "GetMergeStackResultFn" }),
+            "v79, v80 then v81 slots last: " + string.Join(",", names));
+        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(3).TakeLast(6).ToArray();
+        Check(sdkNames.SequenceEqual(names), "SDK v79, v80 and v81 slots in the same order");
     }
 
-    // v80: GetContainerOrder and PutItemInContainer are the table's last two slots, engine and SDK alike,
-    // and the whole table has the same field names in the same order on both sides.
+    // v80: GetContainerOrder and PutItemInContainer come right before v81's slot, engine and SDK alike;
+    // v81: GetMergeStackResult, then v82: SalvageDirect is the table's last slot. The whole table has the same field names in the same
+    // order on both sides, and the same size.
     private static void ContainerOrderSlots()
     {
         var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).ToArray();
         var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).ToArray();
-        Check(names.TakeLast(2).SequenceEqual(new[] { "GetContainerOrderFn", "PutItemInContainerFn" }), "v80 slots last: " + string.Join(",", names.TakeLast(2)));
-        Check(sdkNames.TakeLast(2).SequenceEqual(names.TakeLast(2)), "SDK v80 slots in the same order");
+        // v81's GetMergeStackResultFn follows v80's two slots.
+        Check(names.SkipLast(4).TakeLast(2).SequenceEqual(new[] { "GetContainerOrderFn", "PutItemInContainerFn" }), "v80 slots before v81's, v82's and v83's: " + string.Join(",", names.SkipLast(4).TakeLast(2)));
+        Check(sdkNames.SkipLast(4).TakeLast(2).SequenceEqual(names.SkipLast(4).TakeLast(2)), "SDK v80 slots in the same order");
+        Check(names.SkipLast(2).Last() == "SalvageDirectFn", "v82 slot before v83's");
+        // v83: GetObjectServerAge and RemoveClientObject end the table (ghost creatures).
+        Check(names.TakeLast(2).SequenceEqual(new[] { "GetObjectServerAgeFn", "RemoveClientObjectFn" }), "v83 slots last: " + string.Join(",", names.TakeLast(2)));
+        Check(typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SequenceEqual(typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name)), "SDK table has the engine's slots in the same order");
         Eq(Marshal.SizeOf<RynthCore.PluginSdk.RynthCoreApiNative>(), Marshal.SizeOf<RynthCore.Engine.Plugins.RynthCoreAPI>(), "SDK table size = engine table size");
         Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("PutItemInContainerFn"),
            (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("PutItemInContainerFn"), "PutItemInContainerFn offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("SalvageDirectFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("SalvageDirectFn"), "SalvageDirectFn offset");
+        // ClientHelperHooks.MaxSalvageDirectItems (engine side, not linked here) is 100 too.
+        Eq(RynthCore.PluginSdk.RynthCoreHost.MaxSalvageDirectItems, 100, "SalvageDirect item cap");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("RemoveClientObjectFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("RemoveClientObjectFn"), "RemoveClientObjectFn offset");
     }
 
     private sealed class ProbePlugin : RynthCore.PluginCore.RynthPluginBase { }

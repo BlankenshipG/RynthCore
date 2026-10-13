@@ -15,5 +15,8 @@ namespace RynthCore.Engine.Plugins;
 /// <summary>Current API version. Bump when adding fields to RynthCoreAPI (and the SDK's RynthCoreApiNative).</summary>
 internal static class PluginContractVersion
 {
-    public const uint Current = 80;
+    // v81: GetMergeStackResult (was v77 on QOL-items, then v80; renumbered after upstream's v77-v80).
+    // v82: SalvageDirect (salvage without the salvage panel; was v81 on feature/salvage-direct).
+    // v83: GetObjectServerAge and RemoveClientObject (ghost creatures, 2026-10-12).
+    public const uint Current = 83;
 }

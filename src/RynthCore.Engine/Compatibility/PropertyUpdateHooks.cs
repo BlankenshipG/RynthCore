@@ -456,7 +456,9 @@ internal static class PropertyUpdateHooks
                     if (objectId != 0)
                     {
                         EvictObject(objectId);
-                        AppraisalHooks.EvictObject(objectId);
+                        // A client release keeps the identify data a while (a server delete,
+                        // 0xF747, evicts it): see ReleasedObjectRetention.
+                        AppraisalHooks.OnClientRelease(objectId, Environment.TickCount64);
                     }
                 }
             }

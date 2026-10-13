@@ -163,7 +163,22 @@ public readonly unsafe struct RynthCoreHost
     /// <summary>v80: <see cref="PutItemInContainer"/> (a move that lands at a slot; a reorder within a
     /// pack). The sender can still be unbound on an odd client: the call then answers -1.</summary>
     public bool HasPutItemInContainer => _api.Version >= 80 && _api.PutItemInContainerFn != IntPtr.Zero;
+
+    /// <summary>v82: <see cref="SalvageDirect"/> (salvage without opening AC's salvage panel). The sender
+    /// can still be unbound on an odd client: the call then answers -1.</summary>
+    public bool HasSalvageDirect => _api.Version >= 82 && _api.SalvageDirectFn != IntPtr.Zero;
+
+    /// <summary>v82: most ids one <see cref="SalvageDirect"/> request takes (the engine refuses more).</summary>
+    public const int MaxSalvageDirectItems = 100;
+
+    /// <summary>v83: <see cref="GetObjectServerAge"/> (when the server last talked about an object).</summary>
+    public bool HasGetObjectServerAge => _api.Version >= 83 && _api.GetObjectServerAgeFn != IntPtr.Zero;
+
+    /// <summary>v83: <see cref="RemoveClientObject"/> (drop a ghost creature from the client).</summary>
+    public bool HasRemoveClientObject => _api.Version >= 83 && _api.RemoveClientObjectFn != IntPtr.Zero;
     public bool HasGetPluginExportJson     => _api.Version >= 66 && _api.GetPluginExportJsonFn     != IntPtr.Zero;
+    // Version-checked first: on an older engine the field lies past the end of its API table.
+    public bool HasGetMergeStackResult     => _api.Version >= 81 && _api.GetMergeStackResultFn     != IntPtr.Zero;
     public bool HasGetPluginInterface      => _api.Version >= 68 && _api.GetPluginInterfaceFn      != IntPtr.Zero;
     public bool HasGetLiveObjectIds        => _api.Version >= 69 && _api.GetLiveObjectIdsFn        != IntPtr.Zero;
     public bool HasGetLastUseDone          => _api.Version >= 70 && _api.GetLastUseDoneFn          != IntPtr.Zero;
@@ -568,6 +583,37 @@ public readonly unsafe struct RynthCoreHost
     {
         return _api.MergeStackInternalFn != IntPtr.Zero &&
                ((delegate* unmanaged[Cdecl]<uint, uint, int>)_api.MergeStackInternalFn)(sourceObjectId, targetObjectId) != 0;
+    }
+
+    /// <summary>Outcome codes returned by <see cref="GetMergeStackResult"/>.</summary>
+    public static class MergeStackStatus
+    {
+        public const int None       = 0; // no request recorded for this pair (or it aged out)
+        public const int Queued     = 1; // accepted onto AC's main-thread queue, not executed yet
+        public const int Sent       = 2; // merge sent to the server for 'amount' units
+        public const int TargetFull = 3; // skipped: the target stack was already full
+        public const int Failed     = 4; // invalid ids, merge API unavailable, AC rejected, or threw
+        public const int QueueFull  = 5; // dropped: main-thread queue full
+    }
+
+    /// <summary>
+    /// What happened to the latest <see cref="MergeStackInternal"/> request for this pair
+    /// (a <see cref="MergeStackStatus"/> code). <paramref name="amount"/> = units sent
+    /// (Sent only); <paramref name="ageMs"/> = how long ago the outcome was recorded.
+    /// Returns <see cref="MergeStackStatus.None"/> on engines older than API v68.
+    /// </summary>
+    public int GetMergeStackResult(uint sourceObjectId, uint targetObjectId, out int amount, out int ageMs)
+    {
+        amount = 0;
+        ageMs = 0;
+        if (!HasGetMergeStackResult)
+            return MergeStackStatus.None;
+        int a = 0, age = 0;
+        int status = ((delegate* unmanaged[Cdecl]<uint, uint, int*, int*, int>)_api.GetMergeStackResultFn)(
+            sourceObjectId, targetObjectId, &a, &age);
+        amount = a;
+        ageMs = age;
+        return status;
     }
 
     /// <summary>
@@ -1832,6 +1878,54 @@ public readonly unsafe struct RynthCoreHost
         => HasPutItemInContainer
             ? ((delegate* unmanaged[Cdecl]<uint, uint, int, int>)_api.PutItemInContainerFn)(itemId, containerId, placement)
             : -2;
+
+    // ─── Salvage without the panel (API v82) ───────────────────────────────
+
+    /// <summary>
+    /// v82: salvages <paramref name="itemIds"/> with the UST <paramref name="toolId"/> without opening
+    /// AC's salvage panel: the engine sends the 0x027D salvage request through AC's own sender, the
+    /// same game action the panel's Salvage button sends. Salvage bags in the list are merged with the
+    /// new salvage. At most <see cref="MaxSalvageDirectItems"/> ids; none zero, none the tool. The
+    /// server checks the UST is carried, salvages each item it can (in the packs, not worn, not
+    /// retained, with a material) and skips the rest without a word; its answer is the items leaving
+    /// the pack, new salvage bags and a "You obtain ..." chat line. Returns the count sent or queued,
+    /// 0 refused before sending, -1 the sender isn't bound on this client, -2 an engine before v82.
+    /// Any thread (queued to AC's main thread).
+    /// </summary>
+    // ─── Ghost creatures (API v83) ─────────────────────────────────────────
+
+    /// <summary>
+    /// v83: milliseconds since the server last sent a message about <paramref name="objectId"/>
+    /// (create, position, motion, vector, state, parent, pickup, effects, object description,
+    /// update object). -1 when it sent none since the engine started watching (or the object was
+    /// deleted), -2 an engine before v83. A monster fighting anyone near the player gets motion
+    /// updates every few seconds; one that sends nothing for a long time while it is attacked and
+    /// no swing at it ever starts is a ghost. Any thread.
+    /// </summary>
+    public int GetObjectServerAge(uint objectId)
+        => HasGetObjectServerAge
+            ? ((delegate* unmanaged[Cdecl]<uint, int>)_api.GetObjectServerAgeFn)(objectId)
+            : -2;
+
+    /// <summary>
+    /// v83: removes a ghost creature from the client the way a server DeleteObject would (plugins
+    /// get OnDeleteObject). Refused for the player, players, anything that isn't a creature, and an
+    /// object the server sent a message about in the last 5 s. A real object comes back with the
+    /// server's next CreateObject for it. Returns 1 removed, 2 queued for AC's main thread, 0
+    /// refused, -1 the client's DeleteObject isn't bound yet, -2 an engine before v83. Any thread.
+    /// </summary>
+    public int RemoveClientObject(uint objectId)
+        => HasRemoveClientObject
+            ? ((delegate* unmanaged[Cdecl]<uint, int>)_api.RemoveClientObjectFn)(objectId)
+            : -2;
+
+    public int SalvageDirect(uint toolId, ReadOnlySpan<uint> itemIds)
+    {
+        if (!HasSalvageDirect) return -2;
+        if (toolId == 0 || itemIds.Length == 0 || itemIds.Length > MaxSalvageDirectItems) return 0;
+        fixed (uint* p = itemIds)
+            return ((delegate* unmanaged[Cdecl]<uint, uint*, int, int>)_api.SalvageDirectFn)(toolId, p, itemIds.Length);
+    }
 
     /// <summary>
     /// v78: which reassembled server messages this plugin wants on its

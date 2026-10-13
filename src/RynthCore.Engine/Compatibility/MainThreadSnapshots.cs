@@ -105,17 +105,27 @@ internal static class MainThreadSnapshots
             try { EnchantmentHooks.PrefetchWatchedObjectEnchantments(); } catch { }
             // Inventory panel: sends the one requested item action, watches it, and
             // captures the packs (throttled; returns at once while the panel is closed
-            // and nothing is in flight). Only while the player object is live.
-            try { InventoryModel.MainThreadTick(); } catch { }
+            // and nothing is in flight). Only while the player object is live, and held
+            // through a world transition (dead / portal / landblock jump): it SENDS item
+            // actions, and those wait like the AcMainThreadQueue's (WorldTransitionState).
+            if (!PlayerLifecycleLog.InWorldTransition)
+            {
+                try { InventoryModel.MainThreadTick(); } catch { }
+            }
             // Skills panel: ranks, XP spent and buffs (500 ms, only while the panel is open).
             // After the enchantment snapshot so its buffs are this tick's.
             try { PlayerProgressHooks.Prefetch(); } catch { }
         }
 
-        // Aelrynth skill mastery: the /mastery-data request after login, on panel open
-        // and after a raise (only on Aelrynth; a few compares when nothing is wanted).
-        try { MasteryFeed.MainThreadTick(playerLive); } catch { }
-        // Aelrynth account vault (the Inventory panel's Vault view): reads on request only.
-        try { VaultFeed.MainThreadTick(playerLive); } catch { }
+        // Both send server commands (a mastery raise, a vault withdraw), so like the
+        // Inventory panel they wait out a world transition; their requests stay pending.
+        if (!PlayerLifecycleLog.InWorldTransition)
+        {
+            // Aelrynth skill mastery: the /mastery-data request after login, on panel open
+            // and after a raise (only on Aelrynth; a few compares when nothing is wanted).
+            try { MasteryFeed.MainThreadTick(playerLive); } catch { }
+            // Aelrynth account vault (the Inventory panel's Vault view): reads on request only.
+            try { VaultFeed.MainThreadTick(playerLive); } catch { }
+        }
     }
 }

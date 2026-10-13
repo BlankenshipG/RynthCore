@@ -125,6 +125,35 @@ internal static unsafe class FlightRecorder
         try { c.EngineCall(name, a, b); } catch { }
     }
 
+    /// <summary>An engine IdentifyObject send for <paramref name="id"/>, asked for by <paramref name="who"/>
+    /// (IdRequester): the 0xC8 it produces is tagged [eng:&lt;who&gt;]. Call it before the send; the
+    /// token goes to EngineSendFailed when the send does not happen. -1 while the recorder is off.</summary>
+    public static int EngineSend(byte who, uint id)
+    {
+        FlightCapture? c = _cap;
+        if (c == null || _paused) return -1;
+        try { return c.EngineSend(who, id); } catch { return -1; }
+    }
+
+    /// <summary>The send registered as <paramref name="token"/> did not happen: retire its entry.</summary>
+    public static void EngineSendFailed(int token, uint id)
+    {
+        if (token < 0) return;
+        FlightCapture? c = _cap;
+        if (c == null) return;
+        try { c.EngineSendFailed(token, id); } catch { }
+    }
+
+    /// <summary>IdentifyObject messages sent with no engine send to match (AC or Decal); -1 while the recorder is off.</summary>
+    public static long ForeignIdentifyTotal
+    {
+        get
+        {
+            FlightCapture? c = _cap;
+            return c == null ? -1 : c.IdentifyForeignTotal;
+        }
+    }
+
     public static void Mark(FlightMark kind, uint a = 0, uint b = 0, uint c = 0, string? text = null)
     {
         FlightCapture? cap = _cap;

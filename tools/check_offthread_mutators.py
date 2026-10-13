@@ -72,6 +72,8 @@ MUTATOR_DELEGATES = {
     "_eventCloseTradeNegotiations", "_tradeSystemAcceptTrade", "_tradeSystemDeclineTrade",
     # Salvage panel: open notice + gmSalvageUI AddNewItem/Salvage (UIElement tree)
     "_sendNoticeOpenSalvagePanel", "_gmSalvageUIAddNewItem", "_gmSalvageUISalvage",
+    # CM_Inventory::Event_CreateTinkeringTool (0x027D salvage without the panel; v82 SalvageDirect)
+    "_eventCreateTinkeringTool",
     # CombatActionHooks game-action sends (AC heap alloc + send queue; 0xC8 also bumps busy count)
     "_requestId", "_queryHealth", "_cancelAttack",
     # MovementActionHooks: CM_Movement::Event_AutonomyLevel (0xF752 game-action send)
@@ -84,6 +86,12 @@ MUTATOR_DELEGATES = {
     "_eventTrainSkillAdvancementClass",   # 0x0047 TrainSkill (untrained -> trained with credits)
 }
 GATE = "MainThreadGuard.IsOnMainThread"
+# AcMainThreadQueue.MustQueue(teardown: ...) is the shared mutator gate (MutatorGate.cs): it
+# asks MainThreadGuard.IsOnMainThread() itself and returns true (queue) off the main thread.
+# Counted only in the gate's own shape, an if that opens with it (optionally after one
+# 'flag ||'), searched with // comments stripped, so a commented-out gate is not a gate.
+# The check is textual: a string literal that spells the shape would still count.
+GATE_SHAPE = re.compile(r"if\s*\((?:\w+\s*\|\|\s*)?AcMainThreadQueue\.MustQueue\(")
 ENQUEUE = "AcMainThreadQueue.Enqueue"
 
 # Pure off-thread PRODUCERS: Timer/pump callbacks that ONLY enqueue (never call an
@@ -92,6 +100,7 @@ ENQUEUE = "AcMainThreadQueue.Enqueue"
 # (file, method) pairs, each verified to do no off-thread AC mutation.
 ENQUEUE_PRODUCER_ALLOW = {
     ("AutoIdService.cs", "DrainTick"),   # appraisal: enqueues 0xC8, sent on main thread in DrainRequestIds
+    ("AutoIdService.cs", "QueueIdentify"),   # LiveWorld.QueueIdentify, AutoIdDrain's send on the drain timer: only EnqueueRequestId
     ("RynthCoreChatCommands.cs", "Reply"),   # /rc and /rv plates replies: only EnqueueWriteToChat
     ("AcMouseOver.cs", "Say"),   # /rc acmouse watch lines: only EnqueueWriteToChat (and the log)
 }
@@ -179,7 +188,8 @@ def main():
         # executor - exempt it from both checks.
         is_queue = fn == "AcMainThreadQueue.cs"
         for name, line, body, attrs in split_methods(src):
-            gated = GATE in body
+            gate_code = "\n".join(l.split("//", 1)[0] for l in body.splitlines())
+            gated = GATE in body or GATE_SHAPE.search(gate_code) is not None
             allowed = is_allowed(name, attrs) or is_queue
 
             # CHECK A: calls Enqueue but lacks the gate (unless it's a known pure producer).

@@ -177,7 +177,7 @@ internal static class ClientCombatHooks
         // MeleeAttack/MissileAttack, this ran un-marshalled every fight. Marshal
         // as ONE queue entry (not split into four) so the sequence stays atomic
         // relative to the drain loop's other actions.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueNativeAttack(attackHeight, power);
 
         try

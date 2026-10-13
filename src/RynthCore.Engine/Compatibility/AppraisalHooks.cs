@@ -80,6 +80,9 @@ internal static class AppraisalHooks
     // Spell book cache: guid → spell ID array (from AppraisalProfile._spellBook PSmartArray<UInt32> at +0x30)
     private static readonly Dictionary<uint, uint[]> _spellIdCache = new();
     private static readonly object _cacheLock = new();
+    // Objects the CLIENT released, whose data is kept a while (ReleasedObjectRetention).
+    private static readonly ReleasedObjectRetention _released = new();
+    private static readonly List<uint> _expiredScratch = new();
 
     public static bool IsInstalled => _hookInstalled;
     public static string StatusMessage => _statusMessage;
@@ -114,19 +117,64 @@ internal static class AppraisalHooks
             _bags.Clear();
             _spellIdCache.Clear();
             _failedRollLogged.Clear();
+            _released.Clear();
         }
     }
 
-    /// <summary>Drops everything cached for an object AC deleted (PropertyUpdateHooks' BeingDeleted hook).</summary>
+    /// <summary>
+    /// Drops everything cached for an object: the SERVER deleted it (0xF747, SmartBoxHooks /
+    /// ServerMessageStream), or its kept-after-release time ran out. Any thread.
+    /// </summary>
     public static void EvictObject(uint guid)
     {
         lock (_cacheLock)
+            EvictLocked(guid);
+    }
+
+    // Caller holds _cacheLock.
+    private static void EvictLocked(uint guid)
+    {
+        _appraisedGuids.Remove(guid);
+        _lastIdTime.Remove(guid);
+        _bags.Remove(guid);
+        _spellIdCache.Remove(guid);
+        _failedRollLogged.Remove(guid);
+        _released.Forget(guid);
+    }
+
+    /// <summary>
+    /// The CLIENT released an object (AC's BeingDeleted: it left the client's view). Its data is
+    /// kept for ReleasedObjectRetention.RetainMs, so a re-create inside that time still finds it
+    /// (AutoId then skips the re-appraisal). Main thread (the BeingDeleted detour).
+    /// </summary>
+    public static void OnClientRelease(uint guid, long nowMs)
+    {
+        lock (_cacheLock)
         {
-            _appraisedGuids.Remove(guid);
-            _lastIdTime.Remove(guid);
-            _bags.Remove(guid);
-            _spellIdCache.Remove(guid);
-            _failedRollLogged.Remove(guid);
+            if (!_appraisedGuids.Contains(guid) && !_bags.ContainsKey(guid)) return;
+            if (!_released.OnRelease(guid, nowMs))
+                EvictLocked(guid);   // the kept-released bound is full: drop it now
+        }
+    }
+
+    /// <summary>The object was created again: its data is current, not merely kept.</summary>
+    public static void MarkLive(uint guid)
+    {
+        lock (_cacheLock)
+            _released.Forget(guid);
+    }
+
+    /// <summary>Drops the data of objects released longer ago than the retention time. Timer thread.</summary>
+    public static int ExpireReleased(long nowMs)
+    {
+        lock (_cacheLock)
+        {
+            _expiredScratch.Clear();
+            int n = _released.Expire(nowMs, _expiredScratch);
+            foreach (uint g in _expiredScratch)
+                EvictLocked(g);
+            _expiredScratch.Clear();
+            return n;
         }
     }
 
@@ -150,10 +198,7 @@ internal static class AppraisalHooks
                 if (t < oldestTime) { oldestTime = t; oldest = g; }
             }
             if (oldest == 0) return;
-            _bags.Remove(oldest);
-            _appraisedGuids.Remove(oldest);
-            _lastIdTime.Remove(oldest);
-            _spellIdCache.Remove(oldest);
+            EvictLocked(oldest);
         }
     }
 

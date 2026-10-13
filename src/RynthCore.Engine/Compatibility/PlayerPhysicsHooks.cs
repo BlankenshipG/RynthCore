@@ -385,7 +385,7 @@ internal static class PlayerPhysicsHooks
         // Park the heading in the coalesced slot instead; AcMainThreadQueue.Drain
         // calls back in here on the main thread (and falls back to the
         // CommandInterpreter turn there when there is no player, as before).
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueDirectHeading(decalHeadingDeg);
 
         int n = System.Threading.Interlocked.Increment(ref _setHeadingCalls);
@@ -457,7 +457,7 @@ internal static class PlayerPhysicsHooks
         // raw write racing AC's own motion-graph tick is a guaranteed torn
         // write, not just an AV risk. Reachable off-thread via Jumper.cs's
         // ReleaseJump on the Decal-coexistence pump thread.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueLaunchJumpWithMotion(shift, holdW, holdX, holdZ, holdC);
 
         if (!TryGetCMotionInterp(out IntPtr cmi))

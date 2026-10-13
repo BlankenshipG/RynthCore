@@ -53,6 +53,16 @@ internal sealed class SettingsFace : IImGuiPanel
         public bool Active;     // the box had keyboard focus last frame
     }
     private readonly Dictionary<SettingRow, NumberEdit> _edits = new();
+    // Text rows being typed in (the saved value shows again once the box loses focus).
+    private readonly Dictionary<SettingRow, string> _textEdits = new();
+    // The Hotkeys tab (engine-side; not part of RynthAi's settings).
+    private readonly HotkeysSettingsUi _hotkeys = new();
+
+    // A tab asked for from outside (/rc hotkeys), taken on the next draw.
+    private static volatile string? _requestedTab;
+
+    /// <summary>Shows tab <paramref name="name"/> (a SettingsSchema tab name) the next time Settings draws. Any thread.</summary>
+    public static void RequestTab(string name) => _requestedTab = name;
 
     public void OnShown()
     {
@@ -60,7 +70,11 @@ internal sealed class SettingsFace : IImGuiPanel
         UiSources.Settings.RequestRefresh();
     }
 
-    public void OnHidden() => UiSources.Settings.Unsubscribe();
+    public void OnHidden()
+    {
+        UiSources.Settings.Unsubscribe();
+        _hotkeys.Leave();
+    }
 
     public void Draw()
     {
@@ -72,6 +86,13 @@ internal sealed class SettingsFace : IImGuiPanel
             _data = snap.Value.Clone();
         }
         _editing = false;
+
+        if (_requestedTab is { } wanted)
+        {
+            _requestedTab = null;
+            int idx = Array.FindIndex(SettingsSchema.Tabs, t => t.Name.Equals(wanted, StringComparison.OrdinalIgnoreCase));
+            if (idx >= 0) _tab = idx;
+        }
 
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         Vector2 origin = ImGuiNET.ImGui.GetCursorScreenPos();
@@ -163,6 +184,7 @@ internal sealed class SettingsFace : IImGuiPanel
         ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
 
         SettingRow[] rows = SettingsSchema.Tabs[_tab].Rows;
+        if (SettingsSchema.Tabs[_tab].Name != HotkeysSettingsUi.TabName) _hotkeys.Leave();
         for (int i = 0; i < rows.Length; i++)
         {
             SettingRow row = rows[i];
@@ -189,7 +211,131 @@ internal sealed class SettingsFace : IImGuiPanel
             case SettingKind.Spacer: ImGuiNET.ImGui.Dummy(new Vector2(0, 6)); break;
             case SettingKind.Note: Note(row.Label, w); break;
             case SettingKind.CraftingStatus: CraftingStatus(row); break;
+            case SettingKind.Button: ButtonRow(row, w); break;
+            case SettingKind.TraceCategories: TraceCategoriesRow(row, w); break;
+            case SettingKind.Text: TextRow(row, w); break;
+            case SettingKind.Status: StatusRow(row, w); break;
+            case SettingKind.Hotkeys: _editing |= _hotkeys.Draw(w); break;
         }
+    }
+
+    // [All on] [All off] [ILT on], then a 3-column grid of square toggles, one per
+    // RynthAi trace category. Edits the copy's DiagCategories and saves like any other row.
+    private void TraceCategoriesRow(SettingRow row, float w)
+    {
+        var cats = TraceCategoryLevels.Parse(_data.DiagCategories);
+        if (cats.Count == 0)
+        {
+            Note("Waiting for RynthAi...", w);
+            return;
+        }
+
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+        if (ImGuiNET.ImGui.Button("All on")) SaveCategories(TraceCategoryLevels.Set(_data.DiagCategories, "", true));
+        ImGuiNET.ImGui.SameLine(0, 6);
+        if (ImGuiNET.ImGui.Button("All off")) SaveCategories(TraceCategoryLevels.Set(_data.DiagCategories, "", false));
+        ImGuiNET.ImGui.SameLine(0, 6);
+        if (ImGuiNET.ImGui.Button("ILT on")) SaveCategories(TraceCategoryLevels.Set(_data.DiagCategories, "", true, "Ilt"));
+        Tooltip(row);
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
+        float colW = Math.Max(80f, w / 3f);
+        int perRow = Math.Max(1, (int)(w / colW));
+        Vector2 start = ImGuiNET.ImGui.GetCursorScreenPos();
+        for (int i = 0; i < cats.Count; i++)
+        {
+            var (name, level) = cats[i];
+            bool on = level != TraceCategoryLevels.Off;
+            string label = TraceCategoryLevels.Label(name, level);
+            var p = start + new Vector2(i % perRow * colW, i / perRow * 18f);
+            ImGuiNET.ImGui.SetCursorScreenPos(p);
+            ImGuiNET.ImGui.PushID(name);
+            if (ImGuiNET.ImGui.InvisibleButton("##cat", new Vector2(colW - 4, 16)))
+                SaveCategories(TraceCategoryLevels.Set(_data.DiagCategories, name, !on));
+            if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+            ImGuiNET.ImGui.PopID();
+            dl.AddRectFilled(p + new Vector2(0, 2), p + new Vector2(12, 14), on ? ToggleOn : ToggleOff, 2);
+            dl.PushClipRect(p, p + new Vector2(colW - 4, 16), true);
+            dl.AddText(p + new Vector2(18, (16 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), TextDim, label);
+            dl.PopClipRect();
+        }
+        int rowsUsed = (cats.Count + perRow - 1) / perRow;
+        ImGuiNET.ImGui.SetCursorScreenPos(start + new Vector2(0, rowsUsed * 18f));
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+    }
+
+    private void SaveCategories(string levels)
+    {
+        _data.DiagCategories = levels;
+        SettingsCommands.Save(_data.Clone());
+    }
+
+    // Label, then a full-width box; the value commits on Enter or focus loss (like the number boxes).
+    private void TextRow(SettingRow row, float w)
+    {
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, TextDim);
+        ImGuiNET.ImGui.TextUnformatted(row.Label);
+        ImGuiNET.ImGui.PopStyleColor();
+        Tooltip(row);
+
+        string saved = row.GetText?.Invoke(_data) ?? string.Empty;
+        string text = _textEdits.TryGetValue(row, out string? typing) ? typing : saved;
+        ImGuiNET.ImGui.SetNextItemWidth(Math.Max(80, w - 4));
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.FrameBg, PanelBg);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Amber);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, BtnBord);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1f);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 0f);
+        bool enter = ImGuiNET.ImGui.InputTextWithHint("##text", row.Hint ?? string.Empty, ref text, 512u,
+            ImGuiInputTextFlags.EnterReturnsTrue);
+        bool active = ImGuiNET.ImGui.IsItemActive();
+        bool committed = enter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit();
+        ImGuiNET.ImGui.PopStyleVar(2);
+        ImGuiNET.ImGui.PopStyleColor(3);
+        Tooltip(row);
+        _editing |= active;
+
+        if (committed)
+        {
+            _textEdits.Remove(row);
+            if (!string.Equals(text, saved, StringComparison.Ordinal))
+            {
+                row.SetText?.Invoke(_data, text);
+                SettingsCommands.Save(_data.Clone());
+            }
+        }
+        else if (active) _textEdits[row] = text;
+        else _textEdits.Remove(row);
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+    }
+
+    // RynthAi's one-line status (teal), wrapped to the column.
+    private void StatusRow(SettingRow row, float w)
+    {
+        string text = row.GetText?.Invoke(_data) ?? string.Empty;
+        if (text.Length == 0) return;
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Teal);
+        ImGuiNET.ImGui.PushTextWrapPos(ImGuiNET.ImGui.GetCursorPosX() + w);
+        ImGuiNET.ImGui.TextUnformatted(text);
+        ImGuiNET.ImGui.PopTextWrapPos();
+        ImGuiNET.ImGui.PopStyleColor();
+    }
+
+    // Label | [caption]; Click posts its own work (never runs plugin code on AC's thread).
+    private static void ButtonRow(SettingRow row, float w)
+    {
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, TextDim);
+        ImGuiNET.ImGui.AlignTextToFramePadding();
+        ImGuiNET.ImGui.TextUnformatted(row.Label);
+        ImGuiNET.ImGui.PopStyleColor();
+        ImGuiNET.ImGui.SameLine(Math.Max(ImGuiNET.ImGui.GetCursorPosX() + 8, w * 0.45f));
+        if (ImGuiNET.ImGui.Button(row.ButtonText ?? row.Label))
+            row.Click?.Invoke();
+        Tooltip(row);
     }
 
     private void Changed(SettingRow row, double value)
@@ -420,6 +566,7 @@ internal sealed class SettingsFace : IImGuiPanel
     {
         ["Display"] = PhosphorIcons.Monitor,
         ["UI"] = PhosphorIcons.AppWindow,
+        ["Hotkeys"] = PhosphorIcons.Keyboard,
         ["Misc"] = PhosphorIcons.DotsThree,
         ["Recharge"] = PhosphorIcons.BatteryCharging,
         ["Melee Combat"] = PhosphorIcons.Sword,
@@ -430,6 +577,7 @@ internal sealed class SettingsFace : IImGuiPanel
         ["Crafting"] = PhosphorIcons.Hammer,
         ["Looting"] = PhosphorIcons.Bag,
         ["Vendoring"] = PhosphorIcons.Storefront,
+        ["Diagnostics"] = PhosphorIcons.Wrench,
     };
     private static readonly System.Collections.Generic.Dictionary<string, string> TabLabels = new();
 

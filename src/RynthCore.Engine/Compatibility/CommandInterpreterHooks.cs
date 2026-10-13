@@ -163,7 +163,7 @@ internal static class CommandInterpreterHooks
         // motion graph the CSequence-AV corruption class kills. Off-thread
         // callers marshal through the action ring (drained post-tick,
         // gesture-gated) like every other mutator.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: !enabled))
             return AcMainThreadQueue.EnqueueSetAutoRun(enabled);
         int n = System.Threading.Interlocked.Increment(ref _setAutoRunCalls);
         if (!TryBindDelegates())
@@ -269,7 +269,7 @@ internal static class CommandInterpreterHooks
 
     public static bool SetMotion(uint motion, bool enabled)
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: !enabled))
             return AcMainThreadQueue.EnqueueSetMotion(motion, enabled); // same off-thread class as SetAutoRun
         if (!TryBindDelegates() || _setMotion == null)
             return false;
@@ -287,7 +287,7 @@ internal static class CommandInterpreterHooks
 
     public static bool StopCompletely()
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: true))
             return AcMainThreadQueue.EnqueueStopCompletely(); // same off-thread class as SetAutoRun
         if (!TryBindDelegates() || _stopCompletely == null)
             return false;
@@ -305,7 +305,7 @@ internal static class CommandInterpreterHooks
 
     public static bool TurnToHeading(float headingDegrees)
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueTurnToHeading(headingDegrees); // same off-thread class as SetAutoRun
         int n = System.Threading.Interlocked.Increment(ref _turnToHeadingCalls);
         if (!TryBindDelegates() || _turnToHeading == null)
@@ -398,7 +398,7 @@ internal static class CommandInterpreterHooks
 
     public static bool TapJump()
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueTapJump();
         if (!TryBindDelegates())
             return false;
@@ -419,7 +419,7 @@ internal static class CommandInterpreterHooks
 
     public static bool CommenceJump()
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueCommenceJump();
         if (!TryBindDelegates())
             return false;
@@ -437,7 +437,7 @@ internal static class CommandInterpreterHooks
 
     public static bool DoJump(bool autonomous)
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueDoJumpAutonomous(autonomous);
         if (!TryBindDelegates())
             return false;

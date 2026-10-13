@@ -90,6 +90,7 @@ internal static unsafe class PhosphorIcons
     public const string HourglassMedium = "\uE2B8";
     public const string Hourglass = "\uE2B2";
     public const string Info = "\uE2CE";
+    public const string Keyboard = "\uE2D8";
     public const string Knife = "\uE636";
     public const string Lightning = "\uE2DE";
     public const string Leaf = "\uE2DA";
@@ -168,7 +169,7 @@ internal static unsafe class PhosphorIcons
         + ArrowCircleUp + Barbell + Brain + GraduationCap + Hourglass + SortDescending + Package
         + Binoculars + Crown + Sun
         + CastleTurret + ClockCounterClockwise + GlobeHemisphereWest + Path + Star + Target + User
-        + TextAa + Leaf;
+        + TextAa + Leaf + Keyboard;
 
     /// <summary>
     /// Draws <paramref name="glyph"/> (one icon) centred in the box at

@@ -160,7 +160,7 @@ internal sealed partial class InventoryFace
         // The open pack: a real pack (Classic has no "All" or "Worn" entry; the paperdoll is Worn).
         if (_pack == AllPacks || _pack == WornPacks || view.PackOf(_pack) == null)
             _pack = view.Packs.Length > 0 ? view.Packs[0].Id : AllPacks;
-        bool filtered = _category != 0 || _searchText.Length > 0;
+        bool filtered = FiltersOn;
         RebuildIfNeeded(view, filtered ? AllPacks : _pack);
 
         Backdrop(dl, o, w, bottom - o.Y, s);
@@ -774,12 +774,13 @@ internal sealed partial class InventoryFace
         dl.AddLine(p, p + new Vector2(w, 0), Faded(Gold));
         InventoryTarget? target = InventoryModel.Target;
         InventoryItem? sel = SelectedItem(view);
+        RefreshSelectionLabels(target);
         float zh = h - 4, giveW = Math.Min(128 * s, w * 0.42f), dropW = 62 * s;
         var give = new Vector2(p.X + w - giveW - 2, p.Y + 2);
         var drop = new Vector2(give.X - dropW - 3, p.Y + 2);
-        Zone("##z_drop", DropKind.Drop, PhosphorIcons.ArrowFatDown, "Drop", drop, new Vector2(dropW, zh), 0, "",
-            InventoryModel.DropAvailable, sel, "Drop on the ground: drag an item here, or click to drop the selected item.");
-        Zone("##z_give", DropKind.Give, PhosphorIcons.Gift, target?.ZoneLabel ?? "Give", give, new Vector2(giveW, zh),
+        Zone("##z_drop", DropKind.Drop, PhosphorIcons.ArrowFatDown, _dropLabel, drop, new Vector2(dropW, zh), 0, "",
+            InventoryModel.DropAvailable, sel, DropTip);
+        Zone("##z_give", DropKind.Give, PhosphorIcons.Gift, _giveLabel, give, new Vector2(giveW, zh),
             target?.Id ?? 0, target?.Name ?? "", InventoryModel.GiveAvailable && target != null, sel,
             target?.ZoneTip ?? "Select a creature, NPC or player in the game to give to.");
         StatusLine(new Vector2(p.X + 3, p.Y), Math.Max(10, drop.X - p.X - 6), h, view);
@@ -803,7 +804,7 @@ internal sealed partial class InventoryFace
             dl.AddText(tp, StackCol, it.StackText);
         }
         if (it.Id == pendingId) Overlay(dl, Art.Waiting, min, cell, Amber);
-        if (it.Id == _selected) Overlay(dl, Art.Selected, min, cell, SelYellow);
+        if (IsPicked(it)) Overlay(dl, Art.Selected, min, cell, SelYellow);
     }
 
     /// <summary>Hover, click (select, and a press that may become a drag), double-click (use), right-click (menu).</summary>
@@ -813,7 +814,7 @@ internal sealed partial class InventoryFace
         _hover = it;
         if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Left))
         {
-            _selected = it.Id;
+            ClickItem(it);
             _pressItem = it;
             _pressAt = ImGuiNET.ImGui.GetMousePos();
         }
@@ -823,11 +824,7 @@ internal sealed partial class InventoryFace
             Act(InventoryActionKind.Use, it, 0, "", 0);
         }
         if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Right))
-        {
-            _selected = it.Id;
-            _ctxItem = it;
-            _openCtx = true;
-        }
+            RightClickItem(it);
     }
 
     /// <summary>
@@ -967,8 +964,9 @@ internal sealed partial class InventoryFace
 }
 
 /// <summary>
-/// The Inventory panel's remembered choices: Classic or Modern look, and whether the
-/// Classic view shows its tools row. %LOCALAPPDATA%\RynthCore\inventory_settings.txt,
+/// The Inventory panel's remembered choices: Classic or Modern look, whether the
+/// Classic view shows its tools row, its size, and the attribute filter's rules.
+/// %LOCALAPPDATA%\RynthCore\inventory_settings.txt,
 /// read once when the panel opens, written in the background when a choice changes.
 /// </summary>
 internal static class InventorySettingsStore
@@ -983,6 +981,8 @@ internal static class InventorySettingsStore
     /// <summary>The panel's size in percent of the UI scale (50-150, steps of 5); text follows it.</summary>
     public static int SizePct { get; private set; } = 80;
     public static float SizeFactor => SizePct / 100f;
+    /// <summary>The attribute filter's rules (InventoryAttributeFilter.Serialize); "" = none.</summary>
+    public static string AttrFilter { get; private set; } = string.Empty;
 
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RynthCore", "inventory_settings.txt");
@@ -1006,6 +1006,7 @@ internal static class InventorySettingsStore
                     if (key == "classic") Classic = val == "1";
                     else if (key == "tools") ShowTools = val == "1";
                     else if (key == "size" && int.TryParse(val, out int pct)) SizePct = Math.Clamp(pct, 50, 150);
+                    else if (key == "attrfilter") AttrFilter = val;
                 }
             }
             catch { /* defaults stay */ }
@@ -1034,13 +1035,22 @@ internal static class InventorySettingsStore
         Save();
     }
 
+    public static void SetAttrFilter(string line)
+    {
+        line ??= string.Empty;
+        if (AttrFilter == line) return;
+        AttrFilter = line;
+        Save();
+    }
+
     /// <summary>Writes the settings in the background (the caller is AC's render thread).</summary>
     private static void Save()
     {
         string text = "# RynthCore inventory panel settings - auto-generated, hand-edits OK.\n"
             + "classic=" + (Classic ? "1" : "0") + "\n"
             + "tools=" + (ShowTools ? "1" : "0") + "\n"
-            + "size=" + SizePct + "\n";
+            + "size=" + SizePct + "\n"
+            + "attrfilter=" + AttrFilter + "\n";
         UiBackgroundWriter.Enqueue("inventory settings", () =>
         {
             lock (Sync)

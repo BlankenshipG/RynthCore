@@ -460,11 +460,10 @@ internal sealed class RadarFace : IImGuiPanel
         _tipLabel = m.Label;
         _tipDistance = d;
         _tipPct = pct;
-        // A label is the object's name; the kinds a name alone doesn't tell apart say what they are.
+        // A label is the object's name; the kind always follows it, so a dot says which show box
+        // in the settings hides it (a fellow is not a "Player", your kill's corpse not a "Corpse").
         string name = string.IsNullOrEmpty(m.Label) ? RadarKind.Name(m.Kind)
-            : m.Kind is RadarKind.Fellow or RadarKind.Pet or RadarKind.Vendor or RadarKind.OwnCorpse or RadarKind.Player
-                ? m.Label + "  (" + RadarKind.Name(m.Kind) + ")"
-                : m.Label!;
+            : m.Label + "  (" + RadarKind.Name(m.Kind) + ")";
         var inv = System.Globalization.CultureInfo.InvariantCulture;
         _tipText = name + "\n" + d.ToString(inv) + " yd"
                    + (pct >= 0 ? "   " + pct.ToString(inv) + "%" : "");
@@ -572,6 +571,9 @@ internal sealed class RadarFace : IImGuiPanel
                 AvaloniaOverlay.RadarCtrlGatedClickThrough = RadarSettingsStore.CtrlGatedClickThrough;
                 RadarSettingsStore.Save();
             }
+            // The gear toggles this window too; Close is the obvious way out (changes are already saved).
+            ImGuiNET.ImGui.Separator();
+            if (ImGuiNET.ImGui.Button("Close")) _settingsOpen = false;
             ImGuiNET.ImGui.PopFont();
         }
         ImGuiNET.ImGui.End();
@@ -590,16 +592,16 @@ internal sealed class RadarFace : IImGuiPanel
 
     private static readonly string[] KindTips =
     {
-        "Creatures you can attack.",
-        "Creatures you can't attack (townsfolk, quest givers).",
+        "Creatures you can attack.\nHover a dot on the radar: its tooltip names the box that shows it.",
+        "Creatures you can't attack (townsfolk, quest givers).\nShopkeepers have their own box (Vendors).",
         "Portals, with their destination.",
         "Doors, gates and hatches.",
-        "Other players.",
+        "Other players, outside your fellowship.\nPlayers in your fellowship have their own box (Fellows).",
         "Players in your fellowship.",
         "Your own combat pet.",
         "Shopkeepers.",
-        "Corpses you can't loot (or not identified yet: selecting one tells).",
-        "Corpses you may loot: your kills, your fellows' kills and your own corpse. Known once the corpse has been identified (looting or selecting it does that).",
+        "Corpses. Off hides every corpse, the ones you may loot too.\nOn: corpses you can't loot (or not identified yet: selecting one tells) show in this colour.",
+        "Corpses you may loot: your kills, your fellows' kills and your own corpse, in their own colour. Known once the corpse has been identified (looting or selecting it does that).\nOnly while Corpses is on.",
         "Lifestones.",
         "Items lying on the ground. Off by default: there can be a lot of them.",
     };
@@ -623,14 +625,21 @@ internal sealed class RadarFace : IImGuiPanel
         foreach (var (kind, label) in KindRowsOrder)
         {
             ImGuiNET.ImGui.PushID(kind);
+            // "Your corpses" sits under Corpses: Corpses off hides them too (RadarSettingsStore.ShowKind).
+            bool sub = kind == RadarKind.OwnCorpse;
+            if (sub) { ImGuiNET.ImGui.Indent(14 * scale); ImGuiNET.ImGui.BeginDisabled(!RadarSettingsStore.ShowCorpses); }
             changed |= ImGuiNET.ImGui.Checkbox("##show", ref RadarSettingsStore.ShowFlag(kind));
             if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(KindTips[kind]);
             ImGuiNET.ImGui.SameLine();
-            // The marker exactly as the radar draws it.
+            // The marker exactly as the radar draws it; faded while the kind is hidden, so the
+            // legend doesn't look like the box did nothing.
             float box = ImGuiNET.ImGui.GetFrameHeight();
             Vector2 at = ImGuiNET.ImGui.GetCursorScreenPos();
             ImGuiNET.ImGui.Dummy(new Vector2(box, box));
-            RadarMarkerStyle.Draw(dl, kind, at + new Vector2(box, box) * 0.5f, KindCols[kind], 1.3f * scale);
+            uint glyph = KindCols[kind];
+            if (!RadarSettingsStore.ShowKind(kind))
+                glyph = (glyph & 0x00FFFFFFu) | ((uint)((glyph >> 24) * 0.3f) << 24);
+            RadarMarkerStyle.Draw(dl, kind, at + new Vector2(box, box) * 0.5f, glyph, 1.3f * scale);
             ImGuiNET.ImGui.SameLine();
             ImGuiNET.ImGui.AlignTextToFramePadding();
             ImGuiNET.ImGui.TextUnformatted(label);
@@ -642,6 +651,7 @@ internal sealed class RadarFace : IImGuiPanel
                 RadarSettingsStore.KindColors[kind] = ToArgb(v);
                 _colorDirty = true;
             }
+            if (sub) { ImGuiNET.ImGui.EndDisabled(); ImGuiNET.ImGui.Unindent(14 * scale); }
             ImGuiNET.ImGui.PopID();
         }
         ImGuiNET.ImGui.PopStyleVar();

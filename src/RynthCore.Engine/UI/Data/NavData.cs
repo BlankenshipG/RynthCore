@@ -40,6 +40,20 @@ internal sealed class NavPayload
     public int ActiveNavIndex { get; set; }
     public List<string> NavFiles { get; set; } = new();
     public List<NavPoint> Points { get; set; } = new();
+    /// <summary>RynthAi records (and draws) the walked breadcrumb trail. Older plugins omit it (false).</summary>
+    public bool TrackBreadcrumbs { get; set; }
+    /// <summary>RynthAi draws the route overlay (rings / lines, waypoint labels, guide line).</summary>
+    public bool ShowRouteOverlay { get; set; }
+    /// <summary>Route recording is on (points are added as you walk). Older plugins omit it.</summary>
+    public bool IsRecording { get; set; }
+    /// <summary>Breadcrumb trail size, for "Trail to route" / "Backtrack".</summary>
+    public int TrailPoints { get; set; }
+    public double TrailYards { get; set; }
+    /// <summary>The last route edit's result, for a few seconds after it (empty otherwise).</summary>
+    public string EditStatus { get; set; } = string.Empty;
+    /// <summary>Map editing commands RynthAi understands (addPointAt, movePointTo, setActive): 1 from
+    /// RynthAi 2026-10-12. Older plugins omit it (0) and the Dungeon Map doesn't offer editing.</summary>
+    public int MapEdit { get; set; }
 
     /// <summary>A copy a face may change (its own point list); the points themselves are shared.</summary>
     public NavPayload Clone()
@@ -60,6 +74,15 @@ internal sealed class NavCmd
     public int InsertAt { get; set; } = -1;
     public string NavName { get; set; } = string.Empty;
     public string Text { get; set; } = string.Empty;   // addChat
+    public bool On { get; set; }                       // setBreadcrumbs / setRouteOverlay / setRecording
+    public List<int>? Indices { get; set; }            // movePoints / duplicatePoints / deletePoints
+    public int Delta { get; set; }                     // movePoints: -1 up, +1 down
+    public double Seconds { get; set; }                // addPause
+    public double Yards { get; set; }                  // simplifyRoute tolerance
+    public bool Reverse { get; set; }                  // trailToRoute: backtrack
+    public double NS { get; set; }                     // addPointAt / movePointTo: nav coordinates
+    public double EW { get; set; }
+    public double Z { get; set; }                      // nav Z (world Z / 240)
 }
 
 [JsonSerializable(typeof(NavPayload))]
@@ -104,6 +127,19 @@ internal static class NavCommands
 
     public static readonly string[] RouteTypes = { "Once", "Circular", "Linear", "Follow" };
     public static readonly string[] AddModes = { "End", "Above", "Below" };
+
+    public static readonly double[] PauseSeconds = { 1, 2, 3, 5, 10, 15, 30, 60 };
+    public static readonly string[] PauseLabels = Array.ConvertAll(PauseSeconds, s => $"Pause {s:0} s");
+
+    public static readonly double[] SimplifyYards = { 0.5, 1, 2, 3, 5 };
+    public static readonly string[] SimplifyLabels =
+        Array.ConvertAll(SimplifyYards, y => $"Drop points within {y:0.#} yd of a straight line");
+
+    public static readonly string[] TrailChoices =
+    {
+        "Replace route with the trail (walk it again)",
+        "Replace route with a backtrack (walk it back)",
+    };
 
     /// <summary>Route picker index for the plugin's RouteType (1 Circular, 2 Linear, 3 Follow, else Once).</summary>
     public static int RouteIndex(int routeType) => routeType switch { 1 => 1, 2 => 2, 3 => 3, _ => 0 };

@@ -17,6 +17,9 @@
 //  One item action at a time: AC keeps one pending inventory request and refuses
 //  a second ("You can only move or use one item at a time"; ClientActionGates).
 //  Request() refuses while an action is waiting; nothing is ever queued behind it.
+//  Several items (the panel's multi-selection) go through RequestBatch
+//  (InventoryModel.Batch.cs), which feeds them to this same path one at a time,
+//  each only after the one before it has ended.
 //
 //  The client's own gate (ClientActionGates, read on the main thread here):
 //    Before the send  while AC's pending-request slot holds anyone's request (the
@@ -212,7 +215,7 @@ internal sealed class InventoryResult
     public long AtTicks;
 }
 
-internal static class InventoryModel
+internal static partial class InventoryModel
 {
     // ── Cadence ─────────────────────────────────────────────────────────
     private static readonly long Freq = Stopwatch.Frequency;
@@ -295,6 +298,11 @@ internal static class InventoryModel
     /// </summary>
     public static bool Request(InventoryRequest request, out string why)
     {
+        if (BatchRunning)
+        {
+            why = "Several items are being sent; wait, or press Stop.";
+            return false;
+        }
         InventoryPending? busy = Pending;
         if (busy != null)
         {
@@ -357,7 +365,8 @@ internal static class InventoryModel
     public static void MainThreadTick()
     {
         bool open = Volatile.Read(ref _subscribers) > 0;
-        if (!open && _inFlight == null && _held == null && Volatile.Read(ref _requested) == null)
+        if (!open && _inFlight == null && _held == null && Volatile.Read(ref _requested) == null
+            && Volatile.Read(ref _batchActive) == 0)
             return;
         if (!MainThreadGuard.IsOnMainThread())
             return;
@@ -375,6 +384,8 @@ internal static class InventoryModel
                 _lastWatch = now;
                 Watch(now);
             }
+            // After the watch, so an item that just ended is counted before the next is sent.
+            if (Volatile.Read(ref _batchActive) != 0) BatchTick(now);
             if (!open) return;
 
             bool dirty = Volatile.Read(ref _dirty) != 0;
@@ -392,6 +403,7 @@ internal static class InventoryModel
                 SampleTarget();
             }
             HoverTick(now);
+            IdentifyQueueTick(now);
         }
         catch (Exception ex)
         {
@@ -420,6 +432,7 @@ internal static class InventoryModel
         {
             _items.Clear();       // another character: nothing carries over
             _identified.Clear();
+            ClearIdentifyQueue();
             _lastPlayer = player;
             _lastSignature = 0;
             _playerName = string.Empty;
@@ -1118,13 +1131,78 @@ internal static class InventoryModel
             _identified[id] = now;
             _lastIdentify = now;
             sentRecently = true;
-            ClientActionHooks.RequestId(id);   // main thread: the 0xC8 is sent now
+            using (Net.EngineSendMarker.Enter(Net.IdRequester.Ui))
+                ClientActionHooks.RequestId(id);   // main thread: the 0xC8 is sent now
             tip = null;                        // rebuild below with "identifying"
         }
 
         if (tip != null && tip.Id == id && now - _lastTooltip < TooltipRefreshTicks) return;
         _lastTooltip = now;
         Volatile.Write(ref _tooltip, BuildTooltip(id, appraised, !appraised && sentRecently));
+    }
+
+    // ── Identify queue (the attribute filter's "Identify N") ────────────
+
+    private static readonly long QueuedIdentifyGapTicks = Freq / 4;   // 4 a second
+    private const int MaxQueuedIdentifies = 1024;
+    private static readonly object IdQueueSync = new();
+    private static readonly Queue<uint> _idQueue = new();               // guarded by IdQueueSync
+    private static readonly HashSet<uint> _idQueued = new();            // guarded by IdQueueSync
+    private static long _lastQueuedIdentify;
+
+    /// <summary>Items still waiting in the identify queue. Any thread.</summary>
+    public static int IdentifyQueueCount
+    {
+        get { lock (IdQueueSync) return _idQueue.Count; }
+    }
+
+    /// <summary>
+    /// Asks the server to identify <paramref name="ids"/>, a few a second on AC's main thread
+    /// while the panel is open. Items already appraised, sent in the last minute, already
+    /// queued or no longer carried are skipped. Any thread.
+    /// </summary>
+    public static void QueueIdentify(IReadOnlyList<uint> ids)
+    {
+        lock (IdQueueSync)
+        {
+            foreach (uint id in ids)
+            {
+                if (id == 0 || _idQueue.Count >= MaxQueuedIdentifies) continue;
+                if (_idQueued.Add(id)) _idQueue.Enqueue(id);
+            }
+        }
+    }
+
+    /// <summary>Drops every queued identify. Any thread.</summary>
+    public static void ClearIdentifyQueue()
+    {
+        lock (IdQueueSync)
+        {
+            _idQueue.Clear();
+            _idQueued.Clear();
+        }
+    }
+
+    /// <summary>Main thread: sends the next queued identify that still needs sending.</summary>
+    private static void IdentifyQueueTick(long now)
+    {
+        if (now - _lastQueuedIdentify < QueuedIdentifyGapTicks) return;
+        while (true)
+        {
+            uint id;
+            lock (IdQueueSync)
+            {
+                if (!_idQueue.TryDequeue(out id)) return;
+                _idQueued.Remove(id);
+            }
+            if (AppraisalHooks.HasAppraisalData(id) || !_items.ContainsKey(id)) continue;
+            if (_identified.TryGetValue(id, out long sentAt) && now - sentAt < IdentifyRepeatTicks) continue;
+            if (_identified.Count > 2048) _identified.Clear();
+            _identified[id] = now;
+            _lastQueuedIdentify = now;
+            ClientActionHooks.RequestId(id);   // main thread: the 0xC8 is sent now
+            return;
+        }
     }
 
     private static InventoryTooltip BuildTooltip(uint id, bool appraised, bool identifying)

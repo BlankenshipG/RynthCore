@@ -298,6 +298,7 @@ internal static class MonsterHud
                 CombatText.PollGains(_playerId);
                 if (track) Snapshot(now, trackMonsters);
             }
+            if (monsters) ApplyDealtHits(now);
 
             _hasContent = Plates.Count > 0 || MonsterHudSettings.SelfPlate || CombatText.HasContent;
         }
@@ -1564,6 +1565,66 @@ internal static class MonsterHud
     /// The plate whose monster has <paramref name="name"/>: the selected one first,
     /// then the one the player hit most recently, then the nearest. 0 if none.
     /// </summary>
+    // ── Hits on monsters with no health feed (CleaveHealth) ─────────────
+    private readonly record struct DealtHit(string Name, float Share, long Ticks);
+    private static readonly object HitSync = new();
+    private static readonly List<DealtHit> PendingHits = new();
+    private static readonly List<DealtHit> HitWork = new();
+    private static string? _lastHitName;
+    private static uint _lastHitDamage;
+    private static long _lastHitTicks;
+    private const int MaxPendingHits = 64;
+    /// <summary>A hit waits this long (s) so the server's own UpdateHealth for it (the queried
+    /// target's) is in before the plates are matched.</summary>
+    private const double HitSettleSec = 0.25;
+
+    /// <summary>AttackerNotification: the player hit <paramref name="name"/> for
+    /// <paramref name="share"/> of its max health. AC's main thread (SmartBoxHooks, two paths per
+    /// event - the same hit inside 50 ms counts once).</summary>
+    internal static void NoteDealtHit(string name, uint damage, double share)
+    {
+        long now = Stopwatch.GetTimestamp();
+        lock (HitSync)
+        {
+            if (damage == _lastHitDamage && name == _lastHitName && now - _lastHitTicks < Stopwatch.Frequency / 20) return;
+            _lastHitName = name; _lastHitDamage = damage; _lastHitTicks = now;
+            if (PendingHits.Count >= MaxPendingHits) PendingHits.RemoveAt(0);
+            PendingHits.Add(new DealtHit(name, (float)share, now));
+        }
+    }
+
+    private static readonly List<CleaveHealth.Candidate> HitCandidates = new();
+
+    /// <summary>Settled hits onto the plates of monsters the server isn't feeding health for.</summary>
+    private static void ApplyDealtHits(long now)
+    {
+        HitWork.Clear();
+        lock (HitSync)
+        {
+            if (PendingHits.Count == 0) return;
+            long settle = (long)(HitSettleSec * Stopwatch.Frequency);
+            int n = 0;
+            while (n < PendingHits.Count && now - PendingHits[n].Ticks >= settle) n++;
+            if (n == 0) return;
+            HitWork.AddRange(PendingHits.GetRange(0, n));
+            PendingHits.RemoveRange(0, n);
+        }
+        double freq = Stopwatch.Frequency;
+        foreach (DealtHit hit in HitWork)
+        {
+            HitCandidates.Clear();
+            foreach (Plate p in Plates.Values)
+            {
+                if (p.Gone || p.IsLabel || !p.Name.Equals(hit.Name, StringComparison.Ordinal)) continue;
+                bool has = MonsterHudData.TryGetHealth(p.Id, out HealthObservation h);
+                HitCandidates.Add(new CleaveHealth.Candidate(p.Id, p.Distance, has, has ? h.Ratio : 1f, has ? h.Prev : -1f,
+                    has && h.Estimated, has ? (hit.Ticks - h.Ticks) / freq : 0));
+            }
+            uint id = CleaveHealth.Pick(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(HitCandidates), hit.Share, out float ratio);
+            if (id != 0) MonsterHudData.RecordHealth(id, ratio, 0, 0, estimated: true);
+        }
+    }
+
     internal static uint FindPlateByName(string name)
     {
         uint target = ClientHelperHooks.GetSelectedItemId();

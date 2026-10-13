@@ -10,8 +10,8 @@
 //
 //  The mechanics live here (tabs, slide, side, placement, the one window);
 //  each drawer only draws its panel (DashboardDrawer.DrawPanel) and says how
-//  big it is. Drawers today: Ranges (RangesSlideOut.cs), Loaded files and
-//  Patrol (RynthAiFace.Drawers.cs).
+//  big it is. Drawers today: Ranges (RangesSlideOut.cs), Loaded files,
+//  Patrol and Mini Remote (RynthAiFace.Drawers.cs).
 //
 //  A top-level ImGui window of its own, begun from inside the dashboard's Draw
 //  and placed against the dashboard's window every frame, so it follows the

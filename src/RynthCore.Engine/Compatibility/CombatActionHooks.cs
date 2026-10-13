@@ -332,7 +332,7 @@ internal static class CombatActionHooks
 
     public static bool MeleeAttack(uint targetId, int attackHeight, float powerLevel)
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueMeleeAttack(targetId, attackHeight, powerLevel);
 
         if (_meleeAttack == null)
@@ -350,7 +350,7 @@ internal static class CombatActionHooks
 
     public static bool MissileAttack(uint targetId, int attackHeight, float accuracyLevel)
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueMissileAttack(targetId, attackHeight, accuracyLevel);
 
         if (_missileAttack == null)
@@ -373,7 +373,7 @@ internal static class CombatActionHooks
         // (CSequence) state on the thread that updates it — eliminating the
         // off-thread-mutation corruption class (e.g. the CSequence::update_internal
         // AV). On the main thread (incl. the drain) this executes directly.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueChangeCombatMode(combatMode);
 
         // Prefer the CLIENT-level entry point. _changeCombatMode is bound by
@@ -412,7 +412,7 @@ internal static class CombatActionHooks
         // same gate. Queued in the action ring so it keeps FIFO order after an attack
         // that is already queued (it used to run at once and could overtake it). The
         // drain re-enters here on the main thread, where the gate passes.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: true))
             return AcMainThreadQueue.EnqueueCancelAttack();
 
         try
@@ -435,7 +435,7 @@ internal static class CombatActionHooks
         // so off-thread calls go to the non-gesture QueryHealth queue and the drain
         // re-enters here on the main thread. Callers ignore the result and read the
         // async 0x01C0 reply, so "queued" is enough.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return targetId != 0 && AcMainThreadQueue.EnqueueQueryHealth(targetId);
 
         try
@@ -461,15 +461,27 @@ internal static class CombatActionHooks
         // here on the main thread, where this gate passes and the packet is sent.
         // Fire-and-forget: the appraisal reply is async anyway, so "queued" keeps
         // the bool's meaning ("requested").
-        if (!MainThreadGuard.IsOnMainThread())
-            return AcMainThreadQueue.EnqueueRequestId(objectId);
+        // The caller's EngineSendMarker (Net/IdRequester.cs) says who asked: it rides with a
+        // queued request, and a send made under it is registered with the flight recorder so
+        // the 0xC8 shows as [eng:<who>]. Without a marker the send stays [cli].
+        Net.IdRequester who = Net.EngineSendMarker.Current;
+        if (AcMainThreadQueue.MustQueue(teardown: false))
+            return AcMainThreadQueue.EnqueueRequestId(objectId, who);
 
+        // Registered BEFORE the call, so the tag is in place whether AC puts the 0xC8 on the
+        // wire inside the call or later. A call that fails or throws retires its entry, so it
+        // cannot mis-tag a later 0xC8 for the same object.
+        int tag = who != Net.IdRequester.None ? Net.FlightRecorder.EngineSend((byte)who, objectId) : -1;
         try
         {
-            return _requestId(objectId);
+            bool sent = _requestId(objectId);
+            if (sent) Net.IdSendStats.CountSent(who);
+            else Net.FlightRecorder.EngineSendFailed(tag, objectId);
+            return sent;
         }
         catch
         {
+            Net.FlightRecorder.EngineSendFailed(tag, objectId);
             return false;
         }
     }
@@ -504,24 +516,23 @@ internal static class CombatActionHooks
         // which the drain-before order is intended to fix. On the main thread (the
         // UseTime drain, or any main-thread caller) this falls through to the direct
         // cast below.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueCast(targetId, (uint)spellId);
 
-        // Call ClientMagicSystem::CastSpell directly off the plugin pump thread.
-        // This is the proven-working casting path (buffs + combat resolve in
-        // chat). The earlier EndScene-marshalled variant (AcMainThreadQueue,
-        // drained from OnEndScene) was REVERTED 2026-05-19: EndScene fires AC's
-        // IncrementBusyCount but is not the context that drives the cast state
-        // machine to completion, so combat casts never produced a projectile /
-        // damage / "You cast" chat — busy leaked, AC's single cast slot jammed
-        // "Casting <spell>" client-wide, and even manual casting died. Do NOT
-        // re-introduce queue/EndScene marshalling for casts.
-        // The documented object-teardown AV (0x0055FA24 [null+0x40] /
-        // 0x00416C86 [null+0x28]) is contained per-callsite by the SEH
-        // trampoline below (__try/__except in RynthCore.SehTrampoline.dll),
-        // which is the correct fix for that AV. AC's CastSpell reads its
-        // "currently selected target" when targetIsSelected=1; SelectItem
-        // first so AC's selection matches the caller's intent.
+        // From here on we are ON AC's main thread: the Client::UseTime cast drain
+        // (AcMainThreadQueue.DrainCasts, before AC's tick) or another main-thread caller.
+        // Nothing below runs on the plugin pump. What was REVERTED earlier is the
+        // EndScene drain for casts: EndScene is not the context that drives the cast state
+        // machine to completion (busy leaked, AC's single cast slot jammed client-wide);
+        // EngineFrameController's EndScene drain still never runs casts.
+        // Two native paths, each through the SEH trampoline (__try/__except in
+        // RynthCore.SehTrampoline.dll), which contains the object-teardown AV
+        // (0x0055FA24 [null+0x40] / 0x00416C86 [null+0x28]) per call:
+        //   targeted (targetId != 0): GetMagicSystem() -> FreeHandsAndCastSpell(mgr, spell,
+        //     target), the target passed explicitly, NO SelectItem;
+        //   self (targetId == 0): ClientMagicSystem::CastSpell(spell, targetIsSelected=0).
+        // While the player is dead, portaling or settling after a landblock jump the drain
+        // holds the cast and drops it once the transition ends (WorldTransitionState).
         if (_castSpellClient != null)
         {
             try

@@ -81,6 +81,12 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item><c>/rc report [text]</c> - "Report a problem" (<see cref="Report.ProblemReport"/>): alone it
 ///         opens the panel; with text it sends that report now, with the recent log attached
 ///         (the panel is where the log can be left out). One report a minute.</item>
+///   <item><c>/rc autoid [all|limited|off]</c> - which background appraisals the engine's AutoId
+///         sends (<see cref="AutoIdService"/>, <see cref="AutoIdPolicy"/>; saved in engine.json);
+///         alone it reports the mode and the identify counts by who asked.</item>
+///   <item><c>/rc hotkeys</c> - opens Settings &gt; Hotkeys. <c>/rc hotkey list | add &lt;combo&gt; &lt;action or
+///         /command&gt; | remove &lt;combo&gt; | enable|disable &lt;combo&gt; | actions | status | on|off</c> - the user
+///         hotkeys (<see cref="Hotkeys.HotkeyService"/>; saved for the PC in hotkeys.txt).</item>
 /// </list>
 /// </summary>
 internal static class RynthCoreChatCommands
@@ -288,6 +294,18 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
+        // /rc autoid [all|limited|off] : which background appraisals AutoId sends (alone: status)
+        if (IsVerb(sub, "autoid", out string autoIdArgs))
+        {
+            try
+            {
+                foreach (string l in AutoIdService.HandleCommand(autoIdArgs))
+                    Reply(l);
+            }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc autoid failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
         // /rc netmsg [status|on|off|log on|off|capture on|off] : the v78 server message stream
         if (IsVerb(sub, "netmsg", out string netArgs))
         {
@@ -310,6 +328,97 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
+        // /rc bounties|guardian [show|hide|toggle] : the ILT section's panels, like the bar's
+        // ILT button (Bounties: the RynthILT plugin's tracker; Guardian: RynthAi's Temple
+        // guardian tools). Only on Infinite Leaftide with the plugin installed.
+        if (IsVerb(sub, "bounties", out string panelArgs) || IsVerb(sub, "bounty", out panelArgs) || IsVerb(sub, "bountys", out panelArgs))
+        {
+            IltPanel(ImGuiBackend.Panels.BountiesFace.Title, "Bounties", "RynthILT", panelArgs);
+            return true;
+        }
+        if (IsVerb(sub, "guardian", out panelArgs) || IsVerb(sub, "guardians", out panelArgs))
+        {
+            IltPanel(ImGuiBackend.Panels.GuardianFace.Title, "Guardian", "RynthAi", panelArgs);
+            return true;
+        }
+
+        // /rc miniremote [show|hide|toggle|tab <tab>] : the ImGui Mini Remote panel, like its bar
+        // button (RynthAi's dashboard and "/ra hub" use show / hide). "tab" opens it on one of
+        // RynthAi's tabs (character, quests, pets, banking, gear, games; none = the remote).
+        if (IsVerb(sub, "miniremote", out string remoteArgs) || IsVerb(sub, "remote", out remoteArgs))
+        {
+            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.MiniRemoteFace.Title))
+                Reply("The Mini Remote panel isn't available (the ImGui layer is off?).");
+            else if (IsVerb(remoteArgs, "tab", out string tab))
+            {
+                ImGuiBackend.ImGuiPanelHost.Open(ImGuiBackend.Panels.MiniRemoteFace.Title);
+                UI.Data.RynthAiCommands.ApplyRemoteCommand("hub", tab.Length > 0 ? "tab " + tab : "tab");
+            }
+            else if (!TryPanelMode(remoteArgs, out bool? show))
+                Reply("Usage: /rc miniremote [show|hide|toggle|tab <tab>]");
+            else
+                SetPanelOpen(ImGuiBackend.Panels.MiniRemoteFace.Title, show);
+            return true;
+        }
+
+        // /rc skills [show|hide|toggle] : the ImGui Skills panel; /rc progression opens it on its
+        // Progression tab (ILT worlds; the tab shows once RynthAi reports ILT features).
+        if (IsVerb(sub, "skills", out string skillsArgs))
+        {
+            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SkillsFace.Title))
+                Reply("The Skills panel isn't available (the ImGui layer is off?).");
+            else if (!TryPanelMode(skillsArgs, out bool? show))
+                Reply("Usage: /rc skills [show|hide|toggle]");
+            else
+                SetPanelOpen(ImGuiBackend.Panels.SkillsFace.Title, show);
+            return true;
+        }
+        if (sub.Equals("progression", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SkillsFace.Title))
+                Reply("The Skills panel isn't available (the ImGui layer is off?).");
+            else
+                ImGuiBackend.Panels.SkillsFace.ShowProgression();
+            return true;
+        }
+
+        // /rc spells [show|hide|toggle] : RynthAi's Spells window (spell catalog, buff profiles).
+        if (IsVerb(sub, "spells", out string spellsArgs))
+        {
+            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.RynthAiFace.Title))
+                Reply("The Spells window comes with RynthAi; it isn't installed.");
+            else if (!TryPanelMode(spellsArgs, out bool? show))
+                Reply("Usage: /rc spells [show|hide|toggle]");
+            else
+                UI.Data.RynthAiCommands.ApplyRemoteCommand("spells", show == null ? "toggle" : show.Value ? "show" : "hide");
+            return true;
+        }
+
+        // /rc hotkeys : Settings > Hotkeys. /rc hotkey list|add|remove|enable|disable|actions|status|on|off
+        // (Hotkeys/HotkeyService.cs; "/rc hotkeys <verb>" works too).
+        if (IsVerb(sub, "hotkeys", out string hotkeyArgs) && hotkeyArgs.Length == 0)
+        {
+            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SettingsFace.Title))
+                Reply("The Settings panel isn't available (the ImGui layer is off?). /rc hotkey list|add|remove work here in chat.");
+            else
+            {
+                ImGuiBackend.Panels.SettingsFace.RequestTab(ImGuiBackend.Panels.HotkeysSettingsUi.TabName);
+                if (!ImGuiBackend.ImGuiPanelHost.IsOpen(ImGuiBackend.Panels.SettingsFace.Title))
+                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.SettingsFace.Title);
+            }
+            return true;
+        }
+        if (IsVerb(sub, "hotkey", out hotkeyArgs) || IsVerb(sub, "hotkeys", out hotkeyArgs))
+        {
+            try
+            {
+                foreach (string l in Hotkeys.HotkeyService.HandleCommand(hotkeyArgs))
+                    Reply(l);
+            }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc hotkey failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
         switch (sub.ToLowerInvariant())
         {
             case "rl":
@@ -318,6 +427,7 @@ internal static class RynthCoreChatCommands
                 // loader's reload shuts this engine down, and this handler runs
                 // inside AC's outgoing-chat hook.
                 RynthLog.Compat("RynthCoreChatCommands: /rc rl — engine reload requested.");
+                EntryPoint.NoteManualReload();   // by hand: not held for combat (EntryPoint.DeferReloadWhilePluginsObject)
                 System.Threading.ThreadPool.UnsafeQueueUserWorkItem(static _ => EngineLifecycle.SignalReload(), null);
                 return true;
 
@@ -338,6 +448,15 @@ internal static class RynthCoreChatCommands
                     UI.PanelRouter.Toggle(ImGuiBackend.Panels.SenseFace.Title);
                 return true;
 
+            case "characters":
+            case "chars":
+                // The ImGui Characters panel (your other RynthCore clients, through RynthNet).
+                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.CharactersFace.Title))
+                    Reply("The Characters panel needs the RynthNet plugin (add it in the launcher's Plugins tab).");
+                else
+                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.CharactersFace.Title);
+                return true;
+
             case "itemcount":
             case "itemhud":
                 // The ImGui Item Count panel (open/close), like its bar button.
@@ -345,28 +464,6 @@ internal static class RynthCoreChatCommands
                     Reply("The Item Count panel isn't available (the ImGui layer is off?).");
                 else
                     UI.PanelRouter.Toggle(ImGuiBackend.Panels.ItemCountFace.Title);
-                return true;
-
-            case "bounties":
-            case "bounty":
-            case "bountys":
-                // The ImGui Bounties panel (ILT section: ACECustom bounties, the RynthILT plugin's
-                // tracker), like the ILT bar button. Only on Infinite Leaftide with RynthILT installed.
-                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.BountiesFace.Title))
-                    Reply("The Bounties panel isn't available (the RynthILT plugin isn't installed, or the ImGui layer is off).");
-                else if (!IltInfo.IsIlt && !ImGuiBackend.ImGuiPanelHost.IsOpen(ImGuiBackend.Panels.BountiesFace.Title))
-                    Reply("Bounties are an Infinite Leaftide feature, and this isn't Infinite Leaftide (/rc ilt for why).");
-                else
-                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.BountiesFace.Title);
-                return true;
-
-            case "remote":
-            case "miniremote":
-                // The ImGui Mini Remote panel (open/close), like its bar button.
-                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.MiniRemoteFace.Title))
-                    Reply("The Mini Remote panel isn't available (the ImGui layer is off?).");
-                else
-                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.MiniRemoteFace.Title);
                 return true;
 
             case "resetbar":
@@ -624,9 +721,12 @@ internal static class RynthCoreChatCommands
         Reply($"ILT: {(v.IsIlt ? "Infinite Leaftide" : "not Infinite Leaftide")} - {v.Reason}.");
         Reply($"Signals: host {ServerInfo.HostDescription}; world name {AccountHooks.AnnouncedWorldName ?? "(not announced)"}; "
             + $"override {IltInfo.Override}. Lists: {IltInfo.ListsDescription}.");
-        Reply(ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.BountiesFace.Title)
-            ? "RynthILT: installed (Bounties: the ILT bar button or /rc bounties)."
-            : "RynthILT: not installed, so there is no ILT section.");
+        bool bounties = ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.BountiesFace.Title);
+        bool guardian = ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.GuardianFace.Title);
+        Reply(bounties ? "RynthILT: installed (Bounties: the ILT bar button or /rc bounties)."
+            : "RynthILT: not installed (no Bounties panel).");
+        Reply(guardian ? "RynthAi: installed (Guardian: the ILT bar button or /rc guardian; the ILT tabs: the Mini Remote)."
+            : "RynthAi: not installed (no Guardian panel or ILT tabs).");
     }
 
     private static void HandleMasteryCommand()
@@ -668,6 +768,42 @@ internal static class RynthCoreChatCommands
             Reply("Usage: /rc worldlayer [auto|uipass|transition|endscene]");
         Reply(D3D9.Nav3DRenderInjector.Describe());
         Reply(ImGuiBackend.UnderUiLayer.Describe());
+    }
+
+    /// <summary>
+    /// "" / "toggle" → null (flip), "show" / "on" / "open" → true, "hide" / "off" / "close" →
+    /// false. False for anything else.
+    /// </summary>
+    private static bool TryPanelMode(string args, out bool? show)
+    {
+        show = null;
+        switch (args.Trim().ToLowerInvariant())
+        {
+            case "": case "toggle": return true;
+            case "show": case "on": case "open": show = true; return true;
+            case "hide": case "off": case "close": show = false; return true;
+            default: return false;
+        }
+    }
+
+    /// <summary>Opens (true), closes (false) or toggles (null) an ImGui panel, like its bar button.</summary>
+    private static void SetPanelOpen(string title, bool? show)
+    {
+        if (show == null || show.Value != ImGuiBackend.ImGuiPanelHost.IsOpen(title))
+            UI.PanelRouter.Toggle(title);
+    }
+
+    /// <summary>"/rc bounties|guardian [show|hide|toggle]": one of the ILT section's panels.</summary>
+    private static void IltPanel(string title, string label, string plugin, string args)
+    {
+        if (!ImGuiBackend.ImGuiPanelHost.HasFace(title))
+            Reply($"The {label} panel isn't available (the {plugin} plugin isn't installed, or the ImGui layer is off).");
+        else if (!TryPanelMode(args, out bool? show))
+            Reply($"Usage: /rc {label.ToLowerInvariant()} [show|hide|toggle]");
+        else if (show != false && !IltInfo.IsIlt && !ImGuiBackend.ImGuiPanelHost.IsOpen(title))
+            Reply($"{label} is an Infinite Leaftide feature, and this isn't Infinite Leaftide (/rc ilt for why).");
+        else
+            SetPanelOpen(title, show);
     }
 
     private static bool IsVerb(string sub, string verb, out string args)

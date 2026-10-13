@@ -141,7 +141,7 @@ internal static unsafe class PlayerTrade
     /// <summary>Ask <paramref name="targetId"/> to trade (0x01F6 OpenTradeNegotiations).</summary>
     public static bool Open(uint targetId)
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return _eventOpenTradeNegotiations != null && targetId != 0
                 && AcMainThreadQueue.EnqueueTrade((uint)TradeOp.Open, targetId, 0);
         if (_eventOpenTradeNegotiations == null || targetId == 0) return false;
@@ -153,7 +153,7 @@ internal static unsafe class PlayerTrade
     /// <summary>Put one of your items in the trade window (0x01F8 AddToTrade). slot 0 = next free.</summary>
     public static bool Add(uint itemId, uint slot)
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return _eventAddToTrade != null && itemId != 0
                 && AcMainThreadQueue.EnqueueTrade((uint)TradeOp.Add, itemId, slot);
         if (_eventAddToTrade == null || itemId == 0) return false;
@@ -165,7 +165,7 @@ internal static unsafe class PlayerTrade
     /// <summary>Empty both sides of the window (0x0204 ResetTrade).</summary>
     public static bool Reset()
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return _eventResetTrade != null && AcMainThreadQueue.EnqueueTrade((uint)TradeOp.Reset, 0, 0);
         if (_eventResetTrade == null) return false;
         byte rv = _eventResetTrade();
@@ -176,7 +176,7 @@ internal static unsafe class PlayerTrade
     /// <summary>Close the trade (0x01F7 CloseTradeNegotiations).</summary>
     public static bool Close()
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return _eventCloseTradeNegotiations != null && AcMainThreadQueue.EnqueueTrade((uint)TradeOp.Close, 0, 0);
         if (_eventCloseTradeNegotiations == null) return false;
         byte rv = _eventCloseTradeNegotiations();
@@ -187,7 +187,7 @@ internal static unsafe class PlayerTrade
     /// <summary>Accept the trade as it stands (the window's Accept button, 0x01FA AcceptTrade).</summary>
     public static bool Accept()
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return _tradeSystemAcceptTrade != null && AcMainThreadQueue.EnqueueTrade((uint)TradeOp.Accept, 0, 0);
         if (_tradeSystemAcceptTrade == null) return false;
         IntPtr system = TradeSystemWithTrade();
@@ -200,7 +200,7 @@ internal static unsafe class PlayerTrade
     /// <summary>Withdraw your acceptance (the window's Decline button, 0x01FB DeclineTrade).</summary>
     public static bool Decline()
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return _tradeSystemDeclineTrade != null && AcMainThreadQueue.EnqueueTrade((uint)TradeOp.Decline, 0, 0);
         if (_tradeSystemDeclineTrade == null) return false;
         IntPtr system = TradeSystemWithTrade();

@@ -22,8 +22,9 @@ using System.Diagnostics;
 
 namespace RynthCore.Engine.ImGuiBackend.Hud;
 
-/// <summary>Last health observation for one object.</summary>
-internal readonly record struct HealthObservation(float Ratio, uint Current, uint Max, long Ticks);
+/// <summary>Last health observation for one object. <paramref name="Prev"/>: the ratio before it
+/// (-1 = first). <paramref name="Estimated"/>: worked out from a hit (CleaveHealth), not sent by the server.</summary>
+internal readonly record struct HealthObservation(float Ratio, uint Current, uint Max, long Ticks, float Prev = -1f, bool Estimated = false);
 
 internal static class MonsterHudData
 {
@@ -36,17 +37,20 @@ internal static class MonsterHudData
     /// <summary>
     /// A health update for <paramref name="id"/>. A max of 0 (ratio-only update)
     /// keeps the last known max. Any thread; never blocks for long.
+    /// <paramref name="estimated"/>: from a hit's share of max health (CleaveHealth), not the server.
     /// </summary>
-    public static void RecordHealth(uint id, float ratio, uint current, uint max)
+    public static void RecordHealth(uint id, float ratio, uint current, uint max, bool estimated = false)
     {
         if (id == 0 || float.IsNaN(ratio)) return;
         ratio = Math.Clamp(ratio, 0f, 1f);
         long now = Stopwatch.GetTimestamp();
         float before = -1f;
+        bool prevWasEstimate = false;
         lock (Sync)
         {
             bool had = Health.TryGetValue(id, out HealthObservation prev);
             if (had) before = prev.Ratio;
+            prevWasEstimate = had && prev.Estimated;
             if (max == 0 && had && prev.Max > 0)
             {
                 max = prev.Max;
@@ -54,10 +58,13 @@ internal static class MonsterHudData
             }
             if (Health.Count >= MaxHealthEntries && !Health.ContainsKey(id))
                 Health.Clear();
-            Health[id] = new HealthObservation(ratio, current, max, now);
+            Health[id] = new HealthObservation(ratio, current, max, now, before, estimated);
         }
+        // An estimate never kills (CleaveHealth keeps it above 0) and the server correcting one
+        // isn't a heal: the combat text sees an estimate's successor as a first observation.
+        if (estimated) return;
         // Kills and heals for the combat text; a death also drops the monster's debuffs.
-        HudFeed.OnHealth(id, before, ratio, max);
+        HudFeed.OnHealth(id, prevWasEstimate ? -1f : before, ratio, max);
     }
 
     public static bool TryGetHealth(uint id, out HealthObservation h)

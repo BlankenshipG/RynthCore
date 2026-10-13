@@ -34,6 +34,7 @@
     <Compile Include="..\..\src\RynthCore.Engine\Net\FlightRing.cs" Link="Engine\FlightRing.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Net\FlightCapture.cs" Link="Engine\FlightCapture.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Net\FlightFormat.cs" Link="Engine\FlightFormat.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\Net\IdRequester.cs" Link="Engine\IdRequester.cs" />
     <Compile Include="..\NetMessageTests\WireBuilder.cs" Link="WireBuilder.cs" />
   </ItemGroup>
 

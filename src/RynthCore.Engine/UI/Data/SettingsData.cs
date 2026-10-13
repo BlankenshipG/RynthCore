@@ -11,6 +11,7 @@
 // ============================================================================
 
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -47,6 +48,13 @@ internal sealed class RynthAiSettings
     // Decal bridge: stop RynthAi's macro when VTank's starts (one bot per client). Default on;
     // an older RynthAi doesn't send it, and a missing field must not read as "off".
     public bool YieldToVTank { get; set; } = true;
+    // Server Features (RynthAi ServerFeatureGate): world names that turn on the ILT Hub, the
+    // Progression planners and the attribute raiser, plus a manual override. An older RynthAi
+    // doesn't send them; RynthAi lays a save over its current values, so these defaults are
+    // only ever shown, never applied. ServerFeaturesStatus is read-only (RynthAi ignores it).
+    public string FeatureServerNames { get; set; } = "InfiniteLeaftide, *Leaftide*";
+    public bool ForceServerFeatures { get; set; }
+    public string ServerFeaturesStatus { get; set; } = string.Empty;
     public bool EnableRaycasting { get; set; }
     public bool UseArcs { get; set; }
     public float BowArcVelocity { get; set; } = 25f;
@@ -96,6 +104,11 @@ internal sealed class RynthAiSettings
     public int StaminaToHealthAt { get; set; } = 30;
     public int StaminaToHealthMinStamina { get; set; } = 20;
     public bool StopMacroOnDeath { get; set; }
+    // RynthAi Recall On Death: 0 off, 1 cast DeathRecallSpellId, 2 use the item named DeathRecallItem.
+    // An older RynthAi ignores them.
+    public int DeathRecallMode { get; set; }
+    public int DeathRecallSpellId { get; set; } = 48;   // Primary Portal Recall
+    public string DeathRecallItem { get; set; } = string.Empty;
     public bool StopMacroOnNoComponents { get; set; }
     public bool StopLootingWhenPackFull { get; set; } = true;
     public bool StopMacroWhenPackFull { get; set; }
@@ -144,6 +157,16 @@ internal sealed class RynthAiSettings
     // Nav3D extras (RynthAi NavOverlay), both off by default: 0 off, 1 numbers, 2 numbers and names.
     public int NavLabelMode { get; set; }
     public bool NavGuideLine { get; set; }
+    // RynthAi NavResumeNearest: macro start, route loads and resuming after a pause that moved
+    // the character head for the closest waypoint. On by default; an older plugin ignores it.
+    public bool NavResumeNearest { get; set; } = true;
+    // RynthAi dungeon patrol (/ra dunnav-patrol; RynthAi DungeonPatrolOptions). The defaults are
+    // the patrol as it was before these settings; an older plugin ignores them.
+    public int DunPatrolCoverage { get; set; }               // 0 whole dungeon, 1 loops only, 2 everything
+    public int DunPatrolSkipDeadEnds { get; set; } = 10;     // dead-end areas of up to this many cells skipped (0 = none)
+    public bool DunPatrolAvoidFloors { get; set; } = true;   // lava/acid floor cells kept out of the patrol
+    public float DunPatrolWallDistance { get; set; } = 1f;   // every patrol point this far from walls where there is room
+    public float DunPatrolLookInSize { get; set; } = 10f;    // rooms this big the patrol only skirts get a walk to their middle
     public bool OpenDoors { get; set; }
     public float OpenDoorRange { get; set; } = 5f;
     public bool AutoUnlockDoors { get; set; }
@@ -204,6 +227,9 @@ internal sealed class RynthAiSettings
     public bool ReadUnknownScrolls { get; set; } = true;   // VTank's default
     public bool EnableCombineSalvage { get; set; } = true;
     public bool CombineBagsDuringSalvage { get; set; } = true;
+    // Salvage with the 0x027D request sent straight to the server, no salvage panel on screen
+    // (default on; used when the engine has API v81; an older RynthAi doesn't send it).
+    public bool SalvageWithoutPanel { get; set; } = true;
     public int LootInterItemDelayMs { get; set; } = 50;
     public int LootContentSettleMs { get; set; } = 100;
     public int LootEmptyCorpseMs { get; set; } = 300;
@@ -219,6 +245,15 @@ internal sealed class RynthAiSettings
     public int SalvageSalvageDelayMs { get; set; } = 50;
     public int SalvageResultDelayFirstMs { get; set; } = 1000;
     public int SalvageResultDelayFastMs { get; set; } = 250;
+    // Ground loot and item info
+    public bool EnableGroundLoot { get; set; }
+    // Diagnostics (RynthAi's RynthLog: per PC in Logs\Diagnostics\diagnostics.json, not the profile)
+    public bool DiagDebugToChat { get; set; }
+    public bool DiagFileLogAll { get; set; } = true;
+    /// <summary>"Name=Level" per trace category, ','-joined; Level 0 Off, 1 Trace, 2 Info. See <see cref="TraceCategoryLevels"/>.</summary>
+    public string DiagCategories { get; set; } = string.Empty;
+    /// <summary>Read-only (RynthAi ignores it on save): the diagnostics folder.</summary>
+    public string DiagFolder { get; set; } = string.Empty;
 
     /// <summary>A private copy for a face to edit (all members are values or strings).</summary>
     public RynthAiSettings Clone() => (RynthAiSettings)MemberwiseClone();
@@ -289,7 +324,62 @@ internal static unsafe class SettingsCommands
 
 // ── Schema ─────────────────────────────────────────────────────────────────
 
-internal enum SettingKind { Bool, Int, Float, Double, Combo, Section, Spacer, Note, CraftingStatus }
+internal enum SettingKind { Bool, Int, Float, Double, Combo, Section, Spacer, Note, CraftingStatus, Button, TraceCategories, Text, Status,
+    /// <summary>The user hotkeys editor (ImGui/Panels/HotkeysSettingsUi.cs; stored by the engine, not RynthAi).</summary>
+    Hotkeys }
+
+/// <summary>
+/// Reads and edits <see cref="RynthAiSettings.DiagCategories"/> ("Name=Level,..."). The category
+/// list comes from RynthAi, so a category it adds shows up without an engine change.
+/// </summary>
+internal static class TraceCategoryLevels
+{
+    public const int Off = 0, Trace = 1, Info = 2;
+
+    /// <summary>The categories in RynthAi's order; malformed entries are skipped.</summary>
+    public static List<(string Name, int Level)> Parse(string? levels)
+    {
+        var list = new List<(string, int)>();
+        if (string.IsNullOrWhiteSpace(levels)) return list;
+        foreach (string entry in levels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            int eq = entry.IndexOf('=');
+            if (eq <= 0 || !int.TryParse(entry[(eq + 1)..], out int level)) continue;
+            list.Add((entry[..eq], Math.Clamp(level, Off, Info)));
+        }
+        return list;
+    }
+
+    private static string Format(List<(string Name, int Level)> list)
+    {
+        var parts = new string[list.Count];
+        for (int i = 0; i < list.Count; i++) parts[i] = list[i].Name + "=" + list[i].Level;
+        return string.Join(",", parts);
+    }
+
+    /// <summary>
+    /// Turns tracing on or off for one category (empty <paramref name="name"/> with a
+    /// <paramref name="prefix"/>: every category starting with it; both empty: all). On keeps
+    /// a category already at Info at Info, the same rule as /ra trace.
+    /// </summary>
+    public static string Set(string? levels, string name, bool on, string prefix = "")
+    {
+        List<(string Name, int Level)> list = Parse(levels);
+        for (int i = 0; i < list.Count; i++)
+        {
+            var (n, level) = list[i];
+            bool match = name.Length > 0
+                ? string.Equals(n, name, StringComparison.OrdinalIgnoreCase)
+                : n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+            if (!match) continue;
+            list[i] = (n, !on ? Off : level == Off ? Trace : level);
+        }
+        return Format(list);
+    }
+
+    /// <summary>Checkbox label: the name, plus " +log" at Info (trace lines also go to the normal log).</summary>
+    public static string Label(string name, int level) => level == Info ? name + " +log" : name;
+}
 
 /// <summary>
 /// One row of a settings tab. Numeric values go through double (bools as
@@ -307,7 +397,15 @@ internal sealed record SettingRow(
     double Step = 1,
     string[]? Items = null,
     Func<RynthAiSettings, bool>? VisibleWhen = null,
-    bool Gates = false)
+    bool Gates = false,
+    // Button rows: the button's caption (Label is the row label) and its action. Any thread.
+    string? ButtonText = null,
+    Action? Click = null,
+    // Text rows: the string value (committed on Enter / focus loss); Status rows: GetText only.
+    Func<RynthAiSettings, string>? GetText = null,
+    Action<RynthAiSettings, string>? SetText = null,
+    // Text rows: greyed hint shown while the box is empty.
+    string? Hint = null)
 {
     public bool IsVisible(RynthAiSettings s) => VisibleWhen == null || VisibleWhen(s);
 }
@@ -350,6 +448,24 @@ internal static class SettingsSchema
     public static readonly string[] AttackHeights = { "Low", "Medium", "High" };
     public static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
     public static readonly string[] NavLabelModes = { "Off", "Numbers", "Numbers and names" };
+    public static readonly string[] DunPatrolCoverages = { "Whole dungeon", "Loops only", "Everything" };
+    public static readonly string[] DeathRecallModes = { "Off", "Cast a recall spell", "Use a recall item" };
+
+    // The nav editor's recall spells. Filled with "Spell N (N)" and named from the client's spell
+    // table as it loads: the combo reads this array every frame, and RecallSpellIndex refreshes it.
+    private static readonly string[] RecallSpellItems = Array.ConvertAll(NavCommands.RecallIds, id => $"Spell {id} ({id})");
+    private static bool _recallSpellItemsNamed;
+
+    private static int RecallSpellIndex(RynthAiSettings s)
+    {
+        if (!_recallSpellItemsNamed)
+        {
+            string[] labels = NavCommands.RecallLabels;
+            Array.Copy(labels, RecallSpellItems, Math.Min(labels.Length, RecallSpellItems.Length));
+            _recallSpellItemsNamed = Array.TrueForAll(RecallSpellItems, l => !l.StartsWith("Spell ", StringComparison.Ordinal));
+        }
+        return Math.Max(0, Array.IndexOf(NavCommands.RecallIds, s.DeathRecallSpellId));
+    }
 
     private static SettingRow Bool(string label, Func<RynthAiSettings, bool> get, Action<RynthAiSettings, bool> set,
         string? tip = null, Func<RynthAiSettings, bool>? when = null, bool gates = false) =>
@@ -386,6 +502,17 @@ internal static class SettingsSchema
 
     private static SettingRow Note(string text, Func<RynthAiSettings, bool>? when = null) =>
         new(SettingKind.Note, text, VisibleWhen: when);
+
+    private static SettingRow Button(string label, string buttonText, Action click, string? tip = null) =>
+        new(SettingKind.Button, label, tip, ButtonText: buttonText, Click: click);
+
+    private static SettingRow Text(string label, Func<RynthAiSettings, string> get, Action<RynthAiSettings, string> set,
+        string? tip = null, string? hint = null) =>
+        new(SettingKind.Text, label, tip, GetText: get, SetText: set, Hint: hint);
+
+    // A one-line status RynthAi computes (read-only; empty = hidden).
+    private static SettingRow Status(Func<RynthAiSettings, string> get) =>
+        new(SettingKind.Status, "", GetText: get, VisibleWhen: s => !string.IsNullOrEmpty(get(s)));
 
     private static SettingRow[] Tiers(Func<RynthAiSettings, int>[] get, Action<RynthAiSettings, int>[] set)
     {
@@ -481,6 +608,12 @@ internal static class SettingsSchema
             TextSize("Status", "Status"),
             TextSize("Log", "Log"),
             TextSize("Tracker", "Tracker"),
+            Spacer(),
+            Section("Item Info"),
+            Bool("Describe Items When Selected", s => s.ItemInfoOnSelect, (s, v) => s.ItemInfoOnSelect = v,
+                "Print a Mag-style description of an item in chat when you select it, identifying it\nfirst when needed. Items the bot selects while looting are skipped.\nAlso: /ra iteminfo on|off."),
+            Button("Item Info Options", "Open...", () => RynthAiCommands.ApplyRemoteCommand("iteminfo", "window"),
+                "Which fields the description shows and which item types are described on select (/ra iteminfo window)."),
         }),
 
         new("UI", new[]
@@ -508,6 +641,10 @@ internal static class SettingsSchema
                 "Hide the game's own health/stamina/mana bars; the RynthVision player plate and the RynthAi dashboard show them.\nSaved for this PC. Also: /rc ui retailvitals on|off."),
         }),
 
+        // The user hotkeys: stored by the engine for the PC (Hotkeys/HotkeyService.cs, hotkeys.txt),
+        // not in the RynthAi profile; the ImGui face draws the whole editor for this one row.
+        new("Hotkeys", new[] { new SettingRow(SettingKind.Hotkeys, "Hotkeys") }),
+
         new("Misc", new[]
         {
             Bool("Enable FPS Limit", s => s.EnableFPSLimit, (s, v) => s.EnableFPSLimit = v, gates: true),
@@ -532,6 +669,15 @@ internal static class SettingsSchema
                 "On (default): when the game shows \"The server has disconnected\" (only a Quit Game button),\n" +
                 "the client closes itself 5 seconds later, so the launcher's auto-relaunch can start it again.\n" +
                 "A logout or a quit never shows that screen. Applies to all your clients; others pick it up when they start."),
+            // Stored in engine.json for every client (EngineSettings.AutoIdMode, AutoIdPolicy).
+            Combo("Background Identify", new[] { "All", "Limited", "Off" }, _ => (int)Plugins.EngineSettings.AutoIdMode,
+                (_, v) => Plugins.EngineSettings.AutoIdMode = (Compatibility.AutoIdMode)Math.Clamp(v, 0, 2),
+                "How much the client identifies (appraises) on its own, in the background.\n" +
+                "All: everything in view, as before (monster levels on every nameplate; the most traffic).\n" +
+                "Limited (default): monsters, ground items and other players only when selected; your pack\n" +
+                "items after 30 s, at most 5 a second. Unselected monsters' nameplates show no level.\n" +
+                "Off: nothing in the background.\n" +
+                "RynthAi's own identifies (loot, monster weaknesses) are never limited. Applies to all your clients. Also: /rc autoid."),
             Spacer(),
             Bool("Auto Cram", s => s.EnableAutocram, (s, v) => s.EnableAutocram = v,
                 "Automatically moves items from your main pack into side packs.\nNote: recently used weapons stay in the main pack."),
@@ -545,6 +691,17 @@ internal static class SettingsSchema
             Bool("Yield to VTank", s => s.YieldToVTank, (s, v) => s.YieldToVTank = v,
                 "With Decal: when VTank's macro starts (/vt start), RynthAi's macro stops, and it won't start while VTank runs.\nOne bot per client. Without Decal this does nothing. Also: /ra vtankyield on|off."),
             Bool("Enable Raycasting", s => s.EnableRaycasting, (s, v) => s.EnableRaycasting = v),
+            Spacer(),
+            Section("Server Features (ILT / infinite attributes)"),
+            Status(s => s.ServerFeaturesStatus),
+            Text("Servers", s => s.FeatureServerNames, (s, v) => s.FeatureServerNames = v,
+                "Comma-separated world names that turn on the ILT Hub, the Skills panel's Progression planners\n" +
+                "and the attribute raiser. * is a wildcard (*Leaftide* matches any name containing Leaftide).\n" +
+                "Case does not matter. Saved with the RynthAi profile.",
+                hint: "InfiniteLeaftide, *Leaftide*"),
+            Bool("Force enable on this server (manual override)", s => s.ForceServerFeatures, (s, v) => s.ForceServerFeatures = v,
+                "Turn the features on for whatever world you are on, even if it is not in the list.\n" +
+                "Each feature still follows what the server reports (for example /xp off keeps the attribute raiser off)."),
             Spacer(),
             Section("Missile Arc Velocities (m/s)"),
             Bool("Use Arcs for Missile LoS", s => s.UseArcs, (s, v) => s.UseArcs = v,
@@ -620,6 +777,22 @@ internal static class SettingsSchema
                 "Stop the macro after 3 \"missing components\" failures within a minute."),
             Bool("Stop Macro When Pack Full", s => s.StopMacroWhenPackFull, (s, v) => s.StopMacroWhenPackFull = v,
                 "Stop the macro when no pack has a free slot."),
+            Spacer(),
+            Section("On Death"),
+            Combo("Recall On Death", DeathRecallModes, s => Math.Clamp(s.DeathRecallMode, 0, DeathRecallModes.Length - 1), (s, v) => s.DeathRecallMode = v,
+                "After you die with the macro running, once you've respawned: cast a recall spell or use\n" +
+                "a recall item (a gem, scroll or token) from your pack. Nothing else runs until the teleport\n" +
+                "lands; a fizzle is retried (5 tries, 60 s at most). Then nav rejoins the route at the closest\n" +
+                "waypoint, and Travel Back To My Corpse walks to the corpse from there. Stop Macro On Death\n" +
+                "still recalls first. Off by default: most metas handle a death themselves."),
+            Combo("Recall Spell", RecallSpellItems, RecallSpellIndex, (s, v) => s.DeathRecallSpellId = NavCommands.RecallIds[Math.Clamp(v, 0, NavCommands.RecallIds.Length - 1)],
+                "The recall spell to cast after a death (you must know it). Primary Portal Recall takes you\n" +
+                "to where you last tied a primary portal, often next to your hunting ground.")
+                with { VisibleWhen = s => s.DeathRecallMode == 1 },
+            Text("Recall Item", s => s.DeathRecallItem, (s, v) => s.DeathRecallItem = v.Trim(),
+                "Name of the item to use after a death, as it shows in your inventory. An exact match wins;\n" +
+                "otherwise the first item whose name contains it.", hint: "item name, as in your inventory")
+                with { VisibleWhen = s => s.DeathRecallMode == 2 },
             Spacer(),
             Section("Helper Settings (%) — NOT WIRED YET"),
             Int("Heal Others", s => s.HealOthersAt, (s, v) => s.HealOthersAt = v, 0, 100, 1,
@@ -721,6 +894,42 @@ internal static class SettingsSchema
             Bool("Auto-Unlock Doors", s => s.AutoUnlockDoors, (s, v) => s.AutoUnlockDoors = v,
                 "If a door is locked, try to use a lockpick from your Consumable Items list.", when: s => s.OpenDoors),
             Spacer(),
+            Section("Getting Back On Route"),
+            Bool("Go To Closest Waypoint", s => s.NavResumeNearest, (s, v) => s.NavResumeNearest = v,
+                "On: starting the macro, loading a Circular or Linear route, and carrying on after a fight, loot, buff or door\n" +
+                "that moved you 10 yd or more all head for the closest waypoint on the route. A waypoint you have already\n" +
+                "walked past is skipped for the one after it, so nav doesn't turn back. Once routes only look ahead.\n" +
+                "Off: nav carries on to the waypoint it was heading for, and a loaded route starts at its first point."),
+            Spacer(),
+            Section("Dungeon Patrol"),
+            Combo("Coverage", DunPatrolCoverages, s => Math.Clamp(s.DunPatrolCoverage, 0, DunPatrolCoverages.Length - 1), (s, v) => s.DunPatrolCoverage = v,
+                "Which parts of a dungeon the Dungeon Patrol (/ra dunnav-patrol) walks.\n" +
+                "Whole dungeon: every room and corridor it can reach, except small dead ends (Skip Dead Ends Up To).\n" +
+                "Loops only: just the corridors that go round in a loop or join two junctions. Every dead-end branch is left\n" +
+                "out, however long: quicker laps, but in a hive most of the dungeon is never visited.\n" +
+                "Everything: every dead end too, closets and all.\n" +
+                "A dungeon that is one long corridor is walked end to end whatever this says."),
+            Int("Skip Dead Ends Up To (cells)", s => s.DunPatrolSkipDeadEnds, (s, v) => s.DunPatrolSkipDeadEnds = v, 0, 30, 1,
+                "Dead-end areas this small are not walked into: a closet, a short corridor with a small room at its end,\n" +
+                "a little loop off a corridor. Counted in dungeon cells (the pieces a dungeon is built from: a stretch of\n" +
+                "corridor is one, a small room a few), the whole dead end together. In a longer dead end the patrol goes\n" +
+                "in and turns round where only this much is left ahead. A room at least as big as Walk Into Rooms From\n" +
+                "is never skipped. 0 = walk into every dead end. Default 10.",
+                when: s => s.DunPatrolCoverage != 2),
+            Bool("Avoid Lava/Acid Floors", s => s.DunPatrolAvoidFloors, (s, v) => s.DunPatrolAvoidFloors = v,
+                "On: lava and acid floors (cells whose floor texture is in HazardTextures.txt) are left out of the patrol;\n" +
+                "it turns round before them. Off: the patrol walks over them, for characters that don't mind the damage.\n" +
+                "Pools seen as objects, and cells you marked as hazards, are avoided either way. Default on."),
+            Float("Distance From Walls (yd)", s => s.DunPatrolWallDistance, (s, v) => s.DunPatrolWallDistance = Math.Clamp(v, 0.5f, 2f), 0.5f, 2f, 0.25f,
+                "How far every patrol waypoint keeps from walls and ledges, where there is room for it. More keeps the\n" +
+                "character off walls and corners in wide rooms and corridors; less lets the route hug the walls. In a\n" +
+                "corridor narrower than twice this, the waypoints go down its middle. Default 1."),
+            Float("Walk Into Rooms From (yd)", s => s.DunPatrolLookInSize, (s, v) => s.DunPatrolLookInSize = Math.Clamp(v, 3f, 40f), 3f, 40f, 1f,
+                "A room the patrol would only pass the edge of (in and out by the same doorway, or by two doorways close\n" +
+                "together) gets a walk to its middle and back, so monsters in it are seen, if it is at least this big\n" +
+                "(across its corners). Smaller rooms are only looked into from the doorway. Once per room per lap. Default 10."),
+            Note("Changing these rebuilds a running patrol from where you stand; the macro keeps running."),
+            Spacer(),
             Section("Steering"),
             Float("Stop & Turn Angle", s => s.NavStopTurnAngle, (s, v) => s.NavStopTurnAngle = v, 1f, 90f, 1f,
                 "Stop forward motion and turn in place when heading error exceeds this."),
@@ -748,6 +957,8 @@ internal static class SettingsSchema
 
         new("Buffing", Concat(
             Bool("Enable Buffing", s => s.EnableBuffing, (s, v) => s.EnableBuffing = v),
+            Button("Buff Profiles", "Spells...", () => RynthAiCommands.ApplyRemoteCommand("spells", "show"),
+                "Open the RynthAi Spells window: browse the spell list by school, level and target,\nand build the buff profile buffing uses (pick it under Loaded Files > Buffs).\nAlso: /ra spells, /ra buffprofile <name>|none."),
             Bool("Rebuff When Idle", s => s.RebuffWhenIdle, (s, v) => s.RebuffWhenIdle = v),
             Int("Rebuff With (seconds left)", s => s.RebuffSecondsRemaining, (s, v) => s.RebuffSecondsRemaining = v, 30, 1800, 30,
                 "Recast a self buff when its remaining duration drops below this value.\nDefault 300 (5 minutes). Lower values rebuff more eagerly."),
@@ -790,6 +1001,8 @@ internal static class SettingsSchema
                 "Don't start on another corpse when no pack has a free slot (says so once in chat)."),
             Bool("Jump When Looting", s => s.LootJumpEnabled, (s, v) => s.LootJumpEnabled = v, gates: true),
             Int("Jump Height", s => s.LootJumpHeight, (s, v) => s.LootJumpHeight = v, 1, 100, 5, when: s => s.LootJumpEnabled),
+            Bool("Loot Items On Ground", s => s.EnableGroundLoot, (s, v) => s.EnableGroundLoot = v,
+                "Pick up loose items on the ground that match your loot profile, within Corpse Max range.\nCorpses always come first. Status and rescan: /ra groundloot."),
             Spacer(),
             Section("Corpse Ownership"),
             Combo("Loot From", LootOwnershipModes, s => s.LootOwnership, (s, v) => s.LootOwnership = v),
@@ -799,8 +1012,6 @@ internal static class SettingsSchema
                 "After a death, walk back to where you died with RynthNav (outdoor deaths only),\nfighting on the way as usual, recover the corpse, then carry on. Needs the macro\nrunning and RynthNav loaded. /ra owncorpse stop cancels."),
             Spacer(),
             Section("Inventory Management"),
-            Bool("Item Info On Select", s => s.ItemInfoOnSelect, (s, v) => s.ItemInfoOnSelect = v,
-                "Selecting an item prints its details to chat, Mag-Tools style (/ra iteminfo),\nidentifying it first when needed. Items the bot selects while looting are skipped."),
             Bool("Enable Autostack", s => s.EnableAutostack, (s, v) => s.EnableAutostack = v),
             Bool("Enable Autocram", s => s.EnableAutocram, (s, v) => s.EnableAutocram = v,
                 "Automatically moves items from your main pack into side packs.\nNote: recently used weapons stay in the main pack."),
@@ -808,6 +1019,10 @@ internal static class SettingsSchema
                 "After the salvage queue empties, move same-name bags together so the server merges them."),
             Bool("Combine Bags During Salvage", s => s.CombineBagsDuringSalvage, (s, v) => s.CombineBagsDuringSalvage = v,
                 "When salvaging an item, also add any under-full salvage bag of the same material to the salvage panel."),
+            Button("Floating HUDs", "Inventory HUDs...", () => RynthAiCommands.ApplyRemoteCommand("huds", "show"),
+                "Opens the item count HUD / Mini Remote setup window (/ra huds)."),
+            Bool("Salvage Without The Panel", s => s.SalvageWithoutPanel, (s, v) => s.SalvageWithoutPanel = v,
+                "Salvage (and combine bags) by sending the salvage request to the server directly:\nAC's salvage panel never opens. When a request changes nothing, that batch is tried once\nthrough the panel. Needs an engine with plugin API v82; otherwise the panel is used."),
             Spacer(),
             Section("Loot Timers (ms)"),
             Int("Inter-Item Delay", s => s.LootInterItemDelayMs, (s, v) => s.LootInterItemDelayMs = v, 0, 5000, 25),
@@ -849,6 +1064,25 @@ internal static class SettingsSchema
             Int("Time Between Tries (ms)", s => s.AutoVendorTriesTime, (s, v) => s.AutoVendorTriesTime = v, 500, 30000, 250),
             Spacer(),
             Note("Never sold: equipped, attuned, bonded, retained, tinkered, imbued, inscribed, rare, zero value, packs, or anything a Keep rule could match."),
+        }),
+
+        new("Diagnostics", new[]
+        {
+            Section("Logging & Debugging"),
+            Bool("Debug to chat", s => s.DiagDebugToChat, (s, v) => s.DiagDebugToChat = v,
+                "Echo trace lines and errors from the categories ticked below into the chat window.\nAlso: /ra debug on|off."),
+            Bool("Daily RynthAi log file", s => s.DiagFileLogAll, (s, v) => s.DiagFileLogAll = v,
+                "Mirror every RynthAi log line to rynthai_<date>.txt in the log folder (kept 7 days).\nAlso: /ra logs file on|off."),
+            Button("Log Folder", "Open", () => RynthAiCommands.ApplyRemoteCommand("logs", "open"),
+                "Open RynthAi's Logs\\Diagnostics folder in Explorer (/ra logs open)."),
+            Button("Old Log Files", "Prune", () => RynthAiCommands.ApplyRemoteCommand("logs", "prune"),
+                "Delete diagnostics files past the retention limit now (/ra logs prune)."),
+            Spacer(),
+            Section("Trace Per Category"),
+            new SettingRow(SettingKind.TraceCategories, "Categories",
+                "Ticked categories write their trace lines to Trace\\<Category>_<date>.txt (/ra trace <category> on|off)."),
+            Note("+log = the category is at Info: its trace lines also go to the normal log. The launcher's Logging page sets Off, Trace or Info."),
+            Note("Exceptions always go to exceptions_<date>.txt with full stack traces (throttled). Settings here are for this PC, not the profile."),
         }),
     };
 }

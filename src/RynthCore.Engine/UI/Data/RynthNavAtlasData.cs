@@ -78,6 +78,7 @@ internal static class RynthNavAtlas
     private static string _requested = "";
     private static volatile NavPlace[] _places = Array.Empty<NavPlace>();
     private static volatile HashSet<uint> _mapLandblocks = new();
+    private static volatile Dictionary<uint, string> _dungeonNames = new();
     private static volatile string _status = "";
     private static long _version;
 
@@ -106,6 +107,7 @@ internal static class RynthNavAtlas
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
             var list = new List<NavPlace>();
             var lbs = new HashSet<uint>();
+            var dungeons = new Dictionary<uint, string>();
             if (doc.RootElement.TryGetProperty("locations", out var arr) && arr.ValueKind == JsonValueKind.Array)
             {
                 foreach (JsonElement e in arr.EnumerateArray())
@@ -132,11 +134,15 @@ internal static class RynthNavAtlas
                         : p.MinLevel > 0 ? $"level {p.MinLevel}+" : p.MaxLevel > 0 ? $"up to level {p.MaxLevel}" : "";
                     if (p.OnMap && p.Cell.Length == 8 && uint.TryParse(p.Cell.AsSpan(0, 4), NumberStyles.HexNumber, null, out uint lb))
                         lbs.Add(lb);
+                    if (p.Type == "Dungeon" && p.Name.Length > 0
+                        && uint.TryParse(p.Lb, NumberStyles.HexNumber, null, out uint dlb))
+                        dungeons.TryAdd(dlb, p.Name);
                     list.Add(p);
                 }
             }
             _places = list.ToArray();
             _mapLandblocks = lbs;
+            _dungeonNames = dungeons;
             string generated = doc.RootElement.TryGetProperty("generated", out var g) ? g.GetString() ?? "" : "";
             _status = $"{list.Count} places" + (generated.Length >= 10 ? ", from " + generated.Substring(0, 10) : "");
             System.Threading.Interlocked.Increment(ref _version);
@@ -146,6 +152,38 @@ internal static class RynthNavAtlas
             _status = "The Atlas didn't load: " + ex.Message;
             lock (Sync) _requested = "";   // try again on the next request
         }
+    }
+
+    /// <summary>
+    /// The Atlas's name for the dungeon on landblock <paramref name="lb"/> (a cell's top 16 bits),
+    /// or "" when it has none or isn't loaded yet. Any thread.
+    /// </summary>
+    public static string DungeonName(uint lb) =>
+        _dungeonNames.TryGetValue(lb & 0xFFFF, out string? name) ? name : "";
+
+    /// <summary>
+    /// Loads the Atlas for readers that don't own the Go tab (the radar, Sense): RynthNav's
+    /// path when it has reported one, else the default NavData folder. Any thread.
+    /// </summary>
+    public static void EnsureLoadedForNames()
+    {
+        string path = UiSources.RynthNav.Current?.Value?.AtlasPath ?? "";
+        if (path.Length == 0)
+            path = Path.Combine(RynthCore.Install.RynthInstallPaths.CoreDir, "NavData", "locations.json");
+        EnsureLoaded(path);
+    }
+
+    /// <summary>
+    /// True when the Atlas has a surface (on-map) place in landblock <paramref name="lb"/> (a cell's
+    /// top 16 bits): its indoor cells are buildings in the overworld, not a dungeon. Any thread.
+    /// </summary>
+    public static bool IsMapLandblock(uint lb) => _mapLandblocks.Contains(lb & 0xFFFF);
+
+    /// <summary>"Matron Hive East" for a named dungeon, else "LB 6146".</summary>
+    public static string DungeonLabel(uint lb)
+    {
+        string name = DungeonName(lb);
+        return name.Length > 0 ? name : "LB " + (lb & 0xFFFF).ToString("X4", CultureInfo.InvariantCulture);
     }
 
     /// <summary>

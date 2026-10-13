@@ -45,7 +45,7 @@ using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
 
-internal sealed class SkillsFace : IImGuiPanel
+internal sealed partial class SkillsFace : IImGuiPanel
 {
     public const string Title = "Skills";
 
@@ -127,7 +127,7 @@ internal sealed class SkillsFace : IImGuiPanel
     }
 
     // ── State ───────────────────────────────────────────────────────────
-    private int _tab;                                 // 0 skills, 1 attributes & vitals
+    private int _tab;                                 // 0 skills, 1 attributes & vitals, 2 progression (ILT worlds)
     private SortKey _sort = SortKey.Name;
     private bool _descending;
     private readonly bool[] _collapsed = { false, false, false, true };
@@ -193,18 +193,23 @@ internal sealed class SkillsFace : IImGuiPanel
         SkillDat.EnsureLoadQueued();
         PortalSpellTable.EnsureLoadQueued();
         MasteryFeed.PanelOpened();                    // asks only on Aelrynth, and only if the last reply is stale
+        ProgressionShown();
     }
+
+    public void OnHidden() => ProgressionHidden();
 
     public void Draw()
     {
         PlayerProgressHooks.Want();
         Refresh();
+        ApplyProgressionRequest();
+        if (_tab == 2 && !ProgressionTabVisible) _tab = 0;
 
         float w = Begin(out Vector2 origin, out Vector2 size);
         DrawSummary(w);
         DrawTabs(w);
         if (_tab == 0) DrawToolbar(w);
-        DrawColumnHeader(w, _tab == 0 ? "Skill" : "Attribute");
+        if (_tab != 2) DrawColumnHeader(w, _tab == 0 ? "Skill" : "Attribute");
 
         float bodyH = Math.Max(60, Remaining(origin, size) - GripOverlap());
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ChildBg, PanelBg);
@@ -212,7 +217,9 @@ internal sealed class SkillsFace : IImGuiPanel
         ImGuiNET.ImGui.BeginChild("##skills_body", new Vector2(w, bodyH));
         float bw = ImGuiNET.ImGui.GetContentRegionAvail().X;
         EnsureWidths();
-        if (_snap == null || !_snap.SkillTableRead && !_snap.AttributeCacheRead)
+        if (_tab == 2)
+            DrawProgression(bw);
+        else if (_snap == null || !_snap.SkillTableRead && !_snap.AttributeCacheRead)
             Message("Waiting for your character's data...", bw);
         else if (_dat == null)
             Message("Loading skill names from the client's portal.dat: " + SkillDat.Status, bw);
@@ -228,6 +235,7 @@ internal sealed class SkillsFace : IImGuiPanel
         _picker.Draw();
         DrawMulti();
         DrawConfirm();
+        DrawProgressionConfirm();
     }
 
     // ── Data ────────────────────────────────────────────────────────────
@@ -691,13 +699,18 @@ internal sealed class SkillsFace : IImGuiPanel
     private void DrawTabs(float w)
     {
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
-        float half = (w - 4) * 0.5f;
-        if (Button("##tab_skills", "Skills", p, new Vector2(half, 22), _tab == 0 ? Teal : Text, _tab == 0 ? Selected : BtnFill,
+        // The Progression tab only exists on ILT-like worlds (RynthAi's snapshot says so).
+        int count = ProgressionTabVisible ? 3 : 2;
+        float tabW = (w - 4 * (count - 1)) / count;
+        if (Button("##tab_skills", "Skills", p, new Vector2(tabW, 22), _tab == 0 ? Teal : Text, _tab == 0 ? Selected : BtnFill,
                 border: _tab == 0 ? Teal : 0))
             _tab = 0;
-        if (Button("##tab_attrs", "Attributes & Vitals", new Vector2(p.X + half + 4, p.Y), new Vector2(half, 22),
+        if (Button("##tab_attrs", "Attributes & Vitals", new Vector2(p.X + tabW + 4, p.Y), new Vector2(tabW, 22),
                 _tab == 1 ? Teal : Text, _tab == 1 ? Selected : BtnFill, border: _tab == 1 ? Teal : 0))
             _tab = 1;
+        if (count == 3 && Button("##tab_prog", "Progression", new Vector2(p.X + 2 * (tabW + 4), p.Y), new Vector2(tabW, 22),
+                _tab == 2 ? Teal : Text, _tab == 2 ? Selected : BtnFill, border: _tab == 2 ? Teal : 0))
+            _tab = 2;
         NextLine(p, 26);
     }
 

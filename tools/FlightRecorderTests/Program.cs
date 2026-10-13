@@ -30,6 +30,7 @@ internal static unsafe class Program
         RetransmitDedupe();
         ResendRequestMarker();
         EngineTagging();
+        IdentifyTagging();
         EngineRepeatFolding();
 
         DetectUseRefusal();
@@ -378,6 +379,98 @@ internal static unsafe class Program
         Has(engineLines, "engine UseObject(0x80068ACE, 0)", "engine call markers written");
     }
 
+    private static byte[] Identify(uint obj) => Action(0x00C8, new Body().U32(obj));
+
+    private static void IdentifyTagging()
+    {
+        Case("capture: an IdentifyObject is [eng:<who>] after an engine send for that id, otherwise [cli]");
+        var c = NewCapture();
+        LoginAs(c);
+        int marks = Count(c, FlightDir.Mark);
+        c.EngineSend((byte)IdRequester.AutoIdContainer, Corpse);
+        Eq(Count(c, FlightDir.Mark), marks, "an engine send writes no marker line");
+        _t += 30;
+        Out(c, Identify(Corpse));
+        Has(Last(c), "[eng:autoid-container] IdentifyObject 0x80068ACE", "autoid container send");
+        Eq(c.IdentifyForeignTotal, 0L, "not counted as foreign");
+
+        Out(c, Identify(Corpse));
+        Has(Last(c), "[cli] IdentifyObject", "a second 0xC8 with no engine send is AC's or Decal's");
+        Eq(c.IdentifyForeignTotal, 1L, "counted as foreign");
+
+        c.EngineSend((byte)IdRequester.Plugin, Other);
+        Out(c, Identify(Corpse));
+        Has(Last(c), "[cli]", "an engine send for another id does not tag this one");
+        Out(c, Identify(Other));
+        Has(Last(c), "[eng:plugin] IdentifyObject 0x80012345", "plugin send matched by id");
+
+        c.EngineSend((byte)IdRequester.AutoIdTarget, Other);
+        _t += FlightCapture.EngineMatchMs + 1;
+        Out(c, Identify(Other));
+        Has(Last(c), "[cli]", "too late to match");
+
+        c.EngineSend((byte)IdRequester.AutoIdTarget, Other);
+        c.EngineSend((byte)IdRequester.AutoIdInventory, Other);
+        Out(c, Identify(Other));
+        Has(Last(c), "[eng:autoid-target]", "two sends for one id: the older first");
+        Out(c, Identify(Other));
+        Has(Last(c), "[eng:autoid-inventory]", "then the newer");
+
+        c.EngineSend(0, Corpse);
+        Out(c, Identify(Corpse));
+        Has(Last(c), "[cli]", "a send without a requester is not registered");
+        Eq(c.EngineSend(0, Corpse), -1, "no requester: no token");
+
+        // Registered before the call (CombatActionHooks.RequestId): a 0xC8 that AC sends
+        // synchronously, inside the call, is still tagged.
+        int sync = c.EngineSend((byte)IdRequester.AutoIdInventory, Corpse);
+        Out(c, Identify(Corpse));
+        Has(Last(c), "[eng:autoid-inventory] IdentifyObject 0x80068ACE", "a send made inside the call is tagged");
+        c.EngineSendFailed(sync, Corpse); // already matched: a no-op
+        Out(c, Identify(Corpse));
+        Has(Last(c), "[cli]", "a matched entry is not revived");
+
+        // The call returned false (or threw): its entry is retired, so a later 0xC8 for the
+        // same id is AC's or Decal's.
+        long foreignFail = c.IdentifyForeignTotal;
+        int failed = c.EngineSend((byte)IdRequester.AutoIdInventory, Corpse);
+        Check(failed >= 0, "a registration returns a token");
+        c.EngineSendFailed(failed, Corpse);
+        Out(c, Identify(Corpse));
+        Has(Last(c), "[cli]", "a failed send leaves no live entry");
+        Eq(c.IdentifyForeignTotal, foreignFail + 1, "and that 0xC8 counts as foreign");
+
+        // Retiring a token whose slot now holds another id leaves that entry alone.
+        int stale = c.EngineSend((byte)IdRequester.AutoIdTarget, Other);
+        c.EngineSendFailed(stale, Corpse);
+        c.EngineSendFailed(-1, Other);
+        c.EngineSendFailed(int.MaxValue, Other);
+        Out(c, Identify(Other));
+        Has(Last(c), "[eng:autoid-target]", "a retire for another id, or a bad token, is a no-op");
+
+        // 200 sends in a burst (a full RequestId queue drained at once) do not push out other
+        // engine calls (their own table), and every one of them is matched.
+        c.EngineCall("UseObject", Corpse, 0);
+        for (uint i = 0; i < 200; i++) c.EngineSend((byte)IdRequester.AutoIdWorld, 0x80100000 + i);
+        Out(c, Use(Corpse));
+        Has(Last(c), "[eng] Use", "an identify burst leaves the pending use intact");
+        long foreignBefore = c.IdentifyForeignTotal;
+        int matched = 0;
+        for (uint i = 0; i < 200; i++)
+        {
+            Out(c, Identify(0x80100000 + i));
+            if (Last(c).Contains("[eng:autoid-world] IdentifyObject", StringComparison.Ordinal)) matched++;
+        }
+        Eq(matched, 200, "200 registrations, 200 tagged identifies (oldest to newest)");
+        Eq(c.IdentifyForeignTotal, foreignBefore, "none of the burst counted as foreign");
+
+        foreach (IdRequester who in Enum.GetValues<IdRequester>())
+        {
+            if (who == IdRequester.None) continue;
+            Check(IdRequesters.Label((byte)who).Length > 0, $"{who} has a label");
+        }
+    }
+
     private static void EngineRepeatFolding()
     {
         Case("capture: identical engine calls within 1 s fold into one line plus a 'repeated' line");
@@ -603,7 +696,7 @@ internal static unsafe class Program
         Has(DescribeIn(Event(0x01A7, new Body().U32(0))), "AttackDone err 0x0000", "attack done");
         Has(DescribeIn(Event(0x01B8, new Body())), "CombatCommenceAttack", "commence attack");
         Has(DescribeIn(Event(0x01B1, new Body().Str("Drudge Ravener").U32(1).Bytes(BitConverter.GetBytes(0.4)).U32(37).U32(1).U32(0).U32(0))),
-            "AttackerNotification hit 'Drudge Ravener' for 37 (crit), 40% left", "attacker notification");
+            "AttackerNotification hit 'Drudge Ravener' for 37 (crit) (40% of its max health)", "attacker notification");
         var ench = new Body().U16(2053).U16(1).U16(5).U16(0).U32(400).Bytes(BitConverter.GetBytes(0.0)).Bytes(BitConverter.GetBytes(1800.0)).U32(Player);
         Has(DescribeIn(Event(0x02C2, ench)), "MagicUpdateEnchantment spell 2053 layer 1 duration 1800 s caster 0x50000ABC", "enchantment");
         Has(DescribeIn(Event(0x02C3, new Body().U16(2053).U16(1))), "MagicRemoveEnchantment spell 2053 layer 1", "remove enchantment");

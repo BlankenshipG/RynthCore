@@ -134,7 +134,7 @@ Write-Host "  Decal bridge in the installer: $((Get-Item $bridgeStaged).VersionI
 Copy-Item (Join-Path $ScriptDir "Output\RynthCore-Setup.exe") "$rel\RynthCore-Setup.exe"
 Copy-Item (Join-Path $ScriptDir "staging\plugins\RynthAi\RynthCore.Plugin.RynthAi.dll") "$rel\plugins\"
 
-$suitePlugins = "RynthChat", "RynthTracker", "RynthNav", "RynthVision", "RynthLua", "RynthOracle", "RynthInventory", "RynthSort", "RynthILT"
+$suitePlugins = "RynthChat", "RynthTracker", "RynthNav", "RynthVision", "RynthLua", "RynthOracle", "RynthInventory", "RynthSort", "RynthILT", "RynthThreads", "RynthNet"
 foreach ($name in $suitePlugins) {
     Step "Building $name"
     $proj = Join-Path $RynthSuiteRoot "Plugins\RynthCore.Plugin.$name\RynthCore.Plugin.$name.csproj"
@@ -182,6 +182,8 @@ Extract this zip into C:\Games - it creates:
   C:\Games\RynthSuite\RynthInventory\ RynthInventory plugin (search every character's items)
   C:\Games\RynthSuite\RynthSort\     RynthSort plugin (keeps your packs sorted; replaces the RynthSort Lua script)
   C:\Games\RynthSuite\RynthILT\      RynthILT plugin (Infinite Leaftide only: the Bounties window's tracker)
+  C:\Games\RynthSuite\RynthThreads\  RynthThreads plugin (DreamWeave only: Fragment Press results, what each component brings)
+  C:\Games\RynthSuite\RynthNet\      RynthNet plugin (links your clients on this PC: /ub bc, shared vitals, the Characters panel)
   C:\Games\RynthCore\NavData\        RynthNav's portals and Atlas
 
 Then, in the RynthCore launcher's Plugins tab, add the full path of each
@@ -270,6 +272,8 @@ $pluginDescriptions = @{
     RynthInventory = "Search every character's items."
     RynthSort      = "Keeps your packs sorted: new loot goes to the pack its rule names."
     RynthILT       = "Infinite Leaftide only: tracks your ACECustom bounties for the Bounties window."
+    RynthThreads   = "DreamWeave only: records Fragment Press results and works out what each component brings."
+    RynthNet       = "Links your characters on this PC: broadcast commands (/ub bc), shared vitals and the Characters panel."
 }
 # Plugin manifests (embedded in each DLL by the SDK's build targets): each plugin's minEngineApi
 # goes into its feed entry, and the core entry says its engine's API ("engineApi"), so launchers

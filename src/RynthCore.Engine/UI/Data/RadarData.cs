@@ -35,7 +35,7 @@ internal sealed class RadarView
     public required float[]?[] VisitedByLayer { get; init; }
     /// <summary>Per wall of the current layer: true when its midpoint is in a visited strip (drawn blue).</summary>
     public required bool[]? CurrentWallVisited { get; init; }
-    /// <summary>"LB AABB  Z 12.3" indoors, "33.1N  44.8E  Z 12.3" outdoors.</summary>
+    /// <summary>"Matron Hive East  Z 12.3" in a named dungeon ("LB AABB" otherwise), "33.1N  44.8E  Z 12.3" outdoors.</summary>
     public required string CoordText { get; init; }
 }
 
@@ -177,7 +177,10 @@ internal sealed unsafe class RadarSource : UiSource<RadarView>
     {
         RadarPlayer p = s.Player;
         if (s.IsIndoor)
-            return $"LB {p.Landblock:X4}  Z {p.Z:0.0}";
+        {
+            RynthNavAtlas.EnsureLoadedForNames();
+            return $"{RynthNavAtlas.DungeonLabel(p.Landblock)}  Z {p.Z:0.0}";
+        }
         if (!double.IsNaN(s.Ns) && !double.IsNaN(s.Ew))
             return $"{Math.Abs(s.Ns):0.0}{(s.Ns >= 0 ? "N" : "S")}  {Math.Abs(s.Ew):0.0}{(s.Ew >= 0 ? "E" : "W")}  Z {p.Z:0.0}";
         return $"Z {p.Z:0.0}";

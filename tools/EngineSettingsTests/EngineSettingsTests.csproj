@@ -23,6 +23,7 @@
     <Compile Include="..\..\src\RynthCore.Engine\Plugins\EngineSettings.cs" Link="Engine\EngineSettings.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Plugins\EngineSettingsFile.cs" Link="Engine\EngineSettingsFile.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\ReloadCapNotice.cs" Link="Engine\ReloadCapNotice.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\Compatibility\AutoIdPolicy.cs" Link="Engine\AutoIdPolicy.cs" />
   </ItemGroup>
 
 </Project>

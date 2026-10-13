@@ -266,11 +266,15 @@ internal static partial class PluginManager
     private static TrainSkillCallbackDelegate? _trainSkillCallback;                 // v79
     private static GetContainerOrderCallbackDelegate? _getContainerOrderCallback;   // v80
     private static PutItemInContainerCallbackDelegate? _putItemInContainerCallback; // v80
+    private static SalvageDirectCallbackDelegate? _salvageDirectCallback;           // v82
+    private static GetObjectServerAgeCallbackDelegate? _getObjectServerAgeCallback; // v83
+    private static RemoveClientObjectCallbackDelegate? _removeClientObjectCallback; // v83
     private static GetVendorInfoCallbackDelegate? _getVendorInfoCallback;
     private static GetVendorItemsCallbackDelegate? _getVendorItemsCallback;
     private static VendorBuyCallbackDelegate? _vendorBuyCallback;
     private static VendorSellCallbackDelegate? _vendorSellCallback;
     private static GetVendorTradeStatusCallbackDelegate? _getVendorTradeStatusCallback;
+    private static GetMergeStackResultCallbackDelegate? _getMergeStackResultCallback;
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -1020,12 +1024,38 @@ internal static partial class PluginManager
     /// int (atomic read/write on x86) updated by the single TickAll driver.</summary>
     internal static int TickCount;
 
+    // TickAll's own steps are caught one by one (PumpGuards.cs): nothing outside a plugin's
+    // own Tick may take the pump down. Pump thread only.
+    private static readonly StepFaultLog TickStepFaults = new((int)TickStep.Count);
+
+    private static void TickStepFailed(TickStep step, Exception ex)
+    {
+        try
+        {
+            if (!TickStepFaults.Record((int)step, out int count))
+                return;
+            string line = StepFaultLog.Describe(step, ex.GetType().Name, ex.Message, count);
+            RynthLog.Error(count == 1 ? line + Environment.NewLine + ex : line);
+        }
+        catch { /* logging must not be the thing that throws out of TickAll */ }
+    }
+
     public static void TickAll()
     {
         TickCount++;
         Volatile.Write(ref _tickThread, Environment.CurrentManagedThreadId);
         // v77: after Client::Cleanup no plugin ticks (AC is tearing its UI down); Shutdown still comes.
         if (UiFlowHooks.ClientCleanupStarted)
+            return;
+
+        // AC's main thread is frozen (a message box open on it, or no beat for the hang
+        // watchdog's threshold): no plugin Tick this pump tick, so plugins neither decide nor
+        // act against a client that cannot run anything (MainThreadFreezeRule.cs). Events keep
+        // flowing (ProcessPendingActions), and the Nav3D frame is left as it was.
+        bool paused;
+        try { paused = MainThreadFreeze.ShouldPausePluginTick(); }
+        catch (Exception ex) { TickStepFailed(TickStep.FreezeCheck, ex); paused = false; }
+        if (paused)
             return;
 
         // Fire the delayed login self-identify once AC's vitals UI has settled
@@ -1043,11 +1073,12 @@ internal static partial class PluginManager
                 uint pid = ClientHelperHooks.GetPlayerId();
                 if (pid != 0 && CombatActionHooks.HasRequestId)
                 {
-                    CombatActionHooks.RequestId(pid);
+                    using (Net.EngineSendMarker.Enter(Net.IdRequester.Self))
+                        CombatActionHooks.RequestId(pid);
                     RynthLog.Plugin($"PluginManager: sent (delayed) self-identify for player 0x{pid:X8} to seed max vitals.");
                 }
             }
-            catch { }
+            catch (Exception ex) { TickStepFailed(TickStep.SelfIdentify, ex); }
         }
 
         // The cast gate is sampled on AC's main thread now (MainThreadSnapshots.Tick,
@@ -1066,35 +1097,48 @@ internal static partial class PluginManager
         // buffer, plugins fill it, and CommitFrame at the end of this method
         // atomically swaps it into "ready" so the render thread sees a
         // complete frame instead of mid-tick partial state.
-        D3D9.Nav3DRenderer.ClearFrame();
+        try { D3D9.Nav3DRenderer.ClearFrame(); }
+        catch (Exception ex) { TickStepFailed(TickStep.Nav3DClear, ex); }
 
-        for (int i = 0; i < _plugins.Count; i++)
+        try
         {
-            var plugin = _plugins[i];
-            if (!plugin.Initialized || plugin.Failed || plugin.Tick == null)
-                continue;
+            for (int i = 0; i < _plugins.Count; i++)
+            {
+                var plugin = _plugins[i];
+                if (!plugin.Initialized || plugin.Failed || plugin.Tick == null)
+                    continue;
 
-            LoadedPlugin? outer = EnterDispatch(plugin);
-            try
-            {
-                plugin.Tick();
-            }
-            catch (Exception ex)
-            {
-                plugin.Failed = true;
-                RynthLog.Error($"PluginManager: {plugin.DisplayName} Tick threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)} - disabled.");
-            }
-            finally
-            {
-                LeaveDispatch(outer);
+                LoadedPlugin? outer = EnterDispatch(plugin, "Tick");
+                try
+                {
+                    plugin.Tick();
+                }
+                catch (Exception ex)
+                {
+                    plugin.Failed = true;
+                    RynthLog.Error($"PluginManager: {plugin.DisplayName} Tick threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)} - disabled.");
+                }
+                finally
+                {
+                    LeaveDispatch(outer);
+                }
             }
         }
+        catch (Exception ex)
+        {
+            // The loop's own bookkeeping (not a plugin's Tick, which is caught above).
+            TickStepFailed(TickStep.PluginLoop, ex);
+        }
+        finally
+        {
+            // v71 script windows: a plugin that failed (this tick or in an event) loses its windows.
+            try { ScriptWindowRegistry.DropFailedOwners(); }
+            catch (Exception ex) { TickStepFailed(TickStep.DropFailedOwners, ex); }
 
-        // v71 script windows: a plugin that failed (this tick or in an event) loses its windows.
-        ScriptWindowRegistry.DropFailedOwners();
-
-        // Atomically publish this tick's Nav3D submissions to the render thread.
-        D3D9.Nav3DRenderer.CommitFrame();
+            // Atomically publish this tick's Nav3D submissions to the render thread.
+            try { D3D9.Nav3DRenderer.CommitFrame(); }
+            catch (Exception ex) { TickStepFailed(TickStep.Nav3DCommit, ex); }
+        }
     }
 
     // The first PluginTraceLimit plugin exceptions also log their stack trace: "Tick threw
@@ -1140,6 +1184,189 @@ internal static partial class PluginManager
                 RynthLog.Error($"PluginManager: {plugin.DisplayName} Render threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)} - disabled.");
             }
         }
+    }
+
+    /// <summary>
+    /// ImGui-shell-off counterpart of <see cref="RenderAll"/>: calls the optional
+    /// RynthPluginRenderOverlay export, where a plugin draws only the extra windows that have
+    /// no Avalonia panel (e.g. RynthAi's ILT Hub). They float beside the Avalonia UI and add to it.
+    /// A throw switches off just that plugin's overlay windows; the plugin is NOT marked Failed,
+    /// so its tick/automation and Avalonia panels keep running.
+    /// </summary>
+    public static void RenderOverlayAll()
+    {
+        _overlayCalls++;
+        if (!_loginCompleteObserved)
+        {
+            if (!_loggedOverlayWaitingForLogin)
+            {
+                _loggedOverlayWaitingForLogin = true;
+                RynthLog.Info("PluginManager: RenderOverlayAll called - waiting for login before drawing overlay windows.");
+            }
+            return; // same not-in-world crash zone guard as RenderAll
+        }
+
+        LoadedPlugin[] plugins = System.Threading.Volatile.Read(ref _pluginsRenderSnapshot);
+
+        // Count plugins that will actually be called; log whenever that set changes.
+        int bound = 0;
+        for (int i = 0; i < plugins.Length; i++)
+        {
+            var p = plugins[i];
+            if (p.Initialized && !p.Failed && p.RenderOverlay != null) bound++;
+        }
+        _overlayBound = bound;
+        if (bound != _loggedOverlayBound || plugins.Length != _loggedOverlayTotal)
+        {
+            _loggedOverlayBound = bound;
+            _loggedOverlayTotal = plugins.Length;
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < plugins.Length; i++)
+            {
+                var p = plugins[i];
+                if (sb.Length > 0) sb.Append(", ");
+                sb.Append(p.DisplayName).Append('(')
+                  .Append(p.RenderOverlay != null ? "overlay" : "no-overlay")
+                  .Append(p.Initialized ? "" : ",not-init")
+                  .Append(p.Failed ? ",failed" : "")
+                  .Append(')');
+            }
+            RynthLog.Info($"PluginManager: RenderOverlayAll login seen, {bound} of {plugins.Length} plugin(s) will draw overlay windows: {sb}.");
+        }
+
+        for (int i = 0; i < plugins.Length; i++)
+        {
+            var plugin = plugins[i];
+            var overlay = plugin.RenderOverlay;
+            if (!plugin.Initialized || plugin.Failed || overlay == null)
+                continue;
+
+            if (!plugin.RenderOverlayLogged)
+            {
+                // One line per plugin per session: proves the engine is actually driving the overlay export.
+                plugin.RenderOverlayLogged = true;
+                RynthLog.Plugin($"PluginManager: first RenderOverlay call for {plugin.DisplayName}.");
+            }
+
+            try
+            {
+                overlay();
+            }
+            catch (Exception ex)
+            {
+                plugin.RenderOverlay = null;
+                RynthLog.Error($"PluginManager: {plugin.DisplayName} RenderOverlay threw {ex.GetType().Name}: {ex.Message} - overlay windows off for this session (plugin keeps running).");
+            }
+        }
+    }
+
+    // RenderOverlayAll diagnostics (render thread only).
+    private static long _overlayCalls;
+    private static int _overlayBound;
+    private static bool _loggedOverlayWaitingForLogin;
+    private static int _loggedOverlayBound = -1;
+    private static int _loggedOverlayTotal = -1;
+
+    /// <summary>
+    /// True when an initialized, healthy plugin exports RynthPluginRenderOverlay. Reads the
+    /// render snapshot only (no lock, no allocation): safe every frame on the render thread.
+    /// </summary>
+    internal static bool HasOverlayPlugins
+    {
+        get
+        {
+            LoadedPlugin[] plugins = System.Threading.Volatile.Read(ref _pluginsRenderSnapshot);
+            for (int i = 0; i < plugins.Length; i++)
+            {
+                var p = plugins[i];
+                if (p.Initialized && !p.Failed && p.RenderOverlay != null) return true;
+            }
+            return false;
+        }
+    }
+
+    /// <summary>Overlay stats for the ImGui heartbeat line.</summary>
+    internal static string DescribeOverlayState()
+        => $"overlayCalls={_overlayCalls} loginSeen={_loginCompleteObserved} overlayPlugins={_overlayBound}";
+
+    /// <summary>RenderEmbed results.</summary>
+    internal const int EmbedDrawn = 1, EmbedNotReady = 0, EmbedNoPlugin = -1, EmbedFailed = -2;
+
+    /// <summary>
+    /// Appended to an embed surface's name when the caller draws in another ImGui context than
+    /// the one plugins were given (a popped-out panel's own context). Only a plugin that knows
+    /// the suffix draws then, into the current context; an older one switches to the main
+    /// context, which is not mid-frame there, and faults inside cimgui (an access violation no
+    /// try/catch stops: 2026-10-11, the popped-out Mini Remote), so it must see a surface name
+    /// it doesn't know and decline.
+    /// </summary>
+    private static ReadOnlySpan<byte> PopOutSurfaceSuffix => ":popout"u8;
+
+    /// <summary>
+    /// Lets the plugin named <paramref name="pluginName"/> (display name contains it) draw the
+    /// surface <paramref name="surfaceUtf8"/> (NUL-terminated) into the current ImGui window,
+    /// through its optional RynthPluginRenderEmbed export. The caller has begun a child of
+    /// <paramref name="size"/>; the plugin draws only inside it and reports the content size it
+    /// wants in <paramref name="want"/> (zero when it didn't say). In a context other than the
+    /// plugins' (a pop-out), the surface goes out as "name:popout" (see
+    /// <see cref="PopOutSurfaceSuffix"/>).
+    /// Render thread only. Returns <see cref="EmbedDrawn"/>, <see cref="EmbedNotReady"/> (the
+    /// plugin isn't ready: before login, no ImGui context, or too old to draw in a pop-out),
+    /// <see cref="EmbedNoPlugin"/> (not loaded, or too old to have the export) or
+    /// <see cref="EmbedFailed"/> (it threw: the export is switched off for this session; the
+    /// plugin keeps running).
+    /// </summary>
+    internal static unsafe int RenderEmbed(string pluginName, ReadOnlySpan<byte> surfaceUtf8, System.Numerics.Vector2 size, out System.Numerics.Vector2 want)
+    {
+        want = System.Numerics.Vector2.Zero;
+        if (!_loginCompleteObserved) return EmbedNotReady;   // same not-in-world guard as RenderAll
+        IntPtr current = ImGuiNET.ImGui.GetCurrentContext();
+        if (current == IntPtr.Zero) return EmbedNotReady;
+        if (current != _api.ImGuiContext)
+        {
+            // "name\0" -> "name:popout\0" on the stack; surface names are a few bytes.
+            int nameLen = surfaceUtf8.IndexOf((byte)0);
+            if (nameLen < 0) nameLen = surfaceUtf8.Length;
+            int total = nameLen + PopOutSurfaceSuffix.Length + 1;
+            if (total > 128) return EmbedNotReady;
+            Span<byte> popOut = stackalloc byte[total];
+            surfaceUtf8[..nameLen].CopyTo(popOut);
+            PopOutSurfaceSuffix.CopyTo(popOut[nameLen..]);
+            popOut[^1] = 0;
+            return RenderEmbedCore(pluginName, popOut, size, out want);
+        }
+        return RenderEmbedCore(pluginName, surfaceUtf8, size, out want);
+    }
+
+    /// <summary>The export call behind <see cref="RenderEmbed"/>, with the surface name already final.</summary>
+    private static unsafe int RenderEmbedCore(string pluginName, ReadOnlySpan<byte> surfaceUtf8, System.Numerics.Vector2 size, out System.Numerics.Vector2 want)
+    {
+        want = System.Numerics.Vector2.Zero;
+        LoadedPlugin[] plugins = System.Threading.Volatile.Read(ref _pluginsRenderSnapshot);
+        for (int i = 0; i < plugins.Length; i++)
+        {
+            LoadedPlugin p = plugins[i];
+            if (!p.Initialized || p.Failed || !p.DisplayName.Contains(pluginName, StringComparison.OrdinalIgnoreCase))
+                continue;
+            IntPtr fn = p.RenderEmbedPtr;
+            if (fn == IntPtr.Zero) return EmbedNoPlugin;
+            float w = 0, h = 0;
+            try
+            {
+                int r;
+                fixed (byte* s = surfaceUtf8)
+                    r = ((delegate* unmanaged[Cdecl]<byte*, float, float, float*, float*, int>)fn)(s, size.X, size.Y, &w, &h);
+                want = new System.Numerics.Vector2(float.IsFinite(w) ? MathF.Max(0, w) : 0, float.IsFinite(h) ? MathF.Max(0, h) : 0);
+                return r == 1 ? EmbedDrawn : EmbedNotReady;
+            }
+            catch (Exception ex)
+            {
+                p.RenderEmbedPtr = IntPtr.Zero;
+                RynthLog.Error($"PluginManager: {p.DisplayName} RenderEmbed threw {ex.GetType().Name}: {ex.Message} - embedded surfaces off for this session (plugin keeps running).");
+                return EmbedFailed;
+            }
+        }
+        return EmbedNoPlugin;
     }
 
     public static void ShutdownAll()
@@ -2338,6 +2565,14 @@ internal static partial class PluginManager
         // %APPDATA%\RynthCore\engine.json. The engine never auto-scans a
         // bundled Plugins\ folder — that historically caused stray DLLs to
         // load on next start (or after hot-reload) without the user knowing.
+        //
+        // Track DLL file names and canonical paths already staged this generation. engine.json can
+        // list the same plugin twice (e.g. a stale copy in another folder); a second File.Copy to the
+        // same shadow file name fails while the first copy is still mapped ("used by another process")
+        // and breaks hot-reload ordering for later DLLs.
+        var loadedBasenames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var loadedCanonicalPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         var extraPaths = EngineSettings.PluginPaths;
         var present = new List<string>(extraPaths.Count);
         for (int i = 0; i < extraPaths.Count; i++)
@@ -2387,8 +2622,11 @@ internal static partial class PluginManager
                 continue;
             }
 
-            RynthLog.Plugin($"PluginManager: Loading extra plugin: {dllPath}");
+            // Address space before and after each load: a 32-bit client runs out on the largest
+            // free block, and a reload stacks copies (Compatibility/AddressSpace.cs).
+            RynthLog.Plugin($"PluginManager: Loading extra plugin: {dllPath} (va before: {Compatibility.AddressSpace.Describe()})");
             var plugin = PluginLoader.LoadSingle(dllPath, _shadowRootDir, _loadGeneration);
+            RynthLog.Plugin($"PluginManager: loaded {Path.GetFileName(dllPath)}{(plugin == null ? " (FAILED)" : "")} (va after: {Compatibility.AddressSpace.Describe()})");
             if (plugin != null)
             {
                 plugin.Manifest = manifest;
@@ -2398,7 +2636,29 @@ internal static partial class PluginManager
             }
         }
 
+        // RenderAll / RenderOverlayAll iterate only this snapshot; without it they see no plugins.
         PublishPluginsRenderSnapshot();
+        RynthLog.Plugin($"PluginManager: render snapshot published ({_plugins.Count} plugin(s)).");
+    }
+
+    private static void TryAddCanonicalPath(HashSet<string> set, string path)
+    {
+        if (TryGetCanonicalPath(path, out string canon))
+            set.Add(canon);
+    }
+
+    private static bool TryGetCanonicalPath(string path, out string canonical)
+    {
+        try
+        {
+            canonical = Path.GetFullPath(path);
+            return true;
+        }
+        catch
+        {
+            canonical = string.Empty;
+            return false;
+        }
     }
 
     // ── Plugin manifests ─────────────────────────────────────────────────
@@ -2552,7 +2812,9 @@ internal static partial class PluginManager
             // v71: its script windows close (their placement is kept).
             ScriptWindowRegistry.DropOwner(plugin);
 
+            string vaBefore = Compatibility.AddressSpace.Describe();
             PluginLoader.Unload(plugin);
+            RynthLog.Plugin($"PluginManager: unloaded {plugin.DisplayName} (va before: {vaBefore}, after: {Compatibility.AddressSpace.Describe()})");
         }
 
         _plugins.Clear();
@@ -2791,11 +3053,15 @@ internal static partial class PluginManager
         _trainSkillCallback ??= TrainSkillAction;
         unsafe { _getContainerOrderCallback ??= GetContainerOrderAction; }   // v80
         _putItemInContainerCallback ??= PutItemInContainerAction;
+        unsafe { _salvageDirectCallback ??= SalvageDirectAction; }   // v82
+        _getObjectServerAgeCallback ??= GetObjectServerAgeAction;    // v83
+        _removeClientObjectCallback ??= RemoveClientObjectAction;    // v83
         _getVendorInfoCallback ??= GetVendorInfoAction;
         _getVendorItemsCallback ??= GetVendorItemsAction;
         _vendorBuyCallback ??= VendorBuyAction;
         _vendorSellCallback ??= VendorSellAction;
         _getVendorTradeStatusCallback ??= GetVendorTradeStatusAction;
+        _getMergeStackResultCallback ??= GetMergeStackResultAction;
 
         _api.Version = PluginContractVersion.Current;
         _api.LogFn = Marshal.GetFunctionPointerForDelegate(_logCallback);
@@ -2936,11 +3202,15 @@ internal static partial class PluginManager
         _api.TrainSkillFn = Marshal.GetFunctionPointerForDelegate(_trainSkillCallback);
         _api.GetContainerOrderFn = Marshal.GetFunctionPointerForDelegate(_getContainerOrderCallback);
         _api.PutItemInContainerFn = Marshal.GetFunctionPointerForDelegate(_putItemInContainerCallback);
+        _api.SalvageDirectFn = Marshal.GetFunctionPointerForDelegate(_salvageDirectCallback);
+        _api.GetObjectServerAgeFn = Marshal.GetFunctionPointerForDelegate(_getObjectServerAgeCallback);
+        _api.RemoveClientObjectFn = Marshal.GetFunctionPointerForDelegate(_removeClientObjectCallback);
         _api.GetVendorInfoFn = Marshal.GetFunctionPointerForDelegate(_getVendorInfoCallback);
         _api.GetVendorItemsFn = Marshal.GetFunctionPointerForDelegate(_getVendorItemsCallback);
         _api.VendorBuyFn = Marshal.GetFunctionPointerForDelegate(_vendorBuyCallback);
         _api.VendorSellFn = Marshal.GetFunctionPointerForDelegate(_vendorSellCallback);
         _api.GetVendorTradeStatusFn = Marshal.GetFunctionPointerForDelegate(_getVendorTradeStatusCallback);
+        _api.GetMergeStackResultFn = Marshal.GetFunctionPointerForDelegate(_getMergeStackResultCallback);
         RouteApiThroughLoader();
     }
 
@@ -3069,7 +3339,9 @@ internal static partial class PluginManager
 
     private static int RequestIdAction(uint objectId)
     {
-        return ToAbiBool(ClientActionHooks.RequestId(objectId));
+        // A plugin's identify: never limited by AutoIdMode; its 0xC8 is tagged [eng:plugin].
+        using (Net.EngineSendMarker.Enter(Net.IdRequester.Plugin))
+            return ToAbiBool(ClientActionHooks.RequestId(objectId));
     }
 
     private static int CastSpellAction(uint targetId, int spellId)
@@ -3665,6 +3937,22 @@ internal static partial class PluginManager
         return ToAbiBool(ClientHelperHooks.MergeStackInternal(sourceObjectId, targetObjectId));
     }
 
+    // v68: outcome of the latest MergeStackInternal(source, target) (MergeStackResults codes).
+    private static unsafe int GetMergeStackResultAction(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs)
+    {
+        try
+        {
+            int status = MergeStackResults.Get(sourceObjectId, targetObjectId, out int sent, out int age);
+            if (amount != null) *amount = sent;
+            if (ageMs != null) *ageMs = age;
+            return status;
+        }
+        catch
+        {
+            return MergeStackResults.None;
+        }
+    }
+
     private static int GiveObjectTo(uint objectId, uint targetId, int amount)
     {
         Compatibility.AcActionTrace.Record("GiveObjectTo", objectId, targetId);
@@ -3889,16 +4177,39 @@ internal static partial class PluginManager
     private static LoadedPlugin? _dispatchPlugin;
     private static int _dispatchThread;
 
-    private static LoadedPlugin? EnterDispatch(LoadedPlugin plugin)
+    // What the dispatch in progress calls and since when (PumpDispatchInfo), for the hang
+    // watchdog: a plugin export that faults natively ends the process with only TickAll in
+    // the event log, so the watchdog's report during the crash-dump freeze names the plugin.
+    private static string? _dispatchExport;
+    private static long _dispatchSinceMs;
+
+    private static LoadedPlugin? EnterDispatch(LoadedPlugin plugin, string export = "event")
     {
         int thread = Environment.CurrentManagedThreadId;
         LoadedPlugin? outer = _dispatchThread == thread ? _dispatchPlugin : null;
         _dispatchThread = thread;
+        _dispatchExport = export;
+        _dispatchSinceMs = Environment.TickCount64;
         _dispatchPlugin = plugin;
         return outer;
     }
 
-    private static void LeaveDispatch(LoadedPlugin? outer) => _dispatchPlugin = outer;
+    private static void LeaveDispatch(LoadedPlugin? outer)
+    {
+        _dispatchPlugin = outer;
+        if (outer == null)
+            _dispatchSinceMs = 0;
+    }
+
+    /// <summary>
+    /// "inside RynthAi Tick for 12375 ms" while a plugin call has been running for a second
+    /// or more, else null. Any thread (the hang watchdog); racy by design.
+    /// </summary>
+    internal static string? DescribePumpDispatch()
+    {
+        LoadedPlugin? plugin = _dispatchPlugin;
+        return PumpDispatchInfo.Describe(plugin?.DisplayName, _dispatchExport, Volatile.Read(ref _dispatchSinceMs), Environment.TickCount64);
+    }
 
     /// <summary>The plugin whose tick, event, Init or Shutdown is running on the calling thread, or null.</summary>
     internal static LoadedPlugin? CurrentDispatch
@@ -4078,6 +4389,57 @@ internal static partial class PluginManager
         catch (Exception ex)
         {
             RynthLog.Compat($"PutItemInContainer failed - {ex.GetType().Name}: {ex.Message}");
+            return 0;
+        }
+    }
+
+    // ── v83: ghost creatures (ObjectFreshness, DeleteObjectHooks.RemoveClientObject) ──
+
+    /// <summary>v83: see PluginContract.GetObjectServerAgeFn.</summary>
+    private static int GetObjectServerAgeAction(uint objectId)
+    {
+        try
+        {
+            long age = Compatibility.ObjectFreshness.AgeMs(objectId, Environment.TickCount64);
+            return age < 0 ? -1 : (int)Math.Min(age, int.MaxValue);
+        }
+        catch { return -1; }
+    }
+
+    /// <summary>v83: see PluginContract.RemoveClientObjectFn.</summary>
+    private static int RemoveClientObjectAction(uint objectId)
+    {
+        try
+        {
+            var r = Compatibility.DeleteObjectHooks.RemoveClientObject(objectId, out string? why);
+            if (r == Compatibility.DeleteObjectHooks.RemoveResult.Refused && why != null)
+                RynthLog.Compat($"RemoveClientObject 0x{objectId:X8}: refused - {why}.");
+            return (int)r;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"RemoveClientObject failed - {ex.GetType().Name}: {ex.Message}");
+            return 0;
+        }
+    }
+
+    // ── v82: salvage without the panel (ClientHelperHooks.SalvageDirect) ──
+
+    /// <summary>v82: see PluginContract.SalvageDirectFn.</summary>
+    private static unsafe int SalvageDirectAction(uint toolId, uint* itemIds, int count)
+    {
+        try
+        {
+            if (!ClientHelperHooks.HasSalvageDirect) return -1;
+            if (toolId == 0 || itemIds == null || count <= 0 || count > ClientHelperHooks.MaxSalvageDirectItems) return 0;
+            var ids = new uint[count];
+            for (int i = 0; i < count; i++) ids[i] = itemIds[i];
+            Compatibility.AcActionTrace.Record("SalvageDirect", toolId, (uint)count);
+            return ClientHelperHooks.SalvageDirect(toolId, ids) ? count : 0;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"SalvageDirect failed - {ex.GetType().Name}: {ex.Message}");
             return 0;
         }
     }

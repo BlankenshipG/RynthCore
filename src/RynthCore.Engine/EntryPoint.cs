@@ -12,6 +12,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Collections.Generic;
 using ImGuiNET;
+using RynthCore;
 using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.D3D9;
 using RynthCore.Engine.Plugins;
@@ -45,7 +46,21 @@ public static class EntryPoint
     private static readonly Queue<string> RecentLogLines = new();
     private static long _recentLogSeq;
 
-    /// <summary>Set true to enable verbose startup logging (hook ready messages, plugin lifecycle, etc.).</summary>
+    internal enum EngineLogLevel
+    {
+        /// <summary>As a global threshold: nothing but errors. As a category level: never written.</summary>
+        Off = -1,
+        Error = 0,
+        Warning = 1,
+        Info = 2,
+        Debug = 3,
+        Trace = 4
+    }
+
+    /// <summary>Active engine logging threshold loaded from engine settings.</summary>
+    internal static EngineLogLevel LoggingLevel = EngineLogLevel.Info;
+
+    /// <summary>Legacy convenience flag used by existing verbose call sites.</summary>
     internal static bool VerboseLogging = false;
 
     /// <summary>Set by EngineFrameController once the game window is confirmed. Read by AvaloniaOverlay.</summary>
@@ -190,8 +205,14 @@ public static class EntryPoint
             }
             catch { }
 
+            // engine.json "LoggingLevel" + "LogCategories" (launcher Logging card) set the threshold
+            // and per-category levels first so every line written below honours them. The watcher
+            // started later re-reads them whenever the launcher edits the file.
+            string logSummary = LogSettings.Reload();
+
             // Set up the unified log sink BEFORE anything else so all
-            // subsequent failures are captured in C:\Games\RynthCore\Logs.
+            // subsequent failures are captured in <CoreDir>\Logs (installer-chosen;
+            // resolved here on the init worker, never under the loader lock).
             LogPaths.EnsureLogDirectory();
             if (_initCount <= 1)
             {
@@ -206,10 +227,18 @@ public static class EntryPoint
 
             InstallManagedExceptionHandlers();
 
-            RynthLog.Info("================================================================");
-            RynthLog.Info($"RynthCore.Engine init  build={BuildStamp}  initCount={_initCount}  pid={Environment.ProcessId}");
-            RynthLog.Info($"  os={Environment.OSVersion}  clr={Environment.Version}  cwd={Environment.CurrentDirectory}");
-            RynthLog.Info("================================================================");
+            // The banner bypasses the category levels: it must be in every log, whatever engine.json says.
+            LogTagged("engine", "================================================================", "INF");
+            LogTagged("engine", $"RynthCore.Engine init  build={BuildStamp}  initCount={_initCount}  pid={Environment.ProcessId}", "INF");
+            LogTagged("engine", $"  os={Environment.OSVersion}  clr={Environment.Version}  cwd={Environment.CurrentDirectory}", "INF");
+            LogTagged("engine", $"  logging {logSummary}", "INF");
+            LogTagged("engine", "================================================================", "INF");
+            string hiddenCategories = LogSettings.HiddenCategoriesWarning();
+            if (hiddenCategories.Length > 0) RynthLog.Warn(hiddenCategories);
+
+            // Live logging config: launcher edits to engine.json apply without a client restart.
+            // Stopped in EngineLifecycle.Shutdown before the module can be unloaded.
+            LogSettings.StartWatcher();
 
             CrashLogger.Install();
 
@@ -217,18 +246,10 @@ public static class EntryPoint
             // logging AC's main-thread native stack when its EndScene beat stalls.
             MainThreadHangWatchdog.Start();
 
-            // MultiClientHooks.Initialize installs MinHook detours synchronously
-            // here, BEFORE InitWorker spawns and runs the main PreloadNativeDll
-            // pass. If we don't preload minhook.x86.dll first, the P/Invoke
-            // into minhook fails with DllNotFoundException and the multi-
-            // client hook silently skips — which means AC's
-            // Client::IsAlreadyRunning check fires unpatched on the second-
-            // and-later concurrent acclient.exe processes.
-            string? earlyEngineDir = GetEngineDirectory();
-            if (!string.IsNullOrEmpty(earlyEngineDir))
-                PreloadNativeDll(earlyEngineDir, "minhook.x86.dll");
-            else
-                RynthLog.Info("Early-init: could not resolve engine directory — minhook may not be preloaded before MultiClientHooks.");
+            // MultiClientHooks installs MinHook-based detours immediately. P/Invoke resolves
+            // minhook.x86.dll before InitWorker runs, so preload it from the engine directory;
+            // otherwise Client::IsAlreadyRunning fires unpatched on second-and-later clients.
+            TryPreloadMinHookForEarlyInit();
 
             RunInitStep("early multi-client hooks", MultiClientHooks.Initialize);
             // Before AC's main thread resumes, so no dat or network unpack runs the stock
@@ -337,6 +358,33 @@ public static class EntryPoint
             return null;
 
         return new string(buffer, 0, (int)length);
+    }
+
+    /// <summary>
+    /// Loads MinHook on the RynthCoreInit thread so <see cref="MultiClientHooks.Initialize"/> can
+    /// call <see cref="Hooking.MinHook"/> P/Invokes without relying on the default DLL search path
+    /// (which often resolves against the AC client directory, not <c>Runtime\</c>).
+    /// </summary>
+    private static void TryPreloadMinHookForEarlyInit()
+    {
+        try
+        {
+            string? engineDir = GetEngineDirectory();
+            if (string.IsNullOrEmpty(engineDir))
+            {
+                RynthLog.Info("Early MinHook preload skipped: could not resolve engine directory.");
+                return;
+            }
+
+            if (PreloadNativeDll(engineDir, "minhook.x86.dll"))
+                RynthLog.Verbose($"Early MinHook preload OK (engine dir: {engineDir})");
+            else
+                RynthLog.Info($"Early MinHook preload failed: minhook.x86.dll not found beside engine ({engineDir}).");
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Info($"Early MinHook preload exception: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -518,6 +566,44 @@ public static class EntryPoint
     /// (RynthAi/RynthChat/RynthVision) on the user's launcher selection.
     /// Filename match (not full-path) so users can keep the DLL anywhere.
     /// </summary>
+    private static bool _serverMenusRegistered;
+
+    /// <summary>
+    /// The server sections of the Char and Mini Remote menus (UI.ServerMenus): each server once,
+    /// then the items of the installed plugins that have windows for it. A server whose plugins
+    /// are all missing gets no items, so its section never shows.
+    /// </summary>
+    private static void RegisterServerMenus(bool rynthAi, bool rynthIlt)
+    {
+        if (_serverMenusRegistered) return;
+        _serverMenusRegistered = true;
+
+        // Infinite Leaftide: IltInfo (host / world name lists, or "/rc ilt on" for the session).
+        UI.ServerMenus.DefineServer("ilt", "Infinite Leaftide", static () => IltInfo.IsIlt, "/rc ilt on");
+        if (rynthAi)
+        {
+            // RynthAi's ILT features: the Mini Remote's ILT tabs (shown once the server reports each
+            // on). Its Quests and Pets tabs are universal: the Character half of the menus.
+            foreach ((string label, string tab) in new[]
+            {
+                ("Character", "character"), ("Banking", "banking"), ("Gear", "gear"), ("Charms", "charms"), ("Games", "games"),
+            })
+            {
+                UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem(label, "/rc miniremote tab " + tab,
+                    $"The Mini Remote's {label} tab (RynthAi).", "tab:" + tab));
+            }
+            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Guardian", "/rc guardian toggle",
+                "Temple of Enlightenment guardians: riddle answers and Give (RynthAi)."));
+        }
+        if (rynthIlt)
+            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Bounties", "/rc bounties toggle",
+                "ACECustom bounties and your progress on each (RynthILT)."));
+        if (rynthAi)
+            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Progression", "/rc progression",
+                "XP planner, augmentations and enlightenment (the Skills panel's Progression tab)."));
+        UI.ServerMenus.PushToRynthAi = rynthAi;
+    }
+
     private static bool HasPluginDll(string dllFileName)
     {
         var paths = Plugins.EngineSettings.PluginPaths;
@@ -695,6 +781,8 @@ public static class EntryPoint
             Step("account hooks", AccountHooks.Initialize);
             Step("client combat hooks", () => ClientCombatHooks.Probe());
             Step("selected-target hooks", SelectedTargetHooks.Initialize);
+            // Which item AC is dragging (AC keeps the old selection during a drag).
+            Step("drag-start hook", DragDropHooks.Initialize);
             Step("smartbox hooks", SmartBoxHooks.Initialize);
             Step("player vitals hooks", PlayerVitalsHooks.Initialize);
             Step("enchantment hooks", () => EnchantmentHooks.Initialize());
@@ -993,10 +1081,16 @@ public static class EntryPoint
                     ImGuiBackend.Panels.VisionFace.Register();
                 if (HasPluginDll("RynthCore.Plugin.RynthNav.dll"))
                     ImGuiBackend.Panels.RynthNavFace.Register();
-                // The ILT section (Infinite Leaftide): its faces exist only with RynthILT
-                // installed, and the bar's ILT button shows them only on ILT (IltInfo).
+                // Characters (your other RynthCore clients, through RynthNet): only with RynthNet installed.
+                if (HasPluginDll("RynthCore.Plugin.RynthNet.dll"))
+                    ImGuiBackend.Panels.CharactersFace.Register();
+                // The ILT section (Infinite Leaftide): each face exists only with its plugin
+                // installed (Bounties: RynthILT, Guardian: RynthAi), and the bar's ILT button
+                // shows them only on ILT (IltInfo).
                 if (HasPluginDll("RynthCore.Plugin.RynthILT.dll"))
                     ImGuiBackend.Panels.BountiesFace.Register();
+                if (HasPluginDll("RynthCore.Plugin.RynthAi.dll"))
+                    ImGuiBackend.Panels.GuardianFace.Register();
                 if (HasPluginDll("RynthCore.Plugin.RynthChat.dll"))
                 {
                     ImGuiBackend.Panels.ChatFace.Register();
@@ -1021,6 +1115,7 @@ public static class EntryPoint
                     // RynthAiPanel: see the dispatcher invariant above ChatModel.EnsureSettingsLoaded.
                     RynthAiDashboardState.EnsureLoaded();
                 }
+                RegisterServerMenus(HasPluginDll("RynthCore.Plugin.RynthAi.dll"), HasPluginDll("RynthCore.Plugin.RynthILT.dll"));
                 if (trackerPresent)
                     TrackerSettings.EnsureLoaded();
                 // Hide the docked Avalonia bar before it is built if the ImGui bar stands in.
@@ -1686,8 +1781,32 @@ public static class EntryPoint
 
     internal static void LogVerbose(string message)
     {
-        if (VerboseLogging)
+        if (ShouldLog(EngineLogLevel.Debug))
             Log(message);
+    }
+
+    /// <summary>
+    /// True when a line at <paramref name="level"/> passes the global threshold. Off-level lines
+    /// never pass; an Off threshold blocks everything (errors bypass this gate).
+    /// </summary>
+    internal static bool ShouldLog(EngineLogLevel level)
+        => level != EngineLogLevel.Off && level <= LoggingLevel;
+
+    /// <summary>Parses the global level: Off, Error, Warning/Warn, Info, Debug/Verbose, Trace. Unknown → Info.</summary>
+    internal static EngineLogLevel ParseLoggingLevel(string? configuredLevel)
+    {
+        if (string.IsNullOrWhiteSpace(configuredLevel))
+            return EngineLogLevel.Info;
+
+        string normalized = configuredLevel.Trim();
+        if (string.Equals(normalized, "Verbose", StringComparison.OrdinalIgnoreCase))
+            return EngineLogLevel.Debug;
+        if (string.Equals(normalized, "Warn", StringComparison.OrdinalIgnoreCase))
+            return EngineLogLevel.Warning;
+
+        return Enum.TryParse(normalized, ignoreCase: true, out EngineLogLevel parsed) && Enum.IsDefined(parsed)
+            ? parsed
+            : EngineLogLevel.Info;
     }
 
     internal static string[] GetRecentLogLines()

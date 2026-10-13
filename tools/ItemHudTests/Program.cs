@@ -19,6 +19,7 @@ internal static class Program
         UnknownLinesKept();
         BadFileValues();
         EditsAreImmutable();
+        SlotSizes();
 
         Console.WriteLine(_failed == 0 ? $"PASS ({_checks} assertions)" : $"FAIL ({_failed} of {_checks} assertions)");
         return _failed == 0 ? 0 : 1;
@@ -199,5 +200,35 @@ internal static class Program
         Check(slots[0]?.Name == "Pyreal" && a.Slots.Length == ItemHudCharacter.DefaultSlots, "the old slots are unchanged");
         Check(b.Counts.Length == 2 && b.Slots[0] == null && b.Slots.Length == 12, "the new ones have the edits");
         Check(ItemHudCharacter.Empty.Counts.Length == 0 && ItemHudCharacter.Empty.Slots.All(s => s == null), "Empty stays empty");
+    }
+
+    /// <summary>The Mini Remote's box size: clamped, kept through edits, and saved only when not the default.</summary>
+    private static void SlotSizes()
+    {
+        Case("SlotSizes");
+        var c = ItemHudCharacter.Empty;
+        Check(c.SlotSize == ItemHudCharacter.DefaultSlotSize, "default size");
+        Check(ReferenceEquals(c.WithSlotSize(ItemHudCharacter.DefaultSlotSize), c), "the same size: no change");
+        Check(c.WithSlotSize(1).SlotSize == ItemHudCharacter.MinSlotSize, "clamped to the minimum");
+        Check(c.WithSlotSize(1000).SlotSize == ItemHudCharacter.MaxSlotSize, "clamped to the maximum");
+        var big = c.WithSlotSize(48);
+        var edited = big.WithCount("Mana Scarab", out _).WithSlot(0, new RemoteSlot(1, "Pyreal")).WithSlotCount(12);
+        Check(edited.SlotSize == 48, "other edits keep the size");
+
+        var file = new ItemHudFile.Contents();
+        file.Set("A/Big", big);
+        file.Set("A/Plain", c.WithCount("Healing Kit", out _));
+        string text = ItemHudFile.Write(file);
+        Check(text.Contains("slotsize=48\n"), "a non-default size is written");
+        Check(text.Split("slotsize=").Length == 2, "the default size isn't written");
+        var back = RoundTrip(file);
+        Check(back.For("A/Big").SlotSize == 48 && back.For("A/Plain").SlotSize == ItemHudCharacter.DefaultSlotSize,
+            "sizes read back per character");
+
+        string[] bad = { "[A/B]", "slotsize=banana", "[A/C]", "slotsize=5", "[A/D]", "slotsize=999" };
+        var parsed = ItemHudFile.Parse(bad);
+        Check(parsed.For("A/B").SlotSize == ItemHudCharacter.DefaultSlotSize, "an unreadable size keeps the default");
+        Check(parsed.For("A/C").SlotSize == ItemHudCharacter.MinSlotSize, "a small size clamps up");
+        Check(parsed.For("A/D").SlotSize == ItemHudCharacter.MaxSlotSize, "a large size clamps down");
     }
 }

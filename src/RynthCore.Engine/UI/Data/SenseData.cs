@@ -412,6 +412,7 @@ internal sealed class SenseSource : UiSource<SenseView>
 
     protected internal override void Poll()
     {
+        RynthNavAtlas.EnsureLoadedForNames();   // dungeon names for LocationText
         long now = Environment.TickCount64;
         bool gap = _lastPollMs == 0 || now - _lastPollMs > GapMs;
         _lastPollMs = now;
@@ -521,7 +522,7 @@ internal sealed class SenseSource : UiSource<SenseView>
                     row.CompassText = "here";
                 }
                 row.DistanceText = row.Distance.ToString("0", CultureInfo.InvariantCulture) + " yd";
-                row.LocationText = objOverworld ? coords : "LB " + lb.ToString("X4", CultureInfo.InvariantCulture);
+                row.LocationText = objOverworld ? coords : RynthNavAtlas.DungeonLabel(lb);
             }
             else
             {
@@ -530,7 +531,7 @@ internal sealed class SenseSource : UiSource<SenseView>
                 row.CompassText = "";
                 row.LocationText = objOverworld
                     ? coords + " (LB " + lb.ToString("X4", CultureInfo.InvariantCulture) + ")"
-                    : "dungeon LB " + lb.ToString("X4", CultureInfo.InvariantCulture);
+                    : RynthNavAtlas.DungeonName(lb) is { Length: > 0 } dn ? dn : "dungeon LB " + lb.ToString("X4", CultureInfo.InvariantCulture);
             }
 
             bool isNew;

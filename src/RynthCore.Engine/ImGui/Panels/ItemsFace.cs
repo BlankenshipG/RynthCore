@@ -54,6 +54,13 @@ internal sealed class ItemsFace : IImGuiPanel
         ImGuiNET.ImGui.BeginChild("##items_body", new Vector2(w, Math.Max(60, Remaining(origin, size))));
         float bw = ImGuiNET.ImGui.GetContentRegionAvail().X;
 
+        // Above the lists, which can run long: drops entries for items sold, dropped, used up or traded.
+        AddSelected("##clean_missing", PhosphorIcons.Eraser + " Remove Missing", "(weapons and consumables no longer in your inventory)", ItemsCommands.CleanMissing,
+            "Removes listed weapons and consumables that are no longer in your inventory.\n" +
+            "An entry whose item is gone but with an unlisted item of the same name in your pack\n" +
+            "(a new stack of kits, a replacement weapon) is pointed at that item instead.\n" +
+            "Does nothing while your inventory is still loading. Also: /ra items clean.");
+
         // Weapons
         Section("Weapons", bw);
         if (_data.Weapons.Count == 0) Empty("No weapons configured", bw);
@@ -242,11 +249,12 @@ internal sealed class ItemsFace : IImGuiPanel
         return result;
     }
 
-    private static void AddSelected(string id, string label, string hint, Action onClick)
+    private static void AddSelected(string id, string label, string hint, Action onClick, string? tooltip = null)
     {
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos() + new Vector2(4, 4);
         float bw = ButtonWidth(label) + 4;
         if (Button(id, label, p, new Vector2(bw, 24), Teal, BtnFill)) onClick();
+        if (tooltip != null) ImGuiNET.ImGui.SetItemTooltip(tooltip);
         ImFontPtr f9 = ImGuiFonts.Get(UiFont.Ui9);
         ImGuiNET.ImGui.GetWindowDrawList().AddText(f9, f9.FontSize, new Vector2(p.X + bw + 8, p.Y + (24 - f9.FontSize) * 0.5f), Mute, hint);
         NextLine(new Vector2(p.X - 4, p.Y - 4), 32);

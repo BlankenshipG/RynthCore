@@ -41,6 +41,11 @@ internal sealed class RynthAiSnapshot
     [JsonPropertyName("selectedLootIdx")] public int SelectedLootIdx { get; set; }
     [JsonPropertyName("selectedMetaIdx")] public int SelectedMetaIdx { get; set; }
     [JsonPropertyName("selectedProfileIdx")] public int SelectedProfileIdx { get; set; }
+    // Buff profiles (RynthAi 0.5.31+): "Built-in" first, then BuffProfiles\*.json. Older plugins
+    // send none, and the Buffs picker then shows "Built-in" with nothing to pick.
+    [JsonPropertyName("buffProfiles")]    public string[] BuffProfiles { get; set; } = Array.Empty<string>();
+    [JsonPropertyName("currentBuffName")] public string CurrentBuffName { get; set; } = string.Empty;
+    [JsonPropertyName("selectedBuffIdx")] public int SelectedBuffIdx { get; set; }
     [JsonPropertyName("combatEnabled")]     public bool CombatEnabled { get; set; }
     [JsonPropertyName("buffingEnabled")]    public bool BuffingEnabled { get; set; }
     [JsonPropertyName("navigationEnabled")] public bool NavigationEnabled { get; set; }
@@ -85,6 +90,8 @@ internal sealed class RynthAiView
     public required string NavText { get; init; }
     public required string LootText { get; init; }
     public required string MetaText { get; init; }
+    /// <summary>Buff profile buffing uses ("Built-in" without one).</summary>
+    public required string BuffText { get; init; }
     public required string TargetHeadline { get; init; }
     public required int TargetSegmentsLit { get; init; }
     public required bool ShowTargetSubBars { get; init; }
@@ -164,6 +171,7 @@ internal sealed unsafe class RynthAiSource : UiSource<RynthAiView>
             NavText = Truncate(s.CurrentNavName, 16),
             LootText = Truncate(s.CurrentLootName, 16),
             MetaText = Truncate(s.CurrentMetaName, 16),
+            BuffText = Truncate(string.IsNullOrWhiteSpace(s.CurrentBuffName) ? "Built-in" : s.CurrentBuffName, 16),
             TargetHeadline = Truncate(label, 32),
             TargetSegmentsLit = lit,
             ShowTargetSubBars = showSub,
@@ -265,6 +273,7 @@ internal static unsafe class RynthAiCommands
     private static delegate* unmanaged[Cdecl]<float, void> _adjustOpacity;
     private static delegate* unmanaged[Cdecl]<void> _togglePanelLock;
     private static delegate* unmanaged[Cdecl]<IntPtr, void> _sendNavCommand;
+    private static delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void> _applyRemoteCommand;
 
     static RynthAiCommands()
     {
@@ -272,6 +281,7 @@ internal static unsafe class RynthAiCommands
         {
             _toggleMacro = null; _setSubsystemEnabled = null; _selectProfile = null; _forceRebuff = null;
             _cancelForceRebuff = null; _adjustOpacity = null; _togglePanelLock = null; _sendNavCommand = null;
+            _applyRemoteCommand = null;
         };
     }
 
@@ -297,6 +307,27 @@ internal static unsafe class RynthAiCommands
     {
         if (_setSubsystemEnabled == null) _setSubsystemEnabled = (delegate* unmanaged[Cdecl]<int, int, void>)Export("RynthPluginSetSubsystemEnabled");
         if (_setSubsystemEnabled != null) _setSubsystemEnabled(id, on ? 1 : 0);
+    });
+
+    /// <summary>
+    /// Flips subsystem <paramref name="id"/> (0 Combat, 1 Buff, 2 Nav, 3 Loot, 4 Meta) from RynthAi's
+    /// state right now (a hotkey: the dashboard may be closed, so its snapshot is read fresh here).
+    /// </summary>
+    public static void ToggleSubsystem(int id) => Run("toggle subsystem", () =>
+    {
+        UiSources.RynthAi.Poll();   // pump thread, like the hub's own polls
+        RynthAiSnapshot? raw = UiSources.RynthAi.Current?.Value.Raw;
+        if (raw == null) return;
+        bool on = id switch
+        {
+            0 => raw.CombatEnabled,
+            1 => raw.BuffingEnabled,
+            2 => raw.NavigationEnabled,
+            3 => raw.LootingEnabled,
+            _ => raw.MetaEnabled,
+        };
+        if (_setSubsystemEnabled == null) _setSubsystemEnabled = (delegate* unmanaged[Cdecl]<int, int, void>)Export("RynthPluginSetSubsystemEnabled");
+        if (_setSubsystemEnabled != null) _setSubsystemEnabled(id, on ? 0 : 1);
     });
 
     /// <summary>kind: 0 nav, 1 loot, 2 meta, 3 profile.</summary>
@@ -340,6 +371,29 @@ internal static unsafe class RynthAiCommands
         finally { Marshal.FreeHGlobal(p); }
         if (refreshPatrol) UiSources.Patrol.RequestRefresh();
         UiSources.Nav.RequestRefresh();   // the plugin applied it: the Nav panels show it next poll
+    });
+
+    /// <summary>
+    /// RynthPluginApplyRemoteCommand(action, value) - the same (action, value) pairs as the
+    /// plugin's /ra chat commands ("huds","show"; "remote","toggle"; "hub","show" ...).
+    /// Older RynthAi builds without the export drop the command (logged once per bind miss).
+    /// </summary>
+    public static void ApplyRemoteCommand(string action, string value) => Run("remote command " + action, () =>
+    {
+        if (_applyRemoteCommand == null) _applyRemoteCommand = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void>)Export("RynthPluginApplyRemoteCommand");
+        if (_applyRemoteCommand == null)
+        {
+            RynthLog.UI($"RynthAiCommands: RynthPluginApplyRemoteCommand not exported; dropped '{action} {value}'.");
+            return;
+        }
+        IntPtr a = Marshal.StringToHGlobalAnsi(action);
+        IntPtr b = Marshal.StringToHGlobalAnsi(value);
+        try { _applyRemoteCommand(a, b); }
+        finally
+        {
+            Marshal.FreeHGlobal(a);
+            Marshal.FreeHGlobal(b);
+        }
     });
 }
 

@@ -102,10 +102,16 @@ internal static class HudFeed
         catch (Exception ex) { Log("delete", ex); }
     }
 
-    public static void OnDamageEvent(bool attacker, string? name, uint damage, bool crit)
+    /// <summary><paramref name="share"/>: the hit's damage / the monster's max health (AttackerNotification), 0 = unknown.</summary>
+    public static void OnDamageEvent(bool attacker, string? name, uint damage, bool crit, double share = 0)
     {
         if (!On) return;
-        try { CombatText.OnDamageEvent(attacker, name, damage, crit); }
+        try
+        {
+            CombatText.OnDamageEvent(attacker, name, damage, crit);
+            if (attacker && share > 0 && MonsterHudSettings.Enabled && !string.IsNullOrEmpty(name))
+                MonsterHud.NoteDealtHit(name, damage, share);
+        }
         catch (Exception ex) { Log("damage", ex); }
     }
 

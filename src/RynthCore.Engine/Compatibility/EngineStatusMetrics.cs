@@ -104,6 +104,15 @@ internal static class EngineStatusMetrics
         w.WriteNumber("queueDropped", queueDropped);
         w.WriteNumber("reconciles", reconciles);
         w.WriteNumber("forceClears", forceClears);
+        // AC's main thread frozen (message box or stale beat) and plugin ticks paused for it
+        // (MainThreadFreeze). pluginTicksPausedMs is a running total: a plugin's stall
+        // detector subtracts its change over the window it measured.
+        bool frozen = false; long stallMs = 0, pausedMs = 0;
+        try { frozen = MainThreadFreeze.Paused; stallMs = MainThreadFreeze.MainThreadStallMs; pausedMs = MainThreadFreeze.PausedTotalMs; }
+        catch { }
+        w.WriteBoolean("mainThreadFrozen", frozen);
+        w.WriteNumber("mainThreadStallMs", stallMs);
+        w.WriteNumber("pluginTicksPausedMs", pausedMs);
 
         // Player stats, read on the main thread by PrefetchPlayerStats and served here off-thread
         // (the plugin pump can't read these live). deaths all-time; rates/session = whole-session.

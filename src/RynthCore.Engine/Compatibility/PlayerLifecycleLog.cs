@@ -10,8 +10,14 @@
 //  teleport. With these lines a crash can be lined up with what the character
 //  was doing.
 //
+//  Also the world-transition gate (WorldTransitionState): while the player is dead,
+//  portaling, or settling after either or after a landblock jump, AcMainThreadQueue
+//  holds every queued game-mutating call instead of running it into a world AC is
+//  tearing down (a client died right after a death recall's landblock jump).
+//
 //  Sampled from GameTickHooks.UseTimeDetour on AC's main thread, before AC's
-//  tick, so the reads see a consistent world. Alloc-free except on an edge.
+//  tick and before the cast drain, so the reads see a consistent world and the gate
+//  knows about a death in the same tick. Alloc-free except on an edge.
 // ============================================================================
 
 using System;
@@ -21,20 +27,53 @@ namespace RynthCore.Engine.Compatibility;
 
 internal static class PlayerLifecycleLog
 {
-    private static bool _init;
+    // Main thread only (the UseTime sample and both main-thread drains).
+    private static readonly WorldTransitionState _state = new();
+    private static long _settleUntil;            // published copy for other threads
     private static volatile bool _portaling, _dead;
-    private static long _transitionUntil;
-    private const long TransitionSettleMs = 5_000;
+    private static long _portalEnteredAt, _diedAt;
 
     /// <summary>
-    /// Dead, in portal space, or within 5 s after either: AC is tearing down and
-    /// loading the world, so nothing should poke at its state (BusyCountHooks'
-    /// force-clear). As of the last game tick; any thread.
+    /// Dead, in portal space, or within 5 s after either or after a landblock jump: AC is
+    /// tearing down and loading the world, so nothing should poke at its state
+    /// (BusyCountHooks' force-clear). As of the last game tick; any thread.
     /// </summary>
     public static bool InWorldTransition =>
-        _dead || _portaling || Environment.TickCount64 < Interlocked.Read(ref _transitionUntil);
-    private static uint _landblock;
-    private static long _portalEnteredAt, _diedAt;
+        _dead || _portaling || Environment.TickCount64 < Interlocked.Read(ref _settleUntil);
+
+    /// <summary>
+    /// When the last settle window ends (TickCount64; 0 = no transition yet), as of the last
+    /// game tick; any thread. Moves only on a death, a portal, a teleport or a landblock jump,
+    /// never on a walk into the next landblock (AutoIdPolicy's post-transition defer).
+    /// </summary>
+    public static long SettleUntilMs => Interlocked.Read(ref _settleUntil);
+
+    /// <summary>
+    /// AC main thread only (the queue drains): true = hold everything queued now (see
+    /// WorldTransitionState for the rule).
+    /// </summary>
+    public static bool HoldQueuedWork(long nowMs)
+    {
+        bool hold = _state.CheckHolding(nowMs);
+        if (hold) Interlocked.Exchange(ref _lastBlockedPublished, nowMs);
+        return hold;
+    }
+
+    /// <summary>AC main thread only: what a drain does with one queued item (WorldTransitionState.Decide).</summary>
+    public static WorldTransitionState.Verdict DecideQueued(long nowMs, long queuedAtMs, bool teardown)
+    {
+        WorldTransitionState.Verdict v = _state.Decide(nowMs, queuedAtMs, teardown);
+        if (v == WorldTransitionState.Verdict.Hold) Interlocked.Exchange(ref _lastBlockedPublished, nowMs);
+        return v;
+    }
+
+    private static long _lastBlockedPublished;
+
+    /// <summary>
+    /// The last moment a drain was held by a world transition (0 = never), for other threads:
+    /// queued work from at or before it is dropped when the drains reach it.
+    /// </summary>
+    public static long LastBlockedMs => Interlocked.Read(ref _lastBlockedPublished);
 
     /// <summary>AC main thread, once per game tick.</summary>
     public static void SampleOnGameThread(bool portaling)
@@ -52,51 +91,44 @@ internal static class PlayerLifecycleLog
             cell = c;
         uint landblock = cell >> 16;
 
-        if (!_init)
-        {
-            _init = true;
-            _portaling = portaling;
-            _dead = dead;
-            _landblock = landblock;
-            return;
-        }
-
         long now = Environment.TickCount64;
-        if (dead || portaling || _dead || _portaling)
-            Interlocked.Exchange(ref _transitionUntil, now + TransitionSettleMs);
-        if (dead != _dead)
-        {
-            if (dead)
-            {
-                _diedAt = now;
-                RynthLog.Info($"[Lifecycle] player DIED (health 0/{maxHealth}) in landblock 0x{landblock:X4} (cell 0x{cell:X8}).");
-            }
-            else
-                RynthLog.Info($"[Lifecycle] player alive again (health {health}/{maxHealth}) {Ago(_diedAt, now)} after death, landblock 0x{landblock:X4}.");
-            _dead = dead;
-        }
+        WorldTransitionState.Edge edges = _state.Sample(now, dead, portaling, landblock);
+        _dead = _state.Dead;
+        _portaling = _state.Portaling;
+        Interlocked.Exchange(ref _settleUntil, _state.SettleUntilMs);
+        if (edges == WorldTransitionState.Edge.None)
+            return;
 
-        if (portaling != _portaling)
+        if ((edges & WorldTransitionState.Edge.Died) != 0)
         {
-            if (portaling)
-            {
-                _portalEnteredAt = now;
-                string why = _diedAt != 0 && now - _diedAt < 30_000 ? " (death portal)" : "";
-                RynthLog.Info($"[Lifecycle] portal space ENTERED{why} from landblock 0x{landblock:X4} (cell 0x{cell:X8}).");
-            }
-            else
-                RynthLog.Info($"[Lifecycle] portal space EXITED into landblock 0x{landblock:X4} (cell 0x{cell:X8}) after {Ago(_portalEnteredAt, now)}.");
-            _portaling = portaling;
+            _diedAt = now;
+            RynthLog.Info($"[Lifecycle] player DIED (health 0/{maxHealth}) in landblock 0x{landblock:X4} (cell 0x{cell:X8}).");
         }
+        if ((edges & WorldTransitionState.Edge.Revived) != 0)
+            RynthLog.Info($"[Lifecycle] player alive again (health {health}/{maxHealth}) {Ago(_diedAt, now)} after death, landblock 0x{landblock:X4}.");
+        if ((edges & WorldTransitionState.Edge.PortalEntered) != 0)
+        {
+            _portalEnteredAt = now;
+            string why = _diedAt != 0 && now - _diedAt < 30_000 ? " (death portal)" : "";
+            RynthLog.Info($"[Lifecycle] portal space ENTERED{why} from landblock 0x{landblock:X4} (cell 0x{cell:X8}).");
+        }
+        if ((edges & WorldTransitionState.Edge.PortalExited) != 0)
+            RynthLog.Info($"[Lifecycle] portal space EXITED into landblock 0x{landblock:X4} (cell 0x{cell:X8}) after {Ago(_portalEnteredAt, now)}.");
+        if ((edges & WorldTransitionState.Edge.LandblockJump) != 0)
+            RynthLog.Info($"[Lifecycle] landblock jump 0x{_state.PreviousLandblock:X4} -> 0x{landblock:X4}{(portaling ? " (in portal space)" : "")}; queued game actions held off for {WorldTransitionState.SettleMs / 1000} s.");
+    }
 
-        if (landblock != 0 && _landblock != 0 && landblock != _landblock)
-        {
-            int dx = (int)((landblock >> 8) & 0xFF) - (int)((_landblock >> 8) & 0xFF);
-            int dy = (int)(landblock & 0xFF) - (int)(_landblock & 0xFF);
-            if (Math.Abs(dx) > 1 || Math.Abs(dy) > 1)
-                RynthLog.Info($"[Lifecycle] landblock jump 0x{_landblock:X4} -> 0x{landblock:X4}{(portaling ? " (in portal space)" : "")}.");
-        }
-        if (landblock != 0) _landblock = landblock;
+    /// <summary>
+    /// AC main thread (SmartBoxHooks, after AC handled 0xF751 PlayerTeleport): a teleport starts
+    /// now. The settle window runs from here, published at once for the enqueue side.
+    /// </summary>
+    public static void OnTeleportMessage()
+    {
+        long now = Environment.TickCount64;
+        bool started = _state.OnTeleportMessage(now);
+        Interlocked.Exchange(ref _settleUntil, _state.SettleUntilMs);
+        if (started)
+            RynthLog.Info($"[Lifecycle] PlayerTeleport (0xF751) received in landblock 0x{_state.Landblock:X4}; queued game actions held off for {WorldTransitionState.SettleMs / 1000} s.");
     }
 
     private static string Ago(long since, long now) =>

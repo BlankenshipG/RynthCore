@@ -41,26 +41,40 @@ Name: desktopicon; Description: "Create a &desktop shortcut"; GroupDescription: 
 ; Program files
 [Files]
 ; Launcher + engine runtime + Loot Editor go to {app} (default C:\Games\RynthCore\)
-Source: "staging\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; overwritereadonly: a file left read-only on the player's PC is replaced without a question
+; (a /SILENT update can't answer one); the build clears ReadOnly on everything staged, and Setup
+; doesn't give installed files any attributes, so nothing lands read-only.
+Source: "staging\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs overwritereadonly
 
 ; Plugin DLL goes to its canonical home next to plugin data dirs.
 ; Engine does NOT auto-scan this folder — user adds the full DLL path in the
 ; launcher's Plugins tab to enable the plugin. See BUILD.md "Deploy RynthAi Plugin".
-Source: "staging\plugins\RynthAi\RynthCore.Plugin.RynthAi.dll"; DestDir: "C:\Games\RynthSuite\RynthAi"; Flags: ignoreversion
+Source: "staging\plugins\RynthAi\RynthCore.Plugin.RynthAi.dll"; DestDir: "C:\Games\RynthSuite\RynthAi"; Flags: ignoreversion overwritereadonly
 
 ; Data directories (created once; never removed on uninstall)
+;
+; Permissions: users-modify (2026-10-13). The game client never runs elevated, and RynthAi saves
+; metas, navs, loot and settings profiles in these folders. An "install for all users" (elevated)
+; Setup creates them as an administrator; on a PC whose C:\ permissions aren't Windows' defaults,
+; such folders are read-only for everyone else and RynthAi's saves failed. users-modify gives the
+; Users group Modify, inherited by everything inside, every time Setup runs (also on an update, so
+; it repairs older installs when that update runs elevated). A non-elevated Setup can only change
+; folders its user owns; where it can't, Setup logs "Failed to set permissions" and carries on
+; (not an error), and the launcher's Recovery Actions > Fix folder permissions does it instead.
 [Dirs]
-Name: "C:\Games\RynthSuite\RynthAi";                             Flags: uninsneveruninstall
-Name: "C:\Games\RynthSuite\RynthAi\NavProfiles";                 Flags: uninsneveruninstall
-Name: "C:\Games\RynthSuite\RynthAi\LootProfiles";                Flags: uninsneveruninstall
-Name: "C:\Games\RynthSuite\RynthAi\MetaFiles";                   Flags: uninsneveruninstall
-Name: "C:\Games\RynthSuite\RynthAi\MetaProfiles";                Flags: uninsneveruninstall
-Name: "C:\Games\RynthSuite\RynthAi\SettingsProfiles";            Flags: uninsneveruninstall
-Name: "C:\Games\RynthSuite\RynthAi\SettingsProfiles\ACEmulator"; Flags: uninsneveruninstall
-Name: "C:\Games\RynthSuite\RynthAi\LuaScripts";                  Flags: uninsneveruninstall
-Name: "C:\Games\RynthSuite\RynthAi\Logs";                        Flags: uninsneveruninstall
-Name: "C:\Games\RynthSuite\RynthAi\pvars";                       Flags: uninsneveruninstall
-Name: "C:\Games\RynthSuite\RynthAi\ItemGiver";                   Flags: uninsneveruninstall
+Name: "{app}";                                                   Permissions: users-modify
+Name: "C:\Games\RynthSuite";                                     Permissions: users-modify; Flags: uninsneveruninstall
+Name: "C:\Games\RynthSuite\RynthAi";                             Permissions: users-modify; Flags: uninsneveruninstall
+Name: "C:\Games\RynthSuite\RynthAi\NavProfiles";                 Permissions: users-modify; Flags: uninsneveruninstall
+Name: "C:\Games\RynthSuite\RynthAi\LootProfiles";                Permissions: users-modify; Flags: uninsneveruninstall
+Name: "C:\Games\RynthSuite\RynthAi\MetaFiles";                   Permissions: users-modify; Flags: uninsneveruninstall
+Name: "C:\Games\RynthSuite\RynthAi\MetaProfiles";                Permissions: users-modify; Flags: uninsneveruninstall
+Name: "C:\Games\RynthSuite\RynthAi\SettingsProfiles";            Permissions: users-modify; Flags: uninsneveruninstall
+Name: "C:\Games\RynthSuite\RynthAi\SettingsProfiles\ACEmulator"; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "C:\Games\RynthSuite\RynthAi\LuaScripts";                  Permissions: users-modify; Flags: uninsneveruninstall
+Name: "C:\Games\RynthSuite\RynthAi\Logs";                        Permissions: users-modify; Flags: uninsneveruninstall
+Name: "C:\Games\RynthSuite\RynthAi\pvars";                       Permissions: users-modify; Flags: uninsneveruninstall
+Name: "C:\Games\RynthSuite\RynthAi\ItemGiver";                   Permissions: users-modify; Flags: uninsneveruninstall
 
 ; Shortcuts
 [Icons]

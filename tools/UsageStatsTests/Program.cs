@@ -106,6 +106,18 @@ internal static class Program
         Make("hang_4_new.dmp", now.AddMinutes(-5));
         Check(UsageStats.CountCrashDumps(dumps, now.AddDays(-1), now) == 2, "only crash_*.dmp newer than the last report count (hangs don't)");
         Check(UsageStats.CountCrashDumps(Path.Combine(root, "nope"), now.AddDays(-1), now) == 0, "missing dump folder = 0");
+
+        // CoreCLR fatal-error dumps (the loader's clr_<pid>_<time>.dmp) land in the same folder and
+        // count; the OUT OF MEMORY dumps do not. A folder of its own: the report tests below
+        // count the dumps made above.
+        string clrDumps = Path.Combine(root, "clr-dumps");
+        Directory.CreateDirectory(clrDumps);
+        void MakeIn(string name, DateTime t) { string p = Path.Combine(clrDumps, name); File.WriteAllText(p, "x"); File.SetLastWriteTimeUtc(p, t); }
+        MakeIn("crash_5_new.dmp", now.AddMinutes(-4));
+        MakeIn("clr_100_1760138700.dmp", now.AddMinutes(-3));
+        MakeIn("clr_101_1759917600.dmp", now.AddDays(-2));
+        MakeIn("acclient_oom_102_20261010_181816.dmp", now.AddMinutes(-3));
+        Check(UsageStats.CountCrashDumps(clrDumps, now.AddDays(-1), now) == 2, "clr_*.dmp counts beside crash_*.dmp; old ones and OOM dumps don't");
     }
 
     private static void OptInOut(string root)

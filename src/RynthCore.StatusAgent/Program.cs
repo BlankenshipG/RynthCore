@@ -129,6 +129,10 @@ const int DebounceMs = 50;
 int fallbackMs = Math.Max(1, cfg.IntervalSeconds) * 1000;
 using var dirty = new SemaphoreSlim(0, 1);
 FileSystemWatcher? watcher = opts.Once ? null : TryArmStatusWatcher(cfg.StatusDirectory, dirty);
+// The cycle's summary line: logged when the clients or their states change, else every SummaryEveryMs.
+string _lastSummaryShape = "";
+long _lastSummaryMs = 0;
+const long SummaryEveryMs = 10 * 60_000;
 
 try
 {
@@ -188,7 +192,15 @@ async Task RunCycleAsync()
     // Serialize once; reuse the bytes for serve / file / POST.
     byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(payload, AgentJsonContext.Default.AggregatePayload);
 
-    AgentLog.Info(Summarize(clients));
+    // The summary only when who's there or their state changes, and every 10 minutes: logged every
+    // cycle (several a second; fps and plug numbers differ each time) it filled the disk (2026-10-12).
+    string shape = SummaryShape(clients);
+    if (shape != _lastSummaryShape || Environment.TickCount64 - _lastSummaryMs >= SummaryEveryMs)
+    {
+        _lastSummaryShape = shape;
+        _lastSummaryMs = Environment.TickCount64;
+        AgentLog.Info(Summarize(clients));
+    }
     if (opts.Verbose)
         AgentLog.Debug(System.Text.Encoding.UTF8.GetString(bytes));
 
@@ -238,6 +250,9 @@ static FileSystemWatcher? TryArmStatusWatcher(string statusDir, SemaphoreSlim si
         return null;
     }
 }
+
+static string SummaryShape(List<ClientStatus> clients) =>
+    string.Join("|", clients.Select(c => $"{c.Pid}:{c.Character}:{c.State}"));
 
 static string Summarize(List<ClientStatus> clients)
 {

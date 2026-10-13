@@ -63,7 +63,8 @@ internal static class MainThreadHangWatchdog
     internal static volatile string? CrashCause;
 
     // Stalls longer than this with no EndScene beat = main thread wedged.
-    private const long HangThresholdMs = 4000;
+    // Also the plugin pump's freeze gate (MainThreadFreeze): one signal for both.
+    internal const long HangThresholdMs = 4000;
     // Max stack samples to take during a single hang (1/sec). A permanent freeze
     // shows a stable eip across these = the true wedge; a transient stall logs
     // RECOVERED. Capped to keep the log readable.
@@ -81,6 +82,12 @@ internal static class MainThreadHangWatchdog
 
     /// <summary>Monotonic EndScene frame count since engine init.</summary>
     internal static int FrameCount => _frameCount;
+
+    /// <summary>True once the main thread has beaten (its id is known). Any thread.</summary>
+    internal static bool HasBeaten => _mainThreadId != 0;
+
+    /// <summary>Environment.TickCount64 of the last main-thread beat. Any thread.</summary>
+    internal static long LastBeatTick => Volatile.Read(ref _lastBeatTick);
 
     /// <summary>
     /// Called from EndSceneDetour on AC's main thread, every frame. Must be
@@ -155,6 +162,13 @@ internal static class MainThreadHangWatchdog
                 uint tid = _mainThreadId;
                 if (tid == 0) continue;                       // EndScene hasn't beaten yet
 
+                // The main thread is writing the OUT OF MEMORY full-memory dump (CrashDump,
+                // from MessageBoxHooks). Neither suspend it nor report the wedge yet: the
+                // launcher kills the client on "still hung after", which would cut the dump
+                // short. The hang is detected and reported as usual once the dump is done.
+                if (CrashDump.FullDumpInProgress)
+                    continue;
+
                 long lastBeat = Volatile.Read(ref _lastBeatTick);
                 long stale    = Environment.TickCount64 - lastBeat;
 
@@ -170,6 +184,12 @@ internal static class MainThreadHangWatchdog
                         // A modal dialog (AC's error MessageBox) holds the main thread: say which.
                         string? box = Compatibility.MessageBoxHooks.Describe();
                         if (box != null) RynthLog.Error($"  hang cause: {box}");
+                        // The plugin pump stuck in (or crashed inside) a plugin call: say which. A
+                        // native fault in a managed plugin's export is fatal and leaves only
+                        // "TickAll" in the event log; this line is written during the ~12 s the
+                        // crash dump takes (2026-10-13: RynthAi's Tick).
+                        string? pump = Plugins.PluginManager.DescribePumpDispatch();
+                        if (pump != null) RynthLog.Error($"  plugin pump: {pump}");
                         CrashCause = null;
                     }
 
@@ -228,6 +248,11 @@ internal static class MainThreadHangWatchdog
             if (!Plugins.EngineSettings.EnableHangMinidump)
             {
                 RynthLog.Info("  (hang minidump disabled via EngineSettings.EnableHangMinidump)");
+                return;
+            }
+            if (CrashDump.FullDumpWrittenPath is { } full)
+            {
+                RynthLog.Info($"  (hang minidump skipped: the full-memory dump {full} already covers this hang)");
                 return;
             }
             CrashDump.WriteSelfDump(

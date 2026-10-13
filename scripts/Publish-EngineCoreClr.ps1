@@ -80,13 +80,31 @@ if (-not $EngineOnly) {
     }
 
     $seh = "$repo\native\SehTrampoline\bin\RynthCore.SehTrampoline.dll"
+    $sehC = "$repo\native\SehTrampoline\SehTrampoline.c"
+    # bin\ is gitignored, so a checkout keeps whatever DLL was last built there. Until
+    # 2026-10-12 this shipped a June v1 build over every newer source (v4 was merged):
+    # its crash logger turned managed NullReferenceExceptions into fatal CLR errors and
+    # the Client::UseTime guard stayed off. Same staleness rule as Deploy-RynthCore.ps1.
+    if ((Test-Path $seh) -and (Test-Path $sehC) -and
+        (Get-Item $sehC).LastWriteTime -gt (Get-Item $seh).LastWriteTime) {
+        throw "RynthCore.SehTrampoline.dll is STALE (SehTrampoline.c is newer). Rebuild with native\SehTrampoline\Build-SehTrampoline.ps1 -NoDeploy, then re-run."
+    }
     if (-not (Test-Path $seh)) { $seh = "C:\Games\RynthCore\Runtime\RynthCore.SehTrampoline.dll" }
     $sehDest = Join-Path (Resolve-Path $Target).Path "RynthCore.SehTrampoline.dll"
     $sameSeh = (Test-Path $sehDest) -and ((Resolve-Path $seh).Path -eq $sehDest -or
         (Get-FileHash $seh).Hash -eq (Get-FileHash $sehDest).Hash)
     if (-not $sameSeh) {
+        # Same move-aside as the loader and shim: a locked copy would otherwise keep every
+        # new launch on the old trampoline until all clients close.
         try { Copy-Item $seh $sehDest -Force -ErrorAction Stop }
-        catch { Write-Warning "RynthCore.SehTrampoline.dll changed but is in use by a running client; it gets the new one when it restarts." }
+        catch {
+            try {
+                Rename-Item $sehDest ("RynthCore.SehTrampoline.dll.old-{0:yyyyMMddHHmmss}" -f (Get-Date)) -ErrorAction Stop
+                Copy-Item $seh $sehDest -Force -ErrorAction Stop
+                Write-Host "RynthCore.SehTrampoline.dll was in use: moved the old one aside; new launches get the new one."
+            }
+            catch { Write-Warning "RynthCore.SehTrampoline.dll changed but is in use by a running client; it gets the new one when it restarts." }
+        }
     }
 
     # App-local runtime: the win-x86 runtime pack the SDK restores (same version the engine was built against).

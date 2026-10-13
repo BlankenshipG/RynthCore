@@ -165,6 +165,13 @@ public struct RynthCoreApiNative
     // v80: real slot order of a container's items, and moves that land at a slot
     public IntPtr GetContainerOrderFn;       // int GetContainerOrder(uint container, int slotKind, uint* ids, int max) -> count, -1 unknown
     public IntPtr PutItemInContainerFn;      // int PutItemInContainer(uint item, uint container, int placement) -> 1 sent, 0 refused, -1 unbound
+    // v81: outcome of the latest merge-stack request (cdecl thunk); was v77 on QOL-items, v80 on sk
+    public IntPtr GetMergeStackResultFn;     // int GetMergeStackResult(uint src, uint tgt, int* amount, int* ageMs)
+    // v82: salvage without the salvage panel (the 0x027D game action, AC's own sender)
+    public IntPtr SalvageDirectFn;           // int SalvageDirect(uint tool, uint* ids, int count) -> count sent, 0 refused, -1 unbound
+    // v83: ghost creatures (objects the client draws but the server no longer has for this player)
+    public IntPtr GetObjectServerAgeFn;      // int GetObjectServerAge(uint id) -> ms since the server's last message about it, -1 none
+    public IntPtr RemoveClientObjectFn;      // int RemoveClientObject(uint id) -> 1 removed, 2 queued, 0 refused, -1 unbound
 }
 
 /// <summary>

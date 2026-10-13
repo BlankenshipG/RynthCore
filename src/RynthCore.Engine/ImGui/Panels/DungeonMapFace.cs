@@ -23,6 +23,28 @@
 //  Settings are the engine's (dungeon_map_settings.txt beside radar_settings.txt),
 //  not RynthAi's per-character Map* fields. Zoom, pan and floor picks last for the
 //  session, as they did.
+//
+//  RynthAi's nav route (2026-10-12; UiSources.Nav, subscribed only while the map is
+//  open and its Route box is on): legs between the points (closed for Circular,
+//  dashed after a Recall / Portal step, which jumps), points as dots and the other
+//  step types as icon badges, the next waypoint ringed, numbers when zoomed in, a
+//  tooltip on hover. A point's floor is the layer nearest its Z (nav Z * 240); points
+//  on floors the map isn't showing are hidden, on shown other floors dimmed, like the
+//  walls. Points outside this dungeon's floor area aren't drawn.
+//
+//  "Edit route" (off by default; needs RynthAi with MapEdit >= 1):
+//    - click (no drag) on a floor: add a point there (after the selected point, else
+//      at the end; Z from that floor: the player's floor first, then the other shown
+//      floors nearest it). Off every shown floor: refused with a status line;
+//    - click a point: select / deselect it; Esc deselects;
+//    - drag a point: move it (it follows the cursor; one move on release; Esc or
+//      right-click cancels; a drop off every floor leaves it where it was);
+//    - drag empty space: pans as always; the wheel zooms;
+//    - right-click a point: Delete / Insert after / Set as next target.
+//  Every edit is a RynthAi nav command (addPointAt, movePointTo, deletePoint,
+//  setActive); the route file stays RynthAi's and the map shows the next poll.
+//  Coordinates: DungeonMapMath (screen <-> world through pan and rotation, world <->
+//  nav).
 // ============================================================================
 
 using System;
@@ -44,7 +66,7 @@ internal sealed class DungeonMapFace : IImGuiPanel
     {
         DungeonMapSettingsStore.Load(); // engine init thread: the file read stays off AC's thread
         ImGuiPanelHost.Register(Title,
-            new PanelSpec(new Vector2(480, 520), new Vector2(240, 200), Background: 0, EdgeToEdge: true),
+            new PanelSpec(new Vector2(480, 520), new Vector2(240, 200), Background: 0, EdgeToEdge: true, OpenCentered: true),
             () => new DungeonMapFace());
     }
 
@@ -57,6 +79,10 @@ internal sealed class DungeonMapFace : IImGuiPanel
         CreatureLabel = C(0xFFFFE6E6), Hint = C(0xFF8FA3B8), ButtonBg = C(0xC0141F29), ButtonBorder = C(0xFF34587A),
         FloorOn = C(0xFF2673B3), FloorHere = C(0xFF1AA64D);
     private const uint FillFlat = 0x662E8C38, FillUp = 0x668C1F14, FillDown = 0x661A8026, FillVisited = 0xB84D6B94;
+    // Route (ARGB, alpha scaled per floor).
+    private const uint RouteLegArgb = 0xD9FFA733, RoutePointArgb = 0xFFFFC266, RouteActiveArgb = 0xFFFFF04D,
+        RouteSelectedArgb = 0xFFFFFFFF, RouteBadgeBgArgb = 0xE00A121F, RouteNumberArgb = 0xFFFFE6B3,
+        RouteBadArgb = 0xFFFF4D4D, StatusArgb = 0xFFFFD27A;
     private static uint C(uint argb) => RynthTheme.Argb(argb);
 
     /// <summary>ARGB colour with its alpha scaled, as an ImGui colour.</summary>
@@ -76,6 +102,37 @@ internal sealed class DungeonMapFace : IImGuiPanel
     private uint _landblock;
     private int[] _drawOrder = Array.Empty<int>();
 
+    // ── Route state (per open) ───────────────────────────────────────────
+    private const float NumberZoom = 6f;      // point numbers from this zoom up
+    private const float PickRadius = 8f;      // px: a press this close to a point grabs it
+    private const long StatusMs = 4000;
+    private bool _navSubscribed;
+    private bool _editRoute;
+    private int _selected = -1;               // route index the next added point goes after
+    private int _hoverPt = -1;
+    private readonly List<(int Idx, Vector2 At)> _drawn = new();   // this frame's drawn points, for picking
+    private Vector2[] _ptScreen = Array.Empty<Vector2>();
+    private float[] _ptAlpha = Array.Empty<float>();
+    private int[] _ptLayer = Array.Empty<int>();
+    private bool _pressing;                   // left button went down on the canvas
+    private int _pressPt = -1;                // the point under that press (Edit route)
+    private bool _pressMoved;                 // the press turned into a drag
+    private int _dragPt = -1;                 // the point being dragged
+    private Vector2 _dragWorld;
+    private bool _dragOnFloor;
+    private int _pendingMoveIdx = -1;         // a sent move, drawn there until the route updates
+    private Vector2 _pendingMoveWorld;
+    private object? _pendingMoveFrom;
+    private long _pendingMoveUntil;
+    private bool _openPtMenu;
+    private int _menuPt = -1;
+    private string _status = string.Empty;
+    private long _statusUntil;
+    private object? _boundsFor;
+    private bool _haveBounds;
+    private Vector4 _bounds;
+    private int[] _layerOrder = new int[16];
+
     public int PopOutIdleHz => 20;   // markers move
 
     public bool HiddenWhileDocked
@@ -94,22 +151,42 @@ internal sealed class DungeonMapFace : IImGuiPanel
         UiSources.Radar.RequestRefresh();
     }
 
-    public void OnHidden() => UiSources.Radar.Unsubscribe();
+    public void OnHidden()
+    {
+        UiSources.Radar.Unsubscribe();
+        SyncNavSubscription(false);
+        CancelPress();
+    }
+
+    /// <summary>The route source is polled only while the map is open with Route on.</summary>
+    private void SyncNavSubscription(bool want)
+    {
+        if (want == _navSubscribed) return;
+        _navSubscribed = want;
+        if (want)
+        {
+            UiSources.Nav.Subscribe();
+            UiSources.Nav.RequestRefresh();
+        }
+        else UiSources.Nav.Unsubscribe();
+    }
 
     public void Draw()
     {
+        SyncNavSubscription(DungeonMapSettingsStore.ShowRoute);
         Vector2 origin = ImGuiNET.ImGui.GetCursorScreenPos();
         Vector2 size = ImGuiNET.ImGui.GetContentRegionAvail();
         if (size.X < 16 || size.Y < 16) return;
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         RadarView? view = UiSources.Radar.Current?.Value;
+        NavPayload? nav = DungeonMapSettingsStore.ShowRoute ? UiSources.Nav.Current?.Value : null;
 
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
         try
         {
-            if (view == null) { Message(dl, origin, size, "Waiting for map data from RynthAi..."); return; }
+            if (view == null) { CancelPress(); Message(dl, origin, size, "Waiting for map data from RynthAi..."); return; }
             RadarSnapshot live = view.Live;
-            if (!live.IsIndoor) { Message(dl, origin, size, "Outdoors: the map shows while you're in a dungeon."); return; }
+            if (!live.IsIndoor) { CancelPress(); Message(dl, origin, size, "Outdoors: the map shows while you're in a dungeon."); return; }
 
             int layers = live.LayerZs.Count;
             TrackLayers(view, live.Player.Landblock, layers);
@@ -132,6 +209,9 @@ internal sealed class DungeonMapFace : IImGuiPanel
             if (_follow) _pan = Vector2.Zero;
             Vector2 centre = (canvasMin + canvasMax) * 0.5f + _pan;
 
+            DungeonMapProjection? proj = null;
+            bool routeDrawn = false;
+            _drawn.Clear();
             if (layers == 0)
                 DrawCentredText(dl, (canvasMin + canvasMax) * 0.5f, Hint,
                     $"Loading dungeon geometry for {live.Player.Landblock:X4}...");
@@ -140,11 +220,15 @@ internal sealed class DungeonMapFace : IImGuiPanel
                 ImDrawListFlags saved = dl.Flags;
                 dl.Flags = saved & ~(ImDrawListFlags.AntiAliasedLines | ImDrawListFlags.AntiAliasedLinesUseTex | ImDrawListFlags.AntiAliasedFill);
                 dl.PushClipRect(canvasMin, canvasMax, true);
-                var proj = new Projection(centre, live.Player, DungeonMapSettingsStore.RotateWithPlayer, _zoom);
-                DrawFloors(dl, view, proj, canvasMin, canvasMax);
+                var p = new DungeonMapProjection(centre, live.Player.WorldX, live.Player.WorldY, live.Player.Heading,
+                    DungeonMapSettingsStore.RotateWithPlayer, _zoom);
+                proj = p;
+                DrawFloors(dl, view, p, canvasMin, canvasMax);
                 dl.Flags = saved;
-                DrawMarkers(dl, live, proj, canvasMin, canvasMax);
-                DrawPlayer(dl, centre, proj);
+                if (nav != null) routeDrawn = DrawRoute(dl, view, nav, p, canvasMin, canvasMax);
+                DrawMarkers(dl, live, p, canvasMin, canvasMax);
+                DrawPlayer(dl, centre, p);
+                DrawRouteStatus(dl, canvasMin, canvasMax, nav, routeDrawn);
                 dl.PopClipRect();
             }
 
@@ -159,7 +243,8 @@ internal sealed class DungeonMapFace : IImGuiPanel
                 ImGuiNET.ImGui.SetItemTooltip("Show the map settings");
             }
 
-            CanvasInput(canvasMin, canvasMax);
+            CanvasInput(canvasMin, canvasMax, view, nav, proj);
+            DrawPointMenu(nav);
         }
         finally
         {
@@ -195,7 +280,7 @@ internal sealed class DungeonMapFace : IImGuiPanel
         if (_autoLayer < layers - 1) _visible.Add(_autoLayer + 1);
     }
 
-    private void DrawFloors(ImDrawListPtr dl, RadarView view, in Projection proj, Vector2 clipMin, Vector2 clipMax)
+    private void DrawFloors(ImDrawListPtr dl, RadarView view, in DungeonMapProjection proj, Vector2 clipMin, Vector2 clipMax)
     {
         int layers = view.Live.LayerZs.Count;
         int cur = view.CurrentLayer;
@@ -248,7 +333,7 @@ internal sealed class DungeonMapFace : IImGuiPanel
         }
     }
 
-    private static void FillRect(ImDrawListPtr dl, in Projection proj, float x0, float y0, float x1, float y1,
+    private static void FillRect(ImDrawListPtr dl, in DungeonMapProjection proj, float x0, float y0, float x1, float y1,
         uint col, Vector2 clipMin, Vector2 clipMax)
     {
         Vector2 p00 = proj.P(x0, y0), p11 = proj.P(x1, y1);
@@ -273,14 +358,15 @@ internal sealed class DungeonMapFace : IImGuiPanel
 
     // ── Markers and player ────────────────────────────────────────────────
 
-    private static void DrawMarkers(ImDrawListPtr dl, RadarSnapshot live, in Projection proj, Vector2 clipMin, Vector2 clipMax)
+    private static void DrawMarkers(ImDrawListPtr dl, RadarSnapshot live, in DungeonMapProjection proj, Vector2 clipMin, Vector2 clipMax)
     {
         const float Margin = 20f;
-        bool doors = DungeonMapSettingsStore.ShowDoors, creatures = DungeonMapSettingsStore.ShowCreatures;
+        bool doors = DungeonMapSettingsStore.ShowDoors, creatures = DungeonMapSettingsStore.ShowCreatures,
+            corpses = DungeonMapSettingsStore.ShowCorpses;
         RadarMarkerStyle.FillColors(KindCols);
         foreach (RadarMarker m in live.Markers)
         {
-            if (!ShowOnMap(m.Kind, doors, creatures)) continue;
+            if (!ShowOnMap(m.Kind, doors, creatures, corpses)) continue;
             Vector2 p = proj.P(m.X, m.Y);
             if (p.X < clipMin.X - Margin || p.X > clipMax.X + Margin || p.Y < clipMin.Y - Margin || p.Y > clipMax.Y + Margin) continue;
             switch (m.Kind)
@@ -322,15 +408,17 @@ internal sealed class DungeonMapFace : IImGuiPanel
     /// Portals always; doors with the map's Doors box; monsters and NPCs with its Creatures box.
     /// The kinds added 2026-10-04 also follow the radar's show box for that kind (so items on the
     /// ground stay off unless turned on there): players, fellows, pets and vendors with Creatures,
-    /// corpses, lifestones and ground items on the radar's box alone. Unknown kinds: hidden.
+    /// corpses (both kinds) with the map's Corpses box too (2026-10-12: off hides them here whatever
+    /// the radar says), lifestones and ground items on the radar's box alone. Unknown kinds: hidden.
     /// </summary>
-    private static bool ShowOnMap(byte kind, bool doors, bool creatures) => kind switch
+    private static bool ShowOnMap(byte kind, bool doors, bool creatures, bool corpses) => kind switch
     {
         RadarKind.Portal => true,
         RadarKind.Door => doors,
         RadarKind.Monster or RadarKind.Npc => creatures,
         RadarKind.Player or RadarKind.Fellow or RadarKind.Pet or RadarKind.Vendor =>
             creatures && UI.Panels.RadarSettingsStore.ShowKind(kind),
+        RadarKind.Corpse or RadarKind.OwnCorpse => corpses && UI.Panels.RadarSettingsStore.ShowKind(kind),
         _ => UI.Panels.RadarSettingsStore.ShowKind(kind),
     };
 
@@ -341,7 +429,7 @@ internal sealed class DungeonMapFace : IImGuiPanel
         dl.AddText(pos, col, text);
     }
 
-    private static void DrawPlayer(ImDrawListPtr dl, Vector2 at, in Projection proj)
+    private static void DrawPlayer(ImDrawListPtr dl, Vector2 at, in DungeonMapProjection proj)
     {
         dl.AddCircleFilled(at, 4f, PlayerCol, 10);
         // Rotating: facing is always up. North-up: AC heading 0 = east, 90 = north.
@@ -349,56 +437,472 @@ internal sealed class DungeonMapFace : IImGuiPanel
         dl.AddLine(at, tip, PlayerCol, 1.5f);
     }
 
-    /// <summary>World (AC x east, y north) to screen around the player, north-up or rotated so facing is up.</summary>
-    private readonly struct Projection
+    // ── Route ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Draws the route's legs and points over the floors. Fills <see cref="_drawn"/> with the
+    /// points drawn (for hover and clicks). Returns true when at least one point was drawn.
+    /// </summary>
+    private bool DrawRoute(ImDrawListPtr dl, RadarView view, NavPayload nav, in DungeonMapProjection proj, Vector2 clipMin, Vector2 clipMax)
     {
-        private readonly float _cx, _cy, _pwx, _pwy, _sin, _cos, _zoom;
-        public readonly bool Rotated;
-
-        public Projection(Vector2 playerAt, RadarPlayer p, bool rotate, float zoom)
+        List<NavPoint> pts = nav.Points;
+        int n = pts.Count;
+        if (n == 0) return false;
+        if (_ptScreen.Length < n)
         {
-            _cx = playerAt.X; _cy = playerAt.Y; _pwx = p.WorldX; _pwy = p.WorldY;
-            float h = p.Heading * MathF.PI / 180f;
-            _sin = MathF.Sin(h); _cos = MathF.Cos(h);
-            Rotated = rotate; _zoom = zoom;
+            int cap = Math.Max(n, _ptScreen.Length * 2);
+            _ptScreen = new Vector2[cap];
+            _ptAlpha = new float[cap];
+            _ptLayer = new int[cap];
         }
+        UpdateBounds(view);
+        List<float> layerZs = view.Live.LayerZs;
+        int cur = view.CurrentLayer;
+        bool pending = _pendingMoveIdx >= 0 && ReferenceEquals(nav, _pendingMoveFrom) && Environment.TickCount64 < _pendingMoveUntil;
+        if (!pending) _pendingMoveIdx = -1;
+        const float BoundsMargin = 24f;
 
-        public float Sin => _sin;
-        public float Cos => _cos;
-
-        public Vector2 P(float wx, float wy)
+        // Where each point is and how strongly it's drawn (0 = not at all).
+        for (int i = 0; i < n; i++)
         {
-            float dx = wx - _pwx, dy = wy - _pwy;
-            if (Rotated)
+            NavPoint p = pts[i];
+            Vector2 w;
+            bool dragged = i == _dragPt && _pressMoved;
+            if (dragged) w = _dragWorld;
+            else if (pending && i == _pendingMoveIdx) w = _pendingMoveWorld;
+            else w = DungeonMapMath.NavToWorld(p.NS, p.EW);
+            _ptScreen[i] = proj.P(w.X, w.Y);
+
+            float a = 0f;
+            int layer = -1;
+            bool inside = _haveBounds && w.X >= _bounds.X - BoundsMargin && w.X <= _bounds.Z + BoundsMargin
+                && w.Y >= _bounds.Y - BoundsMargin && w.Y <= _bounds.W + BoundsMargin;
+            if (inside)
             {
-                float right = _sin * dx - _cos * dy;
-                float forward = _cos * dx + _sin * dy;
-                return new Vector2(_cx + right * _zoom, _cy - forward * _zoom);
+                layer = DungeonMapMath.NearestLayer(layerZs, DungeonMapMath.NavZToWorld(p.Z));
+                if (layer >= 0 && _visible.Contains(layer)) a = layer == cur ? 1f : DimOtherFloors;
             }
-            return new Vector2(_cx + dx * _zoom, _cy - dy * _zoom);
+            if (dragged) a = 1f;
+            _ptAlpha[i] = a;
+            _ptLayer[i] = layer;
         }
+
+        // Legs: point to point, back to the start on a Circular route.
+        bool closed = nav.RouteType == 1 && n > 2;
+        int legs = closed ? n : n - 1;
+        for (int k = 0; k < legs; k++)
+        {
+            int ia = k, ib = (k + 1) % n;
+            float a = MathF.Min(_ptAlpha[ia], _ptAlpha[ib]);
+            if (a <= 0f) continue;
+            Vector2 pa = _ptScreen[ia], pb = _ptScreen[ib];
+            if (MathF.Max(pa.X, pb.X) < clipMin.X || MathF.Min(pa.X, pb.X) > clipMax.X ||
+                MathF.Max(pa.Y, pb.Y) < clipMin.Y || MathF.Min(pa.Y, pb.Y) > clipMax.Y) continue;
+            uint col = MulAlpha(RouteLegArgb, a);
+            float thick = ib == nav.ActiveNavIndex ? 2.5f : 1.5f;
+            if (IsJumpStep(pts[ia].Type)) DashedLine(dl, pa, pb, col, thick);   // a recall / portal: no walk
+            else dl.AddLine(pa, pb, col, thick);
+            LegArrow(dl, pa, pb, col);
+        }
+
+        // Points, the dragged one last (on top).
+        ImFontPtr font = ImGuiNET.ImGui.GetFont();
+        bool numbers = _zoom >= NumberZoom;
+        int drawnCount = 0;
+        for (int pass = 0; pass < 2; pass++)
+        {
+            for (int i = 0; i < n; i++)
+            {
+                bool top = i == _dragPt && _pressMoved;
+                if ((pass == 1) != top) continue;
+                float a = _ptAlpha[i];
+                if (a <= 0f) continue;
+                Vector2 at = _ptScreen[i];
+                if (at.X < clipMin.X - 12 || at.X > clipMax.X + 12 || at.Y < clipMin.Y - 12 || at.Y > clipMax.Y + 12) continue;
+                DrawRoutePoint(dl, font, pts[i].Type, at, a, i == nav.ActiveNavIndex, i == _selected, i == _hoverPt);
+                if (top && !_dragOnFloor) dl.AddCircle(at, 9f, RynthTheme.Argb(RouteBadArgb), 16, 2f);
+                if (numbers) dl.AddText(at + new Vector2(7, -15), MulAlpha(RouteNumberArgb, a), NumberLabel(i));
+                _drawn.Add((i, at));
+                drawnCount++;
+            }
+        }
+        return drawnCount > 0;
+    }
+
+    /// <summary>A Recall or Portal step: the leg after it is a jump, not a walk (drawn dashed).</summary>
+    private static bool IsJumpStep(string type) => type is "Recall" or "PortalNPC";
+
+    private static void DrawRoutePoint(ImDrawListPtr dl, ImFontPtr font, string type, Vector2 at, float a,
+        bool active, bool selected, bool hovered)
+    {
+        if (active) dl.AddCircle(at, 9.5f, MulAlpha(RouteActiveArgb, a), 18, 2f);
+        if (selected) dl.AddCircle(at, 12.5f, MulAlpha(RouteSelectedArgb, a), 20, 1.5f);
+        string? glyph = TypeGlyph(type);
+        if (glyph == null)
+        {
+            // Point / Checkpoint (walked to).
+            dl.AddCircleFilled(at, hovered ? 4.5f : 3.5f, MulAlpha(RoutePointArgb, a), 10);
+            if (type == "Checkpoint") dl.AddCircle(at, 6f, MulAlpha(RoutePointArgb, a), 12, 1.2f);
+            return;
+        }
+        const float r = 7f;
+        uint col = MulAlpha(TypeColour(type), a);
+        dl.AddCircleFilled(at, hovered ? r + 1 : r, MulAlpha(RouteBadgeBgArgb, a), 14);
+        dl.AddCircle(at, hovered ? r + 1 : r, col, 14, 1.3f);
+        PhosphorIcons.DrawCentered(dl, font, 10f, glyph, at - new Vector2(r, r), new Vector2(2 * r, 2 * r), col);
+    }
+
+    /// <summary>The badge icon for a step type that isn't simply walked to (RynthAi's NavPointType names).</summary>
+    private static string? TypeGlyph(string type) => type switch
+    {
+        "Point" or "Checkpoint" or "" => null,
+        "Recall" => PhosphorIcons.ArrowCounterClockwise,
+        "Pause" => PhosphorIcons.HourglassMedium,
+        "Chat" => PhosphorIcons.ChatCircleText,
+        "PortalNPC" => PhosphorIcons.Spiral,
+        "Npc" => PhosphorIcons.User,
+        "OpenVendor" => PhosphorIcons.Storefront,
+        "Jump" => PhosphorIcons.ArrowCircleUp,
+        _ => PhosphorIcons.Info,
+    };
+
+    private static uint TypeColour(string type) => type switch
+    {
+        "Recall" => 0xFF8CB3FF,
+        "Pause" => 0xFFE6E6E6,
+        "Chat" => 0xFF8CFFB3,
+        "PortalNPC" => 0xFFE673FF,
+        "Npc" => 0xFFFFD933,
+        "OpenVendor" => 0xFFFFB366,
+        "Jump" => 0xFF66E6FF,
+        _ => 0xFFB0B0B0,
+    };
+
+    /// <summary>"Portal" for PortalNPC and so on, for the tooltip.</summary>
+    private static string TypeName(string type) => type switch
+    {
+        "PortalNPC" => "Portal",
+        "Npc" => "NPC",
+        "OpenVendor" => "Vendor",
+        "" => "Point",
+        _ => type,
+    };
+
+    private static void DashedLine(ImDrawListPtr dl, Vector2 a, Vector2 b, uint col, float thick)
+    {
+        float len = Vector2.Distance(a, b);
+        if (len < 1f) return;
+        if (len > 4000f) { dl.AddLine(a, b, col, thick); return; }
+        Vector2 d = (b - a) / len;
+        const float On = 5f, Off = 4f;
+        for (float t = 0; t < len; t += On + Off)
+            dl.AddLine(a + d * t, a + d * MathF.Min(t + On, len), col, thick);
+    }
+
+    /// <summary>A small arrowhead at the middle of a leg that's long enough, pointing the way the route goes.</summary>
+    private static void LegArrow(ImDrawListPtr dl, Vector2 a, Vector2 b, uint col)
+    {
+        float len = Vector2.Distance(a, b);
+        if (len < 48f || len > 8000f) return;
+        Vector2 d = (b - a) / len, nrm = new(-d.Y, d.X);
+        Vector2 tip = (a + b) * 0.5f + d * 4f;
+        dl.AddTriangleFilled(tip, tip - d * 7f + nrm * 4f, tip - d * 7f - nrm * 4f, col);
+    }
+
+    private static readonly List<string> NumberLabels = new();
+
+    private static string NumberLabel(int i)
+    {
+        while (NumberLabels.Count <= i) NumberLabels.Add(NumberLabels.Count.ToString(CultureInfo.InvariantCulture));
+        return NumberLabels[i];
+    }
+
+    /// <summary>The floors' bounding box (cached per geometry): route points outside it aren't in this dungeon.</summary>
+    private void UpdateBounds(RadarView view)
+    {
+        if (ReferenceEquals(_boundsFor, view.Fills)) return;
+        _boundsFor = view.Fills;
+        _haveBounds = DungeonMapMath.FillBounds(view.FillsByLayer, out _bounds);
+    }
+
+    /// <summary>The floor (layer index) under a world spot, among the floors shown: the player's first.</summary>
+    private int FloorUnder(RadarView view, Vector2 world)
+    {
+        int layers = view.Live.LayerZs.Count;
+        if (_layerOrder.Length < layers) _layerOrder = new int[layers];
+        int n = DungeonMapMath.LayerOrder(view.CurrentLayer, _visible, layers, _layerOrder);
+        return DungeonMapMath.FloorAt(world.X, world.Y, view.FillsByLayer, _layerOrder.AsSpan(0, n));
+    }
+
+    /// <summary>Status line (bottom left of the canvas): the last edit's result, and in Edit route the controls.</summary>
+    private void DrawRouteStatus(ImDrawListPtr dl, Vector2 canvasMin, Vector2 canvasMax, NavPayload? nav, bool routeDrawn)
+    {
+        float y = canvasMax.Y - 18f;
+        float x = canvasMin.X + 6f;
+        if (_editRoute)
+        {
+            string hint = _selected >= 0
+                ? $"Edit route: click a floor to add after {_selected} | drag a point to move | right-click a point | Esc deselects"
+                : "Edit route: click a floor to add at the end | click a point to select | drag to move | right-click a point";
+            dl.AddText(new Vector2(x, y), Hint, hint);
+            y -= 16f;
+        }
+        else if (DungeonMapSettingsStore.ShowRoute && nav != null && nav.Points.Count > 0 && !routeDrawn)
+        {
+            dl.AddText(new Vector2(x, y), Hint, $"Route ({nav.Points.Count} points): none on the floors shown");
+            y -= 16f;
+        }
+        if (_status.Length > 0 && Environment.TickCount64 < _statusUntil)
+            dl.AddText(new Vector2(x, y), RynthTheme.Argb(StatusArgb), _status);
+    }
+
+    private void SetStatus(string text)
+    {
+        _status = text;
+        _statusUntil = Environment.TickCount64 + StatusMs;
+    }
+
+    /// <summary>Edit route can be turned on: RynthAi has the map commands (or hasn't answered yet).</summary>
+    private bool TryStartEditing()
+    {
+        NavPayload? nav = UiSources.Nav.Current?.Value;
+        if (nav != null && nav.MapEdit < 1)
+        {
+            SetStatus("Editing the route on the map needs a newer RynthAi.");
+            return false;
+        }
+        _editRoute = true;
+        return true;
+    }
+
+    private void StopEditing()
+    {
+        _editRoute = false;
+        _selected = -1;
+        CancelPress();
+    }
+
+    private void CancelPress()
+    {
+        _pressing = false;
+        _pressPt = -1;
+        _pressMoved = false;
+        _dragPt = -1;
     }
 
     // ── Canvas input ──────────────────────────────────────────────────────
 
-    private void CanvasInput(Vector2 canvasMin, Vector2 canvasMax)
+    /// <summary>
+    /// Drag pans (and turns Follow off), the wheel zooms. Edit route: a press on a point and a drag
+    /// moves it; a click on a point selects it; a click on a floor adds a point; a drag from empty
+    /// space still pans; right-click a point for its menu.
+    /// </summary>
+    private void CanvasInput(Vector2 canvasMin, Vector2 canvasMax, RadarView view, NavPayload? nav, DungeonMapProjection? proj)
     {
+        ImGuiIOPtr io = ImGuiNET.ImGui.GetIO();
         ImGuiNET.ImGui.SetCursorScreenPos(canvasMin);
-        ImGuiNET.ImGui.InvisibleButton("##dmap_canvas", Vector2.Max(canvasMax - canvasMin, new Vector2(1, 1)));
-        if (ImGuiNET.ImGui.IsItemActive() && ImGuiNET.ImGui.IsMouseDragging(ImGuiMouseButton.Left))
+        ImGuiNET.ImGui.InvisibleButton("##dmap_canvas", Vector2.Max(canvasMax - canvasMin, new Vector2(1, 1)),
+            ImGuiButtonFlags.MouseButtonLeft | ImGuiButtonFlags.MouseButtonRight);
+        bool hovered = ImGuiNET.ImGui.IsItemHovered();
+        Vector2 mouse = io.MousePos;
+        bool canEdit = _editRoute && nav != null && nav.MapEdit >= 1 && proj.HasValue;
+        int count = nav?.Points.Count ?? 0;
+        if (_selected >= count) _selected = -1;
+
+        _hoverPt = (hovered || _pressing) && _drawn.Count > 0 ? DungeonMapMath.Pick(mouse, _drawn, PickRadius) : -1;
+
+        // Press.
+        if (hovered && ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Left))
         {
-            Vector2 delta = ImGuiNET.ImGui.GetIO().MouseDelta;
-            if (float.IsFinite(delta.X) && float.IsFinite(delta.Y) && delta != Vector2.Zero)
+            _pressing = true;
+            _pressMoved = false;
+            _pressPt = canEdit ? _hoverPt : -1;
+            _dragPt = -1;
+        }
+
+        // Drag: a point (Edit route, press on a point) or the map.
+        if (_pressing && ImGuiNET.ImGui.IsMouseDown(ImGuiMouseButton.Left) && ImGuiNET.ImGui.IsMouseDragging(ImGuiMouseButton.Left))
+        {
+            _pressMoved = true;
+            if (_pressPt >= 0)
             {
-                _follow = false;
-                _pan += delta;
+                if (canEdit && _pressPt < count)
+                {
+                    _dragPt = _pressPt;
+                    _dragWorld = proj!.Value.World(mouse);
+                    _dragOnFloor = FloorUnder(view, _dragWorld) >= 0;
+                }
+            }
+            else
+            {
+                Vector2 delta = io.MouseDelta;
+                if (float.IsFinite(delta.X) && float.IsFinite(delta.Y) && delta != Vector2.Zero)
+                {
+                    _follow = false;
+                    _pan += delta;
+                }
             }
         }
-        if (ImGuiNET.ImGui.IsItemHovered())
+
+        // Cancel a point drag: Esc or the right button. Esc with nothing dragged deselects.
+        bool rightClicked = hovered && ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Right);
+        bool esc = ImGuiNET.ImGui.IsKeyPressed(ImGuiKey.Escape, false);
+        if (_pressing && _pressPt >= 0 && (esc || rightClicked))
         {
-            float wheel = ImGuiNET.ImGui.GetIO().MouseWheel;
+            if (_dragPt >= 0) SetStatus("Move cancelled.");
+            CancelPress();
+            rightClicked = false;
+        }
+        else if (esc && canEdit && _selected >= 0 && ImGuiNET.ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows))
+            _selected = -1;
+
+        // Release.
+        if (_pressing && ImGuiNET.ImGui.IsMouseReleased(ImGuiMouseButton.Left))
+        {
+            if (canEdit)
+            {
+                if (_pressMoved)
+                {
+                    if (_dragPt >= 0) CommitMove(view, nav!, _dragPt, _dragWorld);
+                }
+                else if (_pressPt >= 0) _selected = _selected == _pressPt ? -1 : _pressPt;
+                else if (hovered) AddPointAt(view, nav!, proj!.Value.World(mouse));
+            }
+            else if (_editRoute && !_pressMoved && hovered)
+                SetStatus(nav == null ? "Waiting for the route from RynthAi..." : "Editing the route on the map needs a newer RynthAi.");
+            CancelPress();
+        }
+        if (!ImGuiNET.ImGui.IsMouseDown(ImGuiMouseButton.Left) && _pressing) CancelPress();   // released elsewhere
+
+        // Right-click a point: its menu.
+        if (rightClicked && canEdit && _hoverPt >= 0)
+        {
+            _menuPt = _hoverPt;
+            _openPtMenu = true;
+        }
+
+        if (hovered)
+        {
+            float wheel = io.MouseWheel;
             if (float.IsFinite(wheel) && wheel != 0f)
                 _zoom = Math.Clamp(_zoom + wheel * 0.5f, MinZoom, MaxZoom);
+        }
+
+        if (hovered && _hoverPt >= 0 && _dragPt < 0 && nav != null && _hoverPt < count && !ImGuiNET.ImGui.IsPopupOpen("##dmap_ptmenu"))
+            PointTooltip(nav, _hoverPt, view);
+    }
+
+    private void AddPointAt(RadarView view, NavPayload nav, Vector2 world)
+    {
+        int layer = FloorUnder(view, world);
+        if (layer < 0)
+        {
+            SetStatus("Not on a floor: click inside a room or corridor (on a floor that's shown).");
+            return;
+        }
+        float z = view.Live.LayerZs[layer];
+        int after = _selected;
+        NavCommands.Send(new NavCmd
+        {
+            Cmd = "addPointAt",
+            NS = DungeonMapMath.WorldToNav(world.Y),
+            EW = DungeonMapMath.WorldToNav(world.X),
+            Z = DungeonMapMath.WorldZToNav(z),
+            AddMode = after >= 0 ? 2 : 0,
+            InsertAt = after,
+        });
+        if (after >= 0)
+        {
+            SetStatus($"Added point {after + 1} after {after} ({FloorName(layer)}).");
+            _selected = after + 1;   // the next click goes after the new one
+        }
+        else SetStatus($"Added point {nav.Points.Count} at the end ({FloorName(layer)}).");
+    }
+
+    private void CommitMove(RadarView view, NavPayload nav, int idx, Vector2 world)
+    {
+        if (idx < 0 || idx >= nav.Points.Count) return;
+        int layer = FloorUnder(view, world);
+        if (layer < 0)
+        {
+            SetStatus($"Dropped off the floor: point {idx} not moved.");
+            return;
+        }
+        NavCommands.Send(new NavCmd
+        {
+            Cmd = "movePointTo",
+            Index = idx,
+            NS = DungeonMapMath.WorldToNav(world.Y),
+            EW = DungeonMapMath.WorldToNav(world.X),
+            Z = DungeonMapMath.WorldZToNav(view.Live.LayerZs[layer]),
+        });
+        // Keep it where it was dropped until the route comes back (or 3 s, if RynthAi refused).
+        _pendingMoveIdx = idx;
+        _pendingMoveWorld = world;
+        _pendingMoveFrom = nav;
+        _pendingMoveUntil = Environment.TickCount64 + 3000;
+        SetStatus($"Moved point {idx} ({FloorName(layer)}).");
+    }
+
+    private static string FloorName(int layer) => "F" + (layer + 1).ToString(CultureInfo.InvariantCulture);
+
+    private void PointTooltip(NavPayload nav, int i, RadarView view)
+    {
+        NavPoint p = nav.Points[i];
+        int layer = i < _ptLayer.Length ? _ptLayer[i] : -1;
+        ImGuiNET.ImGui.BeginTooltip();
+        ImGuiNET.ImGui.TextUnformatted($"{i}  {TypeName(p.Type)}{(i == nav.ActiveNavIndex ? "  (next waypoint)" : "")}");
+        if (!string.IsNullOrEmpty(p.Desc) && TypeGlyph(p.Type) != null) ImGuiNET.ImGui.TextUnformatted(p.Desc);   // a Point's is just its coordinates
+        ImGuiNET.ImGui.TextUnformatted(string.Format(CultureInfo.InvariantCulture, "{0:0.000}{1}  {2:0.000}{3}  Z {4:0.0}{5}",
+            Math.Abs(p.NS), p.NS >= 0 ? "N" : "S", Math.Abs(p.EW), p.EW >= 0 ? "E" : "W",
+            DungeonMapMath.NavZToWorld(p.Z), layer >= 0 ? "  " + FloorName(layer) : ""));
+        if (_editRoute)
+            ImGuiNET.ImGui.TextDisabled("Drag to move; click to select; right-click for more");
+        ImGuiNET.ImGui.EndTooltip();
+    }
+
+    /// <summary>Right-click menu on a route point (Edit route): Delete / Insert after / Set as next target.</summary>
+    private void DrawPointMenu(NavPayload? nav)
+    {
+        if (_openPtMenu)
+        {
+            _openPtMenu = false;
+            ImGuiNET.ImGui.OpenPopup("##dmap_ptmenu");
+        }
+        if (!ImGuiNET.ImGui.BeginPopup("##dmap_ptmenu")) return;
+        try
+        {
+            if (nav == null || _menuPt < 0 || _menuPt >= nav.Points.Count || !_editRoute)
+            {
+                ImGuiNET.ImGui.CloseCurrentPopup();
+                return;
+            }
+            int i = _menuPt;
+            ImGuiNET.ImGui.TextDisabled($"Point {i}  {TypeName(nav.Points[i].Type)}");
+            ImGuiNET.ImGui.Separator();
+            if (ImGuiNET.ImGui.MenuItem("Delete"))
+            {
+                NavCommands.Send(new NavCmd { Cmd = "deletePoint", Index = i });
+                if (_selected == i) _selected = -1;
+                else if (_selected > i) _selected--;
+                SetStatus($"Deleted point {i}.");
+            }
+            if (ImGuiNET.ImGui.MenuItem("Insert after"))
+            {
+                _selected = i;
+                SetStatus($"Click a floor to add a point after {i}.");
+            }
+            if (ImGuiNET.ImGui.MenuItem("Set as next target", null, i == nav.ActiveNavIndex))
+            {
+                NavCommands.Send(new NavCmd { Cmd = "setActive", Index = i });
+                SetStatus($"Next waypoint: {i}.");
+            }
+            if (_selected >= 0 && ImGuiNET.ImGui.MenuItem("Clear selection"))
+                _selected = -1;
+        }
+        finally
+        {
+            ImGuiNET.ImGui.EndPopup();
         }
     }
 
@@ -490,12 +994,34 @@ internal sealed class DungeonMapFace : IImGuiPanel
             SetOneUpOneDown(layers);
         }
 
-        // Doors / Creatures.
-        SameLineIfFits(160, limit, 12);
+        // Doors / Creatures / Corpses.
+        SameLineIfFits(230, limit, 12);
         changed |= ImGuiNET.ImGui.Checkbox("Doors##dmap_doors", ref DungeonMapSettingsStore.ShowDoors);
         ImGuiNET.ImGui.SameLine();
         changed |= ImGuiNET.ImGui.Checkbox("Creatures##dmap_creatures", ref DungeonMapSettingsStore.ShowCreatures);
-        ImGuiNET.ImGui.SetItemTooltip("Monsters, NPCs, players, fellows, your pet and vendors. Players, fellows, pets, vendors, corpses, lifestones and ground items also follow their box in the Radar's settings.");
+        ImGuiNET.ImGui.SetItemTooltip("Monsters, NPCs, players, fellows, your pet and vendors. Players, fellows, pets and vendors also follow their box in the Radar's settings; lifestones and items on the ground follow the Radar's settings alone.");
+        ImGuiNET.ImGui.SameLine();
+        changed |= ImGuiNET.ImGui.Checkbox("Corpses##dmap_corpses", ref DungeonMapSettingsStore.ShowCorpses);
+        ImGuiNET.ImGui.SetItemTooltip("Corpses on the map. Off hides them here whatever the Radar shows; on, they also follow the Radar's corpse boxes.");
+
+        // Route / Edit route.
+        SameLineIfFits(160, limit, 12);
+        if (ImGuiNET.ImGui.Checkbox("Route##dmap_route", ref DungeonMapSettingsStore.ShowRoute))
+        {
+            changed = true;
+            if (!DungeonMapSettingsStore.ShowRoute) StopEditing();
+        }
+        ImGuiNET.ImGui.SetItemTooltip("RynthAi's nav route: legs (dashed after a recall or portal), points (numbered when zoomed in), the next waypoint ringed. Hover a point for its details.");
+        ImGuiNET.ImGui.SameLine();
+        ImGuiNET.ImGui.BeginDisabled(!DungeonMapSettingsStore.ShowRoute);
+        bool edit = _editRoute;
+        if (ImGuiNET.ImGui.Checkbox("Edit route##dmap_editroute", ref edit))
+        {
+            if (edit) TryStartEditing();
+            else StopEditing();
+        }
+        ImGuiNET.ImGui.EndDisabled();
+        ImGuiNET.ImGui.SetItemTooltip("Click a floor to add a point (after the selected point, else at the end). Click a point to select it; drag a point to move it (Esc cancels); right-click a point to delete it, insert after it or make it the next waypoint. Dragging empty space still pans.");
 
         // Opacity (of the map's background).
         SameLineIfFits(130, limit, 12);
@@ -573,7 +1099,8 @@ internal sealed class DungeonMapFace : IImGuiPanel
 
 /// <summary>
 /// The Dungeon Map's settings (the plugin map's MapShowDoors / MapShowCreatures /
-/// MapShowToolbar / MapBgOpacity / MapRotateWithPlayer, same defaults). Engine-wide,
+/// MapShowToolbar / MapBgOpacity / MapRotateWithPlayer, same defaults; showCorpses and
+/// showRoute added 2026-10-12, both on by default). Engine-wide,
 /// in %LOCALAPPDATA%\RynthCore\dungeon_map_settings.txt, like radar_settings.txt.
 /// </summary>
 internal static class DungeonMapSettingsStore
@@ -583,6 +1110,8 @@ internal static class DungeonMapSettingsStore
 
     public static bool ShowDoors = true;
     public static bool ShowCreatures = true;
+    public static bool ShowCorpses = true;
+    public static bool ShowRoute = true;
     public static bool ShowToolbar = true;
     public static float BgOpacity = 1.0f;
     public static bool RotateWithPlayer;
@@ -618,6 +1147,8 @@ internal static class DungeonMapSettingsStore
                     {
                         case "showDoors":     ShowDoors = val == "1"; break;
                         case "showCreatures": ShowCreatures = val == "1"; break;
+                        case "showCorpses":   ShowCorpses = val == "1"; break;
+                        case "showRoute":     ShowRoute = val == "1"; break;
                         case "showToolbar":   ShowToolbar = val == "1"; break;
                         case "rotate":        RotateWithPlayer = val == "1"; break;
                         case "opacity":
@@ -638,6 +1169,8 @@ internal static class DungeonMapSettingsStore
         string text = "# RynthCore dungeon map settings - auto-generated, hand-edits OK.\n"
             + $"showDoors={(ShowDoors ? "1" : "0")}\n"
             + $"showCreatures={(ShowCreatures ? "1" : "0")}\n"
+            + $"showCorpses={(ShowCorpses ? "1" : "0")}\n"
+            + $"showRoute={(ShowRoute ? "1" : "0")}\n"
             + $"showToolbar={(ShowToolbar ? "1" : "0")}\n"
             + $"rotate={(RotateWithPlayer ? "1" : "0")}\n"
             + FormattableString.Invariant($"opacity={BgOpacity:0.##}\n");

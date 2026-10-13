@@ -10,7 +10,18 @@
 //    const char* RynthPluginName()           — human-readable name
 //    const char* RynthPluginVersion()        — version string (e.g. "1.0.0")
 //    void        RynthPluginTick()           — per-frame logic (before render)
-//    void        RynthPluginRender()         — per-frame ImGui drawing
+//    void        RynthPluginRender()         — per-frame ImGui drawing (ImGui shell on)
+//    void        RynthPluginRenderOverlay()  — per-frame ImGui drawing while the ImGui shell is
+//                                              off (Avalonia mode): only windows that have no
+//                                              Avalonia panel. Gated by engine.json
+//                                              "EnablePluginOverlayWindows" (default true).
+//    int         RynthPluginRenderEmbed(const char* surface, float width, float height,
+//                                       float* wantWidth, float* wantHeight)
+//                                            — draws a named surface (UTF-8, e.g. RynthAi's
+//                                              "miniremote") into the engine's current ImGui
+//                                              window on AC's render thread, inside a
+//                                              width x height child; reports the size it wants.
+//                                              1 = drawn, 0 = not ready / unknown surface.
 //    void        RynthPluginOnServerMessage(uint opcode, byte* data, int length)
 //                                            — v78, reassembled server messages the plugin
 //                                              asked for with SetServerMessageInterestFn
@@ -864,6 +875,42 @@ internal struct RynthCoreAPI
     /// Returns 1 sent or queued, 0 refused before sending (bad ids, negative placement), -1 the
     /// sender isn't bound on this client. Requires API v80+.</summary>
     public IntPtr PutItemInContainerFn;
+
+    /// <summary>v81: <c>int GetMergeStackResult(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs)</c>:
+    /// outcome of the latest MergeStackInternal(source, target) request: 0 none, 1 queued,
+    /// 2 sent (amount = units sent), 3 skipped because the target was already full,
+    /// 4 failed (invalid ids / AC rejected / threw), 5 dropped (main-thread queue full).
+    /// ageMs = how long ago the outcome was recorded. Either out pointer may be null.
+    /// The thunk is cdecl. Any thread. Requires API v81+ (it was v77 on QOL-items and v80 on sk
+    /// before upstream's v77-v80 landed; plugins built against those SDKs must be rebuilt).</summary>
+    public IntPtr GetMergeStackResultFn;
+    /// <summary>v82: <c>int SalvageDirect(uint toolId, uint* itemIds, int count)</c>: salvage without the
+    /// salvage panel. Sends the 0x027D CreateTinkeringTool game action (what the panel's Salvage button
+    /// sends) through AC's own sender, CM_Inventory::Event_CreateTinkeringTool, with the UST and up to
+    /// 100 item ids (salvage bags in the list are merged). The panel never opens. The server checks the
+    /// UST is the player's, salvages what it can, answers with the items' removal, new salvage bags and a
+    /// "You obtain ..." chat line, and skips the rest silently. Queued to AC's main thread when called off
+    /// it (the list is copied). Returns the count sent or queued, 0 refused before sending (no tool, no
+    /// items, more than 100, a zero id, the tool in the list, queue full), -1 the sender isn't bound on
+    /// this client. Requires API v82+.</summary>
+    public IntPtr SalvageDirectFn;
+
+    /// <summary>v83: <c>int GetObjectServerAge(uint objectId)</c>: milliseconds since the server last
+    /// sent a message about the object (create, position, motion, vector, state, parent, pickup,
+    /// effects, object description, update object), capped at int.MaxValue; -1 when it sent none
+    /// since the engine started watching (or the id was deleted). A creature with nothing from the
+    /// server for a long time while it is attacked is a "ghost": the client draws it, the server no
+    /// longer has it for this player. Any thread. Requires API v83+.</summary>
+    public IntPtr GetObjectServerAgeFn;
+
+    /// <summary>v83: <c>int RemoveClientObject(uint objectId)</c>: removes a ghost creature from the
+    /// client the way a server DeleteObject would (AC's ACCObjectMaint::DeleteObject; plugins get
+    /// OnDeleteObject). Refused for the player, players, anything that isn't a creature, and objects
+    /// the server sent a message about in the last 5 s. If the object is real after all, the
+    /// server's next CreateObject for it brings it back. Queued to AC's main thread when called off
+    /// it (checked again there). Returns 1 removed, 2 queued, 0 refused, -1 the client's
+    /// DeleteObject isn't bound yet (no delete seen since the hook went in). Requires API v83+.</summary>
+    public IntPtr RemoveClientObjectFn;
 }
 
 /// <summary>v79 <see cref="TrainingInfoNative.Flags"/> bits.</summary>
@@ -1654,6 +1701,10 @@ internal unsafe delegate uint VendorSellCallbackDelegate(uint vendorId, uint* it
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetVendorTradeStatusCallbackDelegate(VendorTradeStatusNative* status);
+// Cdecl is mandatory on every API delegate: without it x86 marshals a stdcall thunk, the callee and
+// the cdecl caller both pop the args, and the plugin's stack drifts on every call.
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetMergeStackResultCallbackDelegate(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetVTankStateCallbackDelegate(int* sequence);
@@ -1690,3 +1741,12 @@ internal unsafe delegate int GetContainerOrderCallbackDelegate(uint containerId,
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate int PutItemInContainerCallbackDelegate(uint itemId, uint containerId, int placement);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int SalvageDirectCallbackDelegate(uint toolId, uint* itemIds, int count);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int GetObjectServerAgeCallbackDelegate(uint objectId);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int RemoveClientObjectCallbackDelegate(uint objectId);

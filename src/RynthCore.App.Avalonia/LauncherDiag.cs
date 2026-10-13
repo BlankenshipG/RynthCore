@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 using System.Threading;
+using RynthCore.Install;
 
 namespace RynthCore.App.Avalonia;
 

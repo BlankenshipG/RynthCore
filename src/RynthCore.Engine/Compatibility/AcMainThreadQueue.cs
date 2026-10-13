@@ -152,6 +152,13 @@ internal static class AcMainThreadQueue
         // send like DropItem; in the ring so a close queued before the next corpse's UseObject
         // goes out first, in the same drain. A = container id.
         CloseContainer,
+        // v82 SalvageDirect (2026-10-12): CM_Inventory::Event_CreateTinkeringTool (the 0x027D salvage
+        // game action, without the panel). An inventory send like DropItem. The item list doesn't fit
+        // the four slots: A = the UST, B = the index of the list in _salvageDirectLists.
+        SalvageDirect,
+        // v83 RemoveClientObject (2026-10-12): drop a ghost creature from the client
+        // (DeleteObjectHooks.RemoveNow re-checks on the main thread).
+        RemoveClientObject,
     }
 
     // Four payload slots cover every routed action (the 4th was added for
@@ -246,6 +253,35 @@ internal static class AcMainThreadQueue
         _ => false,
     };
 
+    /// <summary>
+    /// Stops and cancels: the teardown group that still runs after a world transition (every
+    /// other entry queued during one is dropped). Never dropped as stale either.
+    /// </summary>
+    private static bool IsTeardown(in Entry e) => IsTeardownKind(e.Kind, e.A, e.B);
+
+    /// <summary>
+    /// The ONE teardown predicate: the enqueue side (ActionRing admission, the teardown reserve)
+    /// and the drain side (which entries survive a world transition) both ask it.
+    /// </summary>
+    internal static bool IsTeardownKind(ActionKind kind, uint a, uint b) => kind switch
+    {
+        ActionKind.SetAutoRun => a == 0,
+        ActionKind.SetMotion => b == 0,
+        ActionKind.StopMovement or ActionKind.StopCompletely or ActionKind.CancelAttack
+            or ActionKind.CloseContainer => true,
+        _ => false,
+    };
+
+    // World-transition drops: counted, and folded into the rate-limited stale summary line.
+    private static long _transitionDropped;
+    public static long TransitionDroppedCount => Interlocked.Read(ref _transitionDropped);
+
+    private static void NoteTransitionDrop(string what, long ageMs)
+    {
+        Interlocked.Increment(ref _transitionDropped);
+        NoteStale(what + " (queued during a death/portal/teleport)", ageMs, dropped: true);
+    }
+
     private static string Describe(in Entry e) => e.Kind switch
     {
         ActionKind.SetAutoRun => e.A != 0 ? "SetAutoRun(on)" : "SetAutoRun(off)",
@@ -256,38 +292,64 @@ internal static class AcMainThreadQueue
         _ => e.Kind.ToString(),
     };
 
+    // The ring (ActionRing: storage, FIFO, admission). 256 entries, the top 32 for teardown
+    // only, so a ring a bot filled with starts still takes its stops and cancels.
     private const int Capacity = 256; // power of two
-    private const int Mask = Capacity - 1;
-    private static readonly Entry[] _slots = new Entry[Capacity];
-    private static readonly object _producerLock = new();
-
-    // Monotonic counters. Producers advance _tail under _producerLock; the sole
-    // consumer (main thread) advances _head.
-    private static int _head;
-    private static int _tail;
+    private const int TeardownReserve = 32;
+    private static readonly ActionRing<Entry> _ring = new(Capacity, TeardownReserve);
     private static long _dropped;
+    private static long _transitionRejected;
 
+    /// <summary>Entries refused because the ring was full (a running total; the heartbeat's qdrop).</summary>
     public static long DroppedCount => Interlocked.Read(ref _dropped);
+
+    /// <summary>Non-teardown entries refused while the player was in a world transition.</summary>
+    public static long TransitionRejectedCount => Interlocked.Read(ref _transitionRejected);
+
+    // -- The mutator gate ----------------------------------------------------------
+    // Every AC-mutating helper (ClientHelperHooks, CombatActionHooks, MovementActionHooks,
+    // CommandInterpreterHooks, ClientCombatHooks, PlayerPhysicsHooks, PlayerTrade,
+    // PlayerTraining) opens with the same line:
+    //     if (AcMainThreadQueue.MustQueue(teardown: <is this a stop/cancel>)) return Enqueue...;
+    // Off AC's main thread it queues (as always). ON the main thread it also queues while a
+    // world transition holds the drains, unless it is being called BY a drain (IsDraining)
+    // or is teardown: render-thread host actions (ImGui panels, the EndScene plugin calls)
+    // used to run straight into a world AC was tearing down, around the gate. The queue
+    // then refuses or holds it like any other queued work (WorldTransitionState).
+    private static int _drainDepth;   // AC main thread only
+
+    /// <summary>AC main thread only: a drain is dispatching queued work right now.</summary>
+    public static bool IsDraining => _drainDepth > 0;
+
+    /// <summary>AC main thread only: a direct call now would run into a world transition.</summary>
+    public static bool ShouldDefer() => !IsDraining && PlayerLifecycleLog.HoldQueuedWork(NowMs);
+
+    /// <summary>
+    /// The one gate every mutator opens with: true = queue instead of calling AC now.
+    /// <paramref name="teardown"/>: a stop or cancel (IsTeardownKind), which runs at once on
+    /// the main thread even in a transition.
+    /// </summary>
+    public static bool MustQueue(bool teardown) =>
+        MutatorGate.MustQueue(MainThreadGuard.IsOnMainThread(), teardown, IsDraining, HoldNow);
+
+    // Cached (no allocation per call): main thread only, asked only by MutatorGate on it.
+    private static readonly Func<bool> HoldNow = () => PlayerLifecycleLog.HoldQueuedWork(NowMs);
 
     private static bool Enqueue(ActionKind kind, uint a, uint b, uint c, uint d = 0)
     {
-        lock (_producerLock)
-        {
-            int tail = _tail;
-            int head = Volatile.Read(ref _head);
-            if (tail - head >= Capacity)
-            {
-                // Full. Drop rather than block or fall back to an off-thread AC
-                // mutation — a dropped movement/attack tick self-corrects on the
-                // next bot tick; an off-thread mutation can crash the client.
-                Interlocked.Increment(ref _dropped);
-                return false;
-            }
-
-            _slots[tail & Mask] = new Entry(kind, a, b, c, d, NowMs, Volatile.Read(ref _loginEpoch));
-            Volatile.Write(ref _tail, tail + 1);
-            return true;
-        }
+        bool teardown = IsTeardownKind(kind, a, b);
+        // Dead / portaling / settling: a start queued now would be dropped when the window
+        // ends anyway (WorldTransitionState), so it is refused here and never takes a slot a
+        // stop needs. Stops and cancels are always taken (the reserve keeps room for them).
+        var r = _ring.TryEnqueue(new Entry(kind, a, b, c, d, NowMs, Volatile.Read(ref _loginEpoch)),
+                                 teardown, PlayerLifecycleLog.InWorldTransition);
+        if (r == ActionRing<Entry>.Admit.Queued) return true;
+        // Full: drop rather than block or fall back to an off-thread AC mutation - a dropped
+        // movement/attack tick self-corrects on the next bot tick; an off-thread mutation can
+        // crash the client.
+        if (r == ActionRing<Entry>.Admit.Full) Interlocked.Increment(ref _dropped);
+        else Interlocked.Increment(ref _transitionRejected);
+        return false;
     }
 
     // ── Typed enqueue helpers (called by the public action methods when they
@@ -336,19 +398,33 @@ internal static class AcMainThreadQueue
     // CommandInterpreter turn, which would change the steering behaviour.
     private static int _directHeadingPending;
     private static uint _directHeadingBits;
+    private static long _directHeadingAt;
 
     public static bool EnqueueDirectHeading(float headingDegrees)
     {
         Volatile.Write(ref _directHeadingBits, BitConverter.SingleToUInt32Bits(headingDegrees));
+        Interlocked.Exchange(ref _directHeadingAt, NowMs);
         Volatile.Write(ref _directHeadingPending, 1);
         return true;
     }
 
     // Main thread only (from Drain). Same order as the pre-queue code: the direct
     // snap first, the CommandInterpreter turn only when there is no player.
+    // World transition: the pending heading is held; once the window ends a heading set
+    // during it is stale (the bot steers again from where it landed) and is dropped.
     private static void DrainDirectHeading()
     {
+        if (Volatile.Read(ref _directHeadingPending) == 0) return;
+        long now = NowMs;
+        long at = Interlocked.Read(ref _directHeadingAt);
+        WorldTransitionState.Verdict v = PlayerLifecycleLog.DecideQueued(now, at, teardown: false);
+        if (v == WorldTransitionState.Verdict.Hold) return;
         if (Interlocked.Exchange(ref _directHeadingPending, 0) == 0) return;
+        if (v == WorldTransitionState.Verdict.Drop)
+        {
+            NoteTransitionDrop("heading", now - at);
+            return;
+        }
         float heading = BitConverter.UInt32BitsToSingle(Volatile.Read(ref _directHeadingBits));
         try
         {
@@ -371,18 +447,25 @@ internal static class AcMainThreadQueue
     // selects mid-gesture too). Lock-free and allocation-free.
     private static int _overlaySelectPending;
     private static uint _overlaySelectId;
+    private static long _overlaySelectAt;
 
     public static bool EnqueueOverlaySelect(uint objectId)
     {
         if (objectId == 0) return false;
         Volatile.Write(ref _overlaySelectId, objectId);
+        Interlocked.Exchange(ref _overlaySelectAt, NowMs);
         Volatile.Write(ref _overlaySelectPending, 1);
         return true;
     }
 
-    // Main thread only (from Drain).
+    // Main thread only (from Drain). World transition: held, and kept when the window ends:
+    // it is the user's own click, and SelectFromOverlay re-checks the object still exists.
     private static void DrainOverlaySelect()
     {
+        if (Volatile.Read(ref _overlaySelectPending) == 0) return;
+        if (PlayerLifecycleLog.DecideQueued(NowMs, Interlocked.Read(ref _overlaySelectAt), teardown: true)
+            == WorldTransitionState.Verdict.Hold)
+            return;
         if (Interlocked.Exchange(ref _overlaySelectPending, 0) == 0) return;
         uint id = Volatile.Read(ref _overlaySelectId);
         try { ClientHelperHooks.SelectFromOverlay(id); }
@@ -449,6 +532,48 @@ internal static class AcMainThreadQueue
     public static bool EnqueueSalvageExecute() =>
         Enqueue(ActionKind.SalvageExecute, 0, 0, 0);
 
+    // ── Salvage-without-panel item lists (v82) ──────────────────────────────────
+    // A SalvageDirect entry carries its item list here: the producer copies the ids into a fresh
+    // array and parks it in a free slot (under _salvageDirectLock), the ring entry carries the slot
+    // index, and the drain takes it back with one Interlocked.Exchange (lock-free, no allocation on
+    // the main thread). Eight slots: the bot has one request in flight at a time; a full set refuses.
+    private const int SalvageDirectSlots = 8;
+    private static readonly uint[]?[] _salvageDirectLists = new uint[]?[SalvageDirectSlots];
+    private static int _salvageDirectNext;
+    // Serializes slot claims (the ring has its own lock since ActionRing<T>, PR #8).
+    private static readonly object _salvageDirectLock = new();
+
+    public static bool EnqueueSalvageDirect(uint toolId, uint[] itemIds)
+    {
+        if (toolId == 0 || itemIds == null || itemIds.Length == 0) return false;
+        uint[] copy = (uint[])itemIds.Clone();
+        lock (_salvageDirectLock)
+        {
+            for (int k = 0; k < SalvageDirectSlots; k++)
+            {
+                int i = (_salvageDirectNext + k) % SalvageDirectSlots;
+                if (Volatile.Read(ref _salvageDirectLists[i]) != null) continue;
+                Volatile.Write(ref _salvageDirectLists[i], copy);
+                if (!Enqueue(ActionKind.SalvageDirect, toolId, (uint)i, 0))
+                {
+                    Volatile.Write(ref _salvageDirectLists[i], null);
+                    return false;
+                }
+                _salvageDirectNext = (i + 1) % SalvageDirectSlots;
+                return true;
+            }
+        }
+        Interlocked.Increment(ref _dropped);
+        return false;
+    }
+
+    /// <summary>Main thread: takes the list a SalvageDirect entry parked (null if none).</summary>
+    private static uint[]? TakeSalvageDirectList(uint slot) =>
+        slot < SalvageDirectSlots ? Interlocked.Exchange(ref _salvageDirectLists[slot], null) : null;
+
+    public static bool EnqueueRemoveClientObject(uint objectId) =>
+        Enqueue(ActionKind.RemoveClientObject, objectId, 0, 0);
+
     public static bool EnqueueSetSelectedObject(uint objectId) =>
         Enqueue(ActionKind.SetSelectedObject, objectId, 0, 0);
 
@@ -492,6 +617,14 @@ internal static class AcMainThreadQueue
 
     public static void Drain()
     {
+        // IsDraining: the helpers this dispatches run their AC call directly (MustQueue).
+        _drainDepth++;
+        try { DrainCore(); }
+        finally { _drainDepth--; }
+    }
+
+    private static void DrainCore()
+    {
         if (_disarmed)
         {
             // Held incoming chat still prints during teardown (the AddTextToScroll detour
@@ -524,14 +657,23 @@ internal static class AcMainThreadQueue
         // and 0xC8 appraisal sends too, contradicting that invariant. Each
         // drains only while ITS OWN queue is non-empty, so moving them here
         // costs nothing when they're empty (the common case).
+        // World transition gate (dead / portal / landblock jump, WorldTransitionState): AC is
+        // tearing objects down and loading new ones, so nothing queued that mutates the game
+        // runs now. Chat output (AC's own text window) and the char-select service still do.
+        long gateNow = NowMs;
+        bool holding = PlayerLifecycleLog.HoldQueuedWork(gateNow);
+
         DrainChat();
-        DrainChatCommands();
+        if (!holding) DrainChatCommands();   // held: their own 15 s age limit still applies
         DrainRequestIds();
         DrainQueryHealth();
         // Vendor buy/sell: a packet send through the client's own SendShopEvent, not a
         // motion, so it sits with the non-gesture queues above. Also polls whether the
         // vendor window is still open. Idle fast path when no vendor is open.
-        try { VendorTrade.MainThreadTick(); } catch { }
+        if (!holding)
+        {
+            try { VendorTrade.MainThreadTick(); } catch { }
+        }
         // Char-select service: publishes the UIFlow mode, runs a pending auto-login
         // LogOnCharacter request and snapshots the native character list (throttled).
         // Pre-login this runs from the Client::UseTime drain (EndScene is not hooked
@@ -541,14 +683,19 @@ internal static class AcMainThreadQueue
         // Plugin heading snap (coalesced slot). Before the ring and its gesture
         // defer: the pre-queue raw write landed immediately, gesture or not, and
         // ahead of the SetAutoRun a nav tick queues right after it. Keep both.
+        // Both are latest-value slots (a heading, a select): held through a world transition,
+        // then decided by their own drains (a stale heading dropped, a user's select kept).
         DrainDirectHeading();
 
         // Overlay click-to-select (Radar dot / nameplate click): also before the
         // gesture defer, so a click selects at once even while the bot swings.
         DrainOverlaySelect();
 
-        int head = _head;                     // only the main thread writes _head
-        int tail = Volatile.Read(ref _tail);
+        // In a world transition the ring is held whole (FIFO kept): nothing runs, nothing is
+        // dropped yet. Once it ends, the loop below drops what was queued during it, except
+        // stops and cancels, which run in order as one teardown group.
+        if (holding)
+            return;
 
         // ── Gesture-phase serialization (extends the 56e6946 anim-walk guard
         // to the whole ring) ─────────────────────────────────────────────────
@@ -562,7 +709,7 @@ internal static class AcMainThreadQueue
         // drop: dropping arbitrary item/movement actions desyncs the bot far
         // worse than a late injection, and the pre-2026-06-12 behavior was
         // "always inject" anyway, so proceeding past the cap is never worse).
-        if (head != tail)
+        if (_ring.Count > 0)
         {
             // In milliseconds (was 250 Drain calls: 2 s to over 10 s depending on the frame rate).
             if (PlayerPhysicsHooks.TryGetCastGestureInProgress(out bool gestureInFlight) && gestureInFlight)
@@ -576,16 +723,22 @@ internal static class AcMainThreadQueue
         }
         long runAt = NowMs;
         int epochNow = Volatile.Read(ref _loginEpoch);
-        while (head != tail)
+        // Bounded to what is queued now plus a capacity's worth: an action that re-queues
+        // itself can never spin the main thread.
+        int budget = Capacity * 2;
+        while (budget-- > 0 && _ring.TryDequeue(out Entry e))
         {
-            Entry e = _slots[head & Mask];
-            Volatile.Write(ref _head, ++head);
-
             long age = runAt - e.At;
+            if (PlayerLifecycleLog.DecideQueued(runAt, e.At, IsTeardown(e)) == WorldTransitionState.Verdict.Drop)
+            {
+                NoteTransitionDrop(Describe(e), age);
+                if (e.Kind == ActionKind.SalvageDirect) TakeSalvageDirectList(e.B);   // free its list slot
+                continue;
+            }
             if (e.Epoch != epochNow || (age > StaleActionMs && DropsWhenStale(e)))
             {
                 NoteStale(Describe(e) + (e.Epoch != epochNow ? " (queued before this login)" : ""), age, dropped: true);
-                tail = Volatile.Read(ref _tail);
+                if (e.Kind == ActionKind.SalvageDirect) TakeSalvageDirectList(e.B);   // free its list slot
                 continue;
             }
             if (age > LateActionLogMs)
@@ -673,6 +826,13 @@ internal static class AcMainThreadQueue
                     case ActionKind.SalvageExecute:
                         ClientHelperHooks.SalvagePanelExecute();
                         break;
+                    case ActionKind.SalvageDirect:
+                        if (TakeSalvageDirectList(e.B) is uint[] salvageItems)
+                            ClientHelperHooks.SalvageDirect(e.A, salvageItems);
+                        break;
+                    case ActionKind.RemoveClientObject:
+                        DeleteObjectHooks.RemoveNow(e.A);
+                        break;
                     case ActionKind.SetSelectedObject:
                         // On the main thread now -> SetSelectedObjectId's gate is
                         // satisfied and it calls AC's SetSelectedObject directly.
@@ -719,8 +879,6 @@ internal static class AcMainThreadQueue
                 // not managed exceptions and won't be caught here — but these
                 // now run on the correct thread, which is the whole point.)
             }
-
-            tail = Volatile.Read(ref _tail);
         }
     }
 
@@ -733,22 +891,43 @@ internal static class AcMainThreadQueue
     // Kept in its OWN queue — NOT the gesture-deferred action ring above — so a backlog
     // of appraisals can never crowd out combat/movement actions or get gesture-deferred:
     // an appraisal is just a packet send and doesn't perturb AC's motion/UI state.
-    private static readonly System.Collections.Generic.Queue<(uint Id, long At, int Epoch)> _requestIdQueue = new();
-    private static readonly object _requestIdLock = new();
+    // A request for an object that already has one pending is merged into it, as the
+    // QueryHealth slot does: the one appraisal reply answers every caller (PendingIdQueue).
     private const int MaxRequestIdQueue = 256;
+    private static readonly PendingIdQueue _requestIdQueue = new(MaxRequestIdQueue);
+    private static readonly object _requestIdLock = new();
+    // Merge only into an entry the drain will still send: half the stale limit leaves room
+    // for a drain that runs late (a stalled main thread).
+    private const long RequestIdMergeMaxAgeMs = RequestIdMaxAgeMs / 2;
 
-    // Pump/Timer-thread enqueue. Drops (returns false) if the queue is full.
-    public static bool EnqueueRequestId(uint objectId)
+    /// <summary>RequestId calls absorbed by an already-pending request for the same object.</summary>
+    public static long RequestIdMergedCount
+    {
+        get { lock (_requestIdLock) return _requestIdQueue.MergedTotal; }
+    }
+
+    // Pump/Timer-thread enqueue. Drops (returns false) if the queue is full. A request for an
+    // object already waiting returns true without queueing a second send.
+    // <paramref name="who"/> rides with the entry so the drain can mark the real send as the
+    // engine's (Net/IdRequester.cs); a merge keeps the first requester.
+    public static bool EnqueueRequestId(uint objectId, Net.IdRequester who = Net.IdRequester.None)
     {
         if (objectId == 0) return false;
+        // Dead / portaling / settling: an appraisal queued now is dropped when the window
+        // ends, so it is refused here (the caller sees false and may ask again later). Nor
+        // does a request merge into an entry from before the last held drain: that entry is
+        // dropped when the drain reaches it, and the merged request would go with it.
+        if (PlayerLifecycleLog.InWorldTransition) return false;
+        long mergeOnlyAfter = PlayerLifecycleLog.LastBlockedMs;
         lock (_requestIdLock)
         {
-            if (_requestIdQueue.Count >= MaxRequestIdQueue)
+            PendingIdQueue.Result r = _requestIdQueue.Enqueue(objectId, NowMs, Volatile.Read(ref _loginEpoch),
+                                                              RequestIdMergeMaxAgeMs, mergeOnlyAfter, (byte)who);
+            if (r == PendingIdQueue.Result.Full)
             {
                 Interlocked.Increment(ref _dropped);
                 return false;
             }
-            _requestIdQueue.Enqueue((objectId, NowMs, Volatile.Read(ref _loginEpoch)));
             return true;
         }
     }
@@ -760,22 +939,42 @@ internal static class AcMainThreadQueue
         // Bounded like DrainChatCommands: a re-queue never spins the main thread.
         int budget;
         lock (_requestIdLock) budget = _requestIdQueue.Count;
+        if (budget == 0) return;
         long now = NowMs;
+        // World transition (dead / portal / landblock jump): hold every appraisal; once it
+        // ends, those queued during it are dropped (WorldTransitionState).
+        if (PlayerLifecycleLog.HoldQueuedWork(now)) return;
         int epoch = Volatile.Read(ref _loginEpoch);
         while (budget-- > 0)
         {
-            (uint Id, long At, int Epoch) item;
+            PendingIdQueue.Item item;
             lock (_requestIdLock)
             {
-                if (_requestIdQueue.Count == 0) return;
-                item = _requestIdQueue.Dequeue();
+                if (!_requestIdQueue.TryDequeue(out item)) return;
             }
             if (item.Epoch != epoch || now - item.At > RequestIdMaxAgeMs)
             {
                 NoteStale($"RequestId(0x{item.Id:X8})", now - item.At, dropped: true);
                 continue;
             }
-            try { CombatActionHooks.RequestId(item.Id); } catch { }
+            if (PlayerLifecycleLog.DecideQueued(now, item.At, teardown: false) == WorldTransitionState.Verdict.Drop)
+            {
+                NoteTransitionDrop($"RequestId(0x{item.Id:X8})", now - item.At);
+                continue;
+            }
+            bool sent = false;
+            try
+            {
+                using (Net.EngineSendMarker.Enter((Net.IdRequester)item.Source))
+                    sent = CombatActionHooks.RequestId(item.Id);
+            }
+            catch { }
+            // AutoId's re-appraisal window starts at the real send, not at the queueing:
+            // a request dropped here (stale, transition) leaves the object due again.
+            if (sent)
+            {
+                try { AutoIdService.OnSent(item.Id, now); } catch { }
+            }
         }
     }
 
@@ -819,6 +1018,7 @@ internal static class AcMainThreadQueue
         int budget;
         lock (_queryHealthLock) budget = _queryHealthQueue.Count;
         long now = NowMs;
+        if (PlayerLifecycleLog.HoldQueuedWork(now)) return;   // world transition: hold
         int epoch = Volatile.Read(ref _loginEpoch);
         while (budget-- > 0)
         {
@@ -832,6 +1032,11 @@ internal static class AcMainThreadQueue
             if (item.Epoch != epoch || now - item.At > QueryHealthMaxAgeMs)
             {
                 NoteStale($"QueryHealth(0x{item.Id:X8})", now - item.At, dropped: true);
+                continue;
+            }
+            if (PlayerLifecycleLog.DecideQueued(now, item.At, teardown: false) == WorldTransitionState.Verdict.Drop)
+            {
+                NoteTransitionDrop($"QueryHealth(0x{item.Id:X8})", now - item.At);
                 continue;
             }
             try { CombatActionHooks.QueryHealth(item.Id); } catch { }
@@ -958,9 +1163,7 @@ internal static class AcMainThreadQueue
     // tick — they already handle a false return without wedging. At ~frame-rate drain
     // the slot clears within ~1 frame. This is the LAST off-thread AC mutator to be
     // marshalled, closing the off-thread object-graph corruption class at its source.
-    private static int _castPending;
-    private static uint _castTargetId;
-    private static uint _castSpellId;
+    private static readonly CastSlot _cast = new();   // writes under _castLock
     private static readonly object _castLock = new();
 
     // Ticks DrainCasts has deferred the pending cast because a motion gesture was
@@ -969,30 +1172,27 @@ internal static class AcMainThreadQueue
     // plugin's no-chat-resolve machinery already retries casts that produce no
     // chat, so a drop degrades to one retry cycle, never a wedge.
     private static long _castDeferDrops;
-    private static long _castQueuedAt;   // TickCount64 when the pending cast was queued (2026-10-06)
+
 
     /// <summary>Casts dropped after deferring CastDeferTickCap ticks (stuck gesture).</summary>
     public static long CastDeferDropCount => Interlocked.Read(ref _castDeferDrops);
 
     // Pump-thread enqueue. Returns false (caller retries next tick) if a cast is
-    // already pending.
+    // already pending, or during a world transition (CastSlot): the drain would only hold
+    // it and then drop it, and the slot would refuse every newer cast meanwhile.
     public static bool EnqueueCast(uint targetId, uint spellId)
     {
+        CastSlot.Admit admit;
         lock (_castLock)
-        {
-            if (_castPending != 0) return false;
-            _castTargetId = targetId;
-            _castSpellId = spellId;
-            _castQueuedAt = NowMs;
-            _castStopWaitNoted = false;
-            _castPending = 1;
-            return true;
-        }
+            admit = _cast.TryEnqueue(targetId, spellId, NowMs, PlayerLifecycleLog.InWorldTransition);
+        if (admit == CastSlot.Admit.RejectedTransition)
+            Interlocked.Increment(ref _transitionRejected);
+        return admit == CastSlot.Admit.Queued;
     }
 
-    // Casts that waited for a movement stop queued ahead of them (counted once per cast).
+    // Casts that waited for a movement stop queued ahead of them (counted once per cast;
+    // the per-cast flag is CastSlot.StopWaitNoted, reset by each new cast).
     private static long _castStopWaits;
-    private static bool _castStopWaitNoted;
 
     /// <summary>Casts that waited one or more ticks for a stop queued ahead of them.</summary>
     public static long CastStopWaitCount => Interlocked.Read(ref _castStopWaits);
@@ -1008,29 +1208,28 @@ internal static class AcMainThreadQueue
 
     /// <summary>
     /// True when the action ring holds a movement stop queued at or before <paramref name="castQueuedAt"/>.
-    /// Main thread only (the ring's sole consumer). Entries are stamped under the producer lock, so
-    /// their times rise from head to tail and the walk stops at the first newer one.
+    /// Main thread only (the ring's sole consumer). An entry's time is taken before ActionRing's
+    /// producer lock, so two producers can land slightly out of time order: the walk checks every
+    /// queued entry (at most Capacity) instead of stopping at the first newer one (CastStopRules).
     /// </summary>
-    private static bool StopQueuedAtOrBefore(long castQueuedAt)
-    {
-        int head = _head;
-        int tail = Volatile.Read(ref _tail);
-        for (int i = head; i != tail; i++)
-        {
-            ref readonly Entry e = ref _slots[i & Mask];
-            if (e.At > castQueuedAt) return false;
-            if (IsMovementStop(e)) return true;
-        }
-        return false;
-    }
+    private static bool StopQueuedAtOrBefore(long castQueuedAt) =>
+        CastStopRules.AnyStopAtOrBefore(_ring, castQueuedAt, static e => e.At, static e => IsMovementStop(e));
 
     // Drained on AC's MAIN thread from the Client::UseTime detour (game-logic tick).
     // Re-invokes CombatActionHooks.CastSpell, which on the main thread executes the
-    // cast directly (SelectItem + ClientMagicSystem::CastSpell via the SEH trampoline).
+    // cast directly via the SEH trampoline (targeted: FreeHandsAndCastSpell with the target
+    // passed explicitly, no SelectItem; self: ClientMagicSystem::CastSpell).
     public static void DrainCasts()
     {
+        _drainDepth++;
+        try { DrainCastsCore(); }
+        finally { _drainDepth--; }
+    }
+
+    private static void DrainCastsCore()
+    {
         if (_disarmed) return;                               // engine teardown in progress
-        if (Volatile.Read(ref _castPending) == 0) return;   // alloc-free fast path
+        if (Volatile.Read(ref _cast.Pending) == 0) return;   // alloc-free fast path
 
         // ── Anim-walk race guard (dump-proven 2026-06-12) ────────────────────
         // DrainCasts runs PRE-tick (selection timing), but a cast initiates a
@@ -1049,7 +1248,23 @@ internal static class AcMainThreadQueue
         // CastDeferMaxMs the cast is dropped and logged with its age. RynthAi waits up to 7 s
         // for a cast's answer before it sends another (ActionPacer), so a drop here can't
         // leave two casts in flight.
-        long castAge = NowMs - Volatile.Read(ref _castQueuedAt);
+        // World transition (dead / portal / landblock jump): hold the cast; a cast queued
+        // during it is dropped once it ends (WorldTransitionState). Before the gesture check:
+        // nothing about the player's motion is read while AC is tearing the world down.
+        long nowCast = NowMs;
+        long queuedAt = Volatile.Read(ref _cast.QueuedAt);
+        WorldTransitionState.Verdict castVerdict = PlayerLifecycleLog.DecideQueued(nowCast, queuedAt, teardown: false);
+        if (castVerdict == WorldTransitionState.Verdict.Hold)
+            return;
+        if (castVerdict == WorldTransitionState.Verdict.Drop)
+        {
+            uint droppedSpell;
+            lock (_castLock) { droppedSpell = _cast.SpellId; _cast.Pending = 0; }
+            NoteTransitionDrop($"CastSpell({droppedSpell})", nowCast - queuedAt);
+            return;
+        }
+
+        long castAge = nowCast - queuedAt;
         if (PlayerPhysicsHooks.TryGetCastGestureInProgress(out bool gestureInFlight) && gestureInFlight)
         {
             if (castAge <= CastDeferMaxMs)
@@ -1057,7 +1272,7 @@ internal static class AcMainThreadQueue
             // Gesture stuck past the deadline — drop the cast instead of injecting
             // into a wedged motion graph; the plugin retries via no-chat-resolve.
             uint dropped;
-            lock (_castLock) { dropped = _castSpellId; _castPending = 0; }
+            lock (_castLock) { dropped = _cast.SpellId; _cast.Pending = 0; }
             Interlocked.Increment(ref _castDeferDrops);
             NoteStale($"CastSpell({dropped}) behind a gesture", castAge, dropped: true);
             return;
@@ -1070,13 +1285,13 @@ internal static class AcMainThreadQueue
         // locomotion still on, and the queued stops followed as extra MoveToStates. Wait (at
         // most until EndScene drains the ring, about one frame; the ring's own gesture defer
         // is shorter than CastDeferMaxMs) while one is queued; past the limit cast anyway.
-        if (StopQueuedAtOrBefore(Volatile.Read(ref _castQueuedAt)))
+        if (StopQueuedAtOrBefore(queuedAt))
         {
             if (castAge <= CastDeferMaxMs)
             {
-                if (!_castStopWaitNoted)
+                if (!_cast.StopWaitNoted)
                 {
-                    _castStopWaitNoted = true;
+                    _cast.StopWaitNoted = true;
                     Interlocked.Increment(ref _castStopWaits);
                     try { Net.FlightRecorder.Mark(Net.FlightMark.Note, text: "cast waits for a movement stop queued before it"); } catch { }
                 }
@@ -1085,7 +1300,7 @@ internal static class AcMainThreadQueue
         }
 
         // ── The stop goes a server answer ahead of the cast (2026-10-12, PreCastStopRules) ──
-        long castStamp = Volatile.Read(ref _castQueuedAt);
+        long castStamp = queuedAt;
         if (_preStopFor != castStamp) { _preStopFor = castStamp; _preStopSent = false; }
         long nowMs = NowMs;
         PreCastStep step = PreCastStopRules.Decide(
@@ -1122,10 +1337,10 @@ internal static class AcMainThreadQueue
         uint target, spell;
         lock (_castLock)
         {
-            if (_castPending == 0) return;
-            target = _castTargetId;
-            spell = _castSpellId;
-            _castPending = 0;
+            if (_cast.Pending == 0) return;
+            target = _cast.TargetId;
+            spell = _cast.SpellId;
+            _cast.Pending = 0;
         }
         if (castAge > LateActionLogMs)
             NoteStale($"CastSpell({spell})", castAge, dropped: false);

@@ -392,6 +392,14 @@ internal static unsafe class Win32Backend
         RunOnGameThread<bool>(() => { action(); return true; });
     }
 
+    /// <summary>
+    /// True once the game window is known AND its WndProc is subclassed, i.e.
+    /// <see cref="RunOnGameThread{T}"/> can actually deliver work to AC's main
+    /// thread. Knowing the HWND alone is not enough: without the subclass,
+    /// WM_RYNTH_RUN_ACTION reaches AC's own WndProc, which ignores it.
+    /// </summary>
+    public static bool CanRunOnGameThread => _initialized && _gameHwnd != IntPtr.Zero;
+
     /// <summary>Deactivates chat capture.  The game HWND retains focus throughout so no
     /// Win32 focus transfer is needed.</summary>
     public static void ReturnFocusToGame() => ChatCaptureActive = false;
@@ -572,10 +580,11 @@ internal static unsafe class Win32Backend
         if (!_initialized) return;
 
         // Destroy floating panels while our hook can still run on the game
-        // thread. LayeredWindow.Dispose only POSTS its destroy, and the game
-        // thread usually hasn't reached that post by the time we unhook below —
-        // AC's own WndProc then drops it and the panel outlives this engine
-        // load, frozen and unclickable (duplicate RynthAi dashboard after RL).
+        // thread. LayeredWindow.Dispose posts its destroy to the panel itself
+        // (handled by the panel's own WndProc, which survives this unhook), but
+        // any panel never disposed would outlive this engine load, frozen and
+        // unclickable (duplicate RynthAi dashboard after RL) — this sweep is the
+        // synchronous backstop for those.
         IntPtr swept = SendMessageTimeout(_gameHwnd, WM_RYNTH_SWEEP_PANELS, new IntPtr(1), IntPtr.Zero,
             SMTO_NORMAL, 2000, out _);
         if (swept == IntPtr.Zero)
@@ -956,6 +965,17 @@ internal static unsafe class Win32Backend
             // which used to be unusable whenever RynthChat was installed, even closed.
             // !ImGuiTextInputActive: the same rule for an ImGui text box.
             ExpireStaleCaptureFlags();
+
+            // ── User hotkeys (Settings > Hotkeys, Hotkeys/HotkeyService.cs) ──
+            // A bound combo's keystroke is eaten here, before AC, ImGui and the Enter-opens-chat
+            // branch below; every other key passes on. RynthChat's capture returned above, and
+            // the service holds hotkeys back while any text box (ours or AC's chat) is typed in.
+            if ((IsKeyMessage(msg) || IsExtraCharMessage(msg) || msg == WM_KILLFOCUS)
+                && Hotkeys.HotkeyService.HandleKeyMessage(msg, wParam, lParam,
+                    rynthTextFocus: ChatCaptureActive || AvaloniaTextInputActive || ImGuiTextInputActive
+                                    || _wantCaptureKeyboard || ImGuiPopOuts.HasTextFocus))
+                return IntPtr.Zero;
+
             if (msg == WM_KEYDOWN && (int)wParam == VK_RETURN && !IsExtendedKey(lParam) && !ChatCaptureActive && !AvaloniaTextInputActive
                 && !ImGuiTextInputActive && !ImGuiPopOuts.HasTextFocus
                 && RynthCore.Engine.Compatibility.ChatHooks.RynthChatOwnsChat)
@@ -991,11 +1011,15 @@ internal static unsafe class Win32Backend
             // HUD drag (keeps our SetCapture from fighting NewFrame's). No-op
             // unless the HUD is drawn.
             if (IsMouseMessage(msg))
+            {
                 TrackMouseButtons(msg, wParam);
+                ItemDragBridge.OnGameMouse(msg, wParam, lParam, _heldButtonsBelongToGame);
+            }
             else if (msg == WM_KILLFOCUS)
             {
                 _heldMouseButtons = 0;
                 _heldButtonsBelongToGame = false;
+                ItemDragBridge.Reset();
             }
 
             // ── Avalonia panel hit-test & input forwarding ────────────────
@@ -1006,7 +1030,7 @@ internal static unsafe class Win32Backend
             {
                 // fall through: AC gets the message
             }
-            else if (IsMouseMessage(msg))
+            else if (IsMouseMessage(msg) && !ImGuiOwnsMouseOverAvalonia())
             {
                 bool handled = TryForwardToAvalonia(msg, wParam, lParam);
                 if (handled)
@@ -1097,6 +1121,14 @@ internal static unsafe class Win32Backend
                 }
             }
 
+            // An AC inventory item dragged onto an ImGui window: AC must not drop it on the
+            // ground behind the window. It gets the release where the drag began instead.
+            if (ItemDragBridge.TryRedirectNativeDrop(msg, out IntPtr pressLParam))
+            {
+                CallWindowProcA(_originalWndProc, hWnd, WM_MOUSEMOVE, (IntPtr)MK_LBUTTON, pressLParam);
+                return CallWindowProcA(_originalWndProc, hWnd, msg, wParam, pressLParam);
+            }
+
             // Pass through to original WndProc
             return CallWindowProcA(_originalWndProc, hWnd, msg, wParam, lParam);
         }
@@ -1105,6 +1137,17 @@ internal static unsafe class Win32Backend
             RynthLog.Render($"Win32Backend.WndProcHook: {ex.GetType().Name}: {ex.Message}");
             return CallWindowProcA(_originalWndProc, hWnd, msg, wParam, lParam);
         }
+    }
+
+    /// <summary>
+    /// ImGui windows are drawn on top of the Avalonia layer, so when the cursor is over
+    /// an ImGui window (or an ImGui widget is active) mouse input must go to ImGui
+    /// instead of the Avalonia panel underneath. An Avalonia drag/resize that is already
+    /// in progress keeps its capture so the release is never lost.
+    /// </summary>
+    private static bool ImGuiOwnsMouseOverAvalonia()
+    {
+        return _wantCaptureMouse && !AvaloniaOverlay.HasPointerCapture;
     }
 
     /// <summary>

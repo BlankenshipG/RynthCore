@@ -11,9 +11,11 @@
 //    count=Mana Scarab
 //    count=Prismatic Taper
 //    slots=8
+//    slotsize=44
 //    slot=0|0x80123456|Healing Kit
 //    slot=3|0x8012ABCD|Stamina Elixir
-//  Lines this version doesn't know are kept where they were.
+//  slotsize (the remote's box edge in pixels) is written only when it isn't
+//  the default. Lines this version doesn't know are kept where they were.
 // ============================================================================
 
 using System;
@@ -34,15 +36,18 @@ internal sealed class ItemHudCharacter
 {
     public const int MaxCounts = 30;
     public const int MinSlots = 4, MaxSlots = 24, DefaultSlots = 8;
+    /// <summary>Mini Remote box edge in pixels (before UI scaling): the grow / shrink range.</summary>
+    public const int MinSlotSize = 24, MaxSlotSize = 72, DefaultSlotSize = 36;
     public const int MaxNameLength = 64;
 
     public static readonly ItemHudCharacter Empty = new(Array.Empty<string>(), new RemoteSlot?[DefaultSlots], Array.Empty<string>());
 
-    public ItemHudCharacter(string[] counts, RemoteSlot?[] slots, string[] other)
+    public ItemHudCharacter(string[] counts, RemoteSlot?[] slots, string[] other, int slotSize = DefaultSlotSize)
     {
         Counts = counts;
         Slots = slots;
         Other = other;
+        SlotSize = Math.Clamp(slotSize, MinSlotSize, MaxSlotSize);
     }
 
     /// <summary>Item names on the Item Count list, in the order added.</summary>
@@ -51,6 +56,8 @@ internal sealed class ItemHudCharacter
     public RemoteSlot?[] Slots { get; }
     /// <summary>Lines of this section the file had that this version doesn't know.</summary>
     public string[] Other { get; }
+    /// <summary>The remote's box edge in pixels, <see cref="MinSlotSize"/>..<see cref="MaxSlotSize"/>.</summary>
+    public int SlotSize { get; }
 
     public bool HasCount(string name) => IndexOfCount(name) >= 0;
 
@@ -78,7 +85,7 @@ internal sealed class ItemHudCharacter
         Array.Copy(Counts, next, Counts.Length);
         next[^1] = name;
         message = $"Counting \"{name}\".";
-        return new ItemHudCharacter(next, Slots, Other);
+        return new ItemHudCharacter(next, Slots, Other, SlotSize);
     }
 
     public ItemHudCharacter WithoutCount(int index)
@@ -87,7 +94,7 @@ internal sealed class ItemHudCharacter
         var next = new string[Counts.Length - 1];
         Array.Copy(Counts, 0, next, 0, index);
         Array.Copy(Counts, index + 1, next, index, Counts.Length - index - 1);
-        return new ItemHudCharacter(next, Slots, Other);
+        return new ItemHudCharacter(next, Slots, Other, SlotSize);
     }
 
     public ItemHudCharacter WithSlot(int index, RemoteSlot? slot)
@@ -95,7 +102,7 @@ internal sealed class ItemHudCharacter
         if (index < 0 || index >= Slots.Length) return this;
         var next = (RemoteSlot?[])Slots.Clone();
         next[index] = slot == null ? null : slot with { Name = Clean(slot.Name) };
-        return new ItemHudCharacter(Counts, next, Other);
+        return new ItemHudCharacter(Counts, next, Other, SlotSize);
     }
 
     /// <summary>More or fewer slots (clamped); slots past the new end are dropped.</summary>
@@ -105,7 +112,14 @@ internal sealed class ItemHudCharacter
         if (count == Slots.Length) return this;
         var next = new RemoteSlot?[count];
         Array.Copy(Slots, next, Math.Min(count, Slots.Length));
-        return new ItemHudCharacter(Counts, next, Other);
+        return new ItemHudCharacter(Counts, next, Other, SlotSize);
+    }
+
+    /// <summary>Bigger or smaller remote boxes (clamped). Same instance when nothing changes.</summary>
+    public ItemHudCharacter WithSlotSize(int size)
+    {
+        size = Math.Clamp(size, MinSlotSize, MaxSlotSize);
+        return size == SlotSize ? this : new ItemHudCharacter(Counts, Slots, Other, size);
     }
 }
 
@@ -183,11 +197,12 @@ internal static class ItemHudFile
         string? key = null;
         List<string>? counts = null, other = null;
         RemoteSlot?[]? slots = null;
+        int slotSize = ItemHudCharacter.DefaultSlotSize;
 
         void Flush()
         {
             if (key == null) return;
-            result.Set(key, new ItemHudCharacter(counts!.ToArray(), slots!, other!.ToArray()));
+            result.Set(key, new ItemHudCharacter(counts!.ToArray(), slots!, other!.ToArray(), slotSize));
         }
 
         foreach (string raw in lines)
@@ -201,6 +216,7 @@ internal static class ItemHudFile
                 counts = new List<string>();
                 other = new List<string>();
                 slots = new RemoteSlot?[ItemHudCharacter.DefaultSlots];
+                slotSize = ItemHudCharacter.DefaultSlotSize;
                 continue;
             }
             if (key == null)
@@ -228,6 +244,11 @@ internal static class ItemHudFile
                         Array.Copy(slots!, resized, Math.Min(n, slots!.Length));
                         slots = resized;
                     }
+                    break;
+                case "slotsize":
+                    // Clamped by the constructor; an unreadable value keeps the default.
+                    if (int.TryParse(val.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int px))
+                        slotSize = px;
                     break;
                 case "slot":
                 {
@@ -276,6 +297,8 @@ internal static class ItemHudFile
             sb.Append('\n').Append('[').Append(key).Append("]\n");
             foreach (string n in ch.Counts) sb.Append("count=").Append(n).Append('\n');
             sb.Append("slots=").Append(ch.Slots.Length.ToString(CultureInfo.InvariantCulture)).Append('\n');
+            if (ch.SlotSize != ItemHudCharacter.DefaultSlotSize)
+                sb.Append("slotsize=").Append(ch.SlotSize.ToString(CultureInfo.InvariantCulture)).Append('\n');
             for (int i = 0; i < ch.Slots.Length; i++)
             {
                 RemoteSlot? s = ch.Slots[i];

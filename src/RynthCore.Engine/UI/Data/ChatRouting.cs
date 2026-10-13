@@ -292,8 +292,11 @@ internal sealed class ChatRouter
         foreach (ChatFilterRule rule in _rules) Volatile.Write(ref rule.Hits, 0);
     }
 
-    /// <summary>One step of the editor's test: rule index (-1 = mention) and what it did.</summary>
+    /// <summary>One step of the editor's test: rule index (-1 = mention, -2 = a standard filter) and what it did.</summary>
     public readonly record struct Step(int Rule, string What);
+
+    /// <summary><see cref="Step.Rule"/> of a standard-filter (RynthChatPresets) step.</summary>
+    public const int StandardFilterStep = -2;
 
     public ChatRoute Evaluate(ChatLine line, List<Step>? trace) =>
         Evaluate(line.Text, line.Channel, line.ChatType, trace);
@@ -381,6 +384,28 @@ internal sealed class ChatRouter
             }
             if (what is { Length: 0 }) what.Append("matches, but has nothing to do yet (no tab, no colour)");
             trace?.Add(new Step(i, what!.ToString()));
+        }
+
+        // Standard filters (RynthChatPresets) decide only what the custom rules left undecided.
+        if (!routed)
+        {
+            var preset = RynthCore.Engine.UI.Panels.RynthChatPresets.FirstMatch(text, channel);
+            if (preset != null)
+            {
+                string presetTab = preset.Tab;
+                routed = true;
+                if (presetTab.Length == 0)
+                {
+                    hidden = true;
+                    trace?.Add(new Step(StandardFilterStep, $"standard filter \"{preset.Label}\" hides it"));
+                }
+                else
+                {
+                    inHome = false;
+                    AddTab(ref tabs, presetTab);
+                    trace?.Add(new Step(StandardFilterStep, $"standard filter \"{preset.Label}\" moves it to {presetTab}"));
+                }
+            }
         }
 
         bool mention = false;

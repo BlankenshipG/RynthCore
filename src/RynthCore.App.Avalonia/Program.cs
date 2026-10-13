@@ -63,6 +63,26 @@ internal static class Program
             LauncherDiag.Info($"DECALBRIDGE: install per-user (installer): {report}");
             return ok ? 0 : 1;
         }
+        // Recovery Actions > Fix folder permissions, the elevated step (MainWindow.FolderAccess.cs):
+        // --fix-folder-permissions <user SID> [--report "<file>"] "<folder>" ["<folder>"...]. Never
+        // falls through to the window: a malformed command exits with 2.
+        if (Array.Exists(args, a => string.Equals(a, RynthCore.App.FolderAccess.RepairArgument, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (!RynthCore.App.FolderAccess.TryParseRepairArguments(args, out string sid, out var roots, out string? reportPath))
+            {
+                LauncherDiag.Info("FOLDERS: fix folder permissions (elevated step): malformed command line; nothing changed.");
+                return 2;
+            }
+            var report = RynthCore.App.FolderAccess.Repair(roots, new System.Security.Principal.SecurityIdentifier(sid));
+            LauncherDiag.Info("FOLDERS: fix folder permissions (elevated step): " + report.ToString().Replace(Environment.NewLine, " | "));
+            // The report goes back to the launcher that asked, only as a new file of the expected name.
+            if (reportPath != null && System.IO.Path.GetFileName(reportPath).StartsWith("rynthcore-folderfix-", StringComparison.OrdinalIgnoreCase)
+                && reportPath.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) && !System.IO.File.Exists(reportPath))
+            {
+                try { System.IO.File.WriteAllText(reportPath, report.ToString()); } catch { }
+            }
+            return report.Ok ? 0 : 1;
+        }
         if (Array.Exists(args, a => string.Equals(a, "--decal-bridge-status", StringComparison.OrdinalIgnoreCase)))
         {
             LauncherDiag.Info($"DECALBRIDGE: status (command line): {RynthCore.App.DecalBridgeRegistration.GetStatus()}");

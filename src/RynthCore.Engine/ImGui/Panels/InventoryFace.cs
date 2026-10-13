@@ -7,20 +7,24 @@
 //    Modern    the Phase 1 layout, below
 //
 //    header    burden (percent of capacity) and pyreals; item count
-//    tools     search box, sort picker; category chips
+//    tools     search box, attribute filter (InventoryFace.AttrFilter.cs), sort
+//              picker; category chips
 //    packs     All, Main pack, each side pack (its icon and fill), Worn
 //    grid      the chosen pack's items as icons with stack counts; hover for a
 //              tooltip (asks the server to identify an unknown item, throttled);
 //              double-click uses; right-click for Use / Equip / Split / Move to /
 //              Drop / Give; drag onto a pack to move, onto Equip / Drop / Give
 //    zones     Equip, Drop, Give-to-<selected creature>: drop targets for a drag,
-//              or buttons for the selected item
+//              or buttons for the selected item(s)
 //    status    the one action waiting for the server (with a timer), or how the
-//              last one ended
+//              last one ended; a several-item run's progress and Stop
+//    several   Ctrl+click / Shift+click / Select all pick several items for Drop,
+//              Give or Move (InventoryFace.MultiSelect.cs)
 //
 //  Data: InventoryModel (Compatibility), captured and acted on on AC's main
 //  thread. This face only reads its published objects and posts requests; one
 //  item action at a time (a click while one waits is refused, never queued).
+//  Several items go as a batch the model sends one after another.
 //  Per frame: no allocation except the tooltip of a newly hovered item and the
 //  filtered list when the view, pack, filter, search or sort change.
 // ============================================================================
@@ -122,6 +126,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
     public void OnShown()
     {
         InventorySettingsStore.Load();
+        LoadAttrFilter();
         InventoryModel.Subscribe();
     }
 
@@ -130,6 +135,8 @@ internal sealed partial class InventoryFace : IImGuiPanel
         InventoryModel.Hover(0);
         InventoryModel.Unsubscribe();
         _dragItem = _pressItem = null;
+        _pressNarrow = false;
+        ItemDragBridge.EndPopOutDrag();
         UiDropTargets.EngineDragObject = 0;
         _lootAdd.Cancel();
     }
@@ -168,6 +175,8 @@ internal sealed partial class InventoryFace : IImGuiPanel
         DrawDragGhost();
         ContextMenu(view);
         SplitDialog(view);
+        ConfirmDialog();
+        AttrFilterDialog();
         _lootAdd.Draw();
         _picker.Draw();
     }
@@ -254,7 +263,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
     {
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
         float sortW = 118;
-        float boxW = Math.Max(80, w - sortW - 26 - 8);
+        float boxW = Math.Max(80, w - sortW - 26 - 26 - 8);
         if (TextBox("##inv_search", _search, p, boxW, PhosphorIcons.MagnifyingGlass + " Search names", out _))
             _searchText = Utf8(_search).Trim().ToLowerInvariant();
         if (IconButton("##inv_clear", PhosphorIcons.X, new Vector2(p.X + boxW + 2, p.Y), new Vector2(22, 22), Mute, BtnFill,
@@ -264,6 +273,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
             _searchText = string.Empty;
         }
         ImGuiNET.ImGui.SetItemTooltip("Clear the search");
+        AttrFilterButton(new Vector2(p.X + boxW + 26, p.Y));
         Vector2 sp = new(p.X + w - sortW, p.Y);
         if (Button("##inv_sortbtn", SortLabels[_sort], sp, new Vector2(sortW, 22), Text, BtnFill,
                 leftAlign: true))
@@ -316,12 +326,17 @@ internal sealed partial class InventoryFace : IImGuiPanel
     private void RebuildIfNeeded(InventoryView view, uint pack)
     {
         bool classic = InventorySettingsStore.Classic;
+        bool attrOn = AttrOn;
+        int attrKey = attrOn ? _attr.Version : -1;
         if (ReferenceEquals(view, _builtFor) && _builtPack == pack && _builtSort == _sort
             && _builtCategory == _category && ReferenceEquals(_builtSearch, _searchText) && _builtClassic == classic
-            && _builtOrderVersion == Net.InventoryOrder.Version)
+            && _builtOrderVersion == Net.InventoryOrder.Version && _builtAttrKey == attrKey && !AttrRefreshDue(attrOn))
             return;
-        if (_builtPack != pack || !ReferenceEquals(_builtSearch, _searchText) || _builtCategory != _category)
+        if (_builtPack != pack || !ReferenceEquals(_builtSearch, _searchText) || _builtCategory != _category || _builtAttrKey != attrKey)
             _gridFirstRow = 0;   // another pack or filter: back to the top (Classic grid)
+        _builtAttrKey = attrKey;
+        BeginAttrPass(attrOn);
+        if (!ReferenceEquals(view, _builtFor)) PruneSelection(view);
         _builtFor = view;
         _builtPack = pack;
         _builtSort = _sort;
@@ -356,6 +371,9 @@ internal sealed partial class InventoryFace : IImGuiPanel
         _countText = _shown.Count == total
             ? total.ToString(CultureInfo.InvariantCulture) + " items"
             : _shown.Count.ToString(CultureInfo.InvariantCulture) + " of " + total.ToString(CultureInfo.InvariantCulture);
+        if (_unidentified.Count > 0)
+            _countText += ", " + _unidentified.Count.ToString(CultureInfo.InvariantCulture) + " not ID'd";
+        _selectAllLabel = "Select all shown (" + _shown.Count.ToString(CultureInfo.InvariantCulture) + ")";
         // The Classic grid's caption, retail's "Contents of <pack>".
         _captionText = pack == WornPacks ? "Worn"
             : one == null ? (_shown.Count == total ? "All packs" : "Matches in all packs: " + _countText)
@@ -388,7 +406,10 @@ internal sealed partial class InventoryFace : IImGuiPanel
 
     /// <summary>A grid cell is a slot only while the list is the server's, whole and in pack order, and the item is an ordinary one.</summary>
     private bool CellsAreSlots(InventoryItem item) =>
-        _orderKnown && _sort == 0 && _category == 0 && _searchText.Length == 0 && !item.RequiresPackSlot && !item.IsPack;
+        _orderKnown && _sort == 0 && !FiltersOn && !item.RequiresPackSlot && !item.IsPack;
+
+    /// <summary>Some filter hides items: a category, search text or the attribute filter.</summary>
+    private bool FiltersOn => _category != 0 || _searchText.Length > 0 || AttrOn;
 
     /// <summary>The slot an item holds now among its pack's ordinary items, or -1 when unknown.</summary>
     private static int SlotOf(InventoryItem item)
@@ -411,6 +432,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
             if (_skipSlotItems && it.RequiresPackSlot) continue;
             if (_category != 0 && it.Category != cat) continue;
             if (_searchText.Length > 0 && !it.SearchName.Contains(_searchText, StringComparison.Ordinal)) continue;
+            if (_attrPass && !AttrKeeps(it)) continue;
             _shown.Add(it);
         }
     }
@@ -513,7 +535,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
 
         if (_shown.Count == 0)
         {
-            dl.AddText(o + new Vector2(4, 4), Mute, _searchText.Length > 0 || _category != 0 ? "Nothing matches." : "Empty.");
+            dl.AddText(o + new Vector2(4, 4), Mute, FiltersOn ? "Nothing matches." : "Empty.");
             ImGuiNET.ImGui.Dummy(new Vector2(avail, 20));
         }
         else
@@ -538,7 +560,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
 
             if (hot != null && ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Left))
             {
-                _selected = hot.Id;
+                ClickItem(hot);
                 _pressItem = hot;
                 _pressAt = mouse;
             }
@@ -548,11 +570,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
                 Act(InventoryActionKind.Use, hot, 0, "", 0);
             }
             if (hot != null && ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Right))
-            {
-                _selected = hot.Id;
-                _ctxItem = hot;
-                _openCtx = true;
-            }
+                RightClickItem(hot);
             if (_pressItem != null && _dragItem == null && ImGuiNET.ImGui.IsMouseDown(ImGuiMouseButton.Left)
                 && Vector2.DistanceSquared(mouse, _pressAt) > 25)
                 _dragItem = _pressItem;
@@ -571,7 +589,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
                     InventoryItem it = _shown[i];
                     var cmin = new Vector2(o.X + c * Cell, o.Y + r * Cell);
                     var cmax = cmin + new Vector2(Cell - 2, Cell - 2);
-                    bool sel = it.Id == _selected;
+                    bool sel = IsPicked(it);
                     dl.AddRectFilled(cmin, cmax, i == hoverIdx ? CellHot : CellBg, 3);
                     DrawItemIcon(dl, it.Id, cmin + new Vector2(2, 2), Icon, ReferenceEquals(it, _dragItem) ? 0x60FFFFFFu : 0xFFFFFFFFu);
                     if (it.StackText.Length > 0)
@@ -612,20 +630,23 @@ internal sealed partial class InventoryFace : IImGuiPanel
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
         InventoryTarget? target = InventoryModel.Target;
         InventoryItem? sel = SelectedItem(view);
+        RefreshSelectionLabels(target);
         float zw = (w - 8) / 3f;
         var sz = new Vector2(zw, ZoneH);
 
         Zone("##z_equip", DropKind.Equip, PhosphorIcons.Shield, "Equip", new Vector2(p.X, p.Y), sz, 0, "",
             InventoryModel.WieldAvailable, sel,
             "Equip: drag an item here, or click to equip the selected item.");
-        Zone("##z_drop", DropKind.Drop, PhosphorIcons.ArrowFatDown, "Drop", new Vector2(p.X + zw + 4, p.Y), sz, 0, "",
-            InventoryModel.DropAvailable, sel,
-            "Drop on the ground: drag an item here, or click to drop the selected item.");
-        Zone("##z_give", DropKind.Give, PhosphorIcons.Gift, target?.ZoneLabel ?? "Give", new Vector2(p.X + 2 * (zw + 4), p.Y), sz,
+        Zone("##z_drop", DropKind.Drop, PhosphorIcons.ArrowFatDown, _dropLabel, new Vector2(p.X + zw + 4, p.Y), sz, 0, "",
+            InventoryModel.DropAvailable, sel, DropTip);
+        Zone("##z_give", DropKind.Give, PhosphorIcons.Gift, _giveLabel, new Vector2(p.X + 2 * (zw + 4), p.Y), sz,
             target?.Id ?? 0, target?.Name ?? "", InventoryModel.GiveAvailable && target != null, sel,
             target?.ZoneTip ?? "Select a creature, NPC or player in the game to give to.");
         NextLine(p, ZoneH + 4);
     }
+
+    private const string DropTip = "Drop on the ground: drag an item here, or click to drop the selected item(s).\n"
+        + "Ctrl+click or Shift+click items to drop several.";
 
     private void Zone(string id, DropKind kind, string glyph, string label, Vector2 pos, Vector2 size, uint targetId,
         string targetName, bool enabled, InventoryItem? selected, string tip)
@@ -646,20 +667,14 @@ internal sealed partial class InventoryFace : IImGuiPanel
         dl.PopClipRect();
         if (enabled)
             _targets.Add(new Target { Min = pos, Max = pos + size, Kind = kind, Id = targetId, Name = targetName });
-        if (clicked && enabled && selected != null)
-            DropOn(kind, targetId, targetName, selected);   // refused with a message while one waits
+        // Refused with a message while one waits. Equip is always the one selected item.
+        if (clicked && enabled && kind != DropKind.Equip && _multi.IsMulti)
+            DropOnSelection(kind, targetId, targetName, null);
+        else if (clicked && enabled && selected != null)
+            DropOn(kind, targetId, targetName, selected);
     }
 
-    private InventoryItem? SelectedItem(InventoryView view)
-    {
-        if (_selected == 0) return null;
-        foreach (InventoryPack p in view.Packs)
-            foreach (InventoryItem it in p.Items)
-                if (it.Id == _selected) return it;
-        foreach (InventoryItem it in view.Worn)
-            if (it.Id == _selected) return it;
-        return null;
-    }
+    private InventoryItem? SelectedItem(InventoryView view) => _selected == 0 ? null : FindAny(view, _selected);
 
     // ── Status row ──────────────────────────────────────────────────────
 
@@ -681,6 +696,8 @@ internal sealed partial class InventoryFace : IImGuiPanel
         InventoryPending? pending = InventoryModel.Pending;
         InventoryResult? result = InventoryModel.LastResult;
         float ty = p.Y + (statusH - ImGuiNET.ImGui.GetFontSize()) * 0.5f;
+        // A several-item run: its progress and Stop (a button, so outside the clip below).
+        if (BatchStatus(dl, p, w, statusH, ty)) return;
         dl.PushClipRect(p, p + new Vector2(w, statusH), true);
         if (pending != null)
         {
@@ -709,6 +726,11 @@ internal sealed partial class InventoryFace : IImGuiPanel
             PhosphorIcons.DrawCentered(dl, ImGuiFonts.Get(UiFont.Ui11), result.Ok ? PhosphorIcons.Check : PhosphorIcons.Warning,
                 p, new Vector2(16, statusH), result.Ok ? Green : Red);
             dl.AddText(new Vector2(p.X + 18, ty), result.Ok ? Green : Red, result.Text);
+        }
+        else if (_selHint.Length > 0)
+        {
+            PhosphorIcons.DrawCentered(dl, ImGuiFonts.Get(UiFont.Ui11), PhosphorIcons.CheckSquare, p, new Vector2(16, statusH), Teal);
+            dl.AddText(new Vector2(p.X + 18, ty), Text, _selHint);
         }
         else if (idleView != null)
         {
@@ -750,7 +772,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
             case DropKind.Pack:
                 if (slot == -2)
                 {
-                    Refuse(_sort != 0 || _category != 0 || _searchText.Length > 0
+                    Refuse(_sort != 0 || FiltersOn
                         ? "To reorder, set Sort to Pack order and clear the search and filter."
                         : "The pack's order isn't known yet: log in again so the panel can learn it.");
                     return;
@@ -802,12 +824,13 @@ internal sealed partial class InventoryFace : IImGuiPanel
         }
     }
 
-    /// <summary>Back to everything: no search text, no category.</summary>
+    /// <summary>Back to everything: no search text, no category, the attribute filter off (its rules kept).</summary>
     private void ClearFilters()
     {
         Array.Clear(_search);
         _searchText = string.Empty;
         _category = 0;
+        SetAttrEnabled(false);
     }
 
     private void Refuse(string why)
@@ -834,15 +857,23 @@ internal sealed partial class InventoryFace : IImGuiPanel
     {
         if (!ImGuiNET.ImGui.IsMouseDown(ImGuiMouseButton.Left))
         {
-            InventoryItem? item = _dragItem;
+            InventoryItem? item = _dragItem, pressed = _pressItem;
+            bool narrow = _pressNarrow;
             _dragItem = null;
             _pressItem = null;
-            if (item == null) return;
+            _pressNarrow = false;
+            if (item == null)
+            {
+                // A plain click on one of a group, not dragged: just that item now.
+                if (narrow && pressed != null) _multi.Single(pressed.Id);
+                return;
+            }
+            ItemDragBridge.EndPopOutDrag();
             Vector2 m = ImGuiNET.ImGui.GetMousePos();
             foreach (Target t in _targets)
             {
                 if (m.X < t.Min.X || m.Y < t.Min.Y || m.X >= t.Max.X || m.Y >= t.Max.Y) continue;
-                DropOn(t.Kind, t.Id, t.Name, item, t.Slot);
+                DropOnSelection(t.Kind, t.Id, t.Name, item, t.Slot);
                 return;
             }
             // Let go outside this panel: another engine panel that takes items (Item Count,
@@ -852,13 +883,51 @@ internal sealed partial class InventoryFace : IImGuiPanel
         }
     }
 
-    private void DrawDragGhost()
+    /// <summary>
+    /// ImGui drag-and-drop payload type for one item (uint object id), published while an item is
+    /// dragged so other ImGui windows (RynthAi's Mini Remote slots) can accept the drop. Must
+    /// match MiniRemoteHud.ItemPayloadType in RynthAi.
+    /// </summary>
+    public const string ItemPayloadType = "RYNTH_INV_ITEM";
+
+    /// <summary>
+    /// Selects <paramref name="it"/> here and in the game, like a click in the retail inventory, so
+    /// "selected item" features (Mini Remote slots, item info, loot rules) see it too.
+    /// </summary>
+    private void SelectItem(InventoryItem it)
+    {
+        _selected = it.Id;
+        // Queued, not called inline: Draw runs inside EndScene, and AC's SetSelectedObject rebuilds
+        // UI elements, so it runs at the main-thread queue's drain point instead.
+        if (ClientHelperHooks.GetSelectedItemId() != it.Id)
+            AcMainThreadQueue.EnqueueSetSelectedObject(it.Id);
+    }
+
+    private unsafe void DrawDragGhost()
     {
         if (_dragItem == null) return;
         var fg = ImGuiNET.ImGui.GetForegroundDrawList();
         Vector2 m = ImGuiNET.ImGui.GetMousePos() - new Vector2(Icon * 0.5f, Icon * 0.5f);
         DrawItemIcon(fg, _dragItem.Id, m, Icon, 0xD0FFFFFF);
+        DragBadge(fg, m);
         ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
+        // A popped-out Inventory draws in its own ImGui context: the client's drop targets
+        // only see the drag through the bridge, which republishes it in the main context.
+        if (ImGuiPopOuts.InPopOutFrame)
+        {
+            ItemDragBridge.NotePopOutDrag(_dragItem.Id);
+            return;
+        }
+
+        // Re-submitted every frame of the drag (an extern source expires when it isn't); the
+        // ghost above is the preview, so no ImGui tooltip.
+        if (ImGuiNET.ImGui.BeginDragDropSource(ImGuiDragDropFlags.SourceExtern | ImGuiDragDropFlags.SourceNoPreviewTooltip))
+        {
+            uint id = _dragItem.Id;
+            ImGuiNET.ImGui.SetDragDropPayload(ItemPayloadType, (IntPtr)(&id), sizeof(uint));
+            ImGuiNET.ImGui.EndDragDropSource();
+        }
     }
 
     // ── Tooltip ─────────────────────────────────────────────────────────
@@ -948,7 +1017,8 @@ internal sealed partial class InventoryFace : IImGuiPanel
         {
             InventoryItem? it = _ctxItem;
             if (it == null) { ImGuiNET.ImGui.CloseCurrentPopup(); return; }
-            bool idle = InventoryModel.Pending == null;
+            if (IsGroup(it)) { GroupMenu(view, it); return; }
+            bool idle = InventoryModel.Pending == null && !InventoryModel.BatchRunning;
             ImGuiNET.ImGui.TextDisabled(it.Name);
             ImGuiNET.ImGui.Separator();
             if (ImGuiNET.ImGui.MenuItem("Use", "double-click", false, idle))
@@ -985,6 +1055,13 @@ internal sealed partial class InventoryFace : IImGuiPanel
                 _lootAdd.Open(it.Id, it.Name, toOpenProfile: false);
             if (ImGuiNET.ImGui.IsItemHovered())
                 ImGuiNET.ImGui.SetTooltip("Make a RynthAi loot rule for this item (preview first)");
+            if (!it.IsPack && ImGuiNET.ImGui.MenuItem("Add to item count HUD"))
+                UI.Data.RynthAiCommands.ApplyRemoteCommand("itemhudadd", it.Name);
+            if (ImGuiNET.ImGui.IsItemHovered())
+                ImGuiNET.ImGui.SetTooltip("Track how many of these you carry on RynthAi's floating item count HUD (/ra itemhud add)");
+            if (!it.IsPack) MiniRemoteMenu(it);
+            ImGuiNET.ImGui.Separator();
+            SelectionMenuItems(it);
             if (!idle)
                 ImGuiNET.ImGui.TextDisabled("(an item action is waiting)");
         }
@@ -993,6 +1070,36 @@ internal sealed partial class InventoryFace : IImGuiPanel
             ImGuiNET.ImGui.EndPopup();
             PopMenuStyle();
         }
+    }
+
+    /// <summary>RynthAi Mini Remote quick-use grid size (HudState.MiniRemoteSlotCount, 6 rows of 5).</summary>
+    private const int MiniRemoteSlots = 30, MiniRemoteColumns = 5;
+
+    /// <summary>
+    /// "Add to Mini Remote" submenu: first empty slot, or a numbered grid laid out like the
+    /// remote's own slots. RynthAi validates the item and reports the result in chat.
+    /// </summary>
+    private static void MiniRemoteMenu(InventoryItem it)
+    {
+        if (!ImGuiNET.ImGui.BeginMenu("Add to Mini Remote")) return;
+        if (ImGuiNET.ImGui.MenuItem("First empty slot"))
+            UI.Data.RynthAiCommands.ApplyRemoteCommand("remoteslot", "first " + it.Id.ToString(CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.Separator();
+        ImGuiNET.ImGui.TextDisabled("Or pick a slot (replaces what's there):");
+        for (int i = 0; i < MiniRemoteSlots; i++)
+        {
+            if (i % MiniRemoteColumns != 0) ImGuiNET.ImGui.SameLine();
+            string label = (i + 1).ToString("00", CultureInfo.InvariantCulture);
+            if (ImGuiNET.ImGui.Button(label, new Vector2(28, 0)))
+            {
+                UI.Data.RynthAiCommands.ApplyRemoteCommand("remoteslot",
+                    (i + 1).ToString(CultureInfo.InvariantCulture) + " " + it.Id.ToString(CultureInfo.InvariantCulture));
+                ImGuiNET.ImGui.CloseCurrentPopup();
+            }
+        }
+        ImGuiNET.ImGui.Separator();
+        ImGuiNET.ImGui.TextDisabled("Tip: you can also drag the item onto a slot.");
+        ImGuiNET.ImGui.EndMenu();
     }
 
     // ── Split dialog ────────────────────────────────────────────────────

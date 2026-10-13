@@ -28,9 +28,11 @@ internal static class EngineSettings
     private static bool _enableEngine = true;
     private static int _engineHookCount = int.MaxValue;
     private static bool _enableImGuiBackend = true;
+    private static bool _enablePluginOverlayWindows = true;
     private static bool _enableHangMinidump = true;
     private static bool _preventIdleLogoff = true;
     private static bool _closeOnServerDisconnect = true;
+    private static string _loggingLevel = "Info";
     private static DecalBridgeMode _decalBridgeMode = DecalBridgeMode.Auto;
     private static bool _decalInGameImGui = true;
     private static bool _decalStandDown = true;
@@ -48,6 +50,7 @@ internal static class EngineSettings
     // "ReportEndpoint": where "Report a problem" posts (Report/ProblemReport.cs); null = the built-in URL.
     // For testing only (https, or http to this PC); read only, like MaxHotReloads.
     private static string? _reportEndpoint;
+    private static Compatibility.AutoIdMode _autoIdMode = Compatibility.AutoIdPolicy.DefaultMode;
     private static bool _loaded;
 
     public static IReadOnlyList<string> PluginPaths
@@ -205,6 +208,19 @@ internal static class EngineSettings
         }
     }
 
+    /// <summary>When true (default) and the ImGui shell is off, plugins that export
+    /// RynthPluginRenderOverlay draw their extra ImGui windows (RynthAi: ILT Hub, Item Info)
+    /// beside the Avalonia UI. engine.json "EnablePluginOverlayWindows": false hides them.
+    /// Needs <see cref="EnableImGuiBackend"/>.</summary>
+    public static bool EnablePluginOverlayWindows
+    {
+        get
+        {
+            EnsureLoaded();
+            return _enablePluginOverlayWindows;
+        }
+    }
+
     /// <summary>When true, MainThreadHangWatchdog writes a minidump to
     /// Logs\dumps\ the first time AC's main thread is confirmed permanently
     /// wedged — a targeted post-mortem to replace always-on procdump (which
@@ -250,6 +266,18 @@ internal static class EngineSettings
             if (_closeOnServerDisconnect == value) return;
             _closeOnServerDisconnect = value;
             Save();
+        }
+    }
+
+    /// <summary>Engine log threshold from engine.json "LoggingLevel", written by the launcher's
+    /// Logging level box: Error, Warning, Info (default), Debug/Verbose or Trace. Parsed by
+    /// EntryPoint.ParseLoggingLevel at init; unknown values fall back to Info.</summary>
+    public static string LoggingLevel
+    {
+        get
+        {
+            EnsureLoaded();
+            return _loggingLevel;
         }
     }
 
@@ -418,6 +446,25 @@ internal static class EngineSettings
         }
     }
 
+    /// <summary>"AutoIdMode" in engine.json: "All", "Limited" (default) or "Off".
+    /// Which background appraisals the engine's AutoId sends (Compatibility/AutoIdPolicy.cs);
+    /// plugins' own RequestId calls are never limited by it. Set live with /rc autoid.</summary>
+    public static Compatibility.AutoIdMode AutoIdMode
+    {
+        get
+        {
+            EnsureLoaded();
+            return _autoIdMode;
+        }
+        set
+        {
+            EnsureLoaded();   // populate _pluginPaths before Save() rewrites the file
+            if (_autoIdMode == value) return;
+            _autoIdMode = value;
+            Save();
+        }
+    }
+
     public static void AddPluginPath(string path)
     {
         EnsureLoaded();
@@ -522,6 +569,12 @@ internal static class EngineSettings
                 _enableImGuiBackend = ibEl.GetBoolean();
             }
 
+            if (doc.RootElement.TryGetProperty("EnablePluginOverlayWindows", out var powEl) &&
+                (powEl.ValueKind == JsonValueKind.True || powEl.ValueKind == JsonValueKind.False))
+            {
+                _enablePluginOverlayWindows = powEl.GetBoolean();
+            }
+
             if (doc.RootElement.TryGetProperty("EnableHangMinidump", out var hmEl) &&
                 (hmEl.ValueKind == JsonValueKind.True || hmEl.ValueKind == JsonValueKind.False))
             {
@@ -568,6 +621,11 @@ internal static class EngineSettings
                 repEl.GetString() is { Length: > 0 } rep)
                 _reportEndpoint = rep.Trim();
 
+            if (doc.RootElement.TryGetProperty("AutoIdMode", out var aimEl) &&
+                aimEl.ValueKind == JsonValueKind.String &&
+                Compatibility.AutoIdPolicy.TryParseMode(aimEl.GetString(), out Compatibility.AutoIdMode aim))
+                _autoIdMode = aim;
+
             if (doc.RootElement.TryGetProperty("PreventIdleLogoff", out var pilEl) &&
                 (pilEl.ValueKind == JsonValueKind.True || pilEl.ValueKind == JsonValueKind.False))
             {
@@ -594,6 +652,14 @@ internal static class EngineSettings
                     if (el.ValueKind == JsonValueKind.String && el.GetString() is { Length: > 0 } hookName)
                         _disabledUiHooks.Add(hookName.Trim());
                 }
+            }
+
+            if (doc.RootElement.TryGetProperty("LoggingLevel", out var logLevelEl) &&
+                logLevelEl.ValueKind == JsonValueKind.String)
+            {
+                string? configuredLevel = logLevelEl.GetString();
+                if (!string.IsNullOrWhiteSpace(configuredLevel))
+                    _loggingLevel = configuredLevel;
             }
         }
         catch (Exception ex)
@@ -627,7 +693,7 @@ internal static class EngineSettings
         "EnableImGuiBackend", "EnableHangMinidump", "PreventIdleLogoff", "DecalBridge",
         "DecalInGameImGui", "DecalStandDown", "DisabledUiHooks", "ServerMessageStream",
         "FlightRecorder", "InsertReleasesUi", "IltServerNames", "IltHosts", "EnableLargeAddressAlignmentFix",
-        "MaxHotReloads", "ReportEndpoint", "CloseOnServerDisconnect",
+        "MaxHotReloads", "ReportEndpoint", "CloseOnServerDisconnect", "AutoIdMode", "EnablePluginOverlayWindows", "LoggingLevel",
     };
 
     private static void Save()
@@ -653,8 +719,11 @@ internal static class EngineSettings
                 w.WriteBoolean("EnableEngine", _enableEngine);
                 w.WriteNumber("EngineHookCount", _engineHookCount);
                 w.WriteBoolean("EnableImGuiBackend", _enableImGuiBackend);
+                w.WriteBoolean("EnablePluginOverlayWindows", _enablePluginOverlayWindows);
                 w.WriteBoolean("EnableHangMinidump", _enableHangMinidump);
                 w.WriteBoolean("PreventIdleLogoff", _preventIdleLogoff);
+                // Preserve the launcher-chosen level; dropping it here would reset logging to Info.
+                w.WriteString("LoggingLevel", _loggingLevel);
                 if (_decalBridgeMode != DecalBridgeMode.Auto)   // default: leave the file as it was
                     w.WriteString("DecalBridge", _decalBridgeMode.ToString());
                 if (!_decalInGameImGui)   // default true: leave the file as it was
@@ -684,6 +753,8 @@ internal static class EngineSettings
                     w.WriteString("ReportEndpoint", _reportEndpoint);
                 WriteStringList(w, "IltServerNames", _iltServerNames);   // null (not in the file): left out
                 WriteStringList(w, "IltHosts", _iltHosts);
+                if (_autoIdMode != Compatibility.AutoIdPolicy.DefaultMode)   // default: leave the file as it was
+                    w.WriteString("AutoIdMode", _autoIdMode.ToString());
                 w.WriteEndObject();
             }
 

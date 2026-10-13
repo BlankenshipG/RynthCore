@@ -18,7 +18,7 @@
 //                 the buttons above it.
 //    drawers      tabs on the left edge (DashboardDrawers.cs), one open at a
 //                 time, a window of their own beside the dashboard: Ranges
-//                 (RangesSlideOut.cs), Loaded files and Patrol
+//                 (RangesSlideOut.cs), Loaded files, Patrol and Mini Remote
 //                 (RynthAiFace.Drawers.cs). Everything that slides out goes
 //                 left; only the bars stay at the bottom (Tom 2026-10-05).
 //  Minimized keeps the title row, the control row and the bars. The window's
@@ -27,6 +27,17 @@
 //  string preformatted); clicks: RynthAiCommands.
 //
 //  Chromeless (like the Avalonia face): the title row is the drag surface.
+//
+//  Size: the dashboard's panel text size (PanelTextScale.Get(Title): its own
+//  row in Settings > Display, else All Panels). The host draws the face with
+//  the fonts baked for that step (ImGuiFonts.CurrentStep, the nearest baked
+//  one until a re-bake lands) and every box here is multiplied by that same
+//  step's factor (Px), so text, icons and boxes grow together; size 0 is the
+//  plain pixel layout. The title row has no host title bar, so it carries the
+//  control: Ctrl+wheel over it steps the size, right-click opens the size
+//  popup (ImGuiPanelHost.TextSizeRows). A size change scales the window's
+//  width with it and fits the height to the content (MeasureAndFit).
+//
 //  AC thread only; no per-frame string building except the FPS/uptime footer,
 //  which is cached until its value changes.
 // ============================================================================
@@ -76,31 +87,54 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     // The drawers on the dashboard's left edge (their own window, placed against this one).
     private readonly DashboardDrawers _drawers;
     private readonly PatrolDrawer _patrol = new();
+    private readonly RemoteDrawer _remote = new();
     // This frame's data, for the drawers.
     private RynthAiView? _view;
     private RynthAiSnapshot _raw = Empty;
     // Picker toggle: ImGui closes a popup on the press outside it, so remember
     // whether it was showing when the selector press began (a second click closes).
-    private readonly int[] _pickerShownFrame = { -10, -10, -10, -10 };
-    private readonly bool[] _pressedWhileOpen = new bool[4];
+    private readonly int[] _pickerShownFrame = { -10, -10, -10, -10, -10 };
+    private readonly bool[] _pressedWhileOpen = new bool[5];
     // The content's height (logical units, body padding included), measured each
     // frame: the window's minimum height. _fit: resize the window to it once.
     private float _contentHeight;
     private bool _fit;
+    // The host's resize grip, which keeps its own size (it is not the panel's text).
     private const float GripRoom = 12;
+
+    // This frame's size factor (PanelTextScale.Factor of the step the fonts are drawn at); 1 at size 0.
+    // Static: the popups' and drawers' static helpers read it too. AC thread.
+    private static float _k = 1f;
+    /// <summary>A layout length (pixels at size 0) at the dashboard's size.</summary>
+    private static float Px(float v) => v * _k;
+    // The size factor the docked window was last fitted at and its width then (logical units):
+    // a size change scales the width from there (not from a width the new minimum already grew).
+    private float _fitK, _fitWidth;
+    private const string SizePopupId = "##dash_size";
+
+    /// <summary>The factor of the step the host draws this panel's fonts at (ImGuiPanelHost.DrawPanel sets the same step).</summary>
+    private static float SizeFactor() => PanelTextScale.Factor(ImGuiFonts.BakedStepNear(PanelTextScale.Get(Title)));
 
     public RynthAiFace()
     {
         // Tab order top to bottom; the first one saved open wins at load.
-        _drawers = new DashboardDrawers(new RangesSlideOut(), new FilesDrawer(this), _patrol);
+        _drawers = new DashboardDrawers(new RangesSlideOut(), new FilesDrawer(this), _patrol, _remote);
     }
 
-    public Vector2? MinSize => new Vector2(MinWidth, _contentHeight > 0 ? _contentHeight
-        : RynthAiDashboardState.Minimized ? 54 : 180);
+    public Vector2? MinSize
+    {
+        get
+        {
+            float k = SizeFactor();
+            return new Vector2(MinWidth * k, _contentHeight > 0 ? _contentHeight
+                : (RynthAiDashboardState.Minimized ? 54 : 180) * k);
+        }
+    }
 
     public void OnShown()
     {
         UiSources.RynthAi.Subscribe();
+        UiSources.RynthSortWatch.Subscribe();   // the Sort toggle, while RynthSort is loaded
         UiSources.RynthAi.RequestRefresh();
         _fit = true; // drop the empty space a taller saved size leaves under the content
     }
@@ -108,6 +142,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     public void OnHidden()
     {
         UiSources.RynthAi.Unsubscribe();
+        UiSources.RynthSortWatch.Unsubscribe();
         if (_patrolOpen) { UiSources.Patrol.Unsubscribe(); _patrolOpen = false; }
         _drawers.Detach();
     }
@@ -121,31 +156,45 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         _view = view;
         _raw = raw;
         uint boxBg = (C(0xFF0A121A) & 0x00FFFFFF) | ((uint)(view?.PanelAlpha ?? 242) << 24);
-
-        Vector2 start = ImGuiNET.ImGui.GetCursorScreenPos();
-        float x0 = start.X;
-        float width = ImGuiNET.ImGui.GetContentRegionAvail().X;
-
-        TitleRow(raw, x0, width, minimized);
-        Gap(4);
-        // Popped out (no drawers there): the Profile/Nav/Loot/Meta pickers inline while expanded
-        // (the caret on the control row). Docked they are the Loaded files drawer.
-        if (popped && !minimized && RynthAiDashboardState.FilesOpen)
+        // The host set the step these fonts are drawn at; the boxes take the same step's factor.
+        _k = PanelTextScale.Factor(ImGuiFonts.CurrentStep);
+        // Enlarged: tooltips and menus opened from the dashboard at its size too. (At size 0 the
+        // default font already is Ui11: nothing is pushed, so nothing changes.)
+        bool pushFont = ImGuiFonts.CurrentStep > 0;
+        if (pushFont) ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
+        try
         {
-            HeaderGrid(view, raw, x0, width);
+            Vector2 start = ImGuiNET.ImGui.GetCursorScreenPos();
+            float x0 = start.X;
+            float width = ImGuiNET.ImGui.GetContentRegionAvail().X;
+
+            TitleRow(raw, x0, width, minimized);
             Gap(4);
+            // Popped out (no drawers there): the Profile/Nav/Loot/Meta pickers inline while expanded
+            // (the caret on the control row). Docked they are the Loaded files drawer.
+            if (popped && !minimized && RynthAiDashboardState.FilesOpen)
+            {
+                HeaderGrid(view, raw, x0, width);
+                Gap(4);
+            }
+            ControlRow(view, raw, x0, width, minimized, popped, boxBg);
+            if (!minimized)
+            {
+                Gap(4);
+                Launchers(x0, width);
+                Gap(6);
+                Footer(view, x0, width);
+            }
+            Bars(view, raw, x0, width, boxBg);
+            PatrolPopup();
+            CharMenu();
+            SizePopup();
+            MeasureAndFit(start.Y);
         }
-        ControlRow(view, raw, x0, width, minimized, popped, boxBg);
-        if (!minimized)
+        finally
         {
-            Gap(4);
-            Launchers(x0, width);
-            Gap(6);
-            Footer(view, x0, width);
+            if (pushFont) ImGuiNET.ImGui.PopFont();
         }
-        Bars(view, raw, x0, width, boxBg);
-        PatrolPopup();
-        MeasureAndFit(start.Y);
         // Last: a window of its own, placed against this one's rect (hidden popped out).
         _drawers.Draw();
     }
@@ -153,6 +202,9 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     /// <summary>
     /// Records the content height as the window's minimum (so the bars at the
     /// bottom are never cut off) and, after a toggle, fits the window to it.
+    /// After a size change the width scales with the size (from the width it had
+    /// at the old size), never wider than the screen, and the window is kept on
+    /// the screen.
     /// </summary>
     private void MeasureAndFit(float startY)
     {
@@ -161,11 +213,30 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         float place = ImGuiPanelHost.PlacementScale();
         // + room for the host's resize grip, which is painted over the body's bottom-right corner.
         _contentHeight = MathF.Ceiling(px / place) + GripRoom;
-        if (_fit && !ImGuiPopOuts.InPopOutFrame)
+        // Popped out the window is the OS window's (sized by the player); a size change made
+        // meanwhile is fitted when it docks back (_fitK still holds the docked size).
+        if (ImGuiPopOuts.InPopOutFrame) return;
+
+        float width = ImGuiNET.ImGui.GetWindowWidth() / place;
+        if (_fitK > 0 && _k != _fitK)
         {
             _fit = false;
-            ImGuiPanelHost.RequestSize(Title, new Vector2(ImGuiNET.ImGui.GetWindowWidth() / place, _contentHeight));
+            width = _fitWidth * (_k / _fitK);
+            float screenW = ImGuiNET.ImGui.GetIO().DisplaySize.X / place;
+            if (screenW > 1) width = MathF.Min(width, screenW);
+            width = MathF.Max(width, MinWidth * _k);
+            ImGuiPanelHost.RequestSize(Title, new Vector2(width, _contentHeight));
+            // Applied after the size, clamped to the screen at it: a bigger dashboard near the right or
+            // bottom edge moves in rather than running off (saved with the new size, like the bar's clamp).
+            ImGuiPanelHost.RequestPos(Title, ImGuiNET.ImGui.GetWindowPos() / place);
         }
+        else if (_fit)
+        {
+            _fit = false;
+            ImGuiPanelHost.RequestSize(Title, new Vector2(width, _contentHeight));
+        }
+        _fitK = _k;
+        _fitWidth = width;
     }
 
     // ── Title row: "R" + "YNTH" | chips (drag surface) ──────
@@ -175,18 +246,19 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         float y = ImGuiNET.ImGui.GetCursorScreenPos().Y;
         const int chips = 7;
-        const float chipW = 18, chipH = 16, chipGap = 2;
+        float chipW = Px(18), chipH = Px(16), chipGap = Px(2), chipRound = Px(2);
         float chipsW = chips * chipW + (chips - 1) * chipGap;
-        float rowH = 20;
+        float rowH = Px(20);
 
         // Drag surface: everything left of the chips.
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y));
         ImGuiNET.ImGui.InvisibleButton("##dash_drag", new Vector2(Math.Max(1, width - chipsW), rowH));
         ImGuiPanelHost.DragWindowWithLastItem();
+        ImGuiNET.ImGui.SetItemTooltip(DragTip);
 
         ImFontPtr title = ImGuiFonts.Get(UiFont.Dash14);
         float ty = y + (rowH - title.FontSize) * 0.5f;
-        dl.PushClipRect(new Vector2(x0, y), new Vector2(x0 + Math.Max(1, width - chipsW - 4), y + rowH), true);
+        dl.PushClipRect(new Vector2(x0, y), new Vector2(x0 + Math.Max(1, width - chipsW - Px(4)), y + rowH), true);
         dl.AddText(title, title.FontSize, new Vector2(x0, ty), Teal, "R");
         float rw = CalcWidth(title, "R");
         dl.AddText(title, title.FontSize, new Vector2(x0 + rw, ty), White, "YNTH");
@@ -198,7 +270,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         const UiFont chipFont = UiFont.Dash11;
 
         bool target = RynthAiDashboardState.ShowTargetBar;
-        if (IconButton("##chip_target", new Vector2(cx, cy), chip, PhosphorIcons.Crosshair, chipFont, BtnFill, target ? Teal : Mute, BtnBord, 2))
+        if (IconButton("##chip_target", new Vector2(cx, cy), chip, PhosphorIcons.Crosshair, chipFont, BtnFill, target ? Teal : Mute, BtnBord, chipRound))
         {
             RynthAiDashboardState.SetShowTargetBar(!target);
             _fit = true;
@@ -208,7 +280,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             : "Target bar off. Click to show the target's name and health at the bottom.");
         cx += chipW + chipGap;
         bool vitals = RynthAiDashboardState.ShowVitals;
-        if (IconButton("##chip_vitals", new Vector2(cx, cy), chip, PhosphorIcons.Heartbeat, chipFont, BtnFill, vitals ? Teal : Mute, BtnBord, 2))
+        if (IconButton("##chip_vitals", new Vector2(cx, cy), chip, PhosphorIcons.Heartbeat, chipFont, BtnFill, vitals ? Teal : Mute, BtnBord, chipRound))
         {
             RynthAiDashboardState.SetShowVitals(!vitals);
             _fit = true;
@@ -218,20 +290,20 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             : "Player vitals off. Click to show your health, stamina and mana at the bottom.");
         cx += chipW + chipGap;
         if (IconButton("##chip_lock", new Vector2(cx, cy), chip, raw.IsLocked ? PhosphorIcons.Lock : PhosphorIcons.LockOpen,
-                chipFont, BtnFill, raw.IsLocked ? Amber : Mute, BtnBord, 2))
+                chipFont, BtnFill, raw.IsLocked ? Amber : Mute, BtnBord, chipRound))
             RynthAiCommands.TogglePanelLock();
         ImGuiNET.ImGui.SetItemTooltip(raw.IsLocked ? "Locked. Click to unlock the dashboard." : "Click to lock the dashboard in place.");
         cx += chipW + chipGap;
-        if (IconButton("##chip_minus", new Vector2(cx, cy), chip, PhosphorIcons.Minus, chipFont, BtnFill, Mute, BtnBord, 2))
+        if (IconButton("##chip_minus", new Vector2(cx, cy), chip, PhosphorIcons.Minus, chipFont, BtnFill, Mute, BtnBord, chipRound))
             RynthAiCommands.AdjustOpacity(-0.1f);
         ImGuiNET.ImGui.SetItemTooltip("More transparent");
         cx += chipW + chipGap;
-        if (IconButton("##chip_plus", new Vector2(cx, cy), chip, PhosphorIcons.Plus, chipFont, BtnFill, Mute, BtnBord, 2))
+        if (IconButton("##chip_plus", new Vector2(cx, cy), chip, PhosphorIcons.Plus, chipFont, BtnFill, Mute, BtnBord, chipRound))
             RynthAiCommands.AdjustOpacity(0.1f);
         ImGuiNET.ImGui.SetItemTooltip("More opaque");
         cx += chipW + chipGap;
         if (IconButton("##chip_min", new Vector2(cx, cy), chip,
-                minimized ? PhosphorIcons.ArrowsOutLineVertical : PhosphorIcons.ArrowsInLineVertical, chipFont, BtnFill, Mute, BtnBord, 2))
+                minimized ? PhosphorIcons.ArrowsOutLineVertical : PhosphorIcons.ArrowsInLineVertical, chipFont, BtnFill, Mute, BtnBord, chipRound))
         {
             RynthAiDashboardState.SetMinimized(!minimized);
             _fit = true;   // the window fits the other mode's content next frame
@@ -240,68 +312,122 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         cx += chipW + chipGap;
         if (PanelRouter.CanPopOut)
         {
-            if (IconButton("##chip_dock", new Vector2(cx, cy), chip, ImGuiPanelHost.PopOutGlyph, chipFont, BtnFill, Mute, BtnBord, 2))
+            if (IconButton("##chip_dock", new Vector2(cx, cy), chip, ImGuiPanelHost.PopOutGlyph, chipFont, BtnFill, Mute, BtnBord, chipRound))
                 ImGuiPanelHost.TogglePopOut(Title);
             ImGuiNET.ImGui.SetItemTooltip(ImGuiPanelHost.PopOutTooltip);
+        }
+
+        // The size, from the title row (no host title bar here): Ctrl+wheel steps it, right-click
+        // opens the size popup. The whole row, chips included; the body below keeps its wheel.
+        if (ImGuiNET.ImGui.IsWindowHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem)
+            && ImGuiNET.ImGui.IsMouseHoveringRect(new Vector2(x0, y), new Vector2(x0 + width, y + rowH), false))
+        {
+            ImGuiIOPtr io = ImGuiNET.ImGui.GetIO();
+            if (io.KeyCtrl && io.MouseWheel != 0f)
+                PanelTextScale.SetForWindow(Title, PanelTextScale.Get(Title) + (io.MouseWheel > 0f ? 1 : -1));
+            if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Right))
+                ImGuiNET.ImGui.OpenPopup(SizePopupId);
         }
 
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y + rowH));
     }
 
-    // ── Header: macro + state (40%) | Profile/Nav/Loot/Meta pickers (60%) ──
+    private const string DragTip = "Drag to move the dashboard.\nRight-click: dashboard size. Ctrl+wheel here: bigger or smaller.";
+
+    /// <summary>
+    /// The title row's right-click popup: the dashboard's size (its panel text size, the same
+    /// setting as Settings > Display > RynthAi Dashboard, or All Panels until it is set on its own).
+    /// </summary>
+    private static void SizePopup()
+    {
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.PopupBg, ShellBg);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, BtnBord);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(Px(8), Px(8)));
+        bool open = ImGuiNET.ImGui.BeginPopup(SizePopupId);
+        ImGuiNET.ImGui.PopStyleVar();
+        ImGuiNET.ImGui.PopStyleColor(2);
+        if (!open) return;
+        try
+        {
+            ImGuiPanelHost.TextSizeRows(Title, _k, "Dashboard size");
+        }
+        finally
+        {
+            ImGuiNET.ImGui.EndPopup();
+        }
+    }
+
+    // ── Header: macro + state (40%) | Profile/Nav/Loot/Meta/Buffs pickers (60%) ──
 
     private void HeaderGrid(RynthAiView? view, RynthAiSnapshot raw, float x0, float width)
     {
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
-        float y0 = ImGuiNET.ImGui.GetCursorScreenPos().Y + 2;
+        float y0 = ImGuiNET.ImGui.GetCursorScreenPos().Y + Px(2);
         float leftW = width * 0.4f;
 
         // Left: Meta State / Bot Activity (the macro start/stop is the control row's first square).
         ImFontPtr f10 = ImGuiFonts.Get(UiFont.Dash10);
         float ly = y0;
         dl.AddText(f10, f10.FontSize, new Vector2(x0, ly), Mute, "Meta State:");
-        dl.AddText(f10, f10.FontSize, new Vector2(x0, ly + f10.FontSize + 1), Amber, view?.MetaStateText ?? "Default");
-        ly += 2 * (f10.FontSize + 1) + 4;
+        dl.AddText(f10, f10.FontSize, new Vector2(x0, ly + f10.FontSize + Px(1)), Amber, view?.MetaStateText ?? "Default");
+        ly += 2 * (f10.FontSize + Px(1)) + Px(4);
         dl.AddText(f10, f10.FontSize, new Vector2(x0, ly), Mute, "Bot Activity:");
-        dl.AddText(f10, f10.FontSize, new Vector2(x0, ly + f10.FontSize + 1), Amber, view?.BotActivityText ?? "Idle");
-        float leftBottom = ly + 2 * (f10.FontSize + 1);
+        dl.AddText(f10, f10.FontSize, new Vector2(x0, ly + f10.FontSize + Px(1)), Amber, view?.BotActivityText ?? "Idle");
+        float leftBottom = ly + 2 * (f10.FontSize + Px(1));
 
-        // Right: four selector rows (label 36 px, picker fills, spacing 3).
+        // Right: five selector rows (label 36 px, picker fills, spacing 3; x the size).
         float rx = x0 + leftW, rw = width - leftW, ry = y0;
         // The fold arrow sits at the end of the Profile row, where it always fits.
-        const float foldW = 18f;
-        Selector(0, "Profile:", view?.ProfileText ?? "Default", raw.Profiles, raw.SelectedProfileIdx, 3, rx, ry, rw - foldW - 2, null);
-        if (IconButton("##files_fold", new Vector2(rx + rw - foldW, ry), new Vector2(foldW, 16), PhosphorIcons.CaretUp, UiFont.Dash11, BtnFill, Mute, BtnBord, 2))
+        float foldW = Px(18f), selH = Px(16), selStep = Px(16 + 3);
+        Selector(0, "Profile:", view?.ProfileText ?? "Default", raw.Profiles, raw.SelectedProfileIdx, 3, rx, ry, rw - foldW - Px(2), null);
+        if (IconButton("##files_fold", new Vector2(rx + rw - foldW, ry), new Vector2(foldW, selH), PhosphorIcons.CaretUp, UiFont.Dash11, BtnFill, Mute, BtnBord, Px(2)))
             RynthAiDashboardState.SetFilesOpen(false);
         ImGuiNET.ImGui.SetItemTooltip("Fold the loaded files into one line");
-        ry += 16 + 3;
+        ry += selStep;
         Selector(1, "Nav:", view?.NavText ?? "None", raw.NavProfiles, raw.SelectedNavIdx, 0, rx, ry, rw, null);
-        ry += 16 + 3;
+        ry += selStep;
         Selector(2, "Loot:", view?.LootText ?? "None", raw.LootProfiles, raw.SelectedLootIdx, 1, rx, ry, rw, raw);
-        ry += 16 + 3;
+        ry += selStep;
         Selector(3, "Meta:", view?.MetaText ?? "None", raw.MetaProfiles, raw.SelectedMetaIdx, 2, rx, ry, rw, null);
-        ry += 16;
+        ry += selStep;
+        Selector(4, "Buffs:", view?.BuffText ?? "Built-in", raw.BuffProfiles, raw.SelectedBuffIdx, 4, rx, ry, rw, null, spellsButton: true);
+        ry += selH;
 
-        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, Math.Max(leftBottom, ry) + 4));
+        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, Math.Max(leftBottom, ry) + Px(4)));
     }
 
-    private static readonly string[] SelectorIds = { "##sel_profile", "##sel_nav", "##sel_loot", "##sel_meta" };
-    private static readonly string[] PickerIds = { "##pick_profile", "##pick_nav", "##pick_loot", "##pick_meta" };
+    private static readonly string[] SelectorIds = { "##sel_profile", "##sel_nav", "##sel_loot", "##sel_meta", "##sel_buff" };
+    private static readonly string[] PickerIds = { "##pick_profile", "##pick_nav", "##pick_loot", "##pick_meta", "##pick_buff" };
     private static readonly string[] NoneItems = { "None" };
 
+    /// <summary>
+    /// One file picker row. <paramref name="kind"/> is RynthPluginSelectProfile's list (0 nav,
+    /// 1 loot, 2 meta, 3 settings profile, 4 buff profile). <paramref name="lootEdit"/> adds the
+    /// Loot Editor button, <paramref name="spellsButton"/> the RynthAi Spells window button.
+    /// </summary>
     private void Selector(int slot, string label, string text, string[] items, int selected, int kind,
-        float x, float y, float w, RynthAiSnapshot? lootEdit)
+        float x, float y, float w, RynthAiSnapshot? lootEdit, bool spellsButton = false)
     {
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         ImFontPtr f10 = ImGuiFonts.Get(UiFont.Dash10), f9 = ImGuiFonts.Get(UiFont.Dash9);
-        dl.AddText(f10, f10.FontSize, new Vector2(x, y + (16 - f10.FontSize) * 0.5f), Mute, label);
+        float rowH = Px(16), round = Px(2);
+        dl.AddText(f10, f10.FontSize, new Vector2(x, y + (rowH - f10.FontSize) * 0.5f), Mute, label);
 
         float editW = 0;
+        if (spellsButton)
+        {
+            editW = Px(18);
+            var ep = new Vector2(x + w - editW, y);
+            if (IconButton("##buff_spells", ep, new Vector2(editW, rowH), PhosphorIcons.Sparkle, UiFont.Dash11, SelectorBg, Mute, 0, round))
+                RynthAiCommands.ApplyRemoteCommand("spells", "toggle");
+            ImGuiNET.ImGui.SetItemTooltip("RynthAi Spells: browse the spell list and build buff profiles.");
+            editW += Px(3);
+        }
         if (lootEdit != null)
         {
-            editW = 18;
+            editW = Px(18);
             var ep = new Vector2(x + w - editW, y);
-            if (IconButton("##loot_edit", ep, new Vector2(editW, 16), PhosphorIcons.TreasureChest, UiFont.Dash11, SelectorBg, Mute, 0, 2))
+            if (IconButton("##loot_edit", ep, new Vector2(editW, rowH), PhosphorIcons.TreasureChest, UiFont.Dash11, SelectorBg, Mute, 0, round))
             {
                 string path = !string.IsNullOrEmpty(lootEdit.VendorProfilePath) ? lootEdit.VendorProfilePath : lootEdit.CurrentLootPath;
                 // The in-game Loot Editor panel. The external editor is one click away on the
@@ -309,29 +435,29 @@ internal sealed partial class RynthAiFace : IImGuiPanel
                 LootEditorFace.ToggleFor(path);
             }
             ImGuiNET.ImGui.SetItemTooltip("Loot Editor: the loot profile in use, or the open vendor's AutoVendor profile.");
-            editW += 3;
+            editW += Px(3);
         }
 
-        var pos = new Vector2(x + 36, y);
-        var size = new Vector2(Math.Max(20, w - 36 - editW), 16);
+        var pos = new Vector2(x + Px(36), y);
+        var size = new Vector2(Math.Max(Px(20), w - Px(36) - editW), rowH);
         ImGuiNET.ImGui.SetCursorScreenPos(pos);
         bool clicked = ImGuiNET.ImGui.InvisibleButton(SelectorIds[slot], size);
         bool hovered = ImGuiNET.ImGui.IsItemHovered();
         if (ImGuiNET.ImGui.IsItemActivated())
             _pressedWhileOpen[slot] = ImGuiNET.ImGui.GetFrameCount() - _pickerShownFrame[slot] <= 1;
         bool open = ImGuiNET.ImGui.IsPopupOpen(PickerIds[slot]);
-        dl.AddRectFilled(pos, pos + size, hovered ? Lighten(SelectorBg) : SelectorBg, 2);
-        dl.AddRect(pos, pos + size, BtnBord, 2);
-        const float arrowW = 12;
-        dl.PushClipRect(pos, pos + size - new Vector2(arrowW + 4, 0), true);
-        dl.AddText(f9, f9.FontSize, pos + new Vector2(5, (16 - f9.FontSize) * 0.5f), White, text);
+        dl.AddRectFilled(pos, pos + size, hovered ? Lighten(SelectorBg) : SelectorBg, round);
+        dl.AddRect(pos, pos + size, BtnBord, round);
+        float arrowW = Px(12);
+        dl.PushClipRect(pos, pos + size - new Vector2(arrowW + Px(4), 0), true);
+        dl.AddText(f9, f9.FontSize, pos + new Vector2(Px(5), (rowH - f9.FontSize) * 0.5f), White, text);
         dl.PopClipRect();
         PhosphorIcons.DrawCentered(dl, f10, open ? PhosphorIcons.CaretUp : PhosphorIcons.CaretDown,
-            new Vector2(pos.X + size.X - arrowW - 3, y), new Vector2(arrowW, 16), Mute);
+            new Vector2(pos.X + size.X - arrowW - Px(3), y), new Vector2(arrowW, rowH), Mute);
 
         if (clicked && !_pressedWhileOpen[slot] && !open)
         {
-            ImGuiNET.ImGui.SetNextWindowPos(new Vector2(pos.X, pos.Y + size.Y + 2));
+            ImGuiNET.ImGui.SetNextWindowPos(new Vector2(pos.X, pos.Y + size.Y + Px(2)));
             ImGuiNET.ImGui.OpenPopup(PickerIds[slot]);
         }
         Picker(slot, items.Length == 0 ? NoneItems : items, Math.Clamp(selected, 0, Math.Max(0, items.Length - 1)), kind, items.Length > 0);
@@ -339,16 +465,16 @@ internal sealed partial class RynthAiFace : IImGuiPanel
 
     private void Picker(int slot, string[] items, int selected, int kind, bool real)
     {
-        // Same look as the Avalonia picker: 200 wide, teal border, radius 6.
-        float maxH = Math.Min(items.Length * 26 + 12, Math.Max(60,
-            ImGuiNET.ImGui.GetIO().DisplaySize.Y - ImGuiNET.ImGui.GetCursorScreenPos().Y - 20));
-        ImGuiNET.ImGui.SetNextWindowSize(new Vector2(200, maxH));
+        // Same look as the Avalonia picker: 200 wide, teal border, radius 6 (x the size).
+        float maxH = Math.Min(items.Length * Px(26) + Px(12), Math.Max(Px(60),
+            ImGuiNET.ImGui.GetIO().DisplaySize.Y - ImGuiNET.ImGui.GetCursorScreenPos().Y - Px(20)));
+        ImGuiNET.ImGui.SetNextWindowSize(new Vector2(Px(200), maxH));
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.PopupBg, ShellBg);
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, Teal);
-        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.PopupRounding, 6f);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.PopupRounding, Px(6f));
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.PopupBorderSize, 1f);
-        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(4, 4));
-        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(2, 2));
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(Px(4), Px(4)));
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(Px(2), Px(2)));
         bool open = ImGuiNET.ImGui.BeginPopup(PickerIds[slot]);
         ImGuiNET.ImGui.PopStyleVar(4);
         ImGuiNET.ImGui.PopStyleColor(2);
@@ -361,7 +487,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             ImGuiNET.ImGui.PushID(i);
             bool isSel = i == selected;
             Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
-            if (ItemButton("##item", p, new Vector2(w, 24), items[i], isSel ? TealSoft : BtnFill, isSel ? Teal : White))
+            if (ItemButton("##item", p, new Vector2(w, Px(24)), items[i], isSel ? TealSoft : BtnFill, isSel ? Teal : White))
             {
                 if (real) RynthAiCommands.SelectProfile(kind, i);
                 ImGuiNET.ImGui.CloseCurrentPopup();
@@ -377,16 +503,16 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         ImGuiNET.ImGui.SetCursorScreenPos(pos);
         bool clicked = ImGuiNET.ImGui.InvisibleButton(id, size);
         uint fill = ImGuiNET.ImGui.IsItemActive() ? Darken(bg) : ImGuiNET.ImGui.IsItemHovered() ? Lighten(bg) : bg;
-        dl.AddRectFilled(pos, pos + size, fill, 3);
-        dl.AddRect(pos, pos + size, BtnBord, 3);
+        dl.AddRectFilled(pos, pos + size, fill, Px(3));
+        dl.AddRect(pos, pos + size, BtnBord, Px(3));
         ImFontPtr f = ImGuiFonts.Get(UiFont.Dash11);
         dl.PushClipRect(pos, pos + size, true);
-        dl.AddText(f, f.FontSize, pos + new Vector2(8, (size.Y - f.FontSize) * 0.5f), fg, text);
+        dl.AddText(f, f.FontSize, pos + new Vector2(Px(8), (size.Y - f.FontSize) * 0.5f), fg, text);
         dl.PopClipRect();
         return clicked;
     }
 
-    // ── Control row: (ON/OFF) combat, buffing, nav, looting, meta ... force rebuff ──
+    // ── Control row: (ON/OFF) combat, buffing, nav, looting, meta, [sort] ... force rebuff ──
 
     private const float Square = 24, SquareStep = 27, RowPad = 3;
 
@@ -394,66 +520,80 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     {
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         float top = ImGuiNET.ImGui.GetCursorScreenPos().Y;
-        float bottom = top + Square + 2 * RowPad;
-        dl.AddRectFilled(new Vector2(x0, top), new Vector2(x0 + width, bottom), boxBg, 3);
-        dl.AddRect(new Vector2(x0, top), new Vector2(x0 + width, bottom), BtnBord, 3);
+        float sq = Px(Square), sqStep = Px(SquareStep), round = Px(3);
+        var square = new Vector2(sq, sq);
+        float bottom = top + sq + 2 * Px(RowPad);
+        dl.AddRectFilled(new Vector2(x0, top), new Vector2(x0 + width, bottom), boxBg, round);
+        dl.AddRect(new Vector2(x0, top), new Vector2(x0 + width, bottom), BtnBord, round);
 
-        float x = x0 + 5, y = top + RowPad;
+        float x = x0 + Px(5), y = top + Px(RowPad);
         // Macro start/stop: a square like the toggles, green with a Stop glyph while running.
         {
             bool on = raw.MacroRunning;
-            if (IconButton("##macro", new Vector2(x, y), new Vector2(Square, Square), on ? PhosphorIcons.Stop : PhosphorIcons.Play,
-                    UiFont.Dash14, on ? MacroRun : BarBg, on ? White : Mute, on ? Green : BtnBord, 3))
+            if (IconButton("##macro", new Vector2(x, y), square, on ? PhosphorIcons.Stop : PhosphorIcons.Play,
+                    UiFont.Dash14, on ? MacroRun : BarBg, on ? White : Mute, on ? Green : BtnBord, round))
                 RynthAiCommands.ToggleMacro();
             ImGuiNET.ImGui.SetItemTooltip(on ? "Macro running. Click to stop it." : "Macro stopped. Click to start it.");
-            x += SquareStep + 6;
+            x += sqStep + Px(6);
         }
         Toggle("##t_combat", PhosphorIcons.Sword, raw.CombatEnabled, 0, new Vector2(x, y), "Combat");
-        x += SquareStep;
+        x += sqStep;
         Toggle("##t_buff", PhosphorIcons.Sparkle, raw.BuffingEnabled, 1, new Vector2(x, y), "Buffing");
-        x += SquareStep;
+        x += sqStep;
         Toggle("##t_nav", PhosphorIcons.SneakerMove, raw.NavigationEnabled, 2, new Vector2(x, y), "Navigation");
-        x += SquareStep;
+        x += sqStep;
         Toggle("##t_loot", PhosphorIcons.Bag, raw.LootingEnabled, 3, new Vector2(x, y), "Looting");
-        x += SquareStep;
+        x += sqStep;
         Toggle("##t_meta", PhosphorIcons.Code, raw.MetaEnabled, 4, new Vector2(x, y), "Meta (the macro rules)");
-        x += SquareStep;
+        x += sqStep;
+        // RynthSort's auto-sort, when RynthSort is loaded and knows the character.
+        int sort = RynthSortWatch.State;
+        if (sort >= 0)
+        {
+            bool on = sort == 1;
+            if (IconButton("##t_sort", new Vector2(x, y), square, PhosphorIcons.SortAscending, UiFont.Dash14,
+                    on ? TealSoft : BarBg, on ? Teal : Mute, on ? Teal : BtnBord, round))
+                RynthSortCommands.SetAuto(!on);
+            ImGuiNET.ImGui.SetItemTooltip(on ? "Auto-sort (RynthSort) on. Click to turn it off." : "Auto-sort (RynthSort) off. Click to turn it on.");
+            x += sqStep;
+        }
 
         // Popped out: the pickers fold out from a caret left of FR (expanded mode, while folded away).
         // Docked they are the Loaded files drawer on the left edge.
-        const float caretW = 16f;
+        float caretW = Px(16f);
         bool caret = popped && !minimized && !RynthAiDashboardState.FilesOpen;
-        float frX = x0 + width - 5 - Square;
+        float frX = x0 + width - Px(5) - sq;
         if (caret)
         {
-            if (IconButton("##files_open", new Vector2(frX - 4 - caretW, y), new Vector2(caretW, Square), PhosphorIcons.CaretDown,
-                    UiFont.Dash11, BtnFill, Teal, BtnBord, 2))
+            if (IconButton("##files_open", new Vector2(frX - Px(4) - caretW, y), new Vector2(caretW, sq), PhosphorIcons.CaretDown,
+                    UiFont.Dash11, BtnFill, Teal, BtnBord, Px(2)))
                 RynthAiDashboardState.SetFilesOpen(true);
             ImGuiNET.ImGui.SetItemTooltip("Profile: " + (view?.ProfileText ?? "Default") + "\nNav: " + (view?.NavText ?? "None") +
                 "\nLoot: " + (view?.LootText ?? "None") + "\nMeta: " + (view?.MetaText ?? "None") +
-                "\n\nClick to show the Profile, Nav, Loot and Meta pickers.");
+                "\nBuffs: " + (view?.BuffText ?? "Built-in") +
+                "\n\nClick to show the Profile, Nav, Loot, Meta and Buffs pickers.");
         }
 
         // What the bot is doing, always in view (every mode, minimized too): between the toggles and FR.
         {
             ImFontPtr af = ImGuiFonts.Get(UiFont.Dash10);
-            float ax = x + 2, aRight = (caret ? frX - 4 - caretW : frX) - 6;
-            if (aRight - ax > 20)
+            float ax = x + Px(2), aRight = (caret ? frX - Px(4) - caretW : frX) - Px(6);
+            if (aRight - ax > Px(20))
             {
                 string activity = view?.BotActivityText ?? "Idle";
-                float ay = y + (Square - af.FontSize) * 0.5f;
-                dl.PushClipRect(new Vector2(ax, y), new Vector2(aRight, y + Square), true);
+                float ay = y + (sq - af.FontSize) * 0.5f;
+                dl.PushClipRect(new Vector2(ax, y), new Vector2(aRight, y + sq), true);
                 dl.AddText(af, af.FontSize, new Vector2(ax, ay), Amber, activity);
                 dl.PopClipRect();
                 ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(ax, y));
-                ImGuiNET.ImGui.InvisibleButton("##activity", new Vector2(aRight - ax, Square));
+                ImGuiNET.ImGui.InvisibleButton("##activity", new Vector2(aRight - ax, sq));
                 ImGuiNET.ImGui.SetItemTooltip("Bot activity: " + activity + "\nMeta state: " + (view?.MetaStateText ?? "Default"));
             }
         }
 
         // Force rebuff, set apart at the right (DrakBot's place for it).
-        if (IconButton("##fr", new Vector2(x0 + width - 5 - Square, y), new Vector2(Square, Square), PhosphorIcons.ArrowsClockwise,
-                UiFont.Dash14, FrFill, Amber, BtnBord, 3))
+        if (IconButton("##fr", new Vector2(frX, y), square, PhosphorIcons.ArrowsClockwise,
+                UiFont.Dash14, FrFill, Amber, BtnBord, round))
             RynthAiCommands.ForceRebuff();
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
             RynthAiCommands.CancelForceRebuff();
@@ -465,7 +605,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
 
     private void Toggle(string id, string icon, bool on, int subsystem, Vector2 pos, string name)
     {
-        if (IconButton(id, pos, new Vector2(Square, Square), icon, UiFont.Dash14, on ? TealSoft : BarBg, on ? Teal : Mute, on ? Teal : BtnBord, 3))
+        if (IconButton(id, pos, new Vector2(Px(Square), Px(Square)), icon, UiFont.Dash14, on ? TealSoft : BarBg, on ? Teal : Mute, on ? Teal : BtnBord, Px(3)))
             RynthAiCommands.SetSubsystemEnabled(subsystem, !on);
         ImGuiNET.ImGui.SetItemTooltip(on ? name + " on. Click to turn it off." : name + " off. Click to turn it on.");
     }
@@ -477,30 +617,31 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     private void Launchers(float x0, float width)
     {
         float y = ImGuiNET.ImGui.GetCursorScreenPos().Y;
-        const int buttons = 8;
-        float bw = MathF.Floor((width - buttons * LauncherGap) / buttons);
+        const int buttons = 10;
+        float gap = Px(LauncherGap);
+        float bw = MathF.Floor((width - buttons * gap) / buttons);
         // Short labels only when every button has room for its icon and label.
-        bool labels = bw >= 68;
+        bool labels = bw >= Px(68);
         float x = x0;
 
         Launcher("##l_meta", PhosphorIcons.ListChecks, "Meta", "Meta: the macro rules", x, y, bw, labels, () => PanelRouter.Toggle("Meta"));
-        x += bw + LauncherGap;
+        x += bw + gap;
         Launcher("##l_lua", PhosphorIcons.FileCode, "Lua", "Lua scripts", x, y, bw, labels, () => PanelRouter.Toggle("Lua"));
-        x += bw + LauncherGap;
+        x += bw + gap;
         // Monsters opens the Damage panel (the basic Monsters panel and its
         // Simple/Advanced chip were retired 2026-10-01).
         Launcher("##l_mon", PhosphorIcons.Skull, "Monsters", "Monsters: weapons, spells and rules per monster (the Damage panel)",
             x, y, bw, labels, PanelRouter.ToggleMonsters);
-        x += bw + LauncherGap;
+        x += bw + gap;
         Launcher("##l_set", PhosphorIcons.Gear, "Settings", "Settings", x, y, bw, labels, () => PanelRouter.Toggle("Settings"));
-        x += bw + LauncherGap;
+        x += bw + gap;
         Launcher("##l_nav", PhosphorIcons.MapTrifold, "Nav", "Nav: routes", x, y, bw, labels, () => PanelRouter.Toggle("Nav"));
-        x += bw + LauncherGap;
+        x += bw + gap;
         Launcher("##l_map", PhosphorIcons.MapPin, "Map", "Dungeon Map (shows while you're in a dungeon)", x, y, bw, labels,
             () => PanelRouter.Toggle(DungeonMapFace.Title));
-        x += bw + LauncherGap;
+        x += bw + gap;
         Launcher("##l_items", PhosphorIcons.Backpack, "Items", "Items", x, y, bw, labels, () => PanelRouter.Toggle("Items"));
-        x += bw + LauncherGap;
+        x += bw + gap;
         bool popped = ImGuiPopOuts.InPopOutFrame;
         Launcher("##l_patrol", PhosphorIcons.Footprints, "Patrol",
             popped ? "Patrol. Left-click: start dungeon patrol.  Right-click: routes & recorded hazards."
@@ -516,30 +657,57 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             }
             else _drawers.Toggle(_patrol);
         }
+        x += bw + gap;
 
-        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y + LauncherH));
+        // Char and Hub open the Mini Remote window (MiniRemoteFace, hosting RynthAi's remote): Char
+        // on its Character tab (an ILT tab; elsewhere the remote shows), Hub as it was left.
+        Launcher("##l_char", PhosphorIcons.User, "Char",
+            "Char. Left-click: the Mini Remote on its Character tab (ILT worlds).  Right-click: Character windows (Spells, Quests, Pets, Skills, Inventory...), then Server: this server's plugin windows.",
+            x, y, bw, labels, () => ShowMiniRemoteTab("character"));
+        if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
+        {
+            ImGuiNET.ImGui.SetNextWindowPos(ImGuiNET.ImGui.GetItemRectMin(), ImGuiCond.Always, new Vector2(0, 1));
+            ImGuiNET.ImGui.OpenPopup("##charmenu");
+        }
+        x += bw + gap;
+        // Left-click is the Mini Remote window (MiniRemoteFace, which hosts RynthAi's remote, the
+        // same window as the bar button). Right-click is the Mini Remote drawer, as Patrol's is
+        // its drawer; popped out there are no drawers, so it opens the window. Inventory HUDs
+        // setup is in the Mini Remote's Options menu.
+        Launcher("##l_hub", PhosphorIcons.SquaresFour, "Hub",
+            popped ? "Hub. Left-click: the Mini Remote window (/rc miniremote).  Right-click: open the Mini Remote window."
+                   : "Hub. Left-click: the Mini Remote window (/rc miniremote).  Right-click: the Mini Remote drawer (left), with its Options.",
+            x, y, bw, labels, () => PanelRouter.Toggle(MiniRemoteFace.Title));
+        if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
+        {
+            if (popped) ImGuiPanelHost.Open(MiniRemoteFace.Title);
+            else _drawers.Toggle(_remote);
+        }
+
+        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y + Px(LauncherH)));
     }
 
     private void Launcher(string id, string icon, string label, string tooltip, float x, float y, float w, bool showLabel, Action? onClick)
     {
         var pos = new Vector2(x, y);
-        var size = new Vector2(Math.Max(10, w), LauncherH);
+        float lh = Px(LauncherH);
+        var size = new Vector2(Math.Max(Px(10), w), lh);
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         ImGuiNET.ImGui.SetCursorScreenPos(pos);
         bool clicked = ImGuiNET.ImGui.InvisibleButton(id, size);
         ImGuiNET.ImGui.SetItemTooltip(tooltip);
         uint fill = ImGuiNET.ImGui.IsItemActive() ? Darken(BtnFill) : ImGuiNET.ImGui.IsItemHovered() ? Lighten(BtnFill) : BtnFill;
-        dl.AddRectFilled(pos, pos + size, fill, 3);
-        dl.AddRect(pos, pos + size, BtnBord, 3);
+        dl.AddRectFilled(pos, pos + size, fill, Px(3));
+        dl.AddRect(pos, pos + size, BtnBord, Px(3));
 
         ImFontPtr iconFont = ImGuiFonts.Get(UiFont.Dash14);
         if (showLabel)
         {
             ImFontPtr f9 = ImGuiFonts.Get(UiFont.Dash9);
-            const float iconBox = 16;
-            PhosphorIcons.DrawCentered(dl, iconFont, icon, pos + new Vector2(4, 0), new Vector2(iconBox, LauncherH), Mute);
+            float iconBox = Px(16);
+            PhosphorIcons.DrawCentered(dl, iconFont, icon, pos + new Vector2(Px(4), 0), new Vector2(iconBox, lh), Mute);
             dl.PushClipRect(pos, pos + size, true);
-            dl.AddText(f9, f9.FontSize, new Vector2(pos.X + 4 + iconBox + 4, pos.Y + (LauncherH - f9.FontSize) * 0.5f), Mute, label);
+            dl.AddText(f9, f9.FontSize, new Vector2(pos.X + Px(4) + iconBox + Px(4), pos.Y + (lh - f9.FontSize) * 0.5f), Mute, label);
             dl.PopClipRect();
         }
         else
@@ -606,24 +774,25 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         string version = view?.Version ?? string.Empty;
         if (version.Length > 0)
         {
-            float left = x0 + fpsW + 8, right = x0 + width - upW - 8;
+            float left = x0 + fpsW + Px(8), right = x0 + width - upW - Px(8);
             if (right > left)
             {
                 float vw = CalcWidth(f10, version);
                 float vx = x0 + (width - vw) * 0.5f;
                 if (vx < left || vx + vw > right) vx = left;
-                dl.PushClipRect(new Vector2(left, y), new Vector2(right, y + f10.FontSize + 2), true);
+                dl.PushClipRect(new Vector2(left, y), new Vector2(right, y + f10.FontSize + Px(2)), true);
                 dl.AddText(f10, f10.FontSize, new Vector2(vx, y), Mute, version);
                 dl.PopClipRect();
             }
         }
-        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y + f10.FontSize + 2));
+        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y + f10.FontSize + Px(2)));
         ImGuiNET.ImGui.Dummy(new Vector2(width, 0));
     }
 
     // ── Bars (bottom): player vitals, then the target ──────────────────────
 
-    private const float VitalsH = 14 + 3 + 14 + 3 + 14;
+    // A vital bar's row and the gap under it; three rows.
+    private const float VitalH = 14, VitalGap = 3;
 
     private void Bars(RynthAiView? view, RynthAiSnapshot raw, float x0, float width, uint boxBg)
     {
@@ -636,21 +805,23 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         // The target's stamina/mana rows are held while that option is on, so they
         // don't grow the box (and the window) as targets come and go.
         bool subRows = raw.ShowTargetStaminaMana;
-        float targetH = f11.FontSize + 2 + 3 + 12 + (subRows ? 2 * (13 + 3) - 3 : 0);
+        float targetH = f11.FontSize + Px(2) + Px(3) + Px(12) + (subRows ? 2 * (Px(13) + Px(3)) - Px(3) : 0);
+        float vh = Px(VitalH), vgap = Px(VitalGap);
+        float vitalsH = vh + vgap + vh + vgap + vh;
         float top = ImGuiNET.ImGui.GetCursorScreenPos().Y;
-        float height = 5 + (vitals ? VitalsH : 0) + (vitals && target ? 6 : 0) + (target ? targetH : 0) + 4;
+        float height = Px(5) + (vitals ? vitalsH : 0) + (vitals && target ? Px(6) : 0) + (target ? targetH : 0) + Px(4);
         var tl = new Vector2(x0, top);
         var br = new Vector2(x0 + width, top + height);
-        dl.AddRectFilled(tl, br, boxBg, 3);
-        dl.AddRect(tl, br, BtnBord, 3);
+        dl.AddRectFilled(tl, br, boxBg, Px(3));
+        dl.AddRect(tl, br, BtnBord, Px(3));
 
-        float rx = x0 + 5, rw = width - 10, ry = top + 5;
+        float rx = x0 + Px(5), rw = width - Px(10), ry = top + Px(5);
         if (vitals)
         {
-            VitalRow(dl, rx, ry, rw, PhosphorIcons.Heart, view?.Health ?? default, Hp, f10); ry += 14 + 3;
-            VitalRow(dl, rx, ry, rw, PhosphorIcons.Lightning, view?.Stamina ?? default, Green, f10); ry += 14 + 3;
-            VitalRow(dl, rx, ry, rw, PhosphorIcons.Drop, view?.Mana ?? default, Mana, f10); ry += 14;
-            if (target) ry += 6;
+            VitalRow(dl, rx, ry, rw, PhosphorIcons.Heart, view?.Health ?? default, Hp, f10); ry += vh + vgap;
+            VitalRow(dl, rx, ry, rw, PhosphorIcons.Lightning, view?.Stamina ?? default, Green, f10); ry += vh + vgap;
+            VitalRow(dl, rx, ry, rw, PhosphorIcons.Drop, view?.Mana ?? default, Mana, f10); ry += vh;
+            if (target) ry += Px(6);
         }
         if (target)
         {
@@ -659,27 +830,28 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             float hpW = CalcWidth(f11, hpText);
             float iconW = CalcWidth(f11, PhosphorIcons.Crosshair);
             dl.AddText(f11, f11.FontSize, new Vector2(rx, ry), Mute, PhosphorIcons.Crosshair);
-            dl.PushClipRect(new Vector2(rx, ry), new Vector2(rx + rw - hpW - 4, ry + f11.FontSize + 2), true);
-            dl.AddText(f11, f11.FontSize, new Vector2(rx + iconW + 3, ry), TextDim, view?.TargetHeadline ?? "NO TARGET");
+            dl.PushClipRect(new Vector2(rx, ry), new Vector2(rx + rw - hpW - Px(4), ry + f11.FontSize + Px(2)), true);
+            dl.AddText(f11, f11.FontSize, new Vector2(rx + iconW + Px(3), ry), TextDim, view?.TargetHeadline ?? "NO TARGET");
             dl.PopClipRect();
             dl.AddText(f11, f11.FontSize, new Vector2(rx + rw - hpW, ry), White, hpText);
-            ry += f11.FontSize + 2 + 3;
+            ry += f11.FontSize + Px(2) + Px(3);
 
-            // 15-segment gradient bar, 10 high, 2 px between segments.
+            // 15-segment gradient bar, 10 high, 2 px between segments (x the size).
             int lit = view?.TargetSegmentsLit ?? 0;
-            float segW = (rw - 2 * (RynthAiView.Segments - 1)) / RynthAiView.Segments;
+            float segGap = Px(2);
+            float segW = (rw - segGap * (RynthAiView.Segments - 1)) / RynthAiView.Segments;
             for (int i = 0; i < RynthAiView.Segments; i++)
             {
-                float sx = rx + i * (segW + 2);
-                dl.AddRectFilled(new Vector2(sx, ry + 1), new Vector2(sx + segW, ry + 11), i < lit ? SegmentColors[i] : BarBg, 1);
+                float sx = rx + i * (segW + segGap);
+                dl.AddRectFilled(new Vector2(sx, ry + Px(1)), new Vector2(sx + segW, ry + Px(11)), i < lit ? SegmentColors[i] : BarBg, Px(1));
             }
-            ry += 12;
+            ry += Px(12);
 
             if (subRows)
             {
                 bool shown = view != null && view.ShowTargetSubBars;
-                ry += 3;
-                CompactBar(dl, rx, ry, rw, shown ? view!.TargetStamina : default, Green, f10); ry += 13 + 3;
+                ry += Px(3);
+                CompactBar(dl, rx, ry, rw, shown ? view!.TargetStamina : default, Green, f10); ry += Px(13) + Px(3);
                 CompactBar(dl, rx, ry, rw, shown ? view!.TargetMana : default, Mana, f10);
             }
         }
@@ -690,22 +862,80 @@ internal sealed partial class RynthAiFace : IImGuiPanel
 
     private static void CompactBar(ImDrawListPtr dl, float x, float y, float w, VitalView bar, uint color, ImFontPtr font)
     {
-        var a = new Vector2(x, y + 1);
-        var b = new Vector2(x + w, y + 12);
-        dl.AddRectFilled(a, b, BarBg, 2);
-        if (bar.Fraction > 0) dl.AddRectFilled(a, new Vector2(x + w * bar.Fraction, b.Y), color, 2);
-        dl.AddText(font, font.FontSize, new Vector2(x + 4, y + 1 + (11 - font.FontSize) * 0.5f), White, bar.Text ?? "");
+        var a = new Vector2(x, y + Px(1));
+        var b = new Vector2(x + w, y + Px(12));
+        dl.AddRectFilled(a, b, BarBg, Px(2));
+        if (bar.Fraction > 0) dl.AddRectFilled(a, new Vector2(x + w * bar.Fraction, b.Y), color, Px(2));
+        dl.AddText(font, font.FontSize, new Vector2(x + Px(4), y + Px(1) + (Px(11) - font.FontSize) * 0.5f), White, bar.Text ?? "");
     }
 
     private static void VitalRow(ImDrawListPtr dl, float x, float y, float w, string icon, VitalView bar, uint color, ImFontPtr font)
     {
-        var a = new Vector2(x, y + 1);
-        var b = new Vector2(x + w, y + 14);
-        dl.AddRectFilled(a, b, BarBg, 6);
-        if (bar.Fraction > 0) dl.AddRectFilled(a, new Vector2(x + w * bar.Fraction, b.Y), color, 6);
-        float ty = y + 1 + (13 - font.FontSize) * 0.5f;
-        dl.AddText(font, font.FontSize, new Vector2(x + 4, ty), Mute, icon);
-        dl.AddText(font, font.FontSize, new Vector2(x + 4 + CalcWidth(font, icon) + 3, ty), White, bar.Text ?? "");
+        var a = new Vector2(x, y + Px(1));
+        var b = new Vector2(x + w, y + Px(14));
+        dl.AddRectFilled(a, b, BarBg, Px(6));
+        if (bar.Fraction > 0) dl.AddRectFilled(a, new Vector2(x + w * bar.Fraction, b.Y), color, Px(6));
+        float ty = y + Px(1) + (Px(13) - font.FontSize) * 0.5f;
+        dl.AddText(font, font.FontSize, new Vector2(x + Px(4), ty), Mute, icon);
+        dl.AddText(font, font.FontSize, new Vector2(x + Px(4) + CalcWidth(font, icon) + Px(3), ty), White, bar.Text ?? "");
+    }
+
+    // ── Char menu (right-click Char) ───────────────────────────────────
+    // Top: "Character", the windows every server has. Bottom: the server section
+    // (UI.ServerMenus): the installed server plugins' windows for the world you're on.
+
+    /// <summary>
+    /// Opens the Mini Remote window on one of its tabs ("" = the remote). Quests and Pets show on
+    /// every server; RynthAi shows an ILT tab once the server reports that feature on, and until
+    /// then the window shows the remote.
+    /// </summary>
+    private static void ShowMiniRemoteTab(string section)
+    {
+        ImGuiPanelHost.Open(MiniRemoteFace.Title);
+        RynthAiCommands.ApplyRemoteCommand("hub", section.Length > 0 ? "tab " + section : "tab");
+    }
+
+    /// <summary>A Char menu item that toggles a registered ImGui panel (checked while open).</summary>
+    private static void PanelMenuItem(string title, string command)
+    {
+        if (!ImGuiPanelHost.HasFace(title)) return;
+        if (ImGuiNET.ImGui.MenuItem(title, command, ImGuiPanelHost.IsOpen(title)))
+            PanelRouter.Toggle(title);
+    }
+
+    private static void CharMenu()
+    {
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.PopupBg, ShellBg);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, BtnBord);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(Px(8), Px(8)));
+        bool open = ImGuiNET.ImGui.BeginPopup("##charmenu");
+        ImGuiNET.ImGui.PopStyleVar();
+        ImGuiNET.ImGui.PopStyleColor(2);
+        if (!open) return;
+        try
+        {
+            ImGuiNET.ImGui.TextDisabled("Character");
+            if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote", ImGuiPanelHost.IsOpen(MiniRemoteFace.Title)))
+                ShowMiniRemoteTab("");
+            if (ImGuiNET.ImGui.MenuItem("Spells", "/rc spells"))
+                RynthAiCommands.ApplyRemoteCommand("spells", "toggle");
+            ImGuiNET.ImGui.SetItemTooltip("RynthAi Spells: the spell catalog and buff profiles.");
+            // The Mini Remote's universal tabs (every server); its ILT tabs are in the server half.
+            if (ImGuiNET.ImGui.MenuItem("Quests", "/rc miniremote tab quests")) ShowMiniRemoteTab("quests");
+            ImGuiNET.ImGui.SetItemTooltip("The Mini Remote's Quests tab: /myquests timers and favorites (RynthAi).");
+            if (ImGuiNET.ImGui.MenuItem("Pets", "/rc miniremote tab pets")) ShowMiniRemoteTab("pets");
+            ImGuiNET.ImGui.SetItemTooltip("The Mini Remote's Pets tab: summoning essences, priorities and the healing pet (RynthAi).");
+            PanelMenuItem(SkillsFace.Title, "/rc skills");
+            PanelMenuItem(InventoryFace.Title, "/rc inventory");
+            PanelMenuItem(ItemCountFace.Title, "/rc itemcount");
+            PanelMenuItem(CharactersFace.Title, "/rc characters");
+
+            UI.ServerMenus.DrawImGuiMenu(separatorFirst: true);
+        }
+        finally
+        {
+            ImGuiNET.ImGui.EndPopup();
+        }
     }
 
     // ── Patrol popup (right-click Patrol, popped out; docked it's the Patrol drawer) ──
@@ -714,8 +944,8 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     {
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.PopupBg, ShellBg);
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, BtnBord);
-        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(8, 8));
-        ImGuiNET.ImGui.SetNextWindowSizeConstraints(new Vector2(260, 0), new Vector2(260, 376));
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(Px(8), Px(8)));
+        ImGuiNET.ImGui.SetNextWindowSizeConstraints(new Vector2(Px(260), 0), new Vector2(Px(260), Px(376)));
         bool open = ImGuiNET.ImGui.BeginPopup("##patrol");
         ImGuiNET.ImGui.PopStyleVar();
         ImGuiNET.ImGui.PopStyleColor(2);
@@ -801,7 +1031,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
 
     private static void Section(string text)
     {
-        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+        ImGuiNET.ImGui.Dummy(new Vector2(0, Px(4)));
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Dash9));
         ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFB8C8D8), text);
         ImGuiNET.ImGui.PopFont();
@@ -816,8 +1046,8 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Amber);
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, BtnBord);
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1f);
-        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 2f);
-        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(6, 1));
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, Px(2f));
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(Px(6), Px(1)));
         bool clicked = ImGuiNET.ImGui.Button(label);
         ImGuiNET.ImGui.PopStyleVar(3);
         ImGuiNET.ImGui.PopStyleColor(5);
@@ -880,7 +1110,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         return a | (b << 16) | (g << 8) | r;
     }
 
-    private static void Gap(float h) => ImGuiNET.ImGui.Dummy(new Vector2(0, h));
+    private static void Gap(float h) => ImGuiNET.ImGui.Dummy(new Vector2(0, Px(h)));
 
     private static uint[] BuildSegmentColors()
     {

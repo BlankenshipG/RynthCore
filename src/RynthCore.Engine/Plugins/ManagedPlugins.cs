@@ -146,10 +146,13 @@ internal static class ManagedPlugins
                 if (retired.Contains(kv.Value)) Loaded.Remove(kv.Key);
         }
 #if ENGINE_CORECLR
+        string vaBefore = retired.Count > 0 ? Compatibility.AddressSpace.Describe() : "";
         foreach (Entry e in retired)
             e.Context.Unload();
+        // Context.Unload only starts the collection; "after" is right after the request, so the
+        // NEXT reload's "va before" is where a context that never collects shows up.
         if (retired.Count > 0)
-            RynthLog.Plugin($"ManagedPlugins: {retired.Count} plugin context(s) unloading: {string.Join(", ", retired.ConvertAll(e => e.Name))}.");
+            RynthLog.Plugin($"ManagedPlugins: {retired.Count} plugin context(s) unloading: {string.Join(", ", retired.ConvertAll(e => e.Name))} (va before: {vaBefore}, after: {Compatibility.AddressSpace.Describe()}).");
 #endif
     }
 

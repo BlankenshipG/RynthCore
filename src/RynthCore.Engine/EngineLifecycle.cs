@@ -164,11 +164,13 @@ internal static class EngineLifecycle
         // → AC chat box stops receiving input after a reload). Idempotent —
         // no-ops if Init never ran or the ImGui path already tore it down.
         Step("Win32Backend.Shutdown (input subclass)", () => ImGuiBackend.Win32Backend.Shutdown());
+        Step("HotkeyService.Shutdown", () => Hotkeys.HotkeyService.Shutdown());
 
         // Stop the dispatch-file watcher and the auto-ID drain timer before the
         // tick pump and plugins go away — both otherwise keep firing in the old
         // generation's (intentionally still-mapped) module across hot-reloads.
         Step("ChatFileDispatcher.Stop", () => Compatibility.ChatFileDispatcher.Stop());
+        Step("LogSettings.StopWatcher", () => LogSettings.StopWatcher());
         Step("AutoIdService.Stop", () => Compatibility.AutoIdService.Stop());
 
         // Stop the headless tick pump BEFORE plugin shutdown / FreeLibrary.

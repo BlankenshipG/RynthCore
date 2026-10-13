@@ -18,6 +18,7 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using RynthCore.Injector;
+using RynthCore.Install;
 
 namespace RynthCore.App.Avalonia;
 
@@ -136,6 +137,8 @@ internal partial class MainWindow : Window
         SessionList.ItemsSource = _sessionItems;
         LoadSettings();
         LoadRuntimeControls();
+        InitLoggingControls();
+        ApplyInstallerPluginRegistration();
         LoadPluginDllPaths();
         BuildPluginLoadout();
         WireEvents();
@@ -149,6 +152,8 @@ internal partial class MainWindow : Window
         Closing += (_, _) => SaveWindowLayout();
         ShowVersion();
         AppendActivity("Avalonia launcher preview ready.");
+        // One-line host/runtime sidecar check (full detail in Desktop RynthCore-Launcher.log).
+        AppendActivity(LauncherHostDiagnostics.BuildActivitySummaryLine());
         _ = RefreshServerStatusesAsync();
         _updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync();
         _updateTimer.Start();
@@ -157,6 +162,7 @@ internal partial class MainWindow : Window
         {
             await AskAboutUsageStatsOnceAsync();
             await CleanUpDecalBridgeIfUnusedAsync(atStartup: true);
+            await CheckFolderAccessAtStartupAsync();   // MainWindow.FolderAccess.cs: can the game client save?
         };
     }
 
@@ -184,6 +190,7 @@ internal partial class MainWindow : Window
         ResetOverlayBarButton.Click += (_, _) => ResetOverlayBar();
         CheckDecalBridgeButton.Click += async (_, _) => await CheckDecalBridgeAsync();
         RepairDecalButton.Click += async (_, _) => await RepairDecalAsync();
+        FixFolderPermissionsButton.Click += async (_, _) => await FixFolderPermissionsAsync();
         AddPluginDllButton.Click += async (_, _) => await AddPluginDllAsync();
         CheckUpdatesButton.Click += async (_, _) => await CheckForUpdatesAsync();
         UpdateCardActionButton.Click += async (_, _) => await OnUpdateCardActionAsync();
@@ -312,6 +319,8 @@ internal partial class MainWindow : Window
         AutoLaunchHeaderCheckBox.IsChecked = _settings.AutoLaunch;
         AutoInjectAfterLaunchCheckBox.IsChecked = _settings.AutoInjectAfterLaunch;
         WatchForAcStartCheckBox.IsChecked = _settings.WatchForAcStart;
+        InjectAllRunningAcCheckBox.IsChecked = _settings.InjectAllRunningClients;
+        SetLoggingLevelSelection(_settings.LoggingLevel);
         OverrideWindowTitleCheckBox.IsChecked = _settings.OverrideWindowTitle;
         LaunchStaggerMsBox.Value = _settings.LaunchStaggerMs;
         CrashRelaunchLimitBox.Value = _settings.CrashRelaunchLimitInWindow;
@@ -1485,6 +1494,8 @@ internal partial class MainWindow : Window
         _settings.AutoLaunch = AutoLaunchHeaderCheckBox.IsChecked == true;
         _settings.AutoInjectAfterLaunch = AutoInjectAfterLaunchCheckBox.IsChecked == true;
         _settings.WatchForAcStart = WatchForAcStartCheckBox.IsChecked == true;
+        _settings.InjectAllRunningClients = InjectAllRunningAcCheckBox.IsChecked == true;
+        _settings.LoggingLevel = GetSelectedLoggingLevel();
         _settings.OverrideWindowTitle = OverrideWindowTitleCheckBox.IsChecked == true;
         if (LaunchStaggerMsBox.Value is decimal staggerMs)
             _settings.LaunchStaggerMs = (int)staggerMs;
@@ -1499,8 +1510,12 @@ internal partial class MainWindow : Window
         if (_settings.EnabledPluginIds.Count == 0)
             _settings.EnabledPluginIds.Add("rynthcore-engine");
         SaveSettings();
+        SyncPluginPathsToEngineSettings();
         if (appendActivity)
+        {
+            AppendActivity($"Logging level saved: {_settings.LoggingLevel}.");
             AppendActivity("Launch behavior saved.");
+        }
     }
 
     private void SaveAutoLaunchPreference()
@@ -2157,6 +2172,78 @@ internal partial class MainWindow : Window
         AppendActivity($"Runtime loadout updated: {Path.GetFileName(dllPath)} {(enabled ? "enabled" : "disabled")} (engine.json synced).");
     }
 
+    /// <summary>
+    /// Applies the installer's one-shot plugin hand-off: the full installer writes the plugin
+    /// DLL paths it placed in the user-chosen RynthSuite folder to
+    /// <c>Software\Rynth\PendingPluginRegistration</c> (';'-separated). Each existing DLL is added
+    /// to the Plugins list, and any entry with the same file name that no longer exists (e.g. the
+    /// old <c>C:\Games\RynthSuite\...</c> path after moving the Suite folder) is replaced.
+    /// Rows pointing inside the RynthCore folder whose file the installer removed are dropped too.
+    /// The value is consumed once (deleted from HKCU; remembered in settings for HKLM).
+    /// </summary>
+    private void ApplyInstallerPluginRegistration()
+    {
+        try
+        {
+            string? pending = InstallerHandoff.ReadSetting("PendingPluginRegistration");
+            if (string.IsNullOrWhiteSpace(pending)
+                || string.Equals(pending, _settings.AppliedInstallerPluginRegistration, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            _settings.PluginDllPaths ??= [];
+            var added = new List<string>();
+
+            // The installer clears loose DLLs out of the RynthCore folder (old 0.4.x layouts kept plugins
+            // and SDK DLLs there), so drop rows that pointed inside it and are now gone. Rows elsewhere are
+            // left alone, since a missing file there may just be on a drive that isn't mounted.
+            string coreRoot = Path.TrimEndingDirectorySeparator(RynthInstallPaths.CoreDir) + Path.DirectorySeparatorChar;
+            bool IsRemovedCoreFile(string p) =>
+                p.StartsWith(coreRoot, StringComparison.OrdinalIgnoreCase) && !File.Exists(p);
+            int pruned = _settings.PluginDllPaths.RemoveAll(IsRemovedCoreFile);
+            _settings.DisabledPluginDllPaths.RemoveAll(IsRemovedCoreFile);
+
+            foreach (string raw in pending.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                string path;
+                try { path = Path.GetFullPath(raw); } catch { continue; }
+                if (!File.Exists(path)) continue;
+
+                string fileName = Path.GetFileName(path);
+                // Drop stale rows for the same plugin that point at a file which is gone.
+                _settings.PluginDllPaths.RemoveAll(p =>
+                    string.Equals(Path.GetFileName(p), fileName, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(p, path, StringComparison.OrdinalIgnoreCase)
+                    && !File.Exists(p));
+
+                if (!_settings.PluginDllPaths.Any(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase)))
+                {
+                    _settings.PluginDllPaths.Add(path);
+                    added.Add(fileName);
+                }
+            }
+
+            _settings.AppliedInstallerPluginRegistration = pending;
+            SaveSettings();
+            InstallerHandoff.DeleteUserSetting("PendingPluginRegistration");
+
+            _pluginDllPaths.Clear();
+            foreach (string p in _settings.PluginDllPaths) _pluginDllPaths.Add(p);
+            SyncPluginPathsToEngineSettings();
+
+            string msg = added.Count > 0
+                ? $"Installer registered plugin(s): {string.Join(", ", added)} (engine.json synced)."
+                : "Installer plugin registration already up to date.";
+            if (pruned > 0)
+                msg += $" Removed {pruned} plugin path(s) for files the installer cleared from {RynthInstallPaths.CoreDir}.";
+            LauncherDiag.Info("PLUGINS: " + msg);
+            try { AppendActivity(msg); } catch { }
+        }
+        catch (Exception ex)
+        {
+            LauncherDiag.Info("PLUGINS: installer registration failed: " + ex.Message);
+        }
+    }
+
     private void LoadPluginDllPaths()
     {
         _pluginDllPaths.Clear();
@@ -2245,6 +2332,8 @@ internal partial class MainWindow : Window
                 .Where(p => !disabled.Contains(p))
                 .ToList();
             EngineJsonStore.SetStringArray("PluginPaths", enabledPaths);
+            // The engine reads its log verbosity from engine.json on init (EngineSettings.LoggingLevel).
+            EngineJsonStore.SetString("LoggingLevel", GetSelectedLoggingLevel());
         }
         catch (Exception ex)
         {
@@ -2740,18 +2829,28 @@ internal partial class MainWindow : Window
         try
         {
             SetOperationState(true);
-            Process target = targets.OrderBy(process => process.Id).First();
-            AppendActivity($"Applying selected loadout to running AC (PID {target.Id}).");
+            IReadOnlyList<Process> orderedTargets = targets.OrderBy(process => process.Id).ToList();
+            bool injectAllSessions = InjectAllRunningAcCheckBox.IsChecked == true;
+            IReadOnlyList<Process> targetsToInject = injectAllSessions
+                ? orderedTargets
+                : [orderedTargets[0]];
+            AppendActivity(injectAllSessions
+                ? $"Applying selected loadout to {targetsToInject.Count} running AC session(s)."
+                : $"Applying selected loadout to first running AC session (PID {targetsToInject[0].Id}).");
 
-            InjectionResult result = await Task.Run(() => _injector.InjectIntoProcess(target, enginePath, AppendActivity));
-            if (result.Success)
+            foreach (Process target in targetsToInject)
             {
-                _launchedSessionPids.Add(target.Id);
-                AppendActivity($"Injection complete for PID {target.Id}.");
-            }
-            else
-            {
-                AppendActivity($"Injection failed: {result.Summary}");
+                AppendActivity($"Injecting running AC (PID {target.Id}).");
+                InjectionResult result = await Task.Run(() => _injector.InjectIntoProcess(target, enginePath, AppendActivity));
+                if (result.Success)
+                {
+                    _launchedSessionPids.Add(target.Id);
+                    AppendActivity($"Injection complete for PID {target.Id}.");
+                }
+                else
+                {
+                    AppendActivity($"Injection failed for PID {target.Id}: {result.Summary}");
+                }
             }
         }
         catch (Exception ex)
@@ -2763,6 +2862,39 @@ internal partial class MainWindow : Window
             SetOperationState(false);
             RefreshSessionState();
         }
+    }
+
+    private string GetSelectedLoggingLevel()
+    {
+        return LoggingLevelComboBox.SelectedItem is ComboBoxItem item
+            ? item.Content?.ToString() ?? "Info"
+            : "Info";
+    }
+
+    private void SetLoggingLevelSelection(string? loggingLevel)
+    {
+        string desiredLevel = string.IsNullOrWhiteSpace(loggingLevel) ? "Info" : loggingLevel.Trim();
+        if (LoggingLevelComboBox.Items == null)
+        {
+            LoggingLevelComboBox.SelectedIndex = 0;
+            return;
+        }
+
+        foreach (object? item in LoggingLevelComboBox.Items)
+        {
+            if (item is not ComboBoxItem comboItem)
+                continue;
+
+            string candidate = comboItem.Content?.ToString() ?? string.Empty;
+            if (!string.Equals(candidate, desiredLevel, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            LoggingLevelComboBox.SelectedItem = comboItem;
+            return;
+        }
+
+        // Unknown saved value: fall back to Info (index 3 after Off, Error, Warning), not the quietest level.
+        LoggingLevelComboBox.SelectedIndex = 3;
     }
 
     private void OnPrimarySelectionChanged()
@@ -3104,6 +3236,27 @@ internal partial class MainWindow : Window
     // thread not draining the marshalled-action queue), and a stale heartbeat
     // file.
     private readonly Dictionary<int, DateTime> _wedgeZeroFpsSinceUtc = new();
+    // PIDs held off for a full-memory dump, and since when (DumpInProgressRule.Decide caps the
+    // hold at MaxHold). Kept while held or expired, dropped once no dump is in progress.
+    private readonly Dictionary<int, DateTime> _dumpHoldSinceUtc = new();
+
+    // Last write of the newest acclient_oom_<pid>_*.dmp in the shared Dumps folder, or null.
+    private static DateTime? NewestOomDumpWriteUtc(int pid)
+    {
+        try
+        {
+            string dir = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.CoreDir, "Dumps");
+            if (!Directory.Exists(dir)) return null;
+            DateTime? newest = null;
+            foreach (string f in Directory.EnumerateFiles(dir, $"{RynthCore.Install.DumpInProgressRule.OomDumpPrefix}{pid}_*.dmp"))
+            {
+                DateTime w = File.GetLastWriteTimeUtc(f);
+                if (newest == null || w > newest) newest = w;
+            }
+            return newest;
+        }
+        catch { return null; }
+    }
     // fps (1), plug pump rate (2), login (3), qd = main-thread queue depth (4, optional on older engines).
     private static readonly System.Text.RegularExpressions.Regex WedgeHbRegex =
         new(@"hb #\d+ .*?fps=(\d+) .*?plug=(\d+)/s .*?login=(\d)(?:.*?qd=(\d+))?", System.Text.RegularExpressions.RegexOptions.Compiled);
@@ -3183,6 +3336,35 @@ internal partial class MainWindow : Window
                 byte[] buf = new byte[want];
                 int read = fs.Read(buf, 0, (int)want);
                 tail = System.Text.Encoding.UTF8.GetString(buf, 0, read);
+
+                // The engine's OUT OF MEMORY full-memory dump suspends every thread for minutes:
+                // the log goes silent and the main thread looks hung, but killing now would cut
+                // the dump short. Hold off both kills below while it is being written
+                // (DumpInProgressRule); the restart for the box that follows is unchanged.
+                DateTime holdNow = DateTime.UtcNow;
+                DateTime? heldSince = _dumpHoldSinceUtc.TryGetValue(pid, out DateTime hs) ? hs : null;
+                var hold = RynthCore.Install.DumpInProgressRule.Decide(tail, fi.LastWriteTimeUtc, NewestOomDumpWriteUtc(pid), heldSince, holdNow);
+                if (hold == RynthCore.Install.DumpInProgressRule.Hold.Holding)
+                {
+                    if (heldSince == null)
+                    {
+                        _dumpHoldSinceUtc[pid] = holdNow;
+                        LauncherDiag.Info($"WEDGE: PID {pid} is writing a full-memory dump - kill held off until it ends (at most {RynthCore.Install.DumpInProgressRule.MaxHold.TotalMinutes:0} min).");
+                    }
+                    continue;
+                }
+                if (hold == RynthCore.Install.DumpInProgressRule.Hold.Expired)
+                {
+                    if (heldSince is DateTime heldAt && heldAt != DateTime.MinValue)
+                    {
+                        _dumpHoldSinceUtc[pid] = DateTime.MinValue;   // logged; stays expired until the signs clear
+                        LauncherDiag.Info($"WEDGE: PID {pid} dump hold expired after {RynthCore.Install.DumpInProgressRule.MaxHold.TotalMinutes:0} min - kill checks resume.");
+                    }
+                }
+                else
+                {
+                    _dumpHoldSinceUtc.Remove(pid);
+                }
 
                 if (hbStale)
                 {

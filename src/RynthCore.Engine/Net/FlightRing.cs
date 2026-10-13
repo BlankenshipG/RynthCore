@@ -93,7 +93,7 @@ internal unsafe struct FlightEntry
     public uint A;
     /// <summary>Messages: rate-limited copies dropped before this one. Markers: second number.</summary>
     public uint B;
-    /// <summary>Messages: unused. Markers: third number.</summary>
+    /// <summary>Messages: an engine 0xC8's requester (IdRequester), else 0. Markers: third number.</summary>
     public uint C;
     public fixed byte Data[DataCap];
 }
@@ -153,7 +153,8 @@ internal sealed unsafe class FlightRing
     }
 
     /// <summary>A message: its first DataCap bytes.</summary>
-    public void WriteMessage(long stamp, FlightDir dir, FlightFlags flags, byte* msg, int len, int fullLen, uint fragSeq, uint suppressed)
+    /// <param name="requester">Messages' C: for an engine 0xC8, who asked (IdRequester); else 0.</param>
+    public void WriteMessage(long stamp, FlightDir dir, FlightFlags flags, byte* msg, int len, int fullLen, uint fragSeq, uint suppressed, uint requester = 0)
     {
         if (!Own(out int i, out int serial)) return;
         ref FlightEntry e = ref _slots[i];
@@ -167,7 +168,7 @@ internal sealed unsafe class FlightRing
         e.FullLen = (ushort)Math.Clamp(fullLen, 0, ushort.MaxValue);
         e.A = fragSeq;
         e.B = suppressed;
-        e.C = 0;
+        e.C = requester;
         fixed (byte* d = e.Data)
         {
             if (keep > 0) Buffer.MemoryCopy(msg, d, FlightEntry.DataCap, keep);

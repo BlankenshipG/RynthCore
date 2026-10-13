@@ -344,7 +344,9 @@ internal static class FlightFormat
 
         uint seq = rd.U32();
         uint action = rd.U32();
-        string tag = (e.Flags & FlightFlags.Engine) != 0 ? "[eng] " : (e.Flags & FlightFlags.Client) != 0 ? "[cli] " : "";
+        string who = IdRequesters.Label(e.C);
+        string tag = (e.Flags & FlightFlags.Engine) != 0 ? (who.Length > 0 ? $"[eng:{who}] " : "[eng] ")
+                   : (e.Flags & FlightFlags.Client) != 0 ? "[cli] " : "";
         string body = action switch
         {
             FlightOp.AcUse => $"{Id(rd.U32())}",
@@ -539,12 +541,12 @@ internal static class FlightFormat
             case FlightOp.EvAttackerNotification:
             {
                 string who = rd.Str(40); rd.U32(); double pct = rd.F64(); uint dmg = rd.U32(); uint crit = rd.U32();
-                return $"hit '{who}' for {dmg}{(crit != 0 ? " (crit)" : "")}, {pct * 100:0}% left";
+                return $"hit '{who}' for {dmg}{(crit != 0 ? " (crit)" : "")} ({pct * 100:0}% of its max health)";   // the share is damage / max, not what is left
             }
             case FlightOp.EvDefenderNotification:
             {
                 string who = rd.Str(40); rd.U32(); double pct = rd.F64(); uint dmg = rd.U32();
-                return $"'{who}' hit you for {dmg}, {pct * 100:0}% left";
+                return $"'{who}' hit you for {dmg} ({pct * 100:0}% of your max health)";
             }
             case FlightOp.EvEvasionAttacker: return $"'{rd.Str(40)}' evaded";
             case FlightOp.EvEvasionDefender: return $"evaded '{rd.Str(40)}'";
@@ -794,6 +796,8 @@ internal static class FlightFormat
         "  ->  client to server (what this client sent).  [eng] = matches an engine direct-action call just before",
         "      (the 'engine ...' marker above it); [cli] = no engine call to match: the client's own path",
         "      (keyboard/mouse, or a plugin calling AC some other way). Movement matches are by time only.",
+        "      IdentifyObject: [eng:autoid-target|autoid-container|autoid-inventory|autoid-world|plugin|self|ui]",
+        "      = an engine appraisal and who asked for it; [cli] = AC itself or Decal.",
         "  <-  server to client: game events (UseDone, ViewContents, errors, magic, combat), the player's own",
         "      motion/position/teleport, system text, and messages about objects the character just used.",
         "  **  engine markers: engine calls, m_cBusy changes and resets, action-gate clears, a per-second link",

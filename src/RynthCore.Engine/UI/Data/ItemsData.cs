@@ -63,11 +63,14 @@ internal sealed unsafe class ItemsSource : UiSource<ItemsSnapshot>
 internal static unsafe class ItemsCommands
 {
     private static delegate* unmanaged[Cdecl]<IntPtr, void> _set;
-    private static delegate* unmanaged[Cdecl]<void> _addWeapon, _addConsumable;
+    private static delegate* unmanaged[Cdecl]<void> _addWeapon, _addShield, _addConsumable, _clean;
+
+    /// <summary>ItemRule.Action value the plugin uses for off-hand shields.</summary>
+    public const string ShieldAction = "Shield";
 
     static ItemsCommands()
     {
-        PluginManager.PluginsUnloaded += () => { _set = null; _addWeapon = null; _addConsumable = null; };
+        PluginManager.PluginsUnloaded += () => { _set = null; _addWeapon = null; _addShield = null; _addConsumable = null; _clean = null; };
     }
 
     public static readonly string[] Elements = { "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether" };
@@ -94,11 +97,35 @@ internal static unsafe class ItemsCommands
         UiSources.Items.RequestRefresh();
     });
 
+    /// <summary>
+    /// Adds the item selected in the inventory as an off-hand shield. RynthAi older than
+    /// 0.6.20 has no such export: the click is logged and dropped.
+    /// </summary>
+    public static void AddSelectedShield() => UiDataHub.Post("Items add shield", () =>
+    {
+        if (_addShield == null) _addShield = (delegate* unmanaged[Cdecl]<void>)Export("RynthPluginAddSelectedShield");
+        if (_addShield != null) _addShield();
+        else RynthLog.UI("ItemsCommands: Add Selected Shield unavailable - RynthAi 0.6.20 or newer is required.");
+        UiSources.Items.RequestRefresh();
+    });
+
     /// <summary>Adds the item selected in the inventory as a consumable.</summary>
     public static void AddSelectedConsumable() => UiDataHub.Post("Items add consumable", () =>
     {
         if (_addConsumable == null) _addConsumable = (delegate* unmanaged[Cdecl]<void>)Export("RynthPluginAddSelectedConsumable");
         if (_addConsumable != null) _addConsumable();
+        UiSources.Items.RequestRefresh();
+    });
+
+    /// <summary>
+    /// Removes weapons and consumables no longer in the inventory; RynthAi reports what it did
+    /// in chat. RynthAi older than 0.5.43 has no such export: the click is logged and dropped.
+    /// </summary>
+    public static void CleanMissing() => UiDataHub.Post("Items clean", () =>
+    {
+        if (_clean == null) _clean = (delegate* unmanaged[Cdecl]<void>)Export("RynthPluginCleanItems");
+        if (_clean != null) _clean();
+        else RynthLog.UI("ItemsCommands: Remove Missing unavailable - RynthAi 0.5.43 or newer is required.");
         UiSources.Items.RequestRefresh();
     });
 

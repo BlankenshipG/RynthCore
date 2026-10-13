@@ -343,7 +343,18 @@ internal static unsafe class LogoffOriginProbe
             bool inWorld = false;
             try { inWorld = LoginLifecycleHooks.HasObservedLoginComplete; } catch { }
             if (!inWorld)
+            {
+                // Before LoginComplete too (2026-10-13): a relaunched client that never had any
+                // input carries an idle time of years (last input 0), and AC logged Drakkon off
+                // 0.7 s after he entered the world, before LoginComplete arrived, so the
+                // in-world refresh below never ran. Keep the clock fresh at char-select as well.
+                if (Plugins.EngineSettings.PreventIdleLogoff && idle > IdleRefreshAfterSec && TryRefreshLastInput() && !_preWorldRefreshLogged)
+                {
+                    _preWorldRefreshLogged = true;
+                    RynthLog.Info($"LogoffProbe: reset the client's idle clock before entering the world ({idle:0}s idle) so the idle auto-logoff can't fire on arrival (PreventIdleLogoff; logged once).");
+                }
                 return;
+            }
 
             if (double.IsNaN(limit) || double.IsInfinity(limit) || limit <= 60)
             {
@@ -387,6 +398,7 @@ internal static unsafe class LogoffOriginProbe
     }
 
     private const double IdleRefreshAfterSec = 120;
+    private static bool _preWorldRefreshLogged;
     private static long _lastIdleRefreshLogMs = -600_000;
 
     /// <summary>Sets the input manager's last-input time to Timer::cur_time, as real input

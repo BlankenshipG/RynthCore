@@ -218,6 +218,14 @@ internal static unsafe class ServerMessageStream
             {
                 try { InventoryOrder.Observe(new ReadOnlySpan<byte>(message, length)); }
                 catch (Exception ex) { RynthLog.Compat($"ServerMessageStream: inventory order failed - {ex.GetType().Name}: {ex.Message}"); }
+                // The SERVER deleted an object (0xF747 ObjectDelete, its id after the opcode). AutoId
+                // tells this apart from the client's own releases: only this one makes a re-create
+                // under the same id due an appraisal again (AutoIdEligibility).
+                if (opcode == InventoryOrder.DeleteObjectOpcode && length >= 8)
+                {
+                    try { Compatibility.AutoIdService.OnServerDelete(AcPacketWire.ReadU32(message + 4)); }
+                    catch (Exception ex) { RynthLog.Compat($"ServerMessageStream: server delete failed - {ex.GetType().Name}: {ex.Message}"); }
+                }
             }
             if (_pluginsWant)
                 _dispatchedToPlugins += PluginManager.DispatchServerMessage(opcode, eventType, message + 4, length - 4);

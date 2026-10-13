@@ -120,4 +120,19 @@ internal static class EngineJsonStore
         fields[field] = doc.RootElement.Clone();
         Write(fields);
     }
+
+    /// <summary>
+    /// Sets a single string field (e.g. "LoggingLevel"), preserving every other field.
+    /// </summary>
+    public static void SetString(string field, string value)
+    {
+        Dictionary<string, JsonElement> fields = Read();
+
+        using var ms = new MemoryStream();
+        using (var w = new Utf8JsonWriter(ms))
+            w.WriteStringValue(value);
+        using var doc = JsonDocument.Parse(ms.ToArray());
+        fields[field] = doc.RootElement.Clone();
+        Write(fields);
+    }
 }

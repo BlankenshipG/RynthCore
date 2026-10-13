@@ -47,6 +47,7 @@ namespace EngineSettingsTests
                 Run(nameof(OwnedKeysMatchEngineSettings), OwnedKeysMatchEngineSettings);
                 Run(nameof(SaveKeepsLauncherKeys), SaveKeepsLauncherKeys);
                 Run(nameof(SaveRoundTripsOwnedKeys), SaveRoundTripsOwnedKeys);
+                Run(nameof(AutoIdModeRoundTrips), AutoIdModeRoundTrips);
                 Run(nameof(SaveWithoutFileWritesOwnedKeys), SaveWithoutFileWritesOwnedKeys);
                 Run(nameof(SaveLeavesMalformedFileAlone), SaveLeavesMalformedFileAlone);
                 Run(nameof(MaxHotReloadsReadAndKept), MaxHotReloadsReadAndKept);
@@ -83,7 +84,12 @@ namespace EngineSettingsTests
                     case "imgui-off": EngineSettings.EnableImGuiBackend = false; break;
                     case "dcclose-off": EngineSettings.CloseOnServerDisconnect = false; break;
                     case "dcclose-on": EngineSettings.CloseOnServerDisconnect = true; break;
+                    case "autoid":
+                        if (!RynthCore.Engine.Compatibility.AutoIdPolicy.TryParseMode(args[1], out var aim)) throw new ArgumentException(args[1]);
+                        EngineSettings.AutoIdMode = aim;
+                        break;
                     case "dump":
+                        Console.WriteLine("AutoIdMode=" + EngineSettings.AutoIdMode);
                         Console.WriteLine("PluginPaths=" + string.Join("|", EngineSettings.PluginPaths));
                         Console.WriteLine("StartTooltip=" + EngineSettings.IsUiHookEnabled("StartTooltip"));
                         Console.WriteLine("DecalBridge=" + EngineSettings.DecalBridgeMode);
@@ -214,6 +220,33 @@ namespace EngineSettingsTests
             Check(output.Contains("DecalBridge=On"), "DecalBridge read back");
             Check(output.Contains("ServerMessageStream=False"), "ServerMessageStream false read back");
             Check(ReadJson(path).TryGetProperty("EnableDcompOverlay", out _), "launcher key still there");
+        }
+
+        private static void AutoIdModeRoundTrips()
+        {
+            string dir = NewDir("autoid");
+            string path = Path.Combine(dir, "engine.json");
+            File.WriteAllText(path, LauncherFile);
+            var (exit, output) = RunChild(path, "dump");
+            Eq(exit, 0, "dump");
+            Check(output.Contains("AutoIdMode=Limited"), "default is Limited: " + output);
+
+            Eq(RunChild(path, "autoid", "off").Exit, 0, "set off");
+            Eq(ReadJson(path).GetProperty("AutoIdMode").GetString(), "Off", "saved as \"Off\"");
+            (exit, output) = RunChild(path, "dump");
+            Check(output.Contains("AutoIdMode=Off"), "Off read back: " + output);
+
+            Eq(RunChild(path, "autoid", "all").Exit, 0, "set all");
+            (exit, output) = RunChild(path, "dump");
+            Check(output.Contains("AutoIdMode=All"), "All read back: " + output);
+
+            Eq(RunChild(path, "autoid", "limited").Exit, 0, "back to limited");
+            Check(!ReadJson(path).TryGetProperty("AutoIdMode", out _), "the default leaves the key out");
+            Check(ReadJson(path).TryGetProperty("EnableDcompOverlay", out _), "launcher key still there");
+
+            File.WriteAllText(path, LauncherFile.Replace("\"LoggingLevel\"", "\"AutoIdMode\": \"bogus\", \"LoggingLevel\""));
+            (exit, output) = RunChild(path, "dump");
+            Check(output.Contains("AutoIdMode=Limited"), "an unknown value reads as the default: " + output);
         }
 
         private static void SaveWithoutFileWritesOwnedKeys()

@@ -51,6 +51,17 @@ internal static class CharacterCaptureHooks
     private const int AutoLoginPollIntervalMs = 600;
     private const int AutoLoginPollHardTimeoutMs = 120_000;
     private const int AutoLoginDirectFailsBeforeClick = 4;
+
+    // Bounced back to char-select (2026-10-13): a client relaunched right after a crash got
+    // into the world and was sent back to char-select 7 s later (the server still held the
+    // old session), and auto-login had already stood down, so it sat there for 5 hours.
+    // After entering the world the poll now watches for BounceWindowMs; back at char-select
+    // inside that window it waits (BounceRetryBaseMs x the bounce count, at most
+    // BounceRetryMaxMs) and logs on again, up to MaxBounceRetries times.
+    private const int BounceWindowMs = 90_000;
+    private const int BounceRetryBaseMs = 20_000;
+    private const int BounceRetryMaxMs = 120_000;
+    private const int MaxBounceRetries = 8;
     private static int _autoLoginPollStarted;
 
     // Native character-list capture. The 0xF658 packet path is dead (see above),
@@ -148,17 +159,38 @@ internal static class CharacterCaptureHooks
         long charSelectFirstSeenTick = 0;
         int directFailCount = 0;
         bool issuedDirect = false;
+        int bounces = 0;
+        string status = string.Empty;
 
         try
         {
             while (EngineThreads.Sleep(AutoLoginPollIntervalMs))
             {
 
-                if (LoginLifecycleHooks.HasObservedLoginComplete)
+                bool loginComplete = LoginLifecycleHooks.HasObservedLoginComplete;
+                bool inWorld = CharacterManagementHooks.TryGetCurrentMode(out int worldMode) && worldMode == GamePlayUIMode;
+                if (loginComplete || inWorld)
                 {
-                    RynthLog.Info($"CharacterCapture: Auto-login complete for '{targetCharacter}' (LoginComplete observed).");
-                    Interlocked.Exchange(ref _autoLoginEverFired, 1);
-                    return;
+                    RynthLog.Info($"CharacterCapture: '{targetCharacter}' is in the world ({(loginComplete ? "LoginComplete observed" : "GamePlayUI")}); watching {BounceWindowMs / 1000}s for a bounce back to char-select.");
+                    if (!WatchForBounce(targetCharacter))
+                    {
+                        Interlocked.Exchange(ref _autoLoginEverFired, 1);
+                        return;   // stayed in the world (or the engine is stopping)
+                    }
+                    if (++bounces > MaxBounceRetries)
+                    {
+                        RynthLog.Warn($"CharacterCapture: '{targetCharacter}' was sent back to char-select {bounces} times; auto-login gives up.");
+                        Interlocked.Exchange(ref _autoLoginEverFired, 1);
+                        return;
+                    }
+                    int waitMs = Math.Min(BounceRetryBaseMs * bounces, BounceRetryMaxMs);
+                    RynthLog.Warn($"CharacterCapture: '{targetCharacter}' was sent back to char-select right after entering the world (bounce {bounces}/{MaxBounceRetries}, probably the server still holding the last session); logging on again in {waitMs / 1000}s.");
+                    if (!WaitAtCharSelect(waitMs))
+                        continue;   // the player went in by hand: the next pass watches that
+                    charSelectFirstSeenTick = 0;
+                    directFailCount = 0;
+                    issuedDirect = false;
+                    continue;
                 }
 
                 // One-shot: if the (currently dead) packet path ever fires and
@@ -173,11 +205,7 @@ internal static class CharacterCaptureHooks
                     continue; // UIFlow not ready yet — keep waiting.
 
                 if (mode == GamePlayUIMode)
-                {
-                    RynthLog.Compat($"CharacterCapture: Poll stopping for '{targetCharacter}' - client already in GamePlayUI.");
-                    Interlocked.Exchange(ref _autoLoginEverFired, 1);
-                    return;
-                }
+                    continue;   // the in-world watch at the top of the loop takes it
 
                 if (mode != CharacterManagementUIMode)
                 {
@@ -199,7 +227,7 @@ internal static class CharacterCaptureHooks
                 // Direct path: read AC's native CharacterSet and call LogOnCharacter.
                 // No packet required. Retries every tick if it didn't take.
                 if (CharacterManagementHooks.TryLogOnCharacter(
-                        targetCharacter, out string matched, out uint avatarId, out int slotIndex, out string status))
+                        targetCharacter, out string matched, out uint avatarId, out int slotIndex, out status))
                 {
                     if (!issuedDirect)
                     {
@@ -245,6 +273,39 @@ internal static class CharacterCaptureHooks
         {
             Interlocked.Exchange(ref _autoLoginPollStarted, 0);
         }
+    }
+
+    /// <summary>
+    /// In the world: true if the client is back at char-select within BounceWindowMs,
+    /// false once it has stayed in the world that long (or the engine is stopping).
+    /// </summary>
+    private static bool WatchForBounce(string targetCharacter)
+    {
+        long since = Environment.TickCount64;
+        while (EngineThreads.Sleep(1000))
+        {
+            if (Environment.TickCount64 - since >= BounceWindowMs)
+            {
+                RynthLog.Info($"CharacterCapture: Auto-login complete for '{targetCharacter}' ({BounceWindowMs / 1000}s in the world).");
+                return false;
+            }
+            if (CharacterManagementHooks.TryGetCurrentMode(out int mode) && mode == CharacterManagementUIMode)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>Waits <paramref name="ms"/> at char-select; false if the client entered the world meanwhile.</summary>
+    private static bool WaitAtCharSelect(int ms)
+    {
+        long until = Environment.TickCount64 + ms;
+        while (Environment.TickCount64 < until)
+        {
+            if (!EngineThreads.Sleep(1000)) return false;
+            if (CharacterManagementHooks.TryGetCurrentMode(out int mode) && mode == GamePlayUIMode)
+                return false;
+        }
+        return true;
     }
 
     private static void StartCharacterListCapturePoll()

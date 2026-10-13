@@ -6,7 +6,8 @@
 //  minimized|expanded, line 2 unused, line 3 target|notarget, line 4
 //  vitals|novitals; line 5 filesopen|nofiles, the Loaded files drawer; line 9
 //  ranges|noranges, the Ranges drawer; line 10 patrol|nopatrol, the Patrol
-//  drawer: the left-edge drawers, ImGui/Panels/DashboardDrawers.cs). Line 2
+//  drawer; line 11 remote|noremote, the Mini Remote drawer: the left-edge
+//  drawers, ImGui/Panels/DashboardDrawers.cs). Line 2
 //  was the Monsters button's Simple/Advanced mode, retired 2026-10-01 with the
 //  basic Monsters panel: it is still written ("advanced") so the lines after
 //  it keep their places, and ignored on read. Lines 7 and 8 (the dashboard's
@@ -37,6 +38,7 @@ internal static class RynthAiDashboardState
     private static volatile bool _barCollapsed;         // the RynthCore bar shows only its grip + expand
     private static volatile bool _rangesOpen;           // the Ranges drawer beside the dashboard is open
     private static volatile bool _patrolOpen;           // the Patrol drawer beside the dashboard is open
+    private static volatile bool _remoteOpen;           // the Mini Remote drawer beside the dashboard is open
     // Lines 7 and 8, unused since 2026-10-05: written back as read.
     private static string _line7 = "-", _line8 = "-";
     private static bool _loaded;
@@ -140,6 +142,19 @@ internal static class RynthAiDashboardState
         UiBackgroundWriter.Enqueue("rynthai dashboard state", Save);
     }
 
+    /// <summary>The Mini Remote drawer (RynthAi's Mini Remote drawn by the plugin) is open beside the dashboard. Any thread.</summary>
+    public static bool RemoteOpen
+    {
+        get { EnsureLoaded(); return _remoteOpen; }
+    }
+
+    public static void SetRemoteOpen(bool open)
+    {
+        EnsureLoaded();
+        _remoteOpen = open;
+        UiBackgroundWriter.Enqueue("rynthai dashboard state", Save);
+    }
+
     /// <summary>Reads the file if it hasn't been read yet. Engine init calls this so AC's thread never does.</summary>
     public static void EnsureLoaded()
     {
@@ -163,6 +178,7 @@ internal static class RynthAiDashboardState
                     if (lines.Length >= 8 && lines[7].Trim().Length > 0) _line8 = lines[7].Trim();
                     _rangesOpen = lines.Length >= 9 && lines[8].Trim().Equals("ranges", StringComparison.OrdinalIgnoreCase);
                     _patrolOpen = lines.Length >= 10 && lines[9].Trim().Equals("patrol", StringComparison.OrdinalIgnoreCase);
+                    _remoteOpen = lines.Length >= 11 && lines[10].Trim().Equals("remote", StringComparison.OrdinalIgnoreCase);
                 }
             }
             catch { /* corrupt cache: start expanded */ }
@@ -180,7 +196,8 @@ internal static class RynthAiDashboardState
                 + (_showTargetBar ? "target" : "notarget") + "\n" + (_showVitals ? "vitals" : "novitals") + "\n"
                 + (_filesOpen ? "filesopen" : "nofiles") + "\n" + (_barCollapsed ? "barcollapsed" : "bar") + "\n"
                 + _line7 + "\n" + _line8 + "\n"
-                + (_rangesOpen ? "ranges" : "noranges") + "\n" + (_patrolOpen ? "patrol" : "nopatrol") + "\n");
+                + (_rangesOpen ? "ranges" : "noranges") + "\n" + (_patrolOpen ? "patrol" : "nopatrol") + "\n"
+                + (_remoteOpen ? "remote" : "noremote") + "\n");
         }
         catch { /* best-effort */ }
     }

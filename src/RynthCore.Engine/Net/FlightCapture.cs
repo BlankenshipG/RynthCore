@@ -348,8 +348,14 @@ internal sealed unsafe class FlightCapture
                 NoteTarget(arg1, now);
         }
 
-        f |= MatchEngineCall(action, arg0, arg1, now) ? FlightFlags.Engine : FlightFlags.Client;
-        Keep(_out, now, FlightDir.Out, f, msg, len, fullLen, seq, 0);
+        // An IdentifyObject is the engine's when an engine send for that object was
+        // registered just before (EngineSend, with who asked); otherwise AC or Decal sent it.
+        byte idWho = action == FlightOp.AcIdentifyObject ? MatchEngineSend(arg0, now) : (byte)0;
+        bool engine = idWho != 0 || MatchEngineCall(action, arg0, arg1, now);
+        if (action == FlightOp.AcIdentifyObject && !engine)
+            Interlocked.Increment(ref _identifyForeign);
+        f |= engine ? FlightFlags.Engine : FlightFlags.Client;
+        Keep(_out, now, FlightDir.Out, f, msg, len, fullLen, seq, 0, idWho);
 
         if (action == FlightOp.AcUse || action == FlightOp.AcUseWithTarget)
             DetectUseSent(action == FlightOp.AcUse ? arg0 : arg1, counted: action == FlightOp.AcUse, now);
@@ -431,10 +437,10 @@ internal sealed unsafe class FlightCapture
         }
     }
 
-    private void Keep(Side side, long now, FlightDir dir, FlightFlags f, byte* msg, int len, int fullLen, uint seq, uint suppressed)
+    private void Keep(Side side, long now, FlightDir dir, FlightFlags f, byte* msg, int len, int fullLen, uint seq, uint suppressed, uint requester = 0)
     {
         side.Kept++;
-        Ring.WriteMessage(now, dir, f, msg, len, fullLen, seq, suppressed);
+        Ring.WriteMessage(now, dir, f, msg, len, fullLen, seq, suppressed, requester);
     }
 
     // ── positions ──────────────────────────────────────────────────────────
@@ -586,6 +592,72 @@ internal sealed unsafe class FlightCapture
             if (best < 0) return false;
             _pending[best].Used = true;
             return true;
+        }
+    }
+
+    // -- engine IdentifyObject (0xC8) sends --
+    // Kept apart from _pending: AutoId alone can send 30 a second, which would push every
+    // other engine call out of that 16-entry table. No marker line per send: the tag on the
+    // 0xC8 itself ([eng:<who>]) says who asked. 256 entries = AcMainThreadQueue's
+    // MaxRequestIdQueue: one drain can send a whole full queue before any of it reaches sendto.
+    private struct IdPending { public uint Id; public byte Who; public long Stamp; public bool Used; }
+    private readonly IdPending[] _idPending = new IdPending[256];
+    private int _idPendingNext;
+    private long _identifyForeign;
+
+    /// <summary>IdentifyObject (0xC8) messages sent with no engine send to match: AC itself or Decal.</summary>
+    public long IdentifyForeignTotal => Interlocked.Read(ref _identifyForeign);
+
+    /// <summary>
+    /// The engine is about to send an IdentifyObject for <paramref name="id"/> on behalf of
+    /// <paramref name="who"/> (an IdRequester, non-zero). The next 0xC8 for that id within
+    /// EngineMatchMs is tagged [eng:&lt;who&gt;]. Called BEFORE the send, so a 0xC8 that AC puts
+    /// on the wire inside the call is still matched. Returns a token for EngineSendFailed, or -1.
+    /// </summary>
+    public int EngineSend(byte who, uint id)
+    {
+        if (who == 0) return -1;
+        long now = _clock();
+        lock (_engineLock)
+        {
+            int slot = _idPendingNext;
+            ref IdPending p = ref _idPending[slot];
+            _idPendingNext = (_idPendingNext + 1) & (_idPending.Length - 1);
+            p.Id = id; p.Who = who; p.Stamp = now; p.Used = false;
+            return slot;
+        }
+    }
+
+    /// <summary>
+    /// The send registered as <paramref name="token"/> did not happen (the call returned false or
+    /// threw): retire its entry so it cannot tag a later 0xC8 for the same id. A no-op when the
+    /// entry was already matched or the slot has since been reused for another id.
+    /// </summary>
+    public void EngineSendFailed(int token, uint id)
+    {
+        if (token < 0 || token >= _idPending.Length) return;
+        lock (_engineLock)
+        {
+            ref IdPending p = ref _idPending[token];
+            if (p.Id == id && !p.Used) p.Used = true;
+        }
+    }
+
+    /// <summary>The requester of the oldest unmatched engine send for <paramref name="id"/>, or 0.</summary>
+    private byte MatchEngineSend(uint id, long now)
+    {
+        lock (_engineLock)
+        {
+            int best = -1;
+            for (int i = 0; i < _idPending.Length; i++)
+            {
+                ref IdPending p = ref _idPending[i];
+                if (p.Who == 0 || p.Used || p.Id != id || now < p.Stamp || Ms(now - p.Stamp) > EngineMatchMs) continue;
+                if (best < 0 || p.Stamp < _idPending[best].Stamp) best = i;
+            }
+            if (best < 0) return 0;
+            _idPending[best].Used = true;
+            return _idPending[best].Who;
         }
     }
 

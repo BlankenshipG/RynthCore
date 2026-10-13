@@ -57,12 +57,14 @@ internal static class ImGuiBar
 
     // Engine panels with an ImGui face only (no OverlayHost entry) that get a bar button.
     private static readonly string[] ImGuiOnlyBarPanels =
-        { Panels.InventoryFace.Title, Panels.SkillsFace.Title, Panels.SenseFace.Title, Panels.ItemCountFace.Title, Panels.MiniRemoteFace.Title };
+        { Panels.InventoryFace.Title, Panels.SkillsFace.Title, Panels.SenseFace.Title, Panels.ItemCountFace.Title, Panels.MiniRemoteFace.Title,
+          Panels.CharactersFace.Title };
 
-    // The ILT section: the RynthILT plugin's ImGui-only panels. They never get buttons of their
-    // own; one ILT button stands for them, shown only on Infinite Leaftide (IltInfo.IsIlt) and
-    // only for the ones registered (EntryPoint registers them when RynthILT is installed).
-    private static readonly string[] IltPanels = { Panels.BountiesFace.Title };
+    // The ILT section: ImGui-only Infinite Leaftide panels (Bounties from RynthILT, Guardian from
+    // RynthAi). They never get buttons of their own; one ILT button stands for them, shown only
+    // on Infinite Leaftide (IltInfo.IsIlt) and only for the ones registered (EntryPoint registers
+    // each when its plugin is installed).
+    private static readonly string[] IltPanels = { Panels.BountiesFace.Title, Panels.GuardianFace.Title };
 
     // Known panels' icons (DrakBot's where the same window exists); others show their first letter.
     private static readonly Dictionary<string, string> PanelIcons = new(StringComparer.OrdinalIgnoreCase)
@@ -88,6 +90,7 @@ internal static class ImGuiBar
         ["Log"] = PhosphorIcons.TerminalWindow,
         ["Item Count"] = PhosphorIcons.Bag,
         ["Mini Remote"] = PhosphorIcons.SquaresFour,
+        ["Characters"] = PhosphorIcons.UsersThree,
         // Plugin windows with a bar button of their own (script windows, by title).
         ["RynthSort"] = PhosphorIcons.SortAscending,
         ["Oracle"] = PhosphorIcons.Sparkle,
@@ -261,6 +264,8 @@ internal static class ImGuiBar
 
     public static void Draw(float s)
     {
+        // The bar draws every frame the ImGui shell is up: keep RynthAi's server menu current.
+        RynthCore.Engine.UI.ServerMenus.Tick();
         EnsureButtons();
         int step = ChromeStep(out float factor);
         s *= factor;
@@ -389,8 +394,8 @@ internal static class ImGuiBar
             FacePopup(b.PopupId, b.Title, ImGuiPanelHost.HasFace(b.Title));
         }
 
-        // The ILT section: one button, only on Infinite Leaftide with RynthILT's panels
-        // registered. With one panel it toggles that panel; with more it opens a menu.
+        // The ILT section: one button, only on Infinite Leaftide with ILT panels registered
+        // (Bounties, Guardian). With one panel it toggles that panel; with more it opens a menu.
         int iltCount = IltPanelCount();
         if (iltCount > 0)
         {
@@ -418,7 +423,11 @@ internal static class ImGuiBar
 
         ImGuiNET.ImGui.SameLine(0, 6 * s);
         if (IconButton("##reload", iconFont, PhosphorIcons.ArrowsClockwise, square, RynthTheme.ReloadLabel))
+        {
+            // By hand: not held while a plugin objects (combat, looting); the player chose the moment.
+            EntryPoint.NoteManualReload();
             ThreadPool.UnsafeQueueUserWorkItem(static _ => EngineLifecycle.SignalReload(), null);
+        }
         ImGuiNET.ImGui.SetItemTooltip("Engine reload (RL) — shut down, FreeLibrary, reload from disk, re-init.");
 
         if (ResolveFace() == PanelFace.ImGui)

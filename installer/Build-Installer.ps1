@@ -299,6 +299,13 @@ Write-Host "  Total staged: ${totalMb} MB"
 
 Write-Host "Staging complete: $StagingDir" -ForegroundColor Green
 
+# No file we ship may carry the ReadOnly attribute (a read-only source - a git checkout on a
+# read-only share, a file copied off an ISO - would otherwise land read-only on the player's PC,
+# where the launcher's updater and RynthAi can't overwrite it). 2026-10-13.
+$readOnly = @(Get-ChildItem "$ScriptDir\staging" -Recurse -File -Force | Where-Object { $_.IsReadOnly })
+foreach ($f in $readOnly) { $f.IsReadOnly = $false }
+if ($readOnly.Count -gt 0) { Write-Host "  Cleared read-only on $($readOnly.Count) staged file(s)." -ForegroundColor Yellow }
+
 # ── Inno Setup ───────────────────────────────────────────────────────────────
 # Auto-detect ISCC if not specified: try standard install location then user-local.
 if (-not $IsccPath) {

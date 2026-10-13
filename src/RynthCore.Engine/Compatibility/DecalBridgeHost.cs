@@ -426,7 +426,7 @@ internal static unsafe class DecalBridgeHost
             case BridgeRecordKind.ReleaseObject:
                 PaletteCache.Remove(arg0);
                 PluginManager.QueueDeleteObject(arg0);
-                AutoIdService.Evict(arg0);
+                AutoIdService.OnClientRelease(arg0);
                 break;
 
             case BridgeRecordKind.ChangeObject:

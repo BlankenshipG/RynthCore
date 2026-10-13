@@ -16,6 +16,8 @@ internal static class SmartBoxHooks
     private const uint PlayerPositionUpdateOpcode = 0x0000F74B;
     private const uint VectorUpdateOpcode = 0x0000F74E;
     private const uint UpdateObjectOpcode = 0x0000F7DB;
+    private const uint ServerObjectDeleteOpcode = 0x0000F747;
+    private const uint PlayerTeleportOpcode = 0x0000F751;
 
     // ACSmartBox::DispatchSmartBoxEvent
     // 83 EC 08 53 8B 5C 24 10 8B 53 30 83 FA 04 8B 43 2C 56 8B F1 89 44 24 14 89 54 24 08 72 ?? 8B 08
@@ -131,10 +133,22 @@ internal static class SmartBoxHooks
 
         try
         {
+            ObjectFreshness.Note(info.Opcode, info.RawObjectId, Environment.TickCount64);   // ghost check (RemoveClientObject)
             if (info.Opcode == PositionUpdateOpcode && info.RawObjectId != 0)
                 NotePlayerMotionEcho(blob, info);
             TryQueueHealthUpdate(blob, info);
             TryQueueDamageEvent(blob, info);
+
+            // Always on (no server-message capture needed), after AC handled the message:
+            //  0xF747 ObjectDelete [opcode][objectId]: the SERVER deleted it (AutoId re-arms it
+            //   and its kept identify data goes), unlike the client's own view releases;
+            //  0xF751 PlayerTeleport: a teleport starts, so queued game actions hold for the
+            //   settle window from this moment (WorldTransitionState), whatever the per-tick
+            //   teleport_in_progress sample catches.
+            if (info.Opcode == ServerObjectDeleteOpcode && info.RawObjectId != 0)
+                AutoIdService.OnServerDelete(info.RawObjectId);
+            else if (info.Opcode == PlayerTeleportOpcode)
+                PlayerLifecycleLog.OnTeleportMessage();
 
             if (info.RawObjectId != 0 &&
                 (info.Opcode == PositionUpdateOpcode ||
@@ -379,6 +393,15 @@ internal static class SmartBoxHooks
                     RecordWeenieError(eventType, unchecked((uint)Marshal.ReadInt32(IntPtr.Add(data, 4))), 0);
                 break;
 
+            case 0x0022: // InventoryPutObjInContainer: [item u32][container u32][placement][type].
+                         // AutoId (Limited): an item that landed in the player's inventory with
+                         // nothing cached is a candidate. Here, not on the server message stream,
+                         // so it works with that stream off (engine.json / /rc netmsg off).
+                if (size >= 12)
+                    AutoIdService.OnPutInContainer(
+                        unchecked((uint)Marshal.ReadInt32(IntPtr.Add(data, 4))),
+                        unchecked((uint)Marshal.ReadInt32(IntPtr.Add(data, 8))));
+                break;
             case 0x00A0: // InventoryServerSaveFailed: [objectId u32][errorType u32] —
                          // the server refused an inventory change (wield, move, ...).
                          // Layout from UIQueueManager::ProcessNetBlobData's inline case
@@ -632,6 +655,7 @@ internal static class SmartBoxHooks
         if (critOff + 4 > size) return;
 
         uint damageType = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(data, off)));
+        double share = BitConverter.Int64BitsToDouble(Marshal.ReadInt64(IntPtr.Add(data, off + 4)));   // damage / the monster's max health
         uint damage = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(data, off + 12)));
         uint crit = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(data, critOff)));
         if (damage == 0 || damage > 1_000_000) return;
@@ -642,8 +666,8 @@ internal static class SmartBoxHooks
             RynthLog.Compat($"Combat: damage evt 0x{eventType:X3} dmg={damage} crit={crit} atk={attacker} len={size}");
         }
         PluginManager.QueueCombatDamage(damage, damageType, crit != 0, attacker);
-        // RynthVision combat text: the attacker event names the monster hit.
-        ImGuiBackend.Hud.HudFeed.OnDamageEvent(attacker, attacker ? ReadString16Latin1(data, 4, size) : null, damage, crit != 0);
+        // RynthVision combat text (and the plate of a monster with no health feed): the attacker event names the monster hit.
+        ImGuiBackend.Hud.HudFeed.OnDamageEvent(attacker, attacker ? ReadString16Latin1(data, 4, size) : null, damage, crit != 0, attacker ? share : 0);
     }
 
     private static SmartBoxEventInfo ReadSmartBoxEventInfo(IntPtr blob)
@@ -767,6 +791,7 @@ internal static class SmartBoxHooks
                 return;
 
             uint damageType = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(payloadPtr, off)));
+            double share = BitConverter.Int64BitsToDouble(Marshal.ReadInt64(IntPtr.Add(payloadPtr, off + 4)));   // damage / the monster's max health
             uint damage = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(payloadPtr, off + 12)));
             uint crit = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(payloadPtr, critOff)));
             if (damage == 0 || damage > 1_000_000)
@@ -779,7 +804,7 @@ internal static class SmartBoxHooks
             }
 
             PluginManager.QueueCombatDamage(damage, damageType, crit != 0, attacker);
-            ImGuiBackend.Hud.HudFeed.OnDamageEvent(attacker, attacker ? ReadString16Latin1(payloadPtr, nameOff, info.BlobSize) : null, damage, crit != 0);
+            ImGuiBackend.Hud.HudFeed.OnDamageEvent(attacker, attacker ? ReadString16Latin1(payloadPtr, nameOff, info.BlobSize) : null, damage, crit != 0, attacker ? share : 0);
         }
         catch
         {
