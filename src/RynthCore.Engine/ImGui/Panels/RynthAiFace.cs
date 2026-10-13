@@ -617,7 +617,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     private void Launchers(float x0, float width)
     {
         float y = ImGuiNET.ImGui.GetCursorScreenPos().Y;
-        const int buttons = 10;
+        const int buttons = 9;
         float gap = Px(LauncherGap);
         float bw = MathF.Floor((width - buttons * gap) / buttons);
         // Short labels only when every button has room for its icon and label.
@@ -659,29 +659,18 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         }
         x += bw + gap;
 
-        // Char and Hub open the Mini Remote window (MiniRemoteFace, hosting RynthAi's remote): Char
-        // on its Character tab (RynthILT's ILT tab; elsewhere the remote shows), Hub as it was left.
+        // Char opens the Mini Remote window (MiniRemoteFace, hosting RynthAi's remote) on its
+        // Character tab (RynthILT's ILT tab; elsewhere the remote shows). The separate Hub launcher
+        // (the same window again) was removed 2026-10-13: the Mini Remote as it was left is the bar
+        // button (/rc miniremote) and "Mini Remote" in Char's right-click menu; its drawer is the
+        // drawer tab on the dashboard's edge.
         Launcher("##l_char", PhosphorIcons.User, "Char",
-            "Char. Left-click: the Mini Remote on its Character tab (ILT worlds).  Right-click: Character windows (Spells, Quests, Pets, Crafting, Skills, Inventory...), then Server: this server's plugin windows.",
+            "Char. Left-click: the Mini Remote on its Character tab (ILT worlds).  Right-click: Character windows (Mini Remote, Spells, Quests, Pets, Crafting, Skills, Inventory...), then Server: this server's plugin windows.",
             x, y, bw, labels, () => ShowMiniRemoteTab("character"));
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
         {
             ImGuiNET.ImGui.SetNextWindowPos(ImGuiNET.ImGui.GetItemRectMin(), ImGuiCond.Always, new Vector2(0, 1));
             ImGuiNET.ImGui.OpenPopup("##charmenu");
-        }
-        x += bw + gap;
-        // Left-click is the Mini Remote window (MiniRemoteFace, which hosts RynthAi's remote, the
-        // same window as the bar button). Right-click is the Mini Remote drawer, as Patrol's is
-        // its drawer; popped out there are no drawers, so it opens the window. Inventory HUDs
-        // setup is in the Mini Remote's Options menu.
-        Launcher("##l_hub", PhosphorIcons.SquaresFour, "Hub",
-            popped ? "Hub. Left-click: the Mini Remote window (/rc miniremote).  Right-click: open the Mini Remote window."
-                   : "Hub. Left-click: the Mini Remote window (/rc miniremote).  Right-click: the Mini Remote drawer (left), with its Options.",
-            x, y, bw, labels, () => PanelRouter.Toggle(MiniRemoteFace.Title));
-        if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
-        {
-            if (popped) ImGuiPanelHost.Open(MiniRemoteFace.Title);
-            else _drawers.Toggle(_remote);
         }
 
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x0, y + Px(LauncherH)));
@@ -885,8 +874,8 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     // (UI.ServerMenus): the installed server plugins' windows for the world you're on.
 
     /// <summary>
-    /// Opens the Mini Remote window on one of its tabs ("" = the remote). Quests, Pets and Crafting show on
-    /// every server; RynthILT's ILT tabs show once the server reports that feature on (and only with
+    /// Opens the Mini Remote window on one of its tabs ("" = the remote). Pets and Crafting show on
+    /// every server (Quests moved to RynthOracle 2026-10-13); RynthILT's ILT tabs show once the server reports that feature on (and only with
     /// RynthILT), and until then the window shows the remote.
     /// </summary>
     private static void ShowMiniRemoteTab(string section)
@@ -901,6 +890,23 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         if (!ImGuiPanelHost.HasFace(title)) return;
         if (ImGuiNET.ImGui.MenuItem(title, command, ImGuiPanelHost.IsOpen(title)))
             PanelRouter.Toggle(title);
+    }
+
+    // RynthOracle's script window keys (RynthOraclePlugin: UiWindow keys).
+    private const string OracleMainKey = "RynthOracle/Oracle";
+    private const string OracleTimersKey = "RynthOracle/QuestTimers";
+
+    /// <summary>
+    /// A Character menu line for one of RynthOracle's script windows: toggles it as the bar does,
+    /// checked while open, greyed out when RynthOracle isn't loaded (or hasn't drawn it yet).
+    /// </summary>
+    private static void OracleMenuItem(string label, string command, string key, string tooltip)
+    {
+        bool has = UI.ScriptWindows.ScriptWindowRegistry.Has(key);
+        bool open = has && UI.ScriptWindows.ScriptWindowRegistry.IsOpen(key);
+        if (ImGuiNET.ImGui.MenuItem(label, command, open, has))
+            UI.ScriptWindows.ScriptWindowRegistry.PlayerSetVisible(key, !open);
+        ImGuiNET.ImGui.SetItemTooltip(has ? tooltip : tooltip + " (RynthOracle isn't loaded.)");
     }
 
     private static void CharMenu()
@@ -920,9 +926,12 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             if (ImGuiNET.ImGui.MenuItem("Spells", "/rc spells"))
                 RynthAiCommands.ApplyRemoteCommand("spells", "toggle");
             ImGuiNET.ImGui.SetItemTooltip("RynthAi Spells: the spell catalog and buff profiles.");
+            // Quests live in RynthOracle (its script windows), since 2026-10-13.
+            OracleMenuItem("Quests", "/ro", OracleMainKey,
+                "RynthOracle: every quest flag, timers, tracking, rewards and (Infinite Leaftide) the /qb list.");
+            OracleMenuItem("Quest Timers", "/ro timers", OracleTimersKey,
+                "RynthOracle's Quest Timers: the quests you track and the time left on each.");
             // The Mini Remote's universal tabs (every server); RynthILT's ILT tabs are in the server half.
-            if (ImGuiNET.ImGui.MenuItem("Quests", "/rc miniremote tab quests")) ShowMiniRemoteTab("quests");
-            ImGuiNET.ImGui.SetItemTooltip("The Mini Remote's Quests tab: /myquests timers and favorites (RynthAi).");
             if (ImGuiNET.ImGui.MenuItem("Pets", "/rc miniremote tab pets")) ShowMiniRemoteTab("pets");
             ImGuiNET.ImGui.SetItemTooltip("The Mini Remote's Pets tab: summoning essences, priorities and the healing pet (RynthAi).");
             if (ImGuiNET.ImGui.MenuItem("Crafting", "/rc miniremote tab crafting")) ShowMiniRemoteTab("crafting");
