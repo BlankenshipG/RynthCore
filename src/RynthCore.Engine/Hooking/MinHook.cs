@@ -80,7 +80,7 @@ internal static unsafe class MinHook
         IntPtr module = GetModuleHandleW(LoaderDll);
         bool facade = module != IntPtr.Zero && GetProcAddress(module, "RcHooks_Version") != IntPtr.Zero;
         if (!facade)
-            module = NativeLibrary.Load(DLL, typeof(MinHook).Assembly, null);
+            module = LoadMinHookFromEngineFolders();
 
         IntPtr Get(string name)
         {
@@ -101,6 +101,19 @@ internal static unsafe class MinHook
             Disable = (delegate* unmanaged[Stdcall]<IntPtr, int>)Get("MH_DisableHook"),
             StatusToString = (delegate* unmanaged[Stdcall]<int, IntPtr>)Get("MH_StatusToString"),
         };
+    }
+
+    /// <summary>
+    /// minhook.x86.dll by full path from the engine's folders (where the early preload found it).
+    /// Never by bare name: Windows' search order (the AC client folder, the current directory,
+    /// PATH) would load a planted minhook.x86.dll into the client when ours is missing.
+    /// </summary>
+    private static IntPtr LoadMinHookFromEngineFolders()
+    {
+        string? path = EntryPoint.FindNativeDll(DLL);
+        if (path == null)
+            throw new DllNotFoundException($"{DLL} was not found beside the engine (other folders are not searched).");
+        return NativeLibrary.Load(path);
     }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]

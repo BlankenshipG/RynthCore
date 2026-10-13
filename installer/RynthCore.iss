@@ -179,9 +179,15 @@ Filename: "{app}\RynthCore.exe"; Parameters: "--decal-bridge-unregister"; Flags:
 [Code]
 const
   DefaultSuiteDir = 'C:\Games\RynthSuite';
-  { Microsoft's permalink to the latest .NET 10 Desktop Runtime (x86 to match RynthCore's x86 binaries). }
-  DotNetDesktopUrl  = 'https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x86.exe';
-  DotNetDesktopFile = 'windowsdesktop-runtime-10-win-x86.exe';
+  { One pinned .NET 10 Desktop Runtime build (x86 to match RynthCore's x86 binaries), checked against its
+    SHA-256 before it runs: a download swapped on the way (or at a mirror) is refused, not run elevated.
+    A moving "latest" link can't be pinned. To move to a newer build, take the url from
+    https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json (windowsdesktop,
+    win-x86 .exe), check the download against the SHA-512 listed there, and put its SHA-256 here.
+    Any 10.x already installed is kept (IsDotNet10DesktopX86Installed); Microsoft Update patches it later. }
+  DotNetDesktopUrl    = 'https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.12/windowsdesktop-runtime-10.0.12-win-x86.exe';
+  DotNetDesktopSha256 = '57c1d40967b73785b9ef95de5f0878e9264423228971a71eb362c03ae01937f5';
+  DotNetDesktopFile   = 'windowsdesktop-runtime-10.0.12-win-x86.exe';
   DotNetManualUrl   = 'https://dotnet.microsoft.com/download/dotnet/10.0';
 
 var
@@ -377,7 +383,7 @@ begin
     if UsePage then
     begin
       DotNetDownloadPage.Clear;
-      DotNetDownloadPage.Add(DotNetDesktopUrl, DotNetDesktopFile, '');
+      DotNetDownloadPage.Add(DotNetDesktopUrl, DotNetDesktopFile, DotNetDesktopSha256);
       DotNetDownloadPage.Show;
       try
         DotNetDownloadPage.Download;
@@ -386,7 +392,7 @@ begin
       end;
     end
     else
-      DownloadTemporaryFile(DotNetDesktopUrl, DotNetDesktopFile, '', @OnDotNetDownloadProgress);
+      DownloadTemporaryFile(DotNetDesktopUrl, DotNetDesktopFile, DotNetDesktopSha256, @OnDotNetDownloadProgress);
   except
     Result := 'the download failed (' + GetExceptionMessage + ')';
     Exit;
