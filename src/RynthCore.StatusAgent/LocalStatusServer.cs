@@ -40,6 +40,8 @@ internal sealed class LocalStatusServer : IDisposable
     // Connected /statusfeed push clients — each value is a per-socket wake signal. UpdateLatest pulses
     // them all; each socket's loop then sends the freshest _latest (coalescing rapid updates).
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _feedSignals = new();
+    // Failed token checks per remote address (lockout after repeated guesses).
+    private readonly AuthThrottle _authThrottle = new();
     private const int FeedKeepAliveMs = 20000;   // re-send _latest at least this often (keepalive + missed-pulse cover)
 
     public bool Running { get; private set; }
@@ -93,9 +95,11 @@ internal sealed class LocalStatusServer : IDisposable
     public bool TryStart(out string error)
     {
         // Never serve without a token, loopback included: every route but /healthz is behind it.
-        if (_token == null)
+        // A bind other PCs can reach also needs one long enough not to be guessed (ServeGuard).
+        string? tokenProblem = ServeGuard.TokenProblem(_prefix, _token);
+        if (tokenProblem != null)
         {
-            error = "no ServeToken set";
+            error = tokenProblem;
             Running = false;
             return false;
         }
@@ -141,7 +145,7 @@ internal sealed class LocalStatusServer : IDisposable
             // Diagnostic: log every /webrtc request + every CORS preflight, at the door (before any
             // auth/route processing), so we can see whether the app's offer POST even reaches us.
             if (path.StartsWith("/webrtc") || string.Equals(method, "OPTIONS", StringComparison.OrdinalIgnoreCase))
-                AgentLog.Info($"[video] HTTP {method} {path} ua=\"{req.UserAgent}\"");
+                AgentLog.Info($"[video] HTTP {ServeGuard.LogSafe(method, 16)} {ServeGuard.LogSafe(path, 64)} ua=\"{ServeGuard.LogSafe(req.UserAgent)}\"");
 
             // CORS preflight for the POST /command path (a browser-hosted client may send it).
             if (string.Equals(method, "OPTIONS", StringComparison.OrdinalIgnoreCase))
@@ -199,7 +203,7 @@ internal sealed class LocalStatusServer : IDisposable
                 int vpid = int.TryParse(req.QueryString["pid"], out int vv) ? vv : 0;
                 if (vpid <= 0) { Write(res, 400, "application/json", "{\"error\":\"pid required\"}"u8.ToArray()); return; }
                 if (!req.IsWebSocketRequest) { Write(res, 426, "application/json", "{\"error\":\"websocket required\"}"u8.ToArray()); return; }
-                AgentLog.Info($"[vsock] HTTP WS /video pid={vpid} ua=\"{req.UserAgent}\"");
+                AgentLog.Info($"[vsock] HTTP WS /video pid={vpid} ua=\"{ServeGuard.LogSafe(req.UserAgent)}\"");
                 _ = HandleVideoSocketAsync(ctx, vpid);
                 return;
             }
@@ -209,7 +213,7 @@ internal sealed class LocalStatusServer : IDisposable
             {
                 if (_token != null && !Authorized(req)) { Write(res, 401, "application/json", "{\"error\":\"unauthorized\"}"u8.ToArray()); return; }
                 if (!req.IsWebSocketRequest) { Write(res, 426, "application/json", "{\"error\":\"websocket required\"}"u8.ToArray()); return; }
-                AgentLog.Info($"[feed] WS /statusfeed ua=\"{req.UserAgent}\"");
+                AgentLog.Info($"[feed] WS /statusfeed ua=\"{ServeGuard.LogSafe(req.UserAgent)}\"");
                 _ = HandleStatusFeedAsync(ctx);
                 return;
             }
@@ -241,7 +245,13 @@ internal sealed class LocalStatusServer : IDisposable
                 if (path == "/webrtc/stop") { _video.Stop(pid); Write(res, 200, "application/json", "{\"ok\":true}"u8.ToArray()); return; }
                 if (path == "/webrtc/clientlog")   // diagnostic: WKWebView reports its WebRTC errors/states here
                 {
-                    try { using var sr = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8); AgentLog.Info($"[video] CLIENT pid={pid}: {sr.ReadToEnd()}"); } catch { }
+                    try
+                    {
+                        if (!ServeGuard.TryReadBounded(req.InputStream, req.ContentLength64, ServeGuard.MaxClientLogBodyBytes, req.ContentEncoding, out string clientLog))
+                        { Write(res, 413, "application/json", "{\"error\":\"too large\"}"u8.ToArray()); return; }
+                        AgentLog.Info($"[video] CLIENT pid={pid}: {ServeGuard.LogSafe(clientLog, 2000)}");
+                    }
+                    catch { }
                     Write(res, 200, "application/json", "{\"ok\":true}"u8.ToArray());
                     return;
                 }
@@ -526,9 +536,11 @@ internal sealed class LocalStatusServer : IDisposable
     {
         try
         {
-            string body;
-            using (var reader = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8))
-                body = reader.ReadToEnd();
+            if (!ServeGuard.TryReadBounded(req.InputStream, req.ContentLength64, ServeGuard.MaxCommandBodyBytes, req.ContentEncoding, out string body))
+            {
+                Write(res, 413, "application/json", "{\"error\":\"command too large\"}"u8.ToArray());
+                return;
+            }
 
             int pid; string action; string value;
             using (var doc = JsonDocument.Parse(body))
@@ -614,9 +626,9 @@ internal sealed class LocalStatusServer : IDisposable
 
             // Keep-alives arrive ~5 a second per held client: debug only, so the log keeps the presses and releases.
             if (string.Equals(action, "moveKeepAlive", StringComparison.OrdinalIgnoreCase))
-                AgentLog.Debug($"command queued: pid={pid} {action}={value}");
+                AgentLog.Debug($"command queued: pid={pid} {action}={ServeGuard.LogSafe(value, 500)}");
             else
-                AgentLog.Info($"command queued: pid={pid} {action}={value}");
+                AgentLog.Info($"command queued: pid={pid} {action}={ServeGuard.LogSafe(value, 500)}");
             Write(res, 202, "application/json", "{\"ok\":true}"u8.ToArray());
         }
         catch (Exception ex)
@@ -837,9 +849,11 @@ internal sealed class LocalStatusServer : IDisposable
 
     private void HandleWebRtcOffer(HttpListenerRequest req, HttpListenerResponse res, int pid)
     {
-        string body;
-        using (var sr = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8))
-            body = sr.ReadToEnd();
+        if (!ServeGuard.TryReadBounded(req.InputStream, req.ContentLength64, ServeGuard.MaxOfferBodyBytes, req.ContentEncoding, out string body))
+        {
+            Write(res, 413, "application/json", "{\"error\":\"offer too large\"}"u8.ToArray());
+            return;
+        }
         string? offer = null;
         try { offer = JsonDocument.Parse(body).RootElement.GetProperty("sdp").GetString(); } catch { }
         if (string.IsNullOrEmpty(offer))
@@ -849,10 +863,10 @@ internal sealed class LocalStatusServer : IDisposable
         }
         // Diagnostic: confirm the offer arrived + from which client (Safari vs Chrome), and what H.264
         // profile-level-id(s) it can RECEIVE.
-        AgentLog.Info($"[video] OFFER pid={pid} ua=\"{req.UserAgent}\"");
+        AgentLog.Info($"[video] OFFER pid={pid} ua=\"{ServeGuard.LogSafe(req.UserAgent)}\"");
         foreach (var ln in offer.Split('\n'))
             if (ln.StartsWith("m=video", StringComparison.Ordinal) || ln.Contains("profile-level-id", StringComparison.OrdinalIgnoreCase) || ln.Contains("candidate", StringComparison.OrdinalIgnoreCase))
-                AgentLog.Info($"[video] offer> {ln.Trim()}");
+                AgentLog.Info($"[video] offer> {ServeGuard.LogSafe(ln.Trim(), 300)}");
         string? answer;
         try { answer = _video!.CreateAnswerAsync(pid, offer).GetAwaiter().GetResult(); }
         catch (Exception ex) { AgentLog.Warn($"[video] offer failed pid {pid}: {ex.Message}"); answer = null; }
@@ -871,13 +885,24 @@ internal sealed class LocalStatusServer : IDisposable
 
     private bool Authorized(HttpListenerRequest req)
     {
-        string? header = req.Headers["Authorization"];
-        if (header != null && header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) &&
-            TokenMatches(header.Substring("Bearer ".Length).Trim()))
-            return true;
+        // An address that kept guessing is refused outright for a while, right token or not.
+        IPAddress? from = req.RemoteEndPoint?.Address;
+        DateTime now = DateTime.UtcNow;
+        if (_authThrottle.IsBlocked(from, now)) return false;
 
-        string? q = req.QueryString["token"];
-        return q != null && TokenMatches(q);
+        string? header = req.Headers["Authorization"];
+        bool ok = header != null && header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) &&
+                  TokenMatches(header.Substring("Bearer ".Length).Trim());
+        if (!ok)
+        {
+            string? q = req.QueryString["token"];
+            ok = q != null && TokenMatches(q);
+        }
+
+        if (ok) _authThrottle.Succeed(from);
+        else if (_authThrottle.Fail(from, now))
+            AgentLog.Warn($"auth: {from} locked out for {AuthThrottle.Lockout.TotalMinutes:0} min after {AuthThrottle.MaxFailures} bad tokens.");
+        return ok;
     }
 
     private bool TokenMatches(string candidate)

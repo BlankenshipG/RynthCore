@@ -676,22 +676,22 @@ internal static unsafe class DamageCommands
         MonstersPanel.Rule? from = string.IsNullOrEmpty(copyFrom) ? null
             : rules.Rules.Find(r => !IsDefault(r) && r.Name.Equals(copyFrom, StringComparison.OrdinalIgnoreCase));
         MonstersPanel.Rule clone = CopyOfDefault(from ?? s, name);
-        if (from != null) { clone.OffhandId = from.OffhandId; clone.PetDamage = from.PetDamage; }   // a name rule's own choices, kept
+        if (from != null) { clone.OffhandId = from.OffhandId; clone.PetDamage = from.PetDamage; clone.AttackPower = from.AttackPower; }   // a name rule's own choices, kept
         rules.Rules.Insert(defIdx >= 0 ? defIdx + 1 : 0, clone);
         return clone;
     }
 
     /// <summary>
-    /// A new rule named <paramref name="name"/> with Default's settings. Off hand and pet are
-    /// left on "follow Default" (0 / PAuto) rather than copied, so a later change on the
-    /// DEFAULT line still reaches it.
+    /// A new rule named <paramref name="name"/> with Default's settings. Off hand, pet and attack
+    /// power are left on "follow Default" (0 / PAuto / Default) rather than copied, so a later
+    /// change on the DEFAULT line still reaches it.
     /// </summary>
     private static MonstersPanel.Rule CopyOfDefault(MonstersPanel.Rule s, string name) => new()
     {
         Name = name, Category = s.Category,
         MatchExpression = "",   // an exact-name rule matches by name, not by a (possibly false) expression
         Priority = s.Priority, DamageType = s.DamageType, WeaponId = s.WeaponId, OffhandId = 0,
-        ExVuln = s.ExVuln, PetDamage = "PAuto",
+        ExVuln = s.ExVuln, PetDamage = "PAuto", AttackPower = "Default",
         Fester = s.Fester, Broadside = s.Broadside, GravityWell = s.GravityWell,
         Imperil = s.Imperil, Yield = s.Yield, Vuln = s.Vuln,
         UseArc = s.UseArc, UseBolt = s.UseBolt, UseRing = s.UseRing, UseStreak = s.UseStreak, UseBlast = s.UseBlast, UseWall = s.UseWall,
@@ -789,6 +789,10 @@ internal static unsafe class DamageCommands
 
     /// <summary>Rule.OffhandId as RynthAi reads it: 0 = follow the DEFAULT line, 1-4 a mode, anything else an item id.</summary>
     public static readonly string[] OffhandModeNames = { "Default", "Auto", "Shield", "Dual wield", "None" };
+
+    /// <summary>Rule.AttackPower choices, spelled as RynthAi reads them (AttackPowerModes).</summary>
+    public static readonly string[] AttackPowerModes =
+        { "Default", "High", "Reckless", "Variable", "Reckless + Variable" };
 
     /// <summary>Rule.PetDamage choices; "PAuto" is shown as Auto.</summary>
     public static readonly string[] PetDamageTypes =

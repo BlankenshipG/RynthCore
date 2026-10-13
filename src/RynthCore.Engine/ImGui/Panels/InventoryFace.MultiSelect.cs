@@ -228,8 +228,8 @@ internal sealed partial class InventoryFace
             ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Amber);
             ImGuiNET.ImGui.TextUnformatted(_confirmTitle);
             ImGuiNET.ImGui.PopStyleColor();
-            foreach (string line in _confirmNames) ImGuiNET.ImGui.BulletText(line);
-            if (_confirmNote.Length > 0) ImGuiNET.ImGui.TextDisabled(_confirmNote);
+            foreach (string line in _confirmNames) SafeImGui.BulletText(line);
+            if (_confirmNote.Length > 0) SafeImGui.TextDisabled(_confirmNote);
             if (_confirmItems.Length > 0 && _confirmItems[0].Kind == InventoryActionKind.Give)
                 ImGuiNET.ImGui.TextDisabled("Given items can't be taken back.");
 
@@ -287,7 +287,7 @@ internal sealed partial class InventoryFace
         bool idle = InventoryModel.Pending == null && !InventoryModel.BatchRunning;
         InventoryTarget? target = InventoryModel.Target;
         RefreshSelectionLabels(target);
-        ImGuiNET.ImGui.TextDisabled(_menuCount);
+        SafeImGui.TextDisabled(_menuCount);
         ImGuiNET.ImGui.Separator();
         if (ImGuiNET.ImGui.MenuItem(_menuDrop, "", false, idle && InventoryModel.DropAvailable))
             GroupAction(DropKind.Drop, 0, string.Empty);

@@ -1,0 +1,111 @@
+{
+    "schema":  1,
+    "product":  "RynthCore + RynthSuite",
+    "version":  "2026.10.5.46",
+    "release":  2026100546,
+    "builtUtc":  "2026-10-13T19:01:30Z",
+    "previous":  "2026.10.5.38",
+    "installer":  {
+                      "file":  "RynthCore-Setup-2026.10.5.46.exe",
+                      "size":  132442703,
+                      "sha256":  "ef63d524de500626592c0d0cb02e1ef4db7e83c96bfa97b63044085c4bfc337d"
+                  },
+    "source":  {
+                   "rynthCore":  {
+                                     "branch":  "build-comp-10-11",
+                                     "commit":  "887ac12c792bd372a73c4c5f7162ab39f15ddb61",
+                                     "dirty":  true
+                                 },
+                   "rynthSuite":  {
+                                      "branch":  "build-comp-10-11",
+                                      "commit":  "20d50ef802ad59175bf535f4e59d63e879c9e0ec",
+                                      "dirty":  true
+                                  }
+               },
+    "components":  [
+                       {
+                           "name":  "Launcher (RynthCore.exe)",
+                           "file":  "core\\RynthCore.exe",
+                           "version":  "2026.10.5.46+887ac12c792bd372a73c4c5f7162ab39f15ddb61"
+                       },
+                       {
+                           "name":  "Engine",
+                           "file":  "core\\Runtime\\RynthCore.Engine.dll",
+                           "version":  "2026.10.5.46+887ac12c792bd372a73c4c5f7162ab39f15ddb61"
+                       },
+                       {
+                           "name":  "Loader",
+                           "file":  "core\\Runtime\\RynthCore.Loader.dll",
+                           "version":  ""
+                       },
+                       {
+                           "name":  "Loot Editor",
+                           "file":  "core\\Tools\\LootEditor\\RynthCore.LootEditor.exe",
+                           "version":  "2026.10.5.46+20d50ef802ad59175bf535f4e59d63e879c9e0ec"
+                       },
+                       {
+                           "name":  "RynthAi plugin",
+                           "file":  "suite\\RynthAi\\RynthCore.Plugin.RynthAi.dll",
+                           "version":  "1.0.0+20d50ef802ad59175bf535f4e59d63e879c9e0ec"
+                       },
+                       {
+                           "name":  "Monster Editor",
+                           "file":  "suite\\RynthAi\\MonsterEditor\\RynthCore.MonsterEditor.exe",
+                           "version":  "2026.10.5.46+20d50ef802ad59175bf535f4e59d63e879c9e0ec"
+                       },
+                       {
+                           "name":  "RynthChat (experimental)",
+                           "file":  "suite\\RynthChat\\RynthCore.Plugin.RynthChat.dll",
+                           "version":  "1.0.0+20d50ef802ad59175bf535f4e59d63e879c9e0ec"
+                       },
+                       {
+                           "name":  "RynthJuice (experimental)",
+                           "file":  "suite\\RynthJuice\\RynthCore.Plugin.RynthJuice.dll",
+                           "version":  "0.1.2-experimental+20d50ef802ad59175bf535f4e59d63e879c9e0ec"
+                       },
+                       {
+                           "name":  "RynthNav (experimental)",
+                           "file":  "suite\\RynthNav\\RynthCore.Plugin.RynthNav.dll",
+                           "version":  "1.0.0+20d50ef802ad59175bf535f4e59d63e879c9e0ec"
+                       },
+                       {
+                           "name":  "RynthTracker (experimental)",
+                           "file":  "suite\\RynthTracker\\RynthCore.Plugin.RynthTracker.dll",
+                           "version":  "1.0.0+20d50ef802ad59175bf535f4e59d63e879c9e0ec"
+                       },
+                       {
+                           "name":  "RynthVision (experimental)",
+                           "file":  "suite\\RynthVision\\RynthCore.Plugin.RynthVision.dll",
+                           "version":  "1.0.0+20d50ef802ad59175bf535f4e59d63e879c9e0ec"
+                       },
+                       {
+                           "name":  "UbRythai (experimental)",
+                           "file":  "suite\\UbRythai\\RynthCore.Plugin.UbRythai.dll",
+                           "version":  "3.1.11+20d50ef802ad59175bf535f4e59d63e879c9e0ec"
+                       }
+                   ],
+    "changelog":  [
+                      "RynthCore/Changelog/2026-10-12-confirmation-answers-crafting-menu.md",
+                      "RynthCore/Changelog/2026-10-12-environment-throttle-attack-power-settings.md",
+                      "RynthCore/Changelog/2026-10-12-hot-release-2026.10.5.39.md",
+                      "RynthCore/Changelog/2026-10-12-hot-release-2026.10.5.40.md",
+                      "RynthCore/Changelog/2026-10-12-hot-release-2026.10.5.41.md",
+                      "RynthCore/Changelog/2026-10-12-hot-release-2026.10.5.42.md",
+                      "RynthCore/Changelog/2026-10-12-hot-release-2026.10.5.43.md",
+                      "RynthCore/Changelog/2026-10-12-items-damage-type-colors.md",
+                      "RynthCore/Changelog/2026-10-13-security-review-fixes-2026.10.5.45.md",
+                      "RynthSuite/Changelog/2026-10-12-crafting-tab-tinkering.md",
+                      "RynthSuite/Changelog/2026-10-12-crafting-trinkets-rings-autobatch.md",
+                      "RynthSuite/Changelog/2026-10-12-environment-impact-throttle-attack-power.md",
+                      "RynthSuite/Changelog/2026-10-12-magic-resync-port.md",
+                      "RynthSuite/Changelog/2026-10-12-missile-launcher-swap-speed.md",
+                      "RynthSuite/Changelog/2026-10-12-pets-damage-type-colors.md",
+                      "RynthSuite/Changelog/2026-10-12-rynthlua-format-nil-safeguard.md",
+                      "RynthSuite/Changelog/2026-10-13-security-review-fixes.md"
+                  ],
+    "changelogSince":  {
+                           "rynthCore":  "479c4b2c92eaf9f5dfb6d5b72bbbdda6f5bec7a3",
+                           "rynthSuite":  "2f9aa0f194556cde934e6dc4b73fd81520436fde",
+                           "date":  ""
+                       }
+}

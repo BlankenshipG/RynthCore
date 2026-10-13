@@ -33,6 +33,7 @@ internal static class Program
         StatusFileReads();
         MoveProtocol();
         LogRollover();
+        ServeGuards();
         if (Arg(args, "--atlas") is { } atlas) RealAtlas(atlas);
         if (portal != null) RealSpellTable(portal);
         if (cell != null) RealWorldMap(cell, outFile);
@@ -40,6 +41,53 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine(_failed == 0 ? $"PASS ({_checks} checks)" : $"FAIL ({_failed} of {_checks} checks failed)");
         return _failed == 0 ? 0 : 1;
+    }
+
+    // ── serve guards (remote access) ────────────────────────────────────────
+
+    private static void ServeGuards()
+    {
+        Section("status server: loopback, token length, lockout, bounded bodies, log-safe text");
+        Check(ServeGuard.IsLoopbackPrefix("http://127.0.0.1:8740/"), "127.0.0.1 is loopback");
+        Check(ServeGuard.IsLoopbackPrefix("http://localhost:8740/"), "localhost is loopback");
+        Check(ServeGuard.IsLoopbackPrefix("http://[::1]:8740/"), "[::1] is loopback");
+        Check(!ServeGuard.IsLoopbackPrefix("http://+:8740/"), "+ is every address");
+        Check(!ServeGuard.IsLoopbackPrefix("http://*:8740/"), "* is every address");
+        Check(!ServeGuard.IsLoopbackPrefix("http://100.64.1.2:8740/"), "a Tailscale address is not");
+        Check(!ServeGuard.IsLoopbackPrefix("http://127.0.0.1.evil.example:8740/"), "a name starting 127.0.0.1 is not");
+
+        Check(ServeGuard.TokenProblem("http://127.0.0.1:8740/", "") != null, "no token: never serves");
+        Check(ServeGuard.TokenProblem("http://127.0.0.1:8740/", "short") == null, "loopback: any token");
+        Check(ServeGuard.TokenProblem("http://+:8740/", "short") != null, "remote bind: a short token is refused");
+        Check(ServeGuard.TokenProblem("http://+:8740/", new string('k', 16)) == null, "remote bind: 16 characters is fine");
+
+        var t = new AuthThrottle();
+        var lan = System.Net.IPAddress.Parse("192.168.1.50");
+        var t0 = new DateTime(2026, 10, 13, 12, 0, 0, DateTimeKind.Utc);
+        bool started = false;
+        for (int i = 0; i < AuthThrottle.MaxFailures - 1; i++) started |= t.Fail(lan, t0.AddSeconds(i));
+        Check(!started && !t.IsBlocked(lan, t0.AddSeconds(10)), "under the limit: not blocked");
+        Check(t.Fail(lan, t0.AddSeconds(10)), "the limit starts a lockout (reported once)");
+        Check(t.IsBlocked(lan, t0.AddMinutes(4)), "still blocked inside the lockout");
+        Check(!t.IsBlocked(lan, t0.AddMinutes(6)), "free again after it");
+        var slow = System.Net.IPAddress.Parse("192.168.1.51");
+        for (int i = 0; i < AuthThrottle.MaxFailures * 2; i++) t.Fail(slow, t0.AddSeconds(i * 61));
+        Check(!t.IsBlocked(slow, t0.AddSeconds(AuthThrottle.MaxFailures * 2 * 61)), "failures spread past the window don't add up");
+        var other = System.Net.IPAddress.Parse("192.168.1.52");
+        for (int i = 0; i < AuthThrottle.MaxFailures - 1; i++) t.Fail(other, t0);
+        t.Succeed(other);
+        Check(!t.Fail(other, t0), "a good token clears the count");
+        for (int i = 0; i < AuthThrottle.MaxFailures * 2; i++) t.Fail(System.Net.IPAddress.Loopback, t0);
+        Check(!t.IsBlocked(System.Net.IPAddress.Loopback, t0), "loopback is never locked out");
+
+        Check(ServeGuard.TryReadBounded(new MemoryStream(Encoding.UTF8.GetBytes("{\"pid\":1}")), 9, 64, null, out string small) && small == "{\"pid\":1}", "a small body reads");
+        Check(!ServeGuard.TryReadBounded(new MemoryStream(new byte[100]), 100, 64, null, out _), "a declared length over the limit is refused");
+        Check(!ServeGuard.TryReadBounded(new MemoryStream(new byte[100]), -1, 64, null, out _), "chunked (no length) over the limit is refused");
+        Check(ServeGuard.TryReadBounded(new MemoryStream(new byte[64]), -1, 64, null, out _), "exactly the limit reads");
+
+        Check(ServeGuard.LogSafe("a\r\nFAKE LOG LINE") == "a  FAKE LOG LINE", "CR/LF can't start a log line");
+        Check(ServeGuard.LogSafe(new string('x', 500), 10) == "xxxxxxxxxx...", "capped");
+        Check(ServeGuard.LogSafe(null) == "", "null is empty");
     }
 
     // ── log rollover ────────────────────────────────────────────────────────

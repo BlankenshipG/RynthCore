@@ -150,7 +150,7 @@ internal sealed class BountiesFace : IImGuiPanel
         if (Button("##bounty_hideqb", hideLabel, new Vector2(x, p.Y), new Vector2(hw, 22),
                    d.HideQbLocked ? OnText : Mute, d.HideQbLocked ? OnBg : BtnFill))
             BountiesCommands.Set("hideqblocked", !d.HideQbLocked);
-        if (d.HiddenCount > 0) ImGuiNET.ImGui.SetItemTooltip($"{d.HiddenCount} hidden");
+        if (d.HiddenCount > 0) SafeImGui.SetItemTooltip($"{d.HiddenCount} hidden");
 
         x += hw + 4;
         const string sortLabel = "Closest first";
@@ -263,7 +263,7 @@ internal sealed class BountiesFace : IImGuiPanel
                 BountyRowStatus.NeedsQb => $"\nNeeds {N0(r.QbRequired)} QB; you have {N0(r.QbHave)}.",
                 _ => string.Empty,
             };
-            ImGuiNET.ImGui.SetTooltip($"{r.Where}: {N0(r.Amount)} {r.Item}\n{every}{detail}");
+            SafeImGui.SetTooltip($"{r.Where}: {N0(r.Amount)} {r.Item}\n{every}{detail}");
         }
         NextLine(p, RowH);
     }

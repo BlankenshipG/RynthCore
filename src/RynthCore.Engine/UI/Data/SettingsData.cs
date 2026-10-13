@@ -117,6 +117,17 @@ internal sealed class RynthAiSettings
     public bool UseNativeAttack { get; set; } = true;
     public bool SummonPets { get; set; }
     public int PetMinMonsters { get; set; } = 1;
+    // RynthAi 0.5.47 (2026-10-12): Variable attack power and the environment-impact throttle.
+    // Nullable in RynthAi's payload: an older RynthAi omits them and these defaults show.
+    public int VariablePowerMin { get; set; } = 50;
+    public int VariablePowerMax { get; set; } = 100;
+    public int MissileEnvironmentResponse { get; set; }
+    public int MagicEnvironmentResponse { get; set; }
+    public int EnvironmentImpactLimit { get; set; } = 2;
+    public int EnvironmentImpactWindowSec { get; set; } = 20;
+    public int EnvironmentApproachMeters { get; set; } = 6;
+    public int EnvironmentMinDistance { get; set; } = 3;
+    public int EnvironmentSkipSec { get; set; } = 30;
     // Spell Combat
     public int SpellCastIntervalMs { get; set; } = 400;
     public int AttackSpellIntervalMs { get; set; } = 1500;
@@ -442,6 +453,8 @@ internal static class SettingsSchema
     }
 
     public static readonly string[] AttackHeights = { "Low", "Medium", "High" };
+    // RynthAi's EnvironmentResponse, in its order (0 Off .. 3).
+    public static readonly string[] EnvironmentResponses = { "Off", "Move closer", "New target", "Move closer, then new target" };
     public static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
     public static readonly string[] NavLabelModes = { "Off", "Numbers", "Numbers and names" };
     public static readonly string[] DunPatrolCoverages = { "Whole dungeon", "Loops only", "Everything" };
@@ -804,6 +817,30 @@ internal static class SettingsSchema
             Int("Missile Power %", s => s.MissileAttackPower, (s, v) => s.MissileAttackPower = v, 0, 100, 5, when: s => s.MissileAttackPower >= 0),
             Combo("Missile Attack Height", AttackHeights, s => s.MissileAttackHeight, (s, v) => s.MissileAttackHeight = v),
             Spacer(),
+            Section("Variable Power (monster rules)"),
+            Int("Variable Min %", s => s.VariablePowerMin, (s, v) => s.VariablePowerMin = v, 0, 100, 5,
+                "A monster rule's Power picks per monster (Damage panel, a monster's detail):\n" +
+                "Default (the settings above), High (100%), Reckless (80%, needs Recklessness trained),\n" +
+                "Variable (a new random power each attack, between these two), or Reckless + Variable\n" +
+                "(random, kept inside the Recklessness band 20-80%)."),
+            Int("Variable Max %", s => s.VariablePowerMax, (s, v) => s.VariablePowerMax = v, 0, 100, 5),
+            Spacer(),
+            Section("Hitting the Environment"),
+            Combo("Missile Response", EnvironmentResponses, s => s.MissileEnvironmentResponse, (s, v) => s.MissileEnvironmentResponse = v,
+                "When arrows or bolts keep hitting walls or objects instead of the target\n" +
+                "(\"Your missile attack hit the environment.\"), stop shooting and:\n" +
+                "  Move closer - run toward the target for a clearer shot\n" +
+                "  New target - skip this one for a while and fight another\n" +
+                "  Move closer, then new target - one approach, then switch\n" +
+                "The only monster in reach is never skipped. Magic: Spell Combat tab."),
+            Int("Hits to trip", s => s.EnvironmentImpactLimit, (s, v) => s.EnvironmentImpactLimit = v, 1, 10, 1,
+                "Environment hits on one target, within the window, before combat reacts (missiles and magic)."),
+            Int("Window (s)", s => s.EnvironmentImpactWindowSec, (s, v) => s.EnvironmentImpactWindowSec = v, 5, 120, 5),
+            Int("Move closer by (m)", s => s.EnvironmentApproachMeters, (s, v) => s.EnvironmentApproachMeters = v, 1, 30, 1),
+            Int("Closest (m)", s => s.EnvironmentMinDistance, (s, v) => s.EnvironmentMinDistance = v, 1, 30, 1,
+                "Never moves nearer than this. Already this close, a new target is picked instead."),
+            Int("Skip target (s)", s => s.EnvironmentSkipSec, (s, v) => s.EnvironmentSkipSec = v, 5, 300, 5),
+            Spacer(),
             Bool("Use Native Attack", s => s.UseNativeAttack, (s, v) => s.UseNativeAttack = v,
                 "Uses the client's combat pipeline for attacks.\nThe client handles turn-to-face naturally (no backwards arrows)."),
             Spacer(),
@@ -834,6 +871,16 @@ internal static class SettingsSchema
                 "0 = off: walls are never cast.\nAbove 0: monsters with Wall on cast a wall when Min Wall Targets monsters stand in its\npath toward the target, within this range. RynthAi turns to face the target first\n(a wall flies straight ahead of the caster)."),
             Int("Min Wall Targets", s => s.MinWallTargets, (s, v) => s.MinWallTargets = v, 1, 20, 1,
                 "How many monsters (the target included) must be in the wall's path, within Wall Range."),
+            Spacer(),
+            Section("Hitting the Environment"),
+            Combo("Magic Response", EnvironmentResponses, s => s.MagicEnvironmentResponse, (s, v) => s.MagicEnvironmentResponse = v,
+                "When bolts, streaks, arcs or blasts keep stopping short of the target\n" +
+                "(a wall, a pillar, the ceiling) with no hit or resist, stop casting and:\n" +
+                "  Move closer - run toward the target for a clearer line\n" +
+                "  New target - skip this one for a while and fight another\n" +
+                "  Move closer, then new target - one approach, then switch\n" +
+                "Rings and walls aren't judged. The only monster in reach is never skipped.\n" +
+                "Hits to trip, the window, distances and the skip time: Melee Combat tab."),
             Spacer(),
             Section("Spell Difficulty (Min Buffed Skill)"),
             Tiers(

@@ -10,7 +10,7 @@
 //    {"t":"mule","ready":false,"why":"loading"}     (still loading on the server: never an empty vault)
 //
 //  A field the reader does not know is ignored, so the mod can add fields. Pure code (no engine state);
-//  compiled into tools/NetMessageTests.
+//  compiled into tools/NetMessageTests (with Net/ChatOrigin.cs).
 // ============================================================================
 
 using System;
@@ -48,20 +48,26 @@ internal static class AelrynthVaultWire
     /// <summary>The command for a page (1 = the bare command).</summary>
     public static string PageCommand(int page) => page <= 1 ? Command : Command + " " + page.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    /// <summary>A "~ael1" data line whose kind is "mule" (another mod's data line is not ours).</summary>
+    /// <summary>
+    /// A "~ael1" data line whose kind is "mule" (another mod's data line is not ours). The prefix
+    /// must start the line: a player's copy has their name in front (ChatOrigin).
+    /// </summary>
     public static bool IsMuleLine(string? line)
     {
-        if (string.IsNullOrEmpty(line)) return false;
-        int at = line.IndexOf(Prefix, StringComparison.Ordinal);
-        return at >= 0 && line.IndexOf("\"t\":\"mule\"", at, StringComparison.Ordinal) >= 0;
+        if (!ChatOrigin.StartsWithMarker(line, Prefix)) return false;
+        return line!.IndexOf("\"t\":\"mule\"", ChatOrigin.ContentStart(line), StringComparison.Ordinal) >= 0;
     }
 
-    /// <summary>ACE's reply to a command it does not have ("Unknown command: mule-data").</summary>
+    /// <summary>
+    /// ACE's reply to a command it does not have, "Unknown command: mule-data" (GameActionTalk names
+    /// the bare command; a leading / or @ is allowed). Anchored at the line's start.
+    /// </summary>
     public static bool IsUnknownCommand(string? line)
     {
-        if (string.IsNullOrEmpty(line)) return false;
-        return line.IndexOf("Unknown command", StringComparison.OrdinalIgnoreCase) >= 0
-            && line.IndexOf(CommandName, StringComparison.OrdinalIgnoreCase) >= 0;
+        const string marker = "Unknown command:";
+        if (!ChatOrigin.StartsWithMarker(line, marker, StringComparison.OrdinalIgnoreCase)) return false;
+        string named = line!.Substring(ChatOrigin.ContentStart(line) + marker.Length).Trim().TrimStart('/', '@');
+        return string.Equals(named, CommandName, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>The page in a mule line; false when it is not one or is too damaged to read.</summary>
@@ -71,7 +77,7 @@ internal static class AelrynthVaultWire
         if (!IsMuleLine(line)) return false;
         try
         {
-            int at = line!.IndexOf(Prefix, StringComparison.Ordinal) + Prefix.Length;
+            int at = ChatOrigin.ContentStart(line!) + Prefix.Length;
             using JsonDocument doc = JsonDocument.Parse(line.AsMemory(at));
             JsonElement root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object) return false;

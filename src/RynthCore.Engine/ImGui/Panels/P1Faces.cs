@@ -130,14 +130,14 @@ internal sealed class StatusFace : IImGuiPanel
     private static void Header(string text)
     {
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        ImGuiNET.ImGui.TextColored(HeaderColor, text);
+        SafeImGui.TextColored(HeaderColor, text);
         ImGuiNET.ImGui.PopFont();
     }
 
     private static void Row(string text, bool error)
     {
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, error ? ErrorColor : RowColor);
-        ImGuiNET.ImGui.TextWrapped(text);
+        SafeImGui.TextWrapped(text);
         ImGuiNET.ImGui.PopStyleColor();
     }
 
@@ -274,7 +274,7 @@ internal sealed class TrackerFace : IImGuiPanel
         {
             float rowRight = ImGuiNET.ImGui.GetCursorPosX() + ImGuiNET.ImGui.GetContentRegionAvail().X;
             if (ImGuiNET.ImGui.GetCursorScreenPos().Y + rowH > gripTop) rowRight -= grip;
-            ImGuiNET.ImGui.TextColored(LabelColor, labels[i]);
+            SafeImGui.TextColored(LabelColor, labels[i]);
             if (labels[i].StartsWith("Pass", StringComparison.Ordinal))
                 ImGuiNET.ImGui.SetItemTooltip("Luminance that reached your bank without a \"You've banked\" line: your vassals' pass-up.\nFellowship and Zone Share splits arrive the same silent way and are included.");
             else if (labels[i] == "Lum/5m")

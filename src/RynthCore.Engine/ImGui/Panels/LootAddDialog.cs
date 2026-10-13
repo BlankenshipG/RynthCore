@@ -243,7 +243,7 @@ internal sealed class LootAddDialog
             ImGuiNET.ImGui.TextDisabled("Profile:");
             ImGuiNET.ImGui.SameLine();
             ImGuiNET.ImGui.TextUnformatted(d.TargetFile + (d.TargetInUse ? "  (in use)" : "  (not the one RynthAi loots with)"));
-            if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(d.TargetPath);
+            if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(d.TargetPath);
         }
 
         bool changed = false;
@@ -257,7 +257,7 @@ internal sealed class LootAddDialog
                 _match = i;
                 changed = true;
             }
-            if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(MatchTips[i]);
+            if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(MatchTips[i]);
         }
 
         // T11 attributes. Shown for every item: a non-T11 item answers with a note saying so.
@@ -268,7 +268,7 @@ internal sealed class LootAddDialog
             changed = true;
         }
         if (ImGuiNET.ImGui.IsItemHovered())
-            ImGuiNET.ImGui.SetTooltip(
+            SafeImGui.SetTooltip(
                 "Also require this item's T11 tier (the server's stamped tier when it sends one), weapon grade,\n" +
                 "damage %, gear grade, every modifier, slot special and Cast on Strike, each at least as good\n" +
                 "as this one. Works with any match.\n" +
@@ -306,7 +306,7 @@ internal sealed class LootAddDialog
                 changed = true;
             }
             ImGuiNET.ImGui.SameLine();
-            ImGuiNET.ImGui.TextDisabled(d.Stackable ? "(counts stack sizes)" : "(items)");
+            SafeImGui.TextDisabled(d.Stackable ? "(counts stack sizes)" : "(items)");
         }
 
         // Name.
@@ -316,7 +316,7 @@ internal sealed class LootAddDialog
         ImGuiNET.ImGui.InputText("##la_name", _name, (uint)_name.Length);
         if (ImGuiNET.ImGui.IsItemDeactivatedAfterEdit()) changed = true;
         if (Utf8(_name).Trim().Length == 0 && d.DefaultRuleName.Length > 0)
-            ImGuiNET.ImGui.TextDisabled("Left empty, the rule is named \"" + d.DefaultRuleName + "\".");
+            SafeImGui.TextDisabled("Left empty, the rule is named \"" + d.DefaultRuleName + "\".");
 
         // Preview.
         ImGuiNET.ImGui.Separator();
@@ -360,7 +360,7 @@ internal sealed class LootAddDialog
             Send("item_add");
         }
         if (ImGuiNET.ImGui.IsItemHovered())
-            ImGuiNET.ImGui.SetTooltip(d.InsertAt >= 0
+            SafeImGui.SetTooltip(d.InsertAt >= 0
                 ? $"Insert at {d.InsertAt + 1} of {d.RuleCount + 1}, save {d.TargetFile} (old file kept as .bak) and reload it"
                 : "Add the rule");
         if (Button("##la_cancel", "Cancel", bp + new Vector2(116, 0), new Vector2(80, 24), Text, BtnFill))

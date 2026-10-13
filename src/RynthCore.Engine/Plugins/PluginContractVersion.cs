@@ -18,5 +18,7 @@ internal static class PluginContractVersion
     // v81: GetMergeStackResult (was v77 on QOL-items, then v80; renumbered after upstream's v77-v80).
     // v82: SalvageDirect (salvage without the salvage panel; was v81 on feature/salvage-direct).
     // v83: GetObjectServerAge and RemoveClientObject (ghost creatures, 2026-10-12).
-    public const uint Current = 83;
+    // v84: ArmConfirmation and GetLastConfirmation (answer the craft-chance prompt for a plugin;
+    //      was v81 on build-comp-10-11, renumbered after upstream's v81-v83).
+    public const uint Current = 84;
 }

@@ -111,7 +111,7 @@ internal sealed class DamageDetailFace : IImGuiPanel
         // ── Header ───────────────────────────────────────────────────────
         string name = d != null && d.Name.Length > 0 ? d.Name : _selectedName;
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        ImGuiNET.ImGui.TextColored(Vec(Teal), isDefault ? "DEFAULT" : name);
+        SafeImGui.TextColored(Vec(Teal), isDefault ? "DEFAULT" : name);
         ImGuiNET.ImGui.PopFont();
         if (isDefault)
         {
@@ -123,17 +123,17 @@ internal sealed class DamageDetailFace : IImGuiPanel
         }
         else if (d == null)
         {
-            ImGuiNET.ImGui.TextColored(Vec(Dim), _detail != null && !_detail.Bound ? "Waiting for RynthAi…" : "Loading…");
+            SafeImGui.TextColored(Vec(Dim), _detail != null && !_detail.Bound ? "Waiting for RynthAi…" : "Loading…");
         }
         else
         {
             ImGuiNET.ImGui.SameLine();
-            ImGuiNET.ImGui.TextColored(Vec(Dim), "wcid " + wcid.ToString(CultureInfo.InvariantCulture));
+            SafeImGui.TextColored(Vec(Dim), "wcid " + wcid.ToString(CultureInfo.InvariantCulture));
             // Aelrynth only: which difficulty tier these numbers are (the Damage panel's chip picks it).
             if (UiSources.Damage.Current?.Value.Tier is { Show: true } tier)
             {
                 ImGuiNET.ImGui.SameLine();
-                ImGuiNET.ImGui.TextColored(Vec(tier.View == tier.Current ? Teal : Gold),
+                SafeImGui.TextColored(Vec(tier.View == tier.Current ? Teal : Gold),
                     tier.View <= 0 ? "· Tier 0 (real Dereth)" : "· Tier " + tier.View.ToString(CultureInfo.InvariantCulture));
                 ImGuiNET.ImGui.SetItemTooltip("HP, casts to kill, seconds per kill, hits and damage taken are this difficulty tier's.\n" +
                                               "Damage per cast and weaknesses are the same at every tier. Change it on the Damage panel.");
@@ -141,7 +141,7 @@ internal sealed class DamageDetailFace : IImGuiPanel
             string hp = d.Hp > 0 ? $"HP {d.Hp:N0} ({d.HpSrc})" : "HP unknown";
             string sec = d.SecKill > 0 ? $"{d.SecKill:0.0} s per kill" : "no timed kills yet";
             string hit = d.HitRate >= 0 ? $"{d.HitRate * 100:0}% hits" : "no hits yet";
-            ImGuiNET.ImGui.TextColored(Vec(White), $"{hp}   ·   {sec}   ·   {hit}");
+            SafeImGui.TextColored(Vec(White), $"{hp}   ·   {sec}   ·   {hit}");
 
             float bw = ImGuiNET.ImGui.CalcTextSize(RemoveLabel).X + 16;
             ImGuiNET.ImGui.SameLine();
@@ -153,7 +153,7 @@ internal sealed class DamageDetailFace : IImGuiPanel
             ImGuiNET.ImGui.SetItemTooltip("Take this monster off the Damage panel: its learned numbers and your settings for it. It comes back if you meet it again.");
             if (_confirmRemove)
             {
-                ImGuiNET.ImGui.TextColored(Vec(Gold), "Remove " + name + " and everything learned about it?");
+                SafeImGui.TextColored(Vec(Gold), "Remove " + name + " and everything learned about it?");
                 ImGuiNET.ImGui.SameLine();
                 if (ImGuiNET.ImGui.SmallButton("Remove##yes"))
                 {
@@ -186,7 +186,7 @@ internal sealed class DamageDetailFace : IImGuiPanel
         Rule? rule = _rules?.FindRule(name);
         if (rule != null) _renaming = null;
         ImGuiNET.ImGui.PushTextWrapPos(0);
-        ImGuiNET.ImGui.TextColored(Vec(Dim), rule == null
+        SafeImGui.TextColored(Vec(Dim), rule == null
             ? (_rules == null || _renaming == name ? "Loading…" : "There is no rule with this name (deleted?).")
             : "A name rule: used for every monster whose name contains \"" + name + "\""
               + (string.IsNullOrWhiteSpace(rule.MatchExpression) ? "" : " and its match expression is true")
@@ -200,7 +200,7 @@ internal sealed class DamageDetailFace : IImGuiPanel
             _confirmRemove = true;
         ImGuiNET.ImGui.SetItemTooltip("Delete this rule. Monsters it covered go back to Default (or another rule that matches).");
         if (!_confirmRemove) return;
-        ImGuiNET.ImGui.TextColored(Vec(Gold), "Delete the rule " + name + "?");
+        SafeImGui.TextColored(Vec(Gold), "Delete the rule " + name + "?");
         ImGuiNET.ImGui.SameLine();
         if (ImGuiNET.ImGui.SmallButton("Delete##yes"))
         {
@@ -232,7 +232,7 @@ internal sealed class DamageDetailFace : IImGuiPanel
             ImGuiNET.ImGui.TextColored(Vec(Dim), "Nothing known yet: not in the server data, no creature type, nothing learned.");
             return;
         }
-        ImGuiNET.ImGui.TextColored(Vec(Dim), "Damage it takes from each element (1.0 = full, 0.5 = half), from " + d.WeakSrc + ".");
+        SafeImGui.TextColored(Vec(Dim), "Damage it takes from each element (1.0 = full, 0.5 = half), from " + d.WeakSrc + ".");
         float labelW = ImGuiNET.ImGui.CalcTextSize("Lightning  ").X;
         float barW = Math.Max(80, ImGuiNET.ImGui.GetContentRegionAvail().X - labelW - ImGuiNET.ImGui.CalcTextSize(" 0.00x").X - 8);
         double top = 1.0;
@@ -351,9 +351,9 @@ internal sealed class DamageDetailFace : IImGuiPanel
 
         if (!nameRule)
         {
-            ImGuiNET.ImGui.TextColored(Vec(custom || isDefault ? Gold : Dim),
+            SafeImGui.TextColored(Vec(custom || isDefault ? Gold : Dim),
                 isDefault ? "Applies to every monster set to Default." : custom ? "Custom settings for this monster." : "Following Default (a change here gives it its own settings).");
-            ImGuiNET.ImGui.TextColored(Vec(Dim), DebuffsHint);
+            SafeImGui.TextColored(Vec(Dim), DebuffsHint);
             if (custom)
             {
                 ImGuiNET.ImGui.SameLine();
@@ -404,6 +404,17 @@ internal sealed class DamageDetailFace : IImGuiPanel
             pick => DamageCommands.EditRule(name, r => r.ExVuln = pick),
             "A vulnerability of another element, on top of Vuln (which follows the attack's element).");
 
+        // Melee/missile attack power against it
+        string power = string.IsNullOrEmpty(view.AttackPower) ? "Default" : view.AttackPower;
+        Combo("Power", "##power", DamageCommands.AttackPowerModes, power,
+            pick => DamageCommands.EditRule(name, r => r.AttackPower = pick),
+            (isDefault
+                ? "Melee/missile attack power for every monster without its own. Default = the Power settings (Melee Combat).\n"
+                : "Melee/missile attack power against the monsters it covers. Default = the DEFAULT line's.\n") +
+            "High = 100%. Reckless = 80% (needs Recklessness trained, else 100%).\n" +
+            "Variable = a new random power each attack, between Variable Min and Max (Settings).\n" +
+            "Reckless + Variable = random, kept inside the Recklessness band (20-80%).");
+
         // Match expression (Default never matches by name, so it has none)
         if (!isDefault)
         {
@@ -434,7 +445,7 @@ internal sealed class DamageDetailFace : IImGuiPanel
         {
             ImGuiNET.ImGui.SameLine(0, 10);
             ImGuiNET.ImGui.AlignTextToFramePadding();
-            ImGuiNET.ImGui.TextColored(Vec(Dim), "casts " + casts + (view.UseRing ? ", Ring when enough are near" : ""));
+            SafeImGui.TextColored(Vec(Dim), "casts " + casts + (view.UseRing ? ", Ring when enough are near" : ""));
             ImGuiNET.ImGui.SetItemTooltip("With several shapes on, the first of Arc, Streak, Blast, Bolt is cast.\n" +
                 "Ring replaces it when at least Min Ring Targets monsters are within Ring Range (Settings).");
         }
@@ -481,7 +492,7 @@ internal sealed class DamageDetailFace : IImGuiPanel
     private static void Combo(string label, string id, string[] items, string current, Action<string> onPick, string tip)
     {
         ImGuiNET.ImGui.AlignTextToFramePadding();
-        ImGuiNET.ImGui.TextColored(Vec(Dim), label);
+        SafeImGui.TextColored(Vec(Dim), label);
         ImGuiNET.ImGui.SameLine();
         ImGuiNET.ImGui.SetNextItemWidth(ImGuiNET.ImGui.CalcTextSize("Dual wield").X + 34);
         if (ImGuiNET.ImGui.BeginCombo(id, current))
@@ -492,7 +503,7 @@ internal sealed class DamageDetailFace : IImGuiPanel
                     onPick(v);
             ImGuiNET.ImGui.EndCombo();
         }
-        ImGuiNET.ImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);
     }
 
     private const string RemoveLabel = PhosphorIcons.Trash + " Remove monster";
@@ -501,7 +512,7 @@ internal sealed class DamageDetailFace : IImGuiPanel
 
     private static void ToggleRow(string label, (string Field, string Label, string Tip)[] defs, Rule view, string name)
     {
-        ImGuiNET.ImGui.TextColored(Vec(Dim), label);
+        SafeImGui.TextColored(Vec(Dim), label);
         float h = ImGuiNET.ImGui.GetFrameHeight();
         foreach (var (field, text, tip) in defs)
         {
@@ -513,7 +524,7 @@ internal sealed class DamageDetailFace : IImGuiPanel
             if (ImGuiNET.ImGui.InvisibleButton("##t_" + field, size))
                 DamageCommands.EditRule(name, rule => DamageCommands.FlipToggle(rule, field));
             bool hot = ImGuiNET.ImGui.IsItemHovered();
-            ImGuiNET.ImGui.SetItemTooltip(tip);
+            SafeImGui.SetItemTooltip(tip);
             var dl = ImGuiNET.ImGui.GetWindowDrawList();
             dl.AddRectFilled(p, p + size, hot ? FaceKit.Lighten(EntryBg) : EntryBg, 2);
             dl.AddRect(p, p + size, EntryBorder, 2);
@@ -540,7 +551,7 @@ internal sealed class DamageDetailFace : IImGuiPanel
     private static void Cell(string text)
     {
         ImGuiNET.ImGui.TableNextColumn();
-        ImGuiNET.ImGui.TextColored(Vec(White), text);
+        SafeImGui.TextColored(Vec(White), text);
     }
 
     private static Vector4 Vec(uint abgr) => ImGuiNET.ImGui.ColorConvertU32ToFloat4(abgr);

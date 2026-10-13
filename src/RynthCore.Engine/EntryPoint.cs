@@ -471,6 +471,19 @@ public static class EntryPoint
         return _imGuiNativeHandle;
     }
 
+    /// <summary>
+    /// Full path of <paramref name="dllName"/> in the engine's own folders (the ones
+    /// <see cref="PreloadNativeDll"/> searches), or null. Never Windows' search order.
+    /// </summary>
+    internal static string? FindNativeDll(string dllName)
+    {
+        string? engineDir = GetEngineDirectory();
+        if (string.IsNullOrEmpty(engineDir)) return null;
+        foreach (string path in GetNativeDllCandidates(engineDir, dllName))
+            if (File.Exists(path)) return path;
+        return null;
+    }
+
     private static string[] GetNativeDllCandidates(string engineDir, string dllName)
     {
         var candidates = new List<string>();

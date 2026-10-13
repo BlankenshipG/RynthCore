@@ -176,7 +176,7 @@ internal sealed class SettingsFace : IImGuiPanel
 
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
         if (_tab >= SettingsSchema.Tabs.Length) _tab = 0;
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), Headers[_tab]);
+        SafeImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), Headers[_tab]);
         ImGuiNET.ImGui.PopFont();
         ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
         Vector2 lp = ImGuiNET.ImGui.GetCursorScreenPos();
@@ -532,16 +532,16 @@ internal sealed class SettingsFace : IImGuiPanel
     private void CraftingStatus(SettingRow row)
     {
         ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFB8C8D8), row.Label);
+        SafeImGui.TextColored(RynthTheme.Vec(0xFFB8C8D8), row.Label);
         ImGuiNET.ImGui.SameLine(0, 6);
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(_data.MissileCraftingActive ? 0xFFE8B333 : 0xFFB8C8D8), _data.MissileCraftingState);
+        SafeImGui.TextColored(RynthTheme.Vec(_data.MissileCraftingActive ? 0xFFE8B333 : 0xFFB8C8D8), _data.MissileCraftingState);
         ImGuiNET.ImGui.PopFont();
         if (!string.IsNullOrEmpty(_data.MissileCraftingStatus))
         {
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui10));
             ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, TextDim);
-            ImGuiNET.ImGui.TextWrapped(_data.MissileCraftingStatus);
+            SafeImGui.TextWrapped(_data.MissileCraftingStatus);
             ImGuiNET.ImGui.PopStyleColor();
             ImGuiNET.ImGui.PopFont();
         }
@@ -590,7 +590,7 @@ internal sealed class SettingsFace : IImGuiPanel
 
     private static void Tooltip(SettingRow row)
     {
-        if (row.Tooltip != null) ImGuiNET.ImGui.SetItemTooltip(row.Tooltip);
+        if (row.Tooltip != null) SafeImGui.SetItemTooltip(row.Tooltip);
     }
 
     private static uint Lighten(uint abgr) => Scale(abgr, 1.25f, 12);

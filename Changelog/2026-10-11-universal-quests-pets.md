@@ -27,3 +27,10 @@
 
 - The engine builds in Release, and ItemHudTests pass.
 - Not yet checked in game.
+
+## Installed
+
+- 2026-10-11 22:08: published to `C:\Games\RynthCore\Runtime`. Both running clients (pids 11468
+  and 61016) hot-reloaded to it (gen 3) without errors.
+- 2026.10.5.30 is saved in `C:\Games\Rynthcore\PreviousReleases\2026.10.5.30-engine` and
+  `C:\Games\_rynth-backups\20261011-pre-universal-tabs\Runtime`.

@@ -220,7 +220,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         float bw = ImGuiNET.ImGui.CalcTextSize(view.BurdenText).X;
         ImGuiNET.ImGui.SetCursorScreenPos(p);
         ImGuiNET.ImGui.InvisibleButton("##burden", new Vector2(x + bw - p.X, RowH));
-        ImGuiNET.ImGui.SetItemTooltip(view.BurdenTip);
+        SafeImGui.SetItemTooltip(view.BurdenTip);
 
         x += bw + 16;
         PhosphorIcons.DrawCentered(dl, icons, PhosphorIcons.Coins, new Vector2(x, p.Y), new Vector2(18, RowH), Amber);
@@ -654,7 +654,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         ImGuiNET.ImGui.SetCursorScreenPos(pos);
         bool clicked = ImGuiNET.ImGui.InvisibleButton(id, size);
         bool hot = ImGuiNET.ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
-        ImGuiNET.ImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);   // the Give zone's tip carries the target's name
         bool dropHot = enabled && _dragItem != null && hot;
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         uint fill = dropHot ? DropHot : _dragItem != null && enabled ? Selected : hot && enabled ? Lighten(BtnFill) : BtnFill;
@@ -1019,7 +1019,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
             if (it == null) { ImGuiNET.ImGui.CloseCurrentPopup(); return; }
             if (IsGroup(it)) { GroupMenu(view, it); return; }
             bool idle = InventoryModel.Pending == null && !InventoryModel.BatchRunning;
-            ImGuiNET.ImGui.TextDisabled(it.Name);
+            SafeImGui.TextDisabled(it.Name);
             ImGuiNET.ImGui.Separator();
             if (ImGuiNET.ImGui.MenuItem("Use", "double-click", false, idle))
                 Act(InventoryActionKind.Use, it, 0, "", 0);

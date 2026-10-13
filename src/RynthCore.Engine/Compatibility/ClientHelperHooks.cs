@@ -374,6 +374,9 @@ internal static class ClientHelperHooks
             // Skills panel raises (CM_Train senders).
             try { PlayerTraining.Probe(text); }
             catch (Exception ex) { RynthLog.Compat($"Compat: raise senders binding failed - {ex.Message}"); }
+            // v81 confirmation answers (CM_Character::Event_ConfirmationResponse).
+            try { ConfirmationResponder.Probe(text); }
+            catch (Exception ex) { RynthLog.Compat($"Compat: confirmation response binding failed - {ex.Message}"); }
             _initialized = true;
             _statusMessage = "Ready.";
             RynthLog.Verbose("Compat: helper hooks ready - validated select/state/chat helpers plus mapped interaction and inventory helpers.");

@@ -358,7 +358,7 @@ internal static class ImGuiBar
             ImGuiNET.ImGui.SetWindowPos(next);
             _userMoved = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(_tooltip);
+        SafeImGui.SetItemTooltip(_tooltip);
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
             ImGuiNET.ImGui.OpenPopup("##face_bar");
         PhosphorIcons.DrawCentered(dl, iconFont, PhosphorIcons.DotsSixVertical, rcPos, new Vector2(square.X * 0.8f, square.Y), RynthTheme.RcLabel);
@@ -372,7 +372,7 @@ internal static class ImGuiBar
         if (ImGuiNET.ImGui.InvisibleButton("##barcollapse", caretSize))
             RynthAiDashboardState.SetBarCollapsed(!collapsed);
         bool caretHot = ImGuiNET.ImGui.IsItemHovered();
-        ImGuiNET.ImGui.SetItemTooltip(collapsed ? "Show the bar" : "Fold the bar to this button");
+        SafeImGui.SetItemTooltip(collapsed ? "Show the bar" : "Fold the bar to this button");
         PhosphorIcons.DrawCentered(dl, iconFont, collapsed ? PhosphorIcons.CaretRight : PhosphorIcons.CaretLeft, cPos, caretSize,
             caretHot ? RynthTheme.RcLabel : 0xFF9A9A9Au);
         if (collapsed) return;
@@ -406,7 +406,7 @@ internal static class ImGuiBar
                 if (only != null) PanelRouter.Toggle(only);
                 else ImGuiNET.ImGui.OpenPopup("##ilt_menu");
             }
-            ImGuiNET.ImGui.SetItemTooltip(only != null ? "Infinite Leaftide: " + only : "Infinite Leaftide");
+            SafeImGui.SetItemTooltip(only != null ? "Infinite Leaftide: " + only : "Infinite Leaftide");
         }
 
         // Script windows (decision 2): one button with a menu, only while a ShowInBar
@@ -435,7 +435,7 @@ internal static class ImGuiBar
             ImGuiNET.ImGui.SameLine();
             if (IconButton("##popout", iconFont, popped ? PhosphorIcons.ArrowSquareIn : PhosphorIcons.ArrowSquareOut, square, RynthTheme.PopOutLabel))
                 SetPoppedOut(!popped);
-            ImGuiNET.ImGui.SetItemTooltip(popped ? "Dock the bar back into the game window." : "Pop the bar out into its own floating window.");
+            SafeImGui.SetItemTooltip(popped ? "Dock the bar back into the game window." : "Pop the bar out into its own floating window.");
         }
         else if (Plugins.EngineSettings.EnableAvaloniaOverlay)   // Avalonia/Both bar: pops out as the Avalonia bar
         {
@@ -534,7 +534,7 @@ internal static class ImGuiBar
     private static void FacePopup(string popupId, string title, bool hasImGuiFace, float s = 1f)
     {
         if (!ImGuiNET.ImGui.BeginPopup(popupId)) return;
-        ImGuiNET.ImGui.TextDisabled(title == FaceKey ? "Bar, docked, shows as" : "Docked, shows as");
+        SafeImGui.TextDisabled(title == FaceKey ? "Bar, docked, shows as" : "Docked, shows as");
         PanelFace current = title == FaceKey ? ResolveFace() : PanelRouter.ResolveDockedFace(title);
         for (int i = 0; i < Faces.Length; i++)
         {

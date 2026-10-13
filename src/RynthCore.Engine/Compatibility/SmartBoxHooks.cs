@@ -182,6 +182,7 @@ internal static class SmartBoxHooks
         var pOriginal = (delegate* unmanaged[Thiscall]<IntPtr, IntPtr, int, uint>)_originalDispatchGameEventPtr;
 
         EnchantmentChange? enchantment = null;
+        bool answered = false;
         try
         {
             // Reject undersized payloads instead of clamping up: an inflated
@@ -199,9 +200,18 @@ internal static class SmartBoxHooks
                 ParseGameEvent(eventType, data, (uint)len);
                 if ((eventType >= 0x02C2 && eventType <= 0x02C8) || eventType == 0x0312)
                     enchantment = CaptureEnchantmentEvent(eventType, data, (uint)len);
+                // v81: a prompt a plugin armed an answer for is answered here instead of
+                // opening AC's dialog.
+                if (eventType == ConfirmationResponder.EventConfirmationRequest)
+                    answered = ConfirmationResponder.OnRequest(data, (uint)len);
             }
         }
         catch { }
+
+        // AC's ConfirmationRequest handler returns 0 on every path, so an answered prompt
+        // returns the same without reaching it.
+        if (answered)
+            return 0;
 
         uint status = pOriginal(thisPtr, data, size);
 

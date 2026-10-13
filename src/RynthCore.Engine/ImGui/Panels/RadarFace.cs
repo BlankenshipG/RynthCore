@@ -130,7 +130,7 @@ internal sealed class RadarFace : IImGuiPanel
         {
             if (IconButton("##radar_pop", popPos, ImGuiPanelHost.PopOutGlyph))
                 ImGuiPanelHost.TogglePopOut(Title);
-            ImGuiNET.ImGui.SetItemTooltip(ImGuiPanelHost.PopOutTooltip);
+            SafeImGui.SetItemTooltip(ImGuiPanelHost.PopOutTooltip);
         }
         bool gear = IconButton("##radar_gear", gearPos, PhosphorIcons.Gear);
         ImGuiNET.ImGui.SetItemTooltip("Radar settings");
@@ -629,7 +629,7 @@ internal sealed class RadarFace : IImGuiPanel
             bool sub = kind == RadarKind.OwnCorpse;
             if (sub) { ImGuiNET.ImGui.Indent(14 * scale); ImGuiNET.ImGui.BeginDisabled(!RadarSettingsStore.ShowCorpses); }
             changed |= ImGuiNET.ImGui.Checkbox("##show", ref RadarSettingsStore.ShowFlag(kind));
-            if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(KindTips[kind]);
+            if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(KindTips[kind]);
             ImGuiNET.ImGui.SameLine();
             // The marker exactly as the radar draws it; faded while the kind is hidden, so the
             // legend doesn't look like the box did nothing.
@@ -643,7 +643,7 @@ internal sealed class RadarFace : IImGuiPanel
             ImGuiNET.ImGui.SameLine();
             ImGuiNET.ImGui.AlignTextToFramePadding();
             ImGuiNET.ImGui.TextUnformatted(label);
-            if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(KindTips[kind]);
+            if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(KindTips[kind]);
             ImGuiNET.ImGui.SameLine(190 * scale);
             Vector4 v = RynthTheme.Vec(RadarSettingsStore.KindColors[kind]);
             if (ImGuiNET.ImGui.ColorEdit4("##col", ref v, pickFlags))

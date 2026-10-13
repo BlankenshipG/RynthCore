@@ -209,7 +209,7 @@ internal sealed partial class RynthAiFace
                     {
                         _want = Vector2.Zero;
                         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, DMute);
-                        ImGuiNET.ImGui.TextWrapped(result switch
+                        SafeImGui.TextWrapped(result switch
                         {
                             PluginManager.EmbedNoPlugin =>
                                 "This RynthAi can't draw its Mini Remote here (it needs RynthAi 0.5.27 or later). Left-click Hub for the floating Mini Remote.",

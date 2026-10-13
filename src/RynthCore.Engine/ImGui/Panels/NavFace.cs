@@ -296,7 +296,7 @@ internal sealed class NavFace : IImGuiPanel
     {
         string text = (on ? PhosphorIcons.CheckSquare : PhosphorIcons.Square) + " " + label;
         bool clicked = Button(id, text, pos, new Vector2(width, 22), on ? Teal : Mute, BtnFill, leftAlign: true);
-        if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(tooltip);
+        if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(tooltip);
         return clicked;
     }
 
@@ -324,7 +324,7 @@ internal sealed class NavFace : IImGuiPanel
         dl.AddText(new Vector2(p.X, p.Y + (22 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Mute, label);
         ImGuiNET.ImGui.SetCursorScreenPos(p);
         ImGuiNET.ImGui.InvisibleButton("##reach_label", new Vector2(Math.Max(1, labelW), 22));
-        if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(SettingsSchema.NavPointReachTip);
+        if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(SettingsSchema.NavPointReachTip);
 
         const float stepW = 22, boxW = 52;
         float right = p.X + w;
@@ -456,7 +456,7 @@ internal sealed class NavFace : IImGuiPanel
             _picker.Open(new Vector2(tp.X, tp.Y + 22), NavCommands.TrailChoices, -1, i =>
                 NavCommands.Send(new NavCmd { Cmd = "trailToRoute", Reverse = i == 1 }), width: 300);
         if (ImGuiNET.ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGuiNET.ImGui.SetTooltip(_data.TrailPoints >= 2
+            SafeImGui.SetTooltip(_data.TrailPoints >= 2
                 ? $"Breadcrumb trail: {_data.TrailPoints} crumbs, {_data.TrailYards:0} yd.\nThe new route is unsaved; the loaded nav file is not changed."
                 : "Turn on Breadcrumbs and walk a while to build a trail.");
         NextLine(p, 26);
