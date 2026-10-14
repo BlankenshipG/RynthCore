@@ -207,6 +207,9 @@ internal static class EngineLifecycle
         // Process-wide events: under CoreCLR they would hold this generation.
         Step("EntryPoint.UninstallManagedExceptionHandlers", EntryPoint.UninstallManagedExceptionHandlers);
 
+        // IAT slots aren't MinHook hooks: write them back before this generation unloads.
+        Step("DatFileShareHooks.Uninstall", Compatibility.DatFileShareHooks.Uninstall);
+
         Step("MH_DisableHook(ALL)", () =>
         {
             // DisableHook restores the original code at every hooked function — that's
