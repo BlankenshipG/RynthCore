@@ -46,6 +46,21 @@ Each plugin worked out "which server is this" on its own:
 - tools/PluginManifestTests: PASS (229 assertions). The API table layout now
   ends with GetServerStateJsonFn.
 
+## Install
+
+Installed locally on 2026-10-13 with RynthCore-Setup-2026.10.5.53.exe
+(silent), along with RynthAi 0.5.61-legacy-ui, RynthOracle 0.2.4, ub-Rythai
+3.1.12 and the 16 server plugins at 0.1.1 (RynthSuite ea84e27). Old DLLs were
+backed up to each plugin's PreviousReleases folder.
+
+The previously installed server plugins (copied at 19:06) were the managed
+`bin` builds (about 35 KB), not the NativeAOT `publish` builds (about 2.3 MB),
+so none of them could load. The ones installed now are the `publish` builds,
+and each one exports RynthPluginQueryInterface.
+
+Engine log categories in engine.json were set back to the defaults: Info for
+General, D3D9, Compat, Plugin and UI; Render off; Verbose at Debug.
+
 ## Files
 
 - `src/RynthCore.Engine/UI/Sections/ServerSelection.cs` (new)
