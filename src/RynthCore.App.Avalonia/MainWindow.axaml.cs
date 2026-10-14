@@ -91,6 +91,11 @@ internal partial class MainWindow : Window
     // After CreateProcess+inject+resume, hold the prefs lock this long so AC
     // has a chance to read UserPreferences.ini before another account swaps.
     private static readonly TimeSpan UserPrefsSettleDelay = TimeSpan.FromSeconds(2);
+    // The UserPreferences.ini swap each launched PID started with, so a quick exit can set the
+    // saved copy aside and put the previous live file back (UserPrefsSwapRecovery).
+    private readonly Dictionary<int, PrefsSwapLaunch> _prefsSwapByPid = [];
+    // Counts swaps; a quick exit only restores the live file when no later swap replaced it.
+    private long _prefsSwapGeneration;
     private readonly Dictionary<int, DateTime> _autoInjectFirstReadyAtUtc = [];
     private readonly HashSet<int> _autoInjectAttemptedPids = [];
     private readonly HashSet<int> _autoInjectInFlightPids = [];
@@ -1811,10 +1816,7 @@ internal partial class MainWindow : Window
 
         try
         {
-            if (needsPrefsSwap)
-            {
-                _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity);
-            }
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
 
             InjectionResult result = await Task.Run(() =>
                 _injector.LaunchSuspendedAndInject(
@@ -1838,6 +1840,7 @@ internal partial class MainWindow : Window
                 {
                     _launchedSessionPids.Add(trackedPid);
                     _launchedPidInfo[trackedPid] = (accountKey, DateTime.UtcNow);
+                    TrackPrefsSwap(trackedPid, prefsSwap);
                     RegisterPidExitWatch(trackedPid);
                 }
 
@@ -1891,10 +1894,7 @@ internal partial class MainWindow : Window
 
         try
         {
-            if (needsPrefsSwap)
-            {
-                _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity);
-            }
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
 
             // enginePath != null: "Decal + RynthCore" - Decal is injected first, then the
             // RynthCore loader, before the client resumes.
@@ -1921,6 +1921,7 @@ internal partial class MainWindow : Window
                 {
                     _launchedSessionPids.Add(trackedPid);
                     _launchedPidInfo[trackedPid] = (accountKey, DateTime.UtcNow);
+                    TrackPrefsSwap(trackedPid, prefsSwap);
                     RegisterPidExitWatch(trackedPid);
                 }
 
@@ -1970,10 +1971,7 @@ internal partial class MainWindow : Window
 
         try
         {
-            if (needsPrefsSwap)
-            {
-                _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity);
-            }
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
 
             Process? proc = null;
             Exception? launchEx = null;
@@ -2005,6 +2003,7 @@ internal partial class MainWindow : Window
             {
                 _launchedSessionPids.Add(proc.Id);
                 _launchedPidInfo[proc.Id] = (BuildAccountKey(launchContext.AccountName, launchContext.ServerName), DateTime.UtcNow);
+                TrackPrefsSwap(proc.Id, prefsSwap);
                 RegisterPidExitWatch(proc.Id);
                 LaunchContextStore.WriteForProcess(proc.Id, launchContext);
                 WritePendingSessionState(proc.Id, launchContext);
@@ -3915,6 +3914,7 @@ internal partial class MainWindow : Window
                 AppendActivity($"Account '{entry.Value.AccountKey}' client (PID {entry.Key}) exited after {uptime.TotalSeconds:F0}s — counted as crash.");
                 int hist = _crashHistoryByAccount.TryGetValue(entry.Value.AccountKey, out List<DateTime>? h) ? h.Count : 0;
                 LauncherDiag.Info($"DetectQuickExits: PID {entry.Key} ({entry.Value.AccountKey}) uptime={uptime.TotalSeconds:F1}s -> RecordCrash. crashHist now {hist}.");
+                RecoverFailedPrefsSwap(entry.Key, entry.Value.AccountKey, uptime);
             }
             else if (!string.IsNullOrEmpty(entry.Value.AccountKey))
             {
@@ -3931,6 +3931,7 @@ internal partial class MainWindow : Window
             foreach (int pid in toRemove)
             {
                 _launchedPidInfo.Remove(pid);
+                _prefsSwapByPid.Remove(pid);
                 // Drop the exit-watcher Process handle so the OS can reclaim
                 // the kernel object. Exited already fired (or never will),
                 // so we no longer need to hold the handle alive.
@@ -4271,17 +4272,14 @@ internal partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(account.UserPrefsPath))
             return account.UserPrefsPath.Trim();
 
-        if (string.IsNullOrWhiteSpace(account.AccountName))
+        string legacyPath = ResolveLegacyUserPrefsPath(account);
+        if (string.IsNullOrEmpty(legacyPath))
             return string.Empty;
-
-        string appdata = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string prefsDir = Path.Combine(appdata, "RynthCore", "prefs");
-        string safeName = SafePrefsFileName(account.AccountName);
-        string legacyPath = Path.Combine(prefsDir, $"{safeName}.ini");
         if (string.IsNullOrWhiteSpace(serverName))
             return legacyPath;
 
-        string scopedPath = Path.Combine(prefsDir, $"{safeName}@{SafePrefsFileName(serverName)}.ini");
+        string prefsDir = Path.GetDirectoryName(legacyPath)!;
+        string scopedPath = Path.Combine(prefsDir, $"{SafePrefsFileName(account.AccountName)}@{SafePrefsFileName(serverName)}.ini");
         if (!File.Exists(scopedPath) && File.Exists(legacyPath))
         {
             try { File.Copy(legacyPath, scopedPath, overwrite: false); }
@@ -4291,8 +4289,97 @@ internal partial class MainWindow : Window
         return scopedPath;
     }
 
+    /// <summary>
+    /// The account's old name-only stash (%APPDATA%\RynthCore\prefs\name.ini), which seeds a
+    /// missing per-server one. Empty when the account has no name yet.
+    /// </summary>
+    private static string ResolveLegacyUserPrefsPath(LaunchAccountProfile account)
+    {
+        if (string.IsNullOrWhiteSpace(account.AccountName))
+            return string.Empty;
+
+        string appdata = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        return Path.Combine(appdata, "RynthCore", "prefs", $"{SafePrefsFileName(account.AccountName)}.ini");
+    }
+
     private static string SafePrefsFileName(string name) =>
         string.Join("_", name.Trim().Split(Path.GetInvalidFileNameChars()));
+
+    /// <summary>
+    /// A launch's UserPreferences.ini swap. <see cref="IsProfileOverride"/>: the stash is a file the
+    /// user picked on the profile (never renamed by the launcher). <see cref="LegacyPath"/>: the
+    /// account's name-only stash, set aside with a failed per-server one when identical.
+    /// </summary>
+    private sealed record PrefsSwapLaunch(UserPrefsSwap Swap, long Generation, bool IsProfileOverride, string LegacyPath);
+
+    /// <summary>
+    /// Copies the account's saved UserPreferences.ini over the live one (caller holds
+    /// _userPrefsSwapLock) and returns what was swapped, or null when nothing was.
+    /// </summary>
+    private PrefsSwapLaunch? ApplyPrefsSwap(LaunchAccountProfile account, string? serverName, string resolvedPrefsPath)
+    {
+        UserPrefsSwap? swap = _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity);
+        if (swap == null)
+            return null;
+
+        long generation = ++_prefsSwapGeneration;
+        bool isOverride = !string.IsNullOrWhiteSpace(account.UserPrefsPath);
+        LauncherDiag.Info($"PrefsSwap: account='{account.AccountName}' server='{serverName}' gen={generation} override={isOverride} changedLive={UserPrefsSwapRecovery.SwapChangedPrefs(swap)} stash='{swap.StashPath}'");
+        return new PrefsSwapLaunch(swap, generation, isOverride, ResolveLegacyUserPrefsPath(account));
+    }
+
+    /// <summary>Remembers which swap a launched client started with (no-op without a swap).</summary>
+    private void TrackPrefsSwap(int pid, PrefsSwapLaunch? prefsSwap)
+    {
+        if (prefsSwap != null)
+            _prefsSwapByPid[pid] = prefsSwap;
+    }
+
+    /// <summary>
+    /// A client quit within CrashQuickExitWindow. If it started with a saved UserPreferences.ini
+    /// that differs from the live one, that saved copy is the likely cause (the game reads its
+    /// display mode from it: "Could not initialize Direct3D"), and it would be swapped in again on
+    /// every launch because it is only refreshed after a normal session. So: set the saved copy
+    /// aside (renamed, kept), and put the previous live file back when no later launch replaced it.
+    /// The next normal session saves a fresh copy.
+    /// </summary>
+    private void RecoverFailedPrefsSwap(int pid, string accountKey, TimeSpan uptime)
+    {
+        if (!_prefsSwapByPid.Remove(pid, out PrefsSwapLaunch? launch))
+            return;
+
+        if (!UserPrefsSwapRecovery.SwapChangedPrefs(launch.Swap))
+        {
+            LauncherDiag.Info($"PrefsSwap: PID {pid} ({accountKey}) quick exit, but its stash matched the live file; left alone.");
+            return;
+        }
+
+        bool restoreLive = launch.Generation == _prefsSwapGeneration;
+        try
+        {
+            UserPrefsRecoveryResult result = UserPrefsSwapRecovery.Recover(
+                launch.Swap,
+                quarantineStash: !launch.IsProfileOverride,
+                restoreLive,
+                launch.LegacyPath,
+                DateTime.Now);
+
+            LauncherDiag.Info($"PrefsSwap: PID {pid} ({accountKey}) recovery: quarantined='{result.QuarantinedStashPath}' legacy='{result.QuarantinedLegacyPath}' liveRestored={result.LiveRestored}.");
+
+            string stashName = Path.GetFileName(launch.Swap.StashPath);
+            string what = launch.IsProfileOverride
+                ? $"the UserPreferences file set on its profile ({launch.Swap.StashPath}). Fix or clear that file in the account's settings if launches keep failing"
+                : $"this account's saved game settings ({stashName}). They were set aside as {Path.GetFileName(result.QuarantinedStashPath ?? stashName)}, so the next launch uses the current UserPreferences.ini";
+            string live = result.LiveRestored
+                ? " The previous UserPreferences.ini was put back."
+                : " UserPreferences.ini was left as is (another launch has swapped it since).";
+            AppendActivity($"Account '{accountKey}' client (PID {pid}) quit after {uptime.TotalSeconds:F0}s using {what}.{live}");
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"Account '{accountKey}': could not undo the UserPreferences.ini swap after a quick exit: {ex.Message}");
+        }
+    }
 
     /// <summary>
     /// Copies the current live UserPreferences.ini to the resolved stash for
