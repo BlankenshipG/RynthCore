@@ -179,8 +179,21 @@ internal static class Program
                 string preview = builder.BuildMaskedArguments(ace, a);
                 Check(!preview.Contains("t3st") && preview.Contains("-v " + AcLaunchArgumentBuilder.PasswordMask), "preview masked: " + preview);
                 LaunchAccountProfile noPw = loaded.AccountProfiles.First(x => x.Id == "b");
-                Check(builder.BuildMaskedArguments(ace, noPw).Contains("-v \"\""), "preview of an account without a password");
-                Check(builder.BuildArguments(ace, noPw).Contains("-v \"\""), "no saved password still launches as before (empty)");
+                Check(AcLaunchArgumentBuilder.NeedsPassword(noPw) && !AcLaunchArgumentBuilder.NeedsPassword(a), "NeedsPassword: only the account without one");
+                Check(builder.BuildMaskedArguments(ace, noPw).StartsWith("No password is saved for account 'B'"),
+                    "preview of an account without a password says so: " + builder.BuildMaskedArguments(ace, noPw));
+                // The client exits with "You can only run the game from the launcher program" on an
+                // empty password (Conquest, 2026-10-13), so the launch is refused instead.
+                string refusal = Throws(() => builder.BuildArguments(ace, noPw));
+                Check(refusal.StartsWith("No password is saved for account 'B'"), "no saved password: launch refused: " + refusal);
+                Check(Throws(() => builder.BuildArguments(gdle, noPw)).StartsWith("No password"), "GDLE refused too");
+
+                // Account names: ACE's 50-character limit; GDLE's "account:password" argument.
+                Check(AcLaunchArgumentBuilder.AccountNameProblem("SK", AcEmulatorKind.Ace) == null, "a short name is fine");
+                Check(AcLaunchArgumentBuilder.AccountNameProblem(new string('x', 51), AcEmulatorKind.Ace)?.Contains("50") == true, "51 characters: too long");
+                Check(AcLaunchArgumentBuilder.AccountNameProblem("a:b", AcEmulatorKind.Ace) == null, "a colon is fine on ACE");
+                Check(AcLaunchArgumentBuilder.AccountNameProblem("a:b", AcEmulatorKind.Gdle) != null, "a colon is refused on GDLE");
+                Check(AcLaunchArgumentBuilder.AccountNameProblem("  ", AcEmulatorKind.Ace) != null, "blank is refused");
 
                 LaunchAccountProfile copy = a.Clone();
                 Check(copy.PasswordProtected == a.PasswordProtected, "Clone keeps the encrypted password");
@@ -309,6 +322,50 @@ internal static class Program
                 Check(KnownServerCatalog.FindByHost("172.111.230.127")?.Id == "frostace", "FrostACE by IP");
                 Check(KnownServerCatalog.FindByHost("") == null && KnownServerCatalog.FindByHost(null) == null, "empty host");
             });
+
+            // ── First Login dialog rules (a new server: no password, no characters yet) ──
+            Scenario("first login on a new server", root, () =>
+            {
+                var withPw = new LaunchAccountProfile { Id = "ilt", AccountName = "silentkelpie" };
+                withPw.SetPassword(Pw);
+                var noPwSame = new LaunchAccountProfile { Id = "other", AccountName = "SilentKelpie" };
+                var conquest = new LaunchAccountProfile { Id = "new", AccountName = "SK", CharacterName = LaunchAccountProfile.NoneOption };
+                var all = new List<LaunchAccountProfile> { withPw, noPwSame, conquest };
+
+                Check(FirstLoginRules.KnownAccountNames(all, "new").SequenceEqual(new[] { "silentkelpie" }),
+                    "known names: the others, distinct ignoring case, not this profile's own");
+
+                Check(FirstLoginRules.SavedPasswordSource(all, "SILENTKELPIE", "new")?.Id == "ilt",
+                    "the same name with a saved password can be reused (case ignored)");
+                Check(FirstLoginRules.SavedPasswordSource(all, "SK", "new") == null, "a new name has none to reuse");
+                Check(FirstLoginRules.SavedPasswordSource(all, "silentkelpie", "ilt") == null, "never the profile itself");
+
+                var copy = new LaunchAccountProfile { AccountName = "silentkelpie" };
+                copy.CopyPasswordFrom(withPw);
+                Check(copy.PasswordProtected == withPw.PasswordProtected && copy.TryGetPasswordForLaunch(out string reused, out _) && reused == Pw,
+                    "reuse copies the encrypted blob, and it decrypts");
+
+                var none = new List<string>();
+                List<string> firstChoices = FirstLoginRules.LoginChoices(none, conquest.CharacterName);
+                Check(firstChoices.SequenceEqual(new[] { FirstLoginRules.StopAtCharacterSelect }),
+                    "no characters yet: only stop at character select (the old (None) isn't listed)");
+                Check(FirstLoginRules.CharacterNameFor(FirstLoginRules.StopAtCharacterSelect, none) == "",
+                    "stop with none known saves \"\" so the first character created is picked next time");
+
+                var chars = new List<string> { "Alpha", "Beta" };
+                Check(FirstLoginRules.LoginChoices(chars, "Gamma").SequenceEqual(new[] { FirstLoginRules.StopAtCharacterSelect, "Gamma", "Alpha", "Beta" }),
+                    "several characters: all listed, the saved one kept even if not seen yet");
+                Check(FirstLoginRules.CharacterNameFor("Beta", chars) == "Beta", "picking a character saves it");
+                Check(FirstLoginRules.CharacterNameFor(FirstLoginRules.StopAtCharacterSelect, chars) == LaunchAccountProfile.NoneOption,
+                    "stop with characters known saves the explicit (None)");
+
+                Check(FirstLoginRules.Problem("SK", "", "", false, AcEmulatorKind.Ace)?.StartsWith("Enter the password") == true, "a password is required");
+                Check(FirstLoginRules.Problem("SK", "a", "b", false, AcEmulatorKind.Ace)?.Contains("don't match") == true, "the confirmation must match");
+                Check(FirstLoginRules.Problem("SK", "pw", "pw", false, AcEmulatorKind.Ace) == null, "name + matching password: ready");
+                Check(FirstLoginRules.Problem("silentkelpie", "", "", true, AcEmulatorKind.Ace) == null, "reusing a saved password needs no typing");
+                Check(FirstLoginRules.Problem("a:b", "pw", "pw", false, AcEmulatorKind.Gdle) != null, "GDLE name with a colon refused");
+                Check(FirstLoginRules.Problem("", "pw", "pw", false, AcEmulatorKind.Ace) != null, "a name is required");
+            });
         }
         finally
         {
@@ -412,6 +469,13 @@ internal static class Program
     {
         Id = "s", Name = "Test", Host = "127.0.0.1", Port = 9000, Emulator = kind
     };
+
+    /// <summary>The message <paramref name="action"/> throws ("" when it doesn't throw).</summary>
+    private static string Throws(Action action)
+    {
+        try { action(); return string.Empty; }
+        catch (Exception ex) { return ex.Message; }
+    }
 
     private static string PwOf(AppSettings s, string id) =>
         s.AccountProfiles.First(a => a.Id == id).TryGetPasswordForLaunch(out string pw, out _) ? pw : "<unreadable>";

@@ -33,6 +33,7 @@ internal partial class MainWindow : Window
     // handle most of the work; this cooldown is a final belt-and-braces.
     private static readonly TimeSpan AutoLaunchCooldown = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan AutoLaunchServerDownLogCooldown = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan AutoLaunchNeedsPasswordLogCooldown = TimeSpan.FromMinutes(5);
 
     // Auto-inject only after the external AC client has been continuously
     // graphics-ready for this long. The window gives Decal/UBLoader time to
@@ -99,6 +100,7 @@ internal partial class MainWindow : Window
     private readonly Dictionary<string, ComboBox> _launchTargetInjectionDropdowns = [];
     private readonly Dictionary<string, DateTime> _autoLaunchAttemptTimesUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> _autoLaunchServerDownNoticeTimesUtc = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTime> _autoLaunchNeedsPasswordNoticeTimesUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ServerAvailabilityState> _serverStatuses = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<PluginDefinition> _plugins =
     [
@@ -727,8 +729,10 @@ internal partial class MainWindow : Window
 
     private async System.Threading.Tasks.Task AddAccountAsync()
     {
-        var draft = new RynthCore.App.LaunchAccountProfile();
-        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles);
+        // Defaults to the server selected in the list (a new server's first account), not the
+        // first profile, which RefreshLaunchTargets would otherwise assign.
+        var draft = new RynthCore.App.LaunchAccountProfile { ServerId = GetSelectedServer()?.Id ?? string.Empty };
+        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters);
         bool? accepted = await dialog.ShowDialog<bool?>(this);
         if (accepted != true)
             return;
@@ -749,7 +753,7 @@ internal partial class MainWindow : Window
             return;
 
         LaunchAccountProfile draft = selected.Clone();
-        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles);
+        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters);
         bool? accepted = await dialog.ShowDialog<bool?>(this);
         if (accepted != true)
             return;
@@ -1637,6 +1641,29 @@ internal partial class MainWindow : Window
             }
         }
 
+        // No usable password: the client would refuse to start ("You can only run the game from
+        // the launcher program") and exit within seconds. A manual launch asks for it (and the
+        // account) in the First Login dialog; an automatic one skips the account.
+        if (string.IsNullOrWhiteSpace(overrideArguments))
+        {
+            var ready = new List<LaunchAccountProfile>(accountsToLaunch.Count);
+            foreach (LaunchAccountProfile account in accountsToLaunch)
+            {
+                if (!AcLaunchArgumentBuilder.NeedsPassword(account))
+                    ready.Add(account);
+                else if (isAutomaticLaunch)
+                    AppendActivity($"Auto launch skipped for {account.DisplayName}: {AcLaunchArgumentBuilder.MissingPasswordMessage(account.AccountName)}");
+                else if (await PromptFirstLoginAsync(account))
+                    ready.Add(account);
+                else
+                    AppendActivity($"Launch cancelled for {account.DisplayName}: no password entered.");
+            }
+
+            if (ready.Count == 0)
+                return;
+            accountsToLaunch = ready;
+        }
+
         SaveRuntimePaths(appendActivity: !isAutomaticLaunch);
         SaveLaunchBehavior(appendActivity: !isAutomaticLaunch);
 
@@ -2002,6 +2029,38 @@ internal partial class MainWindow : Window
             }
             LauncherDiag.Info($"LaunchOneNoInject EXIT account='{launchContext.AccountName}'");
         }
+    }
+
+    /// <summary>
+    /// Shows the First Login dialog for <paramref name="account"/> (no usable password). True when
+    /// the player entered one: the profile is updated and saved (password encrypted at once).
+    /// </summary>
+    private async Task<bool> PromptFirstLoginAsync(LaunchAccountProfile account)
+    {
+        LaunchServerProfile? server = ResolveServerForAccount(account);
+        if (server == null)
+        {
+            AppendActivity($"Launch blocked for {account.DisplayName}: add a server profile first.");
+            return false;
+        }
+
+        LaunchAccountProfile draft = account.Clone();
+        var dialog = new FirstLoginDialog(draft, server, _settings.AccountProfiles,
+            accountName => GetDetectedCharacters(accountName, server.Name));
+        bool? accepted = await dialog.ShowDialog<bool?>(this);
+        if (accepted != true)
+            return false;
+
+        account.CopyFrom(draft);
+        SaveSettings();
+        RefreshLists();
+        RefreshSummary();
+
+        string loginAs = string.IsNullOrWhiteSpace(account.CharacterName) || account.CharacterName == LaunchAccountProfile.NoneOption
+            ? "stopping at character select"
+            : $"logging in as {account.CharacterName}";
+        AppendActivity($"First login on {server.DisplayName}: account '{account.AccountName}', password saved (encrypted), {loginAs}.");
+        return true;
     }
 
     private LaunchContextRecord BuildLaunchContext(LaunchAccountProfile account, LaunchServerProfile? server)
@@ -4347,6 +4406,13 @@ internal partial class MainWindow : Window
                 continue;
             }
 
+            // Needs the First Login dialog, which only a manual launch shows.
+            if (AcLaunchArgumentBuilder.NeedsPassword(account))
+            {
+                MaybeLogAutoLaunchNeedsPassword(account, nowUtc);
+                continue;
+            }
+
             if (_autoLaunchAttemptTimesUtc.TryGetValue(account.Id, out DateTime lastAttemptUtc) &&
                 nowUtc - lastAttemptUtc < AutoLaunchCooldown)
             {
@@ -4397,6 +4463,18 @@ internal partial class MainWindow : Window
 
         _autoLaunchServerDownNoticeTimesUtc[account.Id] = nowUtc;
         AppendActivity($"Auto launch waiting for {account.DisplayName}: {(server?.DisplayName ?? "the selected server")} is reporting down.");
+    }
+
+    private void MaybeLogAutoLaunchNeedsPassword(LaunchAccountProfile account, DateTime nowUtc)
+    {
+        if (_autoLaunchNeedsPasswordNoticeTimesUtc.TryGetValue(account.Id, out DateTime lastNoticeUtc) &&
+            nowUtc - lastNoticeUtc < AutoLaunchNeedsPasswordLogCooldown)
+        {
+            return;
+        }
+
+        _autoLaunchNeedsPasswordNoticeTimesUtc[account.Id] = nowUtc;
+        AppendActivity($"Auto launch waiting for {account.DisplayName}: {AcLaunchArgumentBuilder.MissingPasswordMessage(account.AccountName)}");
     }
 
     private bool IsServerKnownDown(LaunchServerProfile? server)
@@ -4476,7 +4554,7 @@ internal partial class MainWindow : Window
 
             string character = !string.IsNullOrWhiteSpace(session.CharacterName) ? session.CharacterName
                 : !string.IsNullOrWhiteSpace(session.TargetCharacter) ? session.TargetCharacter
-                : !string.IsNullOrWhiteSpace(account.CharacterName) ? account.CharacterName
+                : !string.IsNullOrWhiteSpace(account.CharacterName) && account.CharacterName != LaunchAccountProfile.NoneOption ? account.CharacterName
                 : "Logged in";
             string elapsed = FormatElapsed(DateTime.UtcNow - (session.LoginCompletedAtUtc ?? session.LaunchStartedAtUtc));
             return ($"{character} | online {elapsed}", "#66D687");
@@ -4490,12 +4568,16 @@ internal partial class MainWindow : Window
             Process? process = targets.FirstOrDefault(p => p.Id == pid);
             DateTime since = process != null ? GetProcessStartTimeUtc(process) : context.CreatedAtUtc.ToUniversalTime();
             string character = !string.IsNullOrWhiteSpace(context.TargetCharacter) ? context.TargetCharacter
-                : !string.IsNullOrWhiteSpace(account.CharacterName) ? account.CharacterName
-                : "Pending";
+                : !string.IsNullOrWhiteSpace(account.CharacterName) && account.CharacterName != LaunchAccountProfile.NoneOption ? account.CharacterName
+                : "Character select";
             string elapsed = FormatElapsed(DateTime.UtcNow - since);
             return ($"{character} | starting {elapsed}", "#E2B348");
         }
 
+        if (AcLaunchArgumentBuilder.NeedsPassword(account))
+            return ("Needs password | launch to set up", "#E2B348");
+        if (account.CharacterName == LaunchAccountProfile.NoneOption)
+            return ("Character select | offline", "#73828D");
         return (!string.IsNullOrWhiteSpace(account.CharacterName) ? $"{account.CharacterName} | offline" : "Offline", "#73828D");
     }
 

@@ -10,9 +10,27 @@ internal sealed class AcLaunchArgumentBuilder
     public const string PasswordMask = "********";
 
     /// <summary>
+    /// True when <paramref name="account"/> can't be launched until a password is entered: none
+    /// is saved, or the saved one can't be decrypted on this Windows user. Every supported
+    /// emulator logs on with a password, and the client refuses an empty one before it connects
+    /// ("You can only run the game from the launcher program").
+    /// </summary>
+    public static bool NeedsPassword(LaunchAccountProfile account)
+    {
+        ArgumentNullException.ThrowIfNull(account);
+        return account.PasswordNeedsReentry || !account.HasSavedPassword;
+    }
+
+    /// <summary>Why an account without a password can't be launched (no secrets in it).</summary>
+    public static string MissingPasswordMessage(string? accountName) =>
+        $"No password is saved for account '{accountName}'. The AC client won't start without one " +
+        "(\"You can only run the game from the launcher program\"). Launch it by hand to enter it, or edit the account.";
+
+    /// <summary>
     /// The client's command line, with the saved password decrypted now. The result carries the
-    /// password: hand it to the process and never log, display or keep it. Throws when the saved
-    /// password can't be decrypted on this Windows user (never launches with an empty one instead).
+    /// password: hand it to the process and never log, display or keep it. Throws when no password
+    /// is saved or the saved one can't be decrypted on this Windows user (never launches with an
+    /// empty one instead).
     /// </summary>
     public string BuildArguments(LaunchServerProfile server, LaunchAccountProfile account)
     {
@@ -23,6 +41,8 @@ internal sealed class AcLaunchArgumentBuilder
 
         if (!account.TryGetPasswordForLaunch(out string password, out string problem))
             throw new InvalidOperationException(problem);
+        if (password.Length == 0)
+            throw new InvalidOperationException(MissingPasswordMessage(account.AccountName));
 
         return Build(server, account, password);
     }
@@ -40,8 +60,10 @@ internal sealed class AcLaunchArgumentBuilder
 
         if (account.PasswordNeedsReentry)
             return LaunchAccountProfile.PasswordNeedsReentryMessage(account.AccountName);
+        if (!account.HasSavedPassword)
+            return MissingPasswordMessage(account.AccountName);
 
-        return Build(server, account, account.HasSavedPassword ? PasswordMask : string.Empty);
+        return Build(server, account, PasswordMask);
     }
 
     private static string Build(LaunchServerProfile server, LaunchAccountProfile account, string password)
@@ -79,9 +101,31 @@ internal sealed class AcLaunchArgumentBuilder
             errors.Add("Server port must be greater than zero.");
         if (string.IsNullOrWhiteSpace(account.AccountName))
             errors.Add("Account name is required.");
+        else if (AccountNameProblem(account.AccountName, server.Emulator) is string nameProblem)
+            errors.Add(nameProblem);
 
         if (errors.Count > 0)
             throw new InvalidOperationException(string.Join(" ", errors));
+    }
+
+    /// <summary>Longest account name ACE accepts (AuthenticationHandler rejects longer ones).</summary>
+    public const int MaxAccountNameLength = 50;
+
+    /// <summary>
+    /// Why <paramref name="accountName"/> can't log on to a server of <paramref name="emulator"/>
+    /// (null = fine). GDLE takes "account:password" in one argument, so a colon in the name would
+    /// split it in the wrong place.
+    /// </summary>
+    public static string? AccountNameProblem(string? accountName, AcEmulatorKind emulator)
+    {
+        string name = accountName?.Trim() ?? string.Empty;
+        if (name.Length == 0)
+            return "Account name is required.";
+        if (name.Length > MaxAccountNameLength)
+            return $"Account name is longer than {MaxAccountNameLength} characters.";
+        if (emulator == AcEmulatorKind.Gdle && name.Contains(':'))
+            return "Account names can't contain ':' on GDLE servers.";
+        return null;
     }
 
     private static string Quote(string value)
