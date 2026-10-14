@@ -659,14 +659,13 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         }
         x += bw + gap;
 
-        // Char opens the Mini Remote window (MiniRemoteFace, hosting RynthAi's remote) on its
-        // Character tab (RynthILT's ILT tab; elsewhere the remote shows). The separate Hub launcher
-        // (the same window again) was removed 2026-10-13: the Mini Remote as it was left is the bar
-        // button (/rc miniremote) and "Mini Remote" in Char's right-click menu; its drawer is the
-        // drawer tab on the dashboard's edge.
+        // Char opens RynthOracle's Character tab (character, level XP, session rates and, on
+        // Infinite Leaftide, the charms) since 2026.10.5.54; without RynthOracle, the Mini Remote's
+        // Session Stats section. The Mini Remote as it was left is the bar button (/rc miniremote)
+        // and "Mini Remote" in Char's right-click menu; its drawer is the drawer tab on the dashboard's edge.
         Launcher("##l_char", PhosphorIcons.User, "Char",
-            "Char. Left-click: the Mini Remote on its Character tab (ILT worlds).  Right-click: Character windows (Mini Remote, Spells, Quests, Pets, Crafting, Fellowship, Skills, Inventory...), then Server: this server's plugin windows.",
-            x, y, bw, labels, () => ShowMiniRemoteTab("character"));
+            "Char. Left-click: RynthOracle's Character tab (charms on Infinite Leaftide).  Right-click: Character windows (Mini Remote, Spells, Quests, Pets, Crafting, Fellowship, Skills, Inventory...), then Server: this server's plugin windows.",
+            x, y, bw, labels, ShowCharacter);
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
         {
             ImGuiNET.ImGui.SetNextWindowPos(ImGuiNET.ImGui.GetItemRectMin(), ImGuiCond.Always, new Vector2(0, 1));
@@ -885,6 +884,16 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         RynthAiCommands.ApplyRemoteCommand("hub", section.Length > 0 ? "tab " + section : "tab");
     }
 
+    /// <summary>
+    /// RynthOracle's Character tab ("/ro character"), or the Mini Remote's Session Stats section
+    /// when RynthOracle isn't loaded. Every "Character" / "Charms" link goes here.
+    /// </summary>
+    private static void ShowCharacter()
+    {
+        if (UI.ScriptWindows.ScriptWindowRegistry.Has(OracleMainKey)) UI.ServerMenus.Run("/ro character");
+        else UI.ServerMenus.Run("/rc miniremote section char");
+    }
+
     /// <summary>A Char menu item that toggles a registered ImGui panel (checked while open).</summary>
     private static void PanelMenuItem(string title, string command)
     {
@@ -922,6 +931,11 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         try
         {
             ImGuiNET.ImGui.TextDisabled("Character");
+            bool hasOracle = UI.ScriptWindows.ScriptWindowRegistry.Has(OracleMainKey);
+            if (ImGuiNET.ImGui.MenuItem("Character", "/ro character", false, hasOracle)) ShowCharacter();
+            ImGuiNET.ImGui.SetItemTooltip(hasOracle
+                ? "RynthOracle's Character tab: level, XP, session rates and (Infinite Leaftide) your charms."
+                : "RynthOracle's Character tab (RynthOracle isn't loaded).");
             if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote", ImGuiPanelHost.IsOpen(MiniRemoteFace.Title)))
                 ShowMiniRemoteTab("");
             if (ImGuiNET.ImGui.MenuItem("Spells", "/rc spells"))
@@ -938,7 +952,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             if (ImGuiNET.ImGui.MenuItem("Crafting", "/rc miniremote tab crafting")) ShowMiniRemoteTab("crafting");
             ImGuiNET.ImGui.SetItemTooltip("The Mini Remote's Crafting tab: armor, weapon, jewelry and item tinkering, chunking and arrows (RynthAi).");
             // Fellowship is RynthOracle's Fellowship tab ("/ro fellowship" opens the window on it).
-            bool oracle = UI.ScriptWindows.ScriptWindowRegistry.Has(OracleMainKey);
+            bool oracle = hasOracle;
             if (ImGuiNET.ImGui.MenuItem("Fellowship", "/ro fellowship", false, oracle)) UI.ServerMenus.Run("/ro fellowship");
             ImGuiNET.ImGui.SetItemTooltip(oracle
                 ? "RynthOracle's Fellowship tab: members, leader, open / locked, XP sharing and (Infinite Leaftide) the /fship commands."

@@ -8,7 +8,7 @@
 //           menu (sections, active servers' items, hide the rail). Hidden, the
 //           sections stay reachable from the menu and /rc miniremote section.
 //  body     a row of tabs when there is more than one view: the section's views
-//           (engine panels embedded whole, the Char overview, plugin views),
+//           (engine panels embedded whole, the Session Stats overview, plugin views),
 //           then one tab per active server with options here ("Server: ILT")
 //           and "Plugins" for options every world gets. A view fills the body;
 //           an options tab lists the plugins' option surfaces (collapsible) and
@@ -41,7 +41,7 @@ internal sealed partial class MiniRemoteFace
     private const string EmbedHost = "MiniRemote";
     /// <summary>Preferred body size (logical) for a view that doesn't say.</summary>
     private static readonly Vector2 DefaultViewSize = new(420, 380);
-    private static readonly Vector2 OverviewSize = new(400, 340);
+    private static readonly Vector2 OverviewSize = new(360, 200);
 
     // Shared by every instance (the face is recreated on each open): the section shown.
     private static string _section = LoadSection();
@@ -56,7 +56,6 @@ internal sealed partial class MiniRemoteFace
     private readonly HashSet<string> _surfaceOff = new(StringComparer.Ordinal);
     private float _railW;
     private int _railRevision = -1;
-    private string _overviewMessage = string.Empty;
 
     private static bool IsRemote => _section.Equals(SectionCatalog.RemoteId, StringComparison.OrdinalIgnoreCase);
 
@@ -454,9 +453,14 @@ internal sealed partial class MiniRemoteFace
         return result == PluginManager.EmbedDrawn ? want : Vector2.Zero;
     }
 
-    // ── Char overview ───────────────────────────────────────────────────
+    // ── Session Stats overview ──────────────────────────────────────────
 
-    /// <summary>The character, the world, and each server's verdict with its Auto / On / Off override.</summary>
+    /// <summary>
+    /// The Session Stats section's stand-in (shown only while no plugin fills the section; RynthAi
+    /// does): this session's XP and luminance with their per-hour rates, from the engine's
+    /// SessionRates, the same formula RynthAi, RynthTracker, RynthOracle and RynthILT use.
+    /// Character details are RynthOracle's Character tab; server picks are Options > Diagnostics.
+    /// </summary>
     private void DrawOverview(SectionRegistry.Snapshot snap, Vector2 box)
     {
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(2, 2));
@@ -467,37 +471,25 @@ internal sealed partial class MiniRemoteFace
             if (!open) return;
             string who = SessionStateRegistry.LastCharacterName;
             Label(who.Length > 0 ? who : "No character logged in", Teal);
-            string world = AccountHooks.AnnouncedWorldName ?? SessionStateRegistry.LastServerName;
-            SafeImGui.TextDisabled($"World: {(world.Length > 0 ? world : "(not announced)")}   Host: {ServerInfo.HostDescription}");
-            ImGuiNET.ImGui.Spacing();
-
-            Label("Servers", Mute);
             float w = ImGuiNET.ImGui.GetContentRegionAvail().X;
             Separator(w);
-            if (snap.Servers.Count == 0) ImGuiNET.ImGui.TextDisabled("Checking...");
-            foreach (ServerState s in snap.Servers) DrawServerRow(s, w);
 
-            if (_overviewMessage.Length > 0)
+            SessionRatesView r = EngineStatusMetrics.SessionView();
+            if (r.Seconds <= 0)
             {
-                ImGuiNET.ImGui.Spacing();
-                ImGuiNET.ImGui.PushTextWrapPos(0f);
-                ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Mute);
-                SafeImGui.TextWrapped(_overviewMessage);
-                ImGuiNET.ImGui.PopStyleColor();
-                ImGuiNET.ImGui.PopTextWrapPos();
+                ImGuiNET.ImGui.TextDisabled("The session starts once a character is in the world.");
+                return;
             }
-
+            StatRow("Session", FormatDuration(r.Seconds));
+            StatRow("XP", $"{Compact(r.Xp)}  ({Compact(r.XpPerHour)}/hr)");
+            StatRow("Luminance", $"{Compact(r.Lum)}  ({Compact(r.LumPerHour)}/hr)");
             ImGuiNET.ImGui.Spacing();
-            Label("Plugins adding sections", Mute);
-            Separator(w);
-            bool any = false;
-            foreach (SectionManifest m in snap.Manifests)
-            {
-                if (m.Plugin == SectionRegistry.EnginePlugin) continue;
-                any = true;
-                SafeImGui.TextDisabled($"{m.Plugin}: {m.Contributions.Length} item(s), {m.Sections.Length} section(s), {m.Servers.Length} server(s)");
-            }
-            if (!any) ImGuiNET.ImGui.TextDisabled("None yet (they publish once you are in the world).");
+            ImGuiNET.ImGui.PushTextWrapPos(0f);
+            ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Faded(Mute));
+            SafeImGui.TextWrapped("Kills, deaths and per-kill XP come with RynthAi's session stats. "
+                + "Character details: RynthOracle's Character tab (/ro character). Server picks: Options > Diagnostics.");
+            ImGuiNET.ImGui.PopStyleColor();
+            ImGuiNET.ImGui.PopTextWrapPos();
         }
         finally
         {
@@ -505,57 +497,30 @@ internal sealed partial class MiniRemoteFace
         }
     }
 
-    private void DrawServerRow(ServerState s, float w)
+    /// <summary>One "label  value" row of the overview.</summary>
+    private static void StatRow(string label, string value)
     {
-        ImGuiNET.ImGui.PushID("srv_" + s.Id);
-        try
-        {
-            Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
-            uint color = s.Active ? Green : Mute;
-            var dl = ImGuiNET.ImGui.GetWindowDrawList();
-            dl.AddCircleFilled(p + new Vector2(5, 9), 4, color);
-            dl.AddText(p + new Vector2(14, 2), Text, s.Name);
-
-            // Auto / On / Off, right-aligned: the saved override for this character.
-            const float bw = 38f, bh = 18f;
-            float x = p.X + w - 3 * (bw + 2);
-            foreach ((ServerForce mode, string label) in new[] { (ServerForce.Auto, "Auto"), (ServerForce.On, "On"), (ServerForce.Off, "Off") })
-            {
-                bool selected = s.Force == mode;
-                if (Button("##force_" + label, label, new Vector2(x, p.Y), new Vector2(bw, bh), Text,
-                        selected ? Selected : BtnFill, border: selected ? Teal : 0) && !selected)
-                {
-                    bool ok = ServerForceStore.Set(s.Id, mode, out string where);
-                    SectionRegistry.Invalidate();
-                    _overviewMessage = ok ? $"{s.Name}: {ServerForceText.Name(mode)} ({where})." : $"{s.Name}: not changed - {where}.";
-                }
-                SafeImGui.SetItemTooltip(mode switch
-                {
-                    ServerForce.On => $"Treat this world as {s.Name}, for this character (/rc server {s.Id} on).",
-                    ServerForce.Off => $"Never treat this world as {s.Name}, for this character (/rc server {s.Id} off).",
-                    _ => $"Detect {s.Name} from the host and world name (/rc server {s.Id} auto).",
-                });
-                x += bw + 2;
-            }
-            NextLine(p, bh + 2);
-
-            string state = (s.Active ? "Active" : "Not active")
-                + (s.Force == ServerForce.Auto ? "" : $" (forced {ServerForceText.Name(s.Force)}; detected: {(s.Detected ? "yes" : "no")})");
-            ImGuiNET.ImGui.Indent(14);
-            ImGuiNET.ImGui.PushTextWrapPos(0f);
-            ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Faded(Mute));
-            SafeImGui.TextWrapped($"{state} - {s.Reason}.");
-            ImGuiNET.ImGui.PopStyleColor();
-            ImGuiNET.ImGui.PopTextWrapPos();
-            ImGuiNET.ImGui.Unindent(14);
-            ImGuiNET.ImGui.Spacing();
-        }
-        finally
-        {
-            ImGuiNET.ImGui.PopID();
-        }
+        Label(label, Mute);
+        ImGuiNET.ImGui.SameLine(90f);
+        ImGuiNET.ImGui.TextUnformatted(value);
     }
 
+    /// <summary>12.3k, 4.5m, 1.2b (the Mini Remote's compact numbers).</summary>
+    private static string Compact(double v)
+    {
+        double a = Math.Abs(v);
+        if (a >= 1e9) return (v / 1e9).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "b";
+        if (a >= 1e6) return (v / 1e6).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "m";
+        if (a >= 1e4) return (v / 1e3).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "k";
+        return v.ToString("0", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>"1h 05m" or "4m 12s".</summary>
+    private static string FormatDuration(double seconds)
+    {
+        var t = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        return t.TotalHours >= 1 ? $"{(int)t.TotalHours}h {t.Minutes:00}m" : $"{t.Minutes}m {t.Seconds:00}s";
+    }
     // ── Menu ────────────────────────────────────────────────────────────
 
     /// <summary>The menu's section half: every section, the active servers' items, the rail switch.</summary>
@@ -572,6 +537,6 @@ internal sealed partial class MiniRemoteFace
         if (ImGuiNET.ImGui.MenuItem("Show the sections rail", "", rail))
             PanelColumnStore.Set(RailKey, rail ? 0f : 1f);
         SafeImGui.SetItemTooltip("The column of sections down the left. Hidden, RynthAi's remote shows its own tab bar again "
-            + "(Banking, Gear and the other ILT tabs), and a section is picked here or with /rc miniremote section <name>.");
+            + "(Gear, Games and the other ILT tabs), and a section is picked here or with /rc miniremote section <name>.");
     }
 }

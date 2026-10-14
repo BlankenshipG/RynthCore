@@ -658,6 +658,8 @@ internal static partial class PluginManager
         ImGuiBackend.Hud.HudFeed.OnChat(text);
         // Who to /reply and /retell to (ChatCommandDispatcher rewrites those to a /tell).
         Compatibility.TellMemory.Shared.OnChatLine(text);
+        // Luminance deposited into ACECustom's bank isn't session income (SessionRates).
+        Compatibility.EngineStatusMetrics.OnChatLine(text);
 
         if (!_initialized || _plugins.Count == 0)
             return false;

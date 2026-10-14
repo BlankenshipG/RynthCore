@@ -9,8 +9,10 @@
 //
 //  A section's body, top to bottom:
 //    panes    what fills it: the engine's core panels for it (embedded whole),
-//             the Char overview, and plugins' primary surfaces. More than one
-//             pane = a row of sub-tabs.
+//             the Session Stats overview (dropped once a plugin's universal
+//             primary surface fills that section, e.g. RynthAi's session
+//             stats), and plugins' primary surfaces. More than one pane = a
+//             row of sub-tabs.
 //    groups   "Server: <name>" for each active server with items here, then
 //             "Plugins" for items every world gets: inline plugin surfaces
 //             (options and configuration) and command buttons.
@@ -33,7 +35,7 @@ internal sealed record ServerState(string Id, string Name, bool Active, bool Det
 
 internal enum SectionPaneKind
 {
-    /// <summary>The Char section's engine overview (character, servers, overrides).</summary>
+    /// <summary>The Session Stats section's engine overview (XP / luminance this session), when no plugin fills it.</summary>
     Overview,
     /// <summary>An engine panel embedded whole.</summary>
     CorePanel,
@@ -58,13 +60,19 @@ internal static class SectionCatalog
     /// <summary>The rail entry for the remote itself (RynthAi's remote, or the engine's slot grid).</summary>
     public const string RemoteId = "remote";
 
+    /// <summary>The "char" section's label: the session's XP, luminance and kills.</summary>
+    public const string SessionStatsLabel = "Session Stats";
+
     /// <summary>
     /// The core sections, in rail order, with the engine panels that fill each (the first
     /// that exists is the default sub-tab). Sections without panels are filled by plugins.
     /// </summary>
     public static readonly CoreSection[] Core =
     {
-        new("char", "Char", Array.Empty<string>(), Overview: true),
+        // Session Stats (was "Char" until 2026.10.5.54; the id stays "char" so saved rail picks,
+        // "/rc miniremote section char" and plugin manifests keep working). Character details
+        // live in RynthOracle's Character tab now, server picks in Options > Diagnostics.
+        new("char", SessionStatsLabel, Array.Empty<string>(), Overview: true),
         new("map", "Map", new[] { "Radar", "Dungeon Map" }),
         new("skills", "Skills", new[] { "Skills" }),
         new("combat", "Combat", new[] { "Damage", "Monsters" }),
@@ -185,6 +193,12 @@ internal static class SectionCatalog
                 }
             }
         }
+
+        // One session on screen: the engine's own Session Stats overview is a stand-in, dropped
+        // when a plugin fills the section with an every-world view of its own (RynthAi's session
+        // stats, which RynthTracker, RynthOracle and RynthILT follow too).
+        if (core is { Overview: true } && panes.Exists(p => p.Kind == SectionPaneKind.Surface && p.Contribution!.IsUniversal))
+            panes.RemoveAll(p => p.Kind == SectionPaneKind.Overview);
 
         var groups = new List<SectionGroup>();
         foreach (ServerState s in servers)   // the servers' own order: built-in first

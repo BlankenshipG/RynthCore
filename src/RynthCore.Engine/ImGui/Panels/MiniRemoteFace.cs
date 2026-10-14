@@ -10,7 +10,7 @@
 //  With RynthAi loaded it hosts RynthAi's Mini Remote (session rates, target,
 //  summon, item slots, toggles, bank, rebuff, Translate, Guardian and its
 //  Options menu, its Quests and Pets tabs, plus on ILT worlds the RynthILT
-//  plugin's tabs Character, Banking, Gear, Charms and Games, which RynthAi asks
+//  plugin's tabs Gear and Games (Character and Charms moved to RynthOracle, Banking to RynthInventory, 2026.10.5.54), which RynthAi asks
 //  RynthILT to draw), drawn by the plugin through
 //  RynthPluginRenderEmbed ("miniremote-window"). The window fits itself to what
 //  the plugin asks for whenever that changes (another tab, a section shown or
@@ -68,7 +68,7 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
     /// The RynthAi surface for this window (NUL-terminated for the export): "miniremote-remote"
     /// (the remote alone: its tabs are sections here) from a RynthAi that publishes sections
     /// while the sections rail shows, else "miniremote-window" (the remote with its own tab bar).
-    /// With the rail hidden the tab bar is the only way to RynthILT's tabs (Banking, Gear, ...).
+    /// With the rail hidden the tab bar is the only way to RynthILT's tabs (Gear, Games).
     /// </summary>
     private static ReadOnlySpan<byte> Surface =>
         RailShown && RynthAiPublishesSections() ? "miniremote-remote\0"u8 : "miniremote-window\0"u8;

@@ -599,10 +599,11 @@ public static class EntryPoint
         {
             // RynthILT's ILT tabs in RynthAi's Mini Remote (shown once the server reports each on).
             // A RynthAi that doesn't publish sections gets these stand-ins; one that does lists them itself.
+            // Character and Charms are RynthOracle's Character tab and Banking is RynthInventory's
+            // Global Inventory since 2026.10.5.54, so only Gear and Games are left here.
             foreach ((string label, string tab, string section) in new[]
             {
-                ("Character", "character", "char"), ("Banking", "banking", "inventory"), ("Gear", "gear", "inventory"),
-                ("Charms", "charms", "char"), ("Games", "games", "char"),
+                ("Gear", "gear", "inventory"), ("Games", "games", "fellowship"),
             })
             {
                 UI.Sections.SectionRegistry.AddEngineItem(section, ilt, label, "/rc miniremote tab " + tab,
@@ -612,7 +613,8 @@ public static class EntryPoint
         if (rynthIlt)
         {
             // The engine's ILT panels, fed by RynthILT.
-            UI.Sections.SectionRegistry.AddEngineItem("char", ilt, "Guardian", "/rc guardian toggle",
+            // Guardian sits with Progression (Temple of Enlightenment): Session Stats is session stats only.
+            UI.Sections.SectionRegistry.AddEngineItem("skills", ilt, "Guardian", "/rc guardian toggle",
                 "Temple of Enlightenment guardians: riddle answers and Give (RynthILT).");
             UI.Sections.SectionRegistry.AddEngineItem("skills", ilt, "Progression", "/rc progression",
                 "XP planner, augmentations and enlightenment (the Skills panel's Progression tab; RynthILT).");

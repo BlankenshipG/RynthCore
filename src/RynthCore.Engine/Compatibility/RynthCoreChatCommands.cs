@@ -87,11 +87,16 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item><c>/rc hotkeys</c> - opens Settings &gt; Hotkeys. <c>/rc hotkey list | add &lt;combo&gt; &lt;action or
 ///         /command&gt; | remove &lt;combo&gt; | enable|disable &lt;combo&gt; | actions | status | on|off</c> - the user
 ///         hotkeys (<see cref="Hotkeys.HotkeyService"/>; saved for the PC in hotkeys.txt).</item>
+///   <item><c>/rc diagnostics</c> (or <c>/rc serverpick</c>) - opens Settings &gt; Diagnostics, the server
+///         picker: the one place a server is forced for this character (plugins' "Force a server" links).</item>
 /// </list>
 /// </summary>
 internal static class RynthCoreChatCommands
 {
     private const string Prefix = "/rc ";
+
+    /// <summary>The Settings tab with the server picker (UI/Data/SettingsData.cs "Diagnostics").</summary>
+    private const string DiagnosticsTabName = "Diagnostics";
 
     /// <summary>
     /// True if <paramref name="line"/> was a RynthCore engine command and has
@@ -344,12 +349,16 @@ internal static class RynthCoreChatCommands
 
         // /rc miniremote [show|hide|toggle|tab <tab>|section <id>] : the ImGui Mini Remote panel, like
         // its bar button (RynthAi's dashboard and "/ra hub" use show / hide). "tab" opens it on one of
-        // its tabs (RynthAi's pets, crafting; RynthILT's character, banking, gear, charms, games; none =
-        // the remote). Quests are RynthOracle's window (/ro) since 2026-10-13.
-        // "section" opens it on one of its sections (char, map, skills, ...; "remote" = the remote).
+        // its tabs (RynthAi's pets, crafting; RynthILT's gear, games; none = the remote). Quests are
+        // RynthOracle's window (/ro) since 2026-10-13. Since 2026.10.5.54 the old "character" and
+        // "charms" tabs open RynthOracle's Character tab (/ro character) and "banking" opens
+        // RynthInventory's Global Inventory on its Banking tab (/ginv bank).
+        // "section" opens it on one of its sections (char = Session Stats, map, skills, ...; "remote" = the remote).
         if (IsVerb(sub, "miniremote", out string remoteArgs) || IsVerb(sub, "remote", out remoteArgs))
         {
-            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.MiniRemoteFace.Title))
+            if (IsVerb(remoteArgs, "tab", out string moved) && MovedTabCommand(moved) is string movedTo)
+                UI.ServerMenus.Run(movedTo);
+            else if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.MiniRemoteFace.Title))
                 Reply("The Mini Remote panel isn't available (the ImGui layer is off?).");
             else if (IsVerb(remoteArgs, "tab", out string tab)
                      && tab.Length > 0 && ImGuiBackend.Panels.MiniRemoteFace.TryRequestSurface("section:" + tab.Trim().ToLowerInvariant()))
@@ -428,6 +437,20 @@ internal static class RynthCoreChatCommands
             else
             {
                 ImGuiBackend.Panels.SettingsFace.RequestTab(ImGuiBackend.Panels.HotkeysSettingsUi.TabName);
+                if (!ImGuiBackend.ImGuiPanelHost.IsOpen(ImGuiBackend.Panels.SettingsFace.Title))
+                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.SettingsFace.Title);
+            }
+            return true;
+        }
+        // /rc diagnostics : Settings > Diagnostics, where a server is forced for this character (the
+        // server picker). The one place to force a server since 2026.10.5.54, so plugins link here.
+        if ((IsVerb(sub, "diagnostics", out string diagArgs) || IsVerb(sub, "serverpick", out diagArgs)) && diagArgs.Length == 0)
+        {
+            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SettingsFace.Title))
+                Reply("The Settings panel isn't available (the ImGui layer is off?). /rc server <id> auto|on|off works here in chat.");
+            else
+            {
+                ImGuiBackend.Panels.SettingsFace.RequestTab(DiagnosticsTabName);
                 if (!ImGuiBackend.ImGuiPanelHost.IsOpen(ImGuiBackend.Panels.SettingsFace.Title))
                     UI.PanelRouter.Toggle(ImGuiBackend.Panels.SettingsFace.Title);
             }
@@ -942,6 +965,18 @@ internal static class RynthCoreChatCommands
         else
             SetPanelOpen(title, show);
     }
+
+    /// <summary>
+    /// The command for a Mini Remote tab that moved out (2026.10.5.54): "character" and "charms"
+    /// are RynthOracle's Character tab, "banking" is RynthInventory's Global Inventory Banking tab.
+    /// Null for a tab still in the Mini Remote.
+    /// </summary>
+    internal static string? MovedTabCommand(string tab) => tab.Trim().ToLowerInvariant() switch
+    {
+        "character" or "char" or "charms" => "/ro character",
+        "banking" or "bank" => "/ginv bank",
+        _ => null,
+    };
 
     private static bool IsVerb(string sub, string verb, out string args)
     {

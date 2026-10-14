@@ -28,6 +28,8 @@
     <!-- The Diagnostics server picker's plan and the plugin API v85 server-state JSON. -->
     <Compile Include="..\..\src\RynthCore.Engine\UI\Sections\ServerSelection.cs" Link="Engine\ServerSelection.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Sections\ServerStateJson.cs" Link="Engine\ServerStateJson.cs" />
+    <!-- The status feed's / Session Stats' XP and luminance session formula (pure). -->
+    <Compile Include="..\..\src\RynthCore.Engine\Compatibility\SessionRates.cs" Link="Engine\SessionRates.cs" />
   </ItemGroup>
 
 </Project>
