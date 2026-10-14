@@ -709,6 +709,10 @@ internal static class AcMainThreadQueue
         // drop: dropping arbitrary item/movement actions desyncs the bot far
         // worse than a late injection, and the pre-2026-06-12 behavior was
         // "always inject" anyway, so proceeding past the cap is never worse).
+        // Gesture-safe entries at the head still run (RunsDuringGesture): while deferring they
+        // run from the head of the ring up to the first one that doesn't (FIFO order is kept:
+        // nothing overtakes a held entry).
+        bool gestureSafeOnly = false;
         if (_ring.Count > 0)
         {
             // In milliseconds (was 250 Drain calls: 2 s to over 10 s depending on the frame rate).
@@ -716,18 +720,19 @@ internal static class AcMainThreadQueue
             {
                 long nowDefer = NowMs;
                 if (_drainDeferSinceMs == 0) _drainDeferSinceMs = nowDefer;
-                if (nowDefer - _drainDeferSinceMs <= DrainDeferMaxMs)
-                    return;
+                gestureSafeOnly = nowDefer - _drainDeferSinceMs <= DrainDeferMaxMs;
             }
-            _drainDeferSinceMs = 0;
+            if (!gestureSafeOnly) _drainDeferSinceMs = 0;
         }
         long runAt = NowMs;
         int epochNow = Volatile.Read(ref _loginEpoch);
         // Bounded to what is queued now plus a capacity's worth: an action that re-queues
         // itself can never spin the main thread.
         int budget = Capacity * 2;
-        while (budget-- > 0 && _ring.TryDequeue(out Entry e))
+        while (budget-- > 0 && _ring.TryPeek(out Entry e))
         {
+            if (gestureSafeOnly && !RunsDuringGesture(e.Kind)) break;
+            _ring.Pop();
             long age = runAt - e.At;
             if (PlayerLifecycleLog.DecideQueued(runAt, e.At, IsTeardown(e)) == WorldTransitionState.Verdict.Drop)
             {
@@ -880,7 +885,24 @@ internal static class AcMainThreadQueue
                 // now run on the correct thread, which is the whole point.)
             }
         }
+        // The gesture-safe entries emptied the ring: the next held entry gets its own full defer.
+        if (gestureSafeOnly && _ring.Count == 0) _drainDeferSinceMs = 0;
     }
+
+    /// <summary>
+    /// Entries that run while a gesture is in flight (2026-10-14). Each is what the retail
+    /// client does from a key press at any moment, swing or not: the target select, the
+    /// keyboard attack (ClientCombatSystem StartAttackRequest/EndAttackRequest, which the client
+    /// itself holds until the motion allows) and the 0x1B7 cancel. With a crossbow or bow a
+    /// gesture is in flight nearly all the time, so these waited up to DrainDeferMaxMs every
+    /// cycle (Silentkelpie: target select and attacks 1.0-1.9 s late, stale attacks dropped).
+    /// Stance changes, movement, raw attack packets and item moves stay deferred.
+    /// </summary>
+    internal static bool RunsDuringGesture(ActionKind kind) => kind switch
+    {
+        ActionKind.SetSelectedObject or ActionKind.NativeAttack or ActionKind.CancelAttack => true,
+        _ => false,
+    };
 
     // ── RequestId slot (0xC8 appraisal sends from AutoIdService, and every other
     //    off-thread CombatActionHooks.RequestId caller: plugin RequestIdFn, the
