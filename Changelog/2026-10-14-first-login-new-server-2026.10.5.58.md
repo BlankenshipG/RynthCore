@@ -89,9 +89,20 @@ Also:
 
 ## Install
 
-- Launcher only; the engine stays at 2026.10.5.57. Published with
-  `-p:Version=2026.10.5.58` (framework-dependent, win-x86). The apphost
-  `RynthCore.App.Avalonia.exe` is installed as `RynthCore.exe`.
+- Launcher only; the engine stays at 2026.10.5.57. Published like
+  `installer\Build-Installer.ps1` step 1: `-r win-x86 --self-contained true
+  -p:Version=2026.10.5.58`. The apphost `RynthCore.App.Avalonia.exe` is
+  installed as `RynthCore.exe`; the .pdb files are not installed.
+- The first copy was published with `--self-contained false` and wouldn't start:
+  "You must install or update .NET ... 'Microsoft.NETCore.App', version '10.0.0'
+  (x86)". The install folder carries its own .NET 10.0.5 runtime and the old
+  `runtimeconfig.json` lists it under `includedFrameworks`; a framework-dependent
+  launcher instead asks for a shared x86 runtime. The self-contained build
+  bundles the same 10.0.5 runtime, so only the five launcher files change (the
+  other 213 published files are byte-identical to the install). No machine-wide .NET
+  install is needed.
+- Checked locally: the launcher starts, shows its window, reports
+  2026.10.5.58, and logs no errors.
 - The previous launcher (2026.10.5.55) is backed up in
   `C:\Games\RynthCore\PreviousReleases\launcher-2026.10.5.55`. To roll back,
   close the launcher and copy those five files over `C:\Games\RynthCore`.
