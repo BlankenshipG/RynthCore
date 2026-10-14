@@ -38,3 +38,10 @@ sections had no visible way in. The only routes were the right-click menu and
 
 - `src/RynthCore.Engine/ImGui/Panels/MiniRemoteFace.cs`: `Surface` checks `RailShown`.
 - `src/RynthCore.Engine/ImGui/Panels/MiniRemoteFace.Sections.cs`: the rail tooltip.
+
+## Local install (2026-10-13 20:30)
+
+- `installer\Output\RynthCore-Setup-2026.10.5.51.exe` installed silently to `C:\Games\RynthCore`.
+  The 2026.10.5.50 installer is archived in `installer\previous-release\`.
+- RynthILT 0.2.5 (RynthSuite `ce91cf4`, the client-side ILT feature profile) was copied to
+  `C:\Games\RynthSuite\RynthILT`. 0.2.4 is kept in `PreviousReleases\0.2.4`.
