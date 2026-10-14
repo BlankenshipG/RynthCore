@@ -2,7 +2,7 @@
 //  RynthCore.Engine - UI/Sections/ServerSelectionStore.cs
 //  Applies a server pick (ServerSelection.Plan) to the saved per-character
 //  overrides (ServerForceStore) and rebuilds the verdicts, so the menus, the
-//  "servermenu" push and plugin API v85 (GetServerStateJson) follow at once.
+//  "servermenu" push and plugin API v86 (GetServerStateJson) follow at once.
 //  Used by the Diagnostics page's server picker and "/rc server pick".
 //
 //  Threads: any (ServerForceStore locks; the rebuild runs on the next frame).

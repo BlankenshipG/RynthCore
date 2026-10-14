@@ -25,7 +25,7 @@
     <Compile Include="..\..\src\RynthCore.Engine\UI\Sections\SectionCatalog.cs" Link="Engine\SectionCatalog.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Compatibility\IltDetect.cs" Link="Engine\IltDetect.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Compatibility\AelrynthWire.cs" Link="Engine\AelrynthWire.cs" />
-    <!-- The Diagnostics server picker's plan and the plugin API v85 server-state JSON. -->
+    <!-- The Diagnostics server picker's plan and the plugin API v86 server-state JSON. -->
     <Compile Include="..\..\src\RynthCore.Engine\UI\Sections\ServerSelection.cs" Link="Engine\ServerSelection.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Sections\ServerStateJson.cs" Link="Engine\ServerStateJson.cs" />
     <!-- The status feed's / Session Stats' XP and luminance session formula (pure). -->

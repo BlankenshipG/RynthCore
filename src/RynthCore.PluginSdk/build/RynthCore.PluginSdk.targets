@@ -36,7 +36,7 @@
 
   <PropertyGroup>
     <!-- The engine API this SDK knows; tools\PluginManifestTests checks it equals PluginContractVersion.Current. -->
-    <RynthCoreSdkApiVersion>85</RynthCoreSdkApiVersion>
+    <RynthCoreSdkApiVersion>86</RynthCoreSdkApiVersion>
     <_RynthPluginManifestOn Condition="'$(RynthPluginMinEngineApi)' != '' and '$(RynthPluginManifest)' != 'false'">true</_RynthPluginManifestOn>
   </PropertyGroup>
 

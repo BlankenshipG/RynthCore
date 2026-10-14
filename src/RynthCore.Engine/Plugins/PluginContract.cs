@@ -912,26 +912,37 @@ internal struct RynthCoreAPI
     /// DeleteObject isn't bound yet (no delete seen since the hook went in). Requires API v83+.</summary>
     public IntPtr RemoveClientObjectFn;
 
-    /// <summary>v84: <c>int ArmConfirmation(uint type, int minPercent, int timeoutMs)</c>: answer
+    /// <summary>v84: <c>int GetObjectProperties(uint objectId, byte* buffer, int bufferSize)</c>: every
+    /// property the engine knows for the object (int, int64, bool, float, string, data id, instance id
+    /// and the spell book), merged from the client's CreateObject copy, its qualities tables (read on
+    /// AC's main thread), the last identify and the server's property updates, as one record
+    /// (Compatibility/ObjectPropertyRecord.cs; the SDK's ObjectProperties.TryParse reads it). Returns the
+    /// record's size in bytes; it was copied only when that is &lt;= bufferSize (call again with a buffer
+    /// that big). 0 when the engine knows nothing about the object, -1 a zero id or a negative size.
+    /// Off AC's main thread a walk of the object's qualities tables is requested for the next tick
+    /// (flag QualitiesPending): ask again a moment later for the full set. Any thread. Requires API v84+.</summary>
+    public IntPtr GetObjectPropertiesFn;
+
+    /// <summary>v85: <c>int ArmConfirmation(uint type, int minPercent, int timeoutMs)</c>: answer
     /// the next server yes/no prompt (ConfirmationRequest 0x0274) of this type within timeoutMs,
     /// without the client opening its dialog: Yes when the server's "N percent" is at least
     /// minPercent (or minPercent is 0), else No. One-shot. timeoutMs &lt;= 0 disarms.
     /// 1 armed/disarmed, 0 sender or game-event hook unavailable, -3 bad arguments
-    /// (type 0, minPercent outside 0-100, timeout over 120 s). Any thread. Requires API v84+.</summary>
+    /// (type 0, minPercent outside 0-100, timeout over 120 s). Any thread. Requires API v85+.</summary>
     public IntPtr ArmConfirmationFn;
 
-    /// <summary>v84: <c>int GetLastConfirmation(uint* type, uint* contextId, int* percent, int* outcome, int* ageMs)</c>:
+    /// <summary>v85: <c>int GetLastConfirmation(uint* type, uint* contextId, int* percent, int* outcome, int* ageMs)</c>:
     /// the last prompt the server sent: returns its sequence number (0 = none yet); percent -1
     /// when the text has none; outcome 1 shown to the player, 2 answered Yes, 3 answered No,
-    /// 4 the send failed (shown). Any out pointer may be null. Any thread. Requires API v84+.</summary>
+    /// 4 the send failed (shown). Any out pointer may be null. Any thread. Requires API v85+.</summary>
     public IntPtr GetLastConfirmationFn;
 
-    /// <summary>v85: <c>int GetServerStateJson(byte* buffer, int capacity)</c>: which server this is,
+    /// <summary>v86: <c>int GetServerStateJson(byte* buffer, int capacity)</c>: which server this is,
     /// for every plugin: each server the engine knows (built in, or declared by a loaded plugin)
     /// with its verdict, this character's override, why, and the plugin that owns its settings;
     /// plus the active server and the Diagnostics pick (UI/Sections/ServerStateJson.cs has the
     /// schema). Copies NUL-terminated UTF-8 JSON when it fits and returns its byte length either
-    /// way (length &gt;= capacity: call again with a bigger buffer). Any thread. Requires API v85+.</summary>
+    /// way (length &gt;= capacity: call again with a bigger buffer). Any thread. Requires API v86+.</summary>
     public IntPtr GetServerStateJsonFn;
 }
 
@@ -1781,3 +1792,6 @@ internal delegate int GetObjectServerAgeCallbackDelegate(uint objectId);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate int RemoveClientObjectCallbackDelegate(uint objectId);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetObjectPropertiesCallbackDelegate(uint objectId, byte* buffer, int bufferSize);

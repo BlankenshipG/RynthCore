@@ -276,7 +276,7 @@ internal static class Program
         Check(!SectionCatalog.DetectDeclared(none, "a", "b", out why) && why.StartsWith("no host or world-name list"), "no lists");
     }
 
-    // -- Server selection (Diagnostics picker, "/rc server pick", plugin API v85) --
+    // -- Server selection (Diagnostics picker, "/rc server pick", plugin API v86) --
 
     /// <summary>A server row as SectionRegistry builds it (Active = override applied to detection).</summary>
     private static ServerState Srv(string id, bool detected, ServerForce force, bool builtIn = false)

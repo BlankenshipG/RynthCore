@@ -267,6 +267,27 @@ internal static class AppraisalHooks
         }
     }
 
+    /// <summary>
+    /// v84 (GetObjectProperties): a copy of everything the object's last identify carried (with later
+    /// updates folded in) and its spell book, or false when it was never identified. Any thread.
+    /// </summary>
+    internal static bool TryCopyIdentify(uint guid, out PropertyBag? bag, out uint[]? spells)
+    {
+        bag = null;
+        spells = null;
+        lock (_cacheLock)
+        {
+            if (_bags.TryGetValue(guid, out PropertyBag? b))
+            {
+                bag = new PropertyBag();
+                bag.MergeFrom(b);
+            }
+            if (_spellIdCache.TryGetValue(guid, out uint[]? s))
+                spells = (uint[])s.Clone();
+        }
+        return bag != null || spells != null;
+    }
+
     public static bool TryGetCachedInt64Property(uint guid, uint stype, out long value)
     {
         value = 0;

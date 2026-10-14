@@ -1,6 +1,6 @@
 // ============================================================================
 //  RynthCore.Engine - UI/Sections/ServerStateJson.cs
-//  The server list as JSON for plugins (plugin API v85, GetServerStateJson):
+//  The server list as JSON for plugins (plugin API v86, GetServerStateJson):
 //  one answer to "which server is this, and which plugin has its settings",
 //  the same verdicts the Mini Remote, the menus and the "servermenu" push use.
 //

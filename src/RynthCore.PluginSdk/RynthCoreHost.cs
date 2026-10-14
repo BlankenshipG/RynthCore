@@ -142,8 +142,8 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetCharacterTitles => _api.Version >= 75 && _api.GetCharacterTitlesFn != IntPtr.Zero;
     /// <summary>v75: <see cref="TryGetServerInfo"/> (which server this is).</summary>
     public bool HasGetServerInfo => _api.Version >= 75 && _api.GetServerInfoFn != IntPtr.Zero;
-    /// <summary>v85: <see cref="TryGetServerStateJson"/> (the server list for every plugin).</summary>
-    public bool HasGetServerStateJson => _api.Version >= 85 && _api.GetServerStateJsonFn != IntPtr.Zero;
+    /// <summary>v86: <see cref="TryGetServerStateJson"/> (the server list for every plugin).</summary>
+    public bool HasGetServerStateJson => _api.Version >= 86 && _api.GetServerStateJsonFn != IntPtr.Zero;
     /// <summary>v76: <see cref="CloseContainer"/> (close a corpse or chest like the client's window close).</summary>
     public bool HasCloseContainer => _api.Version >= 76 && _api.CloseContainerFn != IntPtr.Zero;
     /// <summary>v77: <see cref="GetScreenMode"/>, <see cref="GetUiHookFlags"/> and the UI callbacks
@@ -178,11 +178,14 @@ public readonly unsafe struct RynthCoreHost
 
     /// <summary>v83: <see cref="RemoveClientObject"/> (drop a ghost creature from the client).</summary>
     public bool HasRemoveClientObject => _api.Version >= 83 && _api.RemoveClientObjectFn != IntPtr.Zero;
+
+    /// <summary>v84: <see cref="TryGetObjectProperties"/> (every property of an object at once).</summary>
+    public bool HasGetObjectProperties => _api.Version >= 84 && _api.GetObjectPropertiesFn != IntPtr.Zero;
     public bool HasGetPluginExportJson     => _api.Version >= 66 && _api.GetPluginExportJsonFn     != IntPtr.Zero;
     // Version-checked first: on an older engine the field lies past the end of its API table.
     public bool HasGetMergeStackResult     => _api.Version >= 81 && _api.GetMergeStackResultFn     != IntPtr.Zero;
-    /// <summary>v84: <see cref="ArmConfirmation"/> and <see cref="TryGetLastConfirmation"/>.</summary>
-    public bool HasConfirmationAnswers     => _api.Version >= 84 && _api.ArmConfirmationFn != IntPtr.Zero && _api.GetLastConfirmationFn != IntPtr.Zero;
+    /// <summary>v85: <see cref="ArmConfirmation"/> and <see cref="TryGetLastConfirmation"/>.</summary>
+    public bool HasConfirmationAnswers     => _api.Version >= 85 && _api.ArmConfirmationFn != IntPtr.Zero && _api.GetLastConfirmationFn != IntPtr.Zero;
     public bool HasGetPluginInterface      => _api.Version >= 68 && _api.GetPluginInterfaceFn      != IntPtr.Zero;
     public bool HasGetLiveObjectIds        => _api.Version >= 69 && _api.GetLiveObjectIdsFn        != IntPtr.Zero;
     public bool HasGetLastUseDone          => _api.Version >= 70 && _api.GetLastUseDoneFn          != IntPtr.Zero;
@@ -1110,11 +1113,11 @@ public readonly unsafe struct RynthCoreHost
     }
 
     /// <summary>
-    /// v85: which server this is, as JSON: every server the engine knows (built in, or declared
+    /// v86: which server this is, as JSON: every server the engine knows (built in, or declared
     /// by a loaded server plugin) with its verdict, this character's override, the reason and the
     /// plugin that owns its settings, plus "active" / "activePlugin" and the Diagnostics "pick".
     /// Schema: RynthCore.Engine UI/Sections/ServerStateJson.cs. False when the engine predates
-    /// v85 or the call failed. Any thread; a few hundred bytes, so poll it (every second or two)
+    /// v86 or the call failed. Any thread; a few hundred bytes, so poll it (every second or two)
     /// rather than caching it for a session: an override changes it live.
     /// </summary>
     public bool TryGetServerStateJson(out string json)
@@ -2007,6 +2010,37 @@ public readonly unsafe struct RynthCoreHost
         => HasRemoveClientObject
             ? ((delegate* unmanaged[Cdecl]<uint, int>)_api.RemoveClientObjectFn)(objectId)
             : -2;
+
+    // ─── Every property of an object (API v84) ─────────────────────────────
+
+    /// <summary>
+    /// v84: every property the engine knows for <paramref name="objectId"/> (int, int64, bool,
+    /// float, string, data id, instance id and the spell book), merged from the client's
+    /// CreateObject copy, its qualities tables, the last identify and the server's property
+    /// updates, the way the per-key reads (TryGetObjectIntProperty, ...) answer. False on an
+    /// engine before v84 (fall back to per-key reads) or when the engine knows nothing about
+    /// the object. Item details need an identify first (<see cref="RequestId"/>, then
+    /// <see cref="ObjectProperties.HasIdData"/>). When <see cref="ObjectProperties.QualitiesPending"/>
+    /// is set, the client's qualities tables are read at AC's next main-thread tick: ask again
+    /// shortly. Any thread.
+    /// </summary>
+    public bool TryGetObjectProperties(uint objectId, out ObjectProperties? properties)
+    {
+        properties = null;
+        if (!HasGetObjectProperties || objectId == 0) return false;
+        var fn = (delegate* unmanaged[Cdecl]<uint, byte*, int, int>)_api.GetObjectPropertiesFn;
+        byte[] buffer = new byte[8192];
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            int n;
+            fixed (byte* p = buffer) n = fn(objectId, p, buffer.Length);
+            if (n <= 0) return false;
+            if (n <= buffer.Length)
+                return ObjectProperties.TryParse(new ReadOnlySpan<byte>(buffer, 0, n), out properties);
+            buffer = new byte[Math.Max(n + 1024, buffer.Length * 2)];   // grew between calls: some room
+        }
+        return false;
+    }
 
     public int SalvageDirect(uint toolId, ReadOnlySpan<uint> itemIds)
     {

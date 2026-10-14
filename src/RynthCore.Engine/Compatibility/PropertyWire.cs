@@ -573,6 +573,28 @@ internal static class PwdLayout
         _ => -1,
     };
 
+    /// <summary>v84: every property the CreateObject copy holds, for <see cref="FillBag"/>.</summary>
+    public static readonly uint[] IntStypes = { 1, 4, 5, 6, 7, 9, 10, 11, 12, 16, 18, 19, 50, 51, 91, 92, 94, 95, 131, 133, 151, 152, 280 };
+    public static readonly uint[] DataIdStypes = { 8, 28, 50, 52 };
+    public static readonly uint[] InstanceIdStypes = { 2, 3, 26, 32, 44 };
+
+    /// <summary>
+    /// v84 (GetObjectProperties): the CreateObject fields as properties, as the per-key readers
+    /// answer them (a zero field answers nothing). Float 280 (the engine's workmanship read) is
+    /// left out: it is no property id (workmanship is ItemWorkmanship, int 105, in the identify).
+    /// </summary>
+    public static void FillBag(ReadOnlySpan<byte> pwd, PropertyBag bag)
+    {
+        foreach (uint s in IntStypes)
+            if (TryGetInt(pwd, s, out int v)) bag.Ints[s] = v;
+        foreach (uint s in DataIdStypes)
+            if (TryGetDataId(pwd, s, out uint d)) bag.DataIds[s] = d;
+        foreach (uint s in InstanceIdStypes)
+            if (TryGetInstanceId(pwd, s, out uint i)) bag.InstanceIds[s] = i;
+        if (TryGetFloat(pwd, 54, out double r)) bag.Floats[54] = r;
+        if (TryGetFloat(pwd, 167, out double c)) bag.Floats[167] = c;
+    }
+
     public static bool TryGetInt(ReadOnlySpan<byte> pwd, uint stype, out int value)
     {
         value = 0;
