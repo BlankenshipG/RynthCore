@@ -53,6 +53,15 @@ RynthAi 0.5.62-legacy-ui, RynthILT 0.2.6, RynthOracle 0.2.5, RynthInventory
   deposits and transfers seen in chat, Aelrynth 9102 / 9103, and a new
   character.
 
+## Install
+
+Installed locally on 2026-10-13 with RynthCore-Setup-2026.10.5.54.exe
+(silent; RynthCore 3405fb7, RynthSuite a316298). The installer brought RynthAi
+0.5.62-legacy-ui, RynthTracker 0.4.1 and ub-Rythai 3.1.13. RynthILT 0.2.6,
+RynthOracle 0.2.5, RynthInventory 0.1.2 and the 16 server plugins at 0.1.2 were
+copied from their NativeAOT `publish` builds. Old DLLs were backed up to each
+plugin's PreviousReleases folder, named by the version they replaced.
+
 ## Files
 
 - `src/RynthCore.Engine/Compatibility/SessionRates.cs` (new)
