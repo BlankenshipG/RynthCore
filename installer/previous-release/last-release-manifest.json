@@ -1,24 +1,24 @@
 {
     "schema":  1,
     "product":  "RynthCore + RynthSuite",
-    "version":  "2026.10.5.56",
-    "release":  2026100556,
-    "builtUtc":  "2026-10-14T04:43:20Z",
-    "previous":  "2026.10.5.55",
+    "version":  "2026.10.5.60",
+    "release":  2026100560,
+    "builtUtc":  "2026-10-14T20:44:13Z",
+    "previous":  "2026.10.5.56",
     "installer":  {
-                      "file":  "RynthCore-Setup-2026.10.5.56.exe",
-                      "size":  132653504,
-                      "sha256":  "b0afcd09a4a92296275af8900295f2f47e271eacd5b6af17a87b7d3f84370ba6"
+                      "file":  "RynthCore-Setup-2026.10.5.60.exe",
+                      "size":  132657184,
+                      "sha256":  "f633a399e647365da7f2248a5439445dc86e1fbf92dafc0d72cfefcfa9c6377b"
                   },
     "source":  {
                    "rynthCore":  {
                                      "branch":  "build-comp-10-11",
-                                     "commit":  "202618c3fa986c58640818d93feaecfae6693f49",
+                                     "commit":  "bf54ad91f16886c479cc182092cd8525c11890a5",
                                      "dirty":  false
                                  },
                    "rynthSuite":  {
                                       "branch":  "build-comp-10-11",
-                                      "commit":  "8eec0b73dabb0f7f2705b13638658a0db06a9d71",
+                                      "commit":  "d86e33e139b367676d532b4a6faf47e71ab84095",
                                       "dirty":  false
                                   }
                },
@@ -26,12 +26,12 @@
                        {
                            "name":  "Launcher (RynthCore.exe)",
                            "file":  "core\\RynthCore.exe",
-                           "version":  "2026.10.5.56+202618c3fa986c58640818d93feaecfae6693f49"
+                           "version":  "2026.10.5.60+bf54ad91f16886c479cc182092cd8525c11890a5"
                        },
                        {
                            "name":  "Engine",
                            "file":  "core\\Runtime\\RynthCore.Engine.dll",
-                           "version":  "2026.10.5.56+202618c3fa986c58640818d93feaecfae6693f49"
+                           "version":  "2026.10.5.60+bf54ad91f16886c479cc182092cd8525c11890a5"
                        },
                        {
                            "name":  "Loader",
@@ -41,57 +41,60 @@
                        {
                            "name":  "Loot Editor",
                            "file":  "core\\Tools\\LootEditor\\RynthCore.LootEditor.exe",
-                           "version":  "2026.10.5.56+8eec0b73dabb0f7f2705b13638658a0db06a9d71"
+                           "version":  "2026.10.5.60+d86e33e139b367676d532b4a6faf47e71ab84095"
                        },
                        {
                            "name":  "RynthAi plugin",
                            "file":  "suite\\RynthAi\\RynthCore.Plugin.RynthAi.dll",
-                           "version":  "1.0.0+8eec0b73dabb0f7f2705b13638658a0db06a9d71"
+                           "version":  "1.0.0+d86e33e139b367676d532b4a6faf47e71ab84095"
                        },
                        {
                            "name":  "Monster Editor",
                            "file":  "suite\\RynthAi\\MonsterEditor\\RynthCore.MonsterEditor.exe",
-                           "version":  "2026.10.5.56+8eec0b73dabb0f7f2705b13638658a0db06a9d71"
+                           "version":  "2026.10.5.60+d86e33e139b367676d532b4a6faf47e71ab84095"
                        },
                        {
                            "name":  "RynthChat (experimental)",
                            "file":  "suite\\RynthChat\\RynthCore.Plugin.RynthChat.dll",
-                           "version":  "1.0.0+8eec0b73dabb0f7f2705b13638658a0db06a9d71"
+                           "version":  "1.0.0+d86e33e139b367676d532b4a6faf47e71ab84095"
                        },
                        {
                            "name":  "RynthJuice (experimental)",
                            "file":  "suite\\RynthJuice\\RynthCore.Plugin.RynthJuice.dll",
-                           "version":  "0.1.3-experimental+8eec0b73dabb0f7f2705b13638658a0db06a9d71"
+                           "version":  "0.1.3-experimental+d86e33e139b367676d532b4a6faf47e71ab84095"
                        },
                        {
                            "name":  "RynthNav (experimental)",
                            "file":  "suite\\RynthNav\\RynthCore.Plugin.RynthNav.dll",
-                           "version":  "1.0.0+8eec0b73dabb0f7f2705b13638658a0db06a9d71"
+                           "version":  "1.0.0+d86e33e139b367676d532b4a6faf47e71ab84095"
                        },
                        {
                            "name":  "RynthTracker (experimental)",
                            "file":  "suite\\RynthTracker\\RynthCore.Plugin.RynthTracker.dll",
-                           "version":  "1.0.0+8eec0b73dabb0f7f2705b13638658a0db06a9d71"
+                           "version":  "1.0.0+d86e33e139b367676d532b4a6faf47e71ab84095"
                        },
                        {
                            "name":  "RynthVision (experimental)",
                            "file":  "suite\\RynthVision\\RynthCore.Plugin.RynthVision.dll",
-                           "version":  "1.0.0+8eec0b73dabb0f7f2705b13638658a0db06a9d71"
+                           "version":  "1.0.0+d86e33e139b367676d532b4a6faf47e71ab84095"
                        },
                        {
                            "name":  "UbRythai (experimental)",
                            "file":  "suite\\UbRythai\\RynthCore.Plugin.UbRythai.dll",
-                           "version":  "3.1.14+8eec0b73dabb0f7f2705b13638658a0db06a9d71"
+                           "version":  "3.1.14+d86e33e139b367676d532b4a6faf47e71ab84095"
                        }
                    ],
     "changelog":  [
-                      "RynthCore/Changelog/2026-10-13-merge-2026.10.13.3-api-renumber-2026.10.5.55.md",
-                      "RynthCore/Changelog/2026-10-13-server-list-and-forced-server-load-2026.10.5.56.md",
-                      "RynthSuite/Changelog/2026-10-13-server-plugins-always-declare-0.1.4.md"
+                      "RynthCore/Changelog/2026-10-14-first-login-new-server-2026.10.5.58.md",
+                      "RynthCore/Changelog/2026-10-14-gesture-safe-attacks-2026.10.5.57.md",
+                      "RynthCore/Changelog/2026-10-14-launcher-failed-prefs-swap-recovery-2026.10.5.60.md",
+                      "RynthCore/Changelog/2026-10-14-loot-timer-optimized-defaults-2026.10.5.59.md",
+                      "RynthSuite/Changelog/2026-10-14-combat-speed-swaps-stalls-0.5.64.md",
+                      "RynthSuite/Changelog/2026-10-14-loot-baseline-0.5.65.md"
                   ],
     "changelogSince":  {
-                           "rynthCore":  "a76885b0f2f74209c33550836af5e69db9fce9c9",
-                           "rynthSuite":  "e56d70e8012d2ed6c0dd94a85384214cc7ef52be",
+                           "rynthCore":  "202618c3fa986c58640818d93feaecfae6693f49",
+                           "rynthSuite":  "8eec0b73dabb0f7f2705b13638658a0db06a9d71",
                            "date":  ""
                        }
 }
