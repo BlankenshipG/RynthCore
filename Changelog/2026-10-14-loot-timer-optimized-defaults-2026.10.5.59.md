@@ -38,3 +38,11 @@ engine's Settings panel (Looting tab) still showed the old list with no defaults
 
 - `dotnet build src\RynthCore.Engine\RynthCore.Engine.csproj -c Release`: 0 errors. No test
   project compiles `SettingsData.cs`.
+
+## Install
+
+Installed locally on 2026-10-14: `RynthCore.Engine.dll` and `.pdb` 2026.10.5.59 (RynthCore 1590c2a,
+published with `scripts\Publish-EngineCoreClr.ps1 -EngineOnly -AllowBehind -MsBuildArgs -p:Version=2026.10.5.59`;
+the script's `status-export` branch no longer exists, and the installed 2026.10.5.57 commit is in
+this build) copied to C:\Games\RynthCore\Runtime. The 2026.10.5.57 engine was backed up to
+PreviousReleases\2026.10.5.57-engine. Running clients hot-reload onto the new engine.
