@@ -86,3 +86,13 @@ Also:
   `RynthCore.App.Avalonia.csproj`
 - `src/RynthCore.Injector/LaunchCommand.cs`
 - `tools/LauncherSettingsTests/Program.cs`, `LauncherSettingsTests.csproj`
+
+## Install
+
+- Launcher only; the engine stays at 2026.10.5.57. Published with
+  `-p:Version=2026.10.5.58` (framework-dependent, win-x86). The apphost
+  `RynthCore.App.Avalonia.exe` is installed as `RynthCore.exe`.
+- The previous launcher (2026.10.5.55) is backed up in
+  `C:\Games\RynthCore\PreviousReleases\launcher-2026.10.5.55`. To roll back,
+  close the launcher and copy those five files over `C:\Games\RynthCore`.
+- Running game clients don't depend on the launcher and keep running.
