@@ -337,6 +337,20 @@ internal static class SettingsPanel
                 return ButtonRow(row.Label, row.ButtonText ?? row.Label, () => row.Click?.Invoke(), row.Tooltip);
             case SettingKind.TraceCategories:
                 return TraceCategoriesRow(state, row);
+            case SettingKind.ServerPick:
+            {
+                // The picker itself is the ImGui face's; here, what is picked and how to change it.
+                var snap = UI.Sections.SectionRegistry.Current;
+                string pick = UI.Sections.ServerSelection.CurrentPick(snap.Servers) ?? "mixed";
+                var active = UI.Sections.ServerSelection.ActiveServer(snap.Servers);
+                return new TextBlock
+                {
+                    Text = $"Server: {(active == null ? "none active" : active.Name + " (" + active.Id + ")")}, pick {pick}. "
+                         + "Change it with /rc server pick <id>|auto (the ImGui panel has a picker).",
+                    Foreground = ColTeal, FontSize = 11,
+                    TextWrapping = Avalonia.Media.TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 2),
+                };
+            }
             case SettingKind.Text:
                 return TextRow(row.Label, row.GetText?.Invoke(d) ?? string.Empty, row.Hint, v =>
                 {

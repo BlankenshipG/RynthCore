@@ -175,6 +175,8 @@ public struct RynthCoreApiNative
     // v84: answer the server's yes/no prompt (craft chance) without the client's dialog
     public IntPtr ArmConfirmationFn;         // int ArmConfirmation(uint type, int minPercent, int timeoutMs) -> 1 armed, 0 unavailable, -3 bad args
     public IntPtr GetLastConfirmationFn;     // int GetLastConfirmation(uint* type, uint* ctx, int* percent, int* outcome, int* ageMs) -> seq
+    // v85: which server this is, for every plugin (servers, verdicts, overrides, owning plugins)
+    public IntPtr GetServerStateJsonFn;      // int GetServerStateJson(byte* buffer, int capacity) -> UTF-8 byte length (>= capacity: too small)
 }
 
 /// <summary>

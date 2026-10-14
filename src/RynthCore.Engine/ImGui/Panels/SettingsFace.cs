@@ -216,6 +216,7 @@ internal sealed class SettingsFace : IImGuiPanel
             case SettingKind.Text: TextRow(row, w); break;
             case SettingKind.Status: StatusRow(row, w); break;
             case SettingKind.Hotkeys: _editing |= _hotkeys.Draw(w); break;
+            case SettingKind.ServerPick: ServerPickSettingsUi.Draw(w, row.Tooltip); break;
         }
     }
 

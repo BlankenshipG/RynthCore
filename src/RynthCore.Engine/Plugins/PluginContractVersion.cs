@@ -20,5 +20,6 @@ internal static class PluginContractVersion
     // v83: GetObjectServerAge and RemoveClientObject (ghost creatures, 2026-10-12).
     // v84: ArmConfirmation and GetLastConfirmation (answer the craft-chance prompt for a plugin;
     //      was v81 on build-comp-10-11, renumbered after upstream's v81-v83).
-    public const uint Current = 84;
+    // v85: GetServerStateJson (the server list, active server and owning plugins for every plugin).
+    public const uint Current = 85;
 }

@@ -925,6 +925,14 @@ internal struct RynthCoreAPI
     /// when the text has none; outcome 1 shown to the player, 2 answered Yes, 3 answered No,
     /// 4 the send failed (shown). Any out pointer may be null. Any thread. Requires API v84+.</summary>
     public IntPtr GetLastConfirmationFn;
+
+    /// <summary>v85: <c>int GetServerStateJson(byte* buffer, int capacity)</c>: which server this is,
+    /// for every plugin: each server the engine knows (built in, or declared by a loaded plugin)
+    /// with its verdict, this character's override, why, and the plugin that owns its settings;
+    /// plus the active server and the Diagnostics pick (UI/Sections/ServerStateJson.cs has the
+    /// schema). Copies NUL-terminated UTF-8 JSON when it fits and returns its byte length either
+    /// way (length &gt;= capacity: call again with a bigger buffer). Any thread. Requires API v85+.</summary>
+    public IntPtr GetServerStateJsonFn;
 }
 
 /// <summary>v79 <see cref="TrainingInfoNative.Flags"/> bits.</summary>
@@ -1734,6 +1742,9 @@ internal unsafe delegate int GetCharacterTitlesCallbackDelegate(uint* ids, int m
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetServerInfoCallbackDelegate(byte* worldName, int capacity);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetServerStateJsonCallbackDelegate(byte* buffer, int capacity);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate int CloseContainerCallbackDelegate(uint containerId);

@@ -702,7 +702,7 @@ internal static class RynthCoreChatCommands
 
     /// <summary>"verb" or "verb args..." (case-insensitive); args trimmed.</summary>
     private const string ServerUsage =
-        "Usage: /rc server [<server> auto|on|off] | [aelrynth|other|auto] | names ilt [add|remove <pattern>]";
+        "Usage: /rc server [<server> auto|on|off] | pick <server>|auto | [aelrynth|other|auto] | names ilt [add|remove <pattern>]";
 
     /// <summary>
     /// /rc server: every server the engine and the plugins know, whether each is active and why.
@@ -719,6 +719,15 @@ internal static class RynthCoreChatCommands
         if (first == "names")
         {
             HandleServerNames(words);
+            return;
+        }
+        if (first == "pick")
+        {
+            // One server for this character (every other off), or "auto": the Diagnostics page's picker.
+            if (words.Length != 2) { Reply(ServerUsage); return; }
+            UI.Sections.ServerSelectionStore.Apply(words[1], out string message);
+            Reply(message);
+            ReplyServers();
             return;
         }
         if (words.Length == 1)

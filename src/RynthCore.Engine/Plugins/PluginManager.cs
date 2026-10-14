@@ -277,6 +277,7 @@ internal static partial class PluginManager
     private static GetMergeStackResultCallbackDelegate? _getMergeStackResultCallback;
     private static ArmConfirmationCallbackDelegate? _armConfirmationCallback;             // v84
     private static GetLastConfirmationCallbackDelegate? _getLastConfirmationCallback;     // v84
+    private static GetServerStateJsonCallbackDelegate? _getServerStateJsonCallback;       // v85
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -3118,6 +3119,7 @@ internal static partial class PluginManager
         _getMergeStackResultCallback ??= GetMergeStackResultAction;
         _armConfirmationCallback ??= ArmConfirmationAction;
         unsafe { _getLastConfirmationCallback ??= GetLastConfirmationAction; }
+        unsafe { _getServerStateJsonCallback ??= GetServerStateJsonAction; }
 
         _api.Version = PluginContractVersion.Current;
         _api.LogFn = Marshal.GetFunctionPointerForDelegate(_logCallback);
@@ -3269,6 +3271,7 @@ internal static partial class PluginManager
         _api.GetMergeStackResultFn = Marshal.GetFunctionPointerForDelegate(_getMergeStackResultCallback);
         _api.ArmConfirmationFn = Marshal.GetFunctionPointerForDelegate(_armConfirmationCallback);
         _api.GetLastConfirmationFn = Marshal.GetFunctionPointerForDelegate(_getLastConfirmationCallback);
+        _api.GetServerStateJsonFn = Marshal.GetFunctionPointerForDelegate(_getServerStateJsonCallback);
         RouteApiThroughLoader();
     }
 
@@ -3455,6 +3458,25 @@ internal static partial class PluginManager
         try
         {
             return Compatibility.CharacterTitles.Copy(ClientHelperHooks.GetPlayerId(), ids, Math.Max(0, maxCount), currentTitle);
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// v85: the server list as JSON (UI/Sections/ServerStateJson.cs) from the published snapshot.
+    /// Any thread: the snapshot is immutable and the strings are volatile reads. -1 on failure.
+    /// </summary>
+    private static unsafe int GetServerStateJsonAction(byte* buffer, int capacity)
+    {
+        try
+        {
+            UI.Sections.SectionRegistry.Snapshot snap = UI.Sections.SectionRegistry.Current;
+            string json = UI.Sections.ServerStateJson.Build(snap.Servers, snap.Manifests, snap.Revision,
+                ServerInfo.LaunchHost, AccountHooks.AnnouncedWorldName, UI.Sections.SectionRegistry.EnginePlugin);
+            return UI.Sections.ServerStateJson.Write(json, buffer, capacity);
         }
         catch
         {

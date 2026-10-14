@@ -142,6 +142,8 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetCharacterTitles => _api.Version >= 75 && _api.GetCharacterTitlesFn != IntPtr.Zero;
     /// <summary>v75: <see cref="TryGetServerInfo"/> (which server this is).</summary>
     public bool HasGetServerInfo => _api.Version >= 75 && _api.GetServerInfoFn != IntPtr.Zero;
+    /// <summary>v85: <see cref="TryGetServerStateJson"/> (the server list for every plugin).</summary>
+    public bool HasGetServerStateJson => _api.Version >= 85 && _api.GetServerStateJsonFn != IntPtr.Zero;
     /// <summary>v76: <see cref="CloseContainer"/> (close a corpse or chest like the client's window close).</summary>
     public bool HasCloseContainer => _api.Version >= 76 && _api.CloseContainerFn != IntPtr.Zero;
     /// <summary>v77: <see cref="GetScreenMode"/>, <see cref="GetUiHookFlags"/> and the UI callbacks
@@ -1105,6 +1107,37 @@ public readonly unsafe struct RynthCoreHost
             worldName = System.Text.Encoding.UTF8.GetString(buf, n);
         }
         return true;
+    }
+
+    /// <summary>
+    /// v85: which server this is, as JSON: every server the engine knows (built in, or declared
+    /// by a loaded server plugin) with its verdict, this character's override, the reason and the
+    /// plugin that owns its settings, plus "active" / "activePlugin" and the Diagnostics "pick".
+    /// Schema: RynthCore.Engine UI/Sections/ServerStateJson.cs. False when the engine predates
+    /// v85 or the call failed. Any thread; a few hundred bytes, so poll it (every second or two)
+    /// rather than caching it for a session: an override changes it live.
+    /// </summary>
+    public bool TryGetServerStateJson(out string json)
+    {
+        json = string.Empty;
+        if (!HasGetServerStateJson)
+            return false;
+        var fn = (delegate* unmanaged[Cdecl]<byte*, int, int>)_api.GetServerStateJsonFn;
+        int capacity = 2048;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            byte[] buffer = new byte[capacity];
+            int length;
+            fixed (byte* p = buffer) length = fn(p, capacity);
+            if (length < 0) return false;
+            if (length < capacity)
+            {
+                json = System.Text.Encoding.UTF8.GetString(buffer, 0, length);
+                return true;
+            }
+            capacity = length + 256;
+        }
+        return false;
     }
 
     public bool TryGetObjectBoolProperty(uint objectId, uint stype, out bool value)

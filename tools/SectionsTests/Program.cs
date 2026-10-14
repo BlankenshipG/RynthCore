@@ -22,6 +22,10 @@ internal static class Program
         CatalogServers();
         CatalogPluginSections();
         DeclaredServers();
+        SelectionPlan();
+        SelectionCurrentPick();
+        SelectionActiveAndOwner();
+        StateJson();
 
         Console.WriteLine();
         Console.WriteLine($"{_checks - _failed}/{_checks} checks passed.");
@@ -251,6 +255,124 @@ internal static class Program
         Check(!SectionCatalog.DetectDeclared(decl, "infiniteleaftide.online", "InfiniteLeaftide", out _), "not another server");
         var none = new SectionServerDecl("x", "X", Array.Empty<string>(), Array.Empty<string>());
         Check(!SectionCatalog.DetectDeclared(none, "a", "b", out why) && why.StartsWith("no host or world-name list"), "no lists");
+    }
+
+    // -- Server selection (Diagnostics picker, "/rc server pick", plugin API v85) --
+
+    /// <summary>A server row as SectionRegistry builds it (Active = override applied to detection).</summary>
+    private static ServerState Srv(string id, bool detected, ServerForce force, bool builtIn = false)
+        => new(id, id.ToUpperInvariant(), ServerForceText.Apply(force, detected), detected, force, builtIn, detected ? "host matches" : "");
+
+    private static void SelectionPlan()
+    {
+        Case("selection plan");
+        var servers = new[] { Srv("ilt", true, ServerForce.Auto, true), Srv("aelrynth", false, ServerForce.Off, true), Srv("frost", false, ServerForce.Auto) };
+
+        var pick = ServerSelection.Plan(servers, "FROST");
+        Check(pick != null && pick.Count == 3, "a known id plans every server");
+        Check(pick!.Single(p => p.Id == "frost").Force == ServerForce.On, "the pick is forced On (case-insensitive)");
+        Check(pick.Where(p => p.Id != "frost").All(p => p.Force == ServerForce.Off), "every other server is forced Off");
+
+        var auto = ServerSelection.Plan(servers, " Auto ");
+        Check(auto != null && auto.All(p => p.Force == ServerForce.Auto), "auto resets every override");
+        Check(ServerSelection.Plan(servers, "")!.All(p => p.Force == ServerForce.Auto), "empty means auto");
+        Check(ServerSelection.Plan(servers, null)!.All(p => p.Force == ServerForce.Auto), "null means auto");
+        Check(ServerSelection.Plan(servers, "nowhere") == null, "an unknown id is refused");
+        Check(ServerSelection.Plan(Array.Empty<ServerState>(), "auto")!.Count == 0, "no servers, empty plan");
+    }
+
+    private static void SelectionCurrentPick()
+    {
+        Case("selection current pick");
+        Check(ServerSelection.CurrentPick(new[] { Srv("ilt", true, ServerForce.Auto), Srv("ael", false, ServerForce.Auto) }) == ServerSelection.Auto, "no overrides is auto");
+        Check(ServerSelection.CurrentPick(new[] { Srv("ilt", true, ServerForce.Off), Srv("ael", false, ServerForce.On) }) == "ael", "one On, rest Off is that pick");
+        Check(ServerSelection.CurrentPick(new[] { Srv("ilt", true, ServerForce.On), Srv("ael", false, ServerForce.On) }) == null, "two On is a mix");
+        Check(ServerSelection.CurrentPick(new[] { Srv("ilt", true, ServerForce.On), Srv("ael", false, ServerForce.Auto) }) == null, "one On, another Auto is a mix");
+        Check(ServerSelection.CurrentPick(new[] { Srv("ilt", true, ServerForce.Off), Srv("ael", false, ServerForce.Auto) }) == null, "only Offs is a mix");
+        Check(ServerSelection.CurrentPick(Array.Empty<ServerState>()) == ServerSelection.Auto, "no servers is auto");
+
+        // A plan applied gives back the same pick.
+        var servers = new[] { Srv("ilt", true, ServerForce.Auto), Srv("ael", false, ServerForce.Auto) };
+        var applied = ServerSelection.Plan(servers, "ael")!.Select(p => Srv(p.Id, servers.Single(s => s.Id == p.Id).Detected, p.Force)).ToArray();
+        Check(ServerSelection.CurrentPick(applied) == "ael", "plan round trip");
+    }
+
+    private static void SelectionActiveAndOwner()
+    {
+        Case("selection active and owner");
+        Check(ServerSelection.ActiveServer(new[] { Srv("ilt", true, ServerForce.Auto), Srv("frost", true, ServerForce.Auto) })!.Id == "ilt", "first detected wins");
+        Check(ServerSelection.ActiveServer(new[] { Srv("ilt", true, ServerForce.Auto), Srv("frost", false, ServerForce.On) })!.Id == "frost", "forced On beats detection");
+        Check(ServerSelection.ActiveServer(new[] { Srv("ilt", true, ServerForce.Off) }) == null, "Off hides a detected server");
+        Check(ServerSelection.ActiveServer(Array.Empty<ServerState>()) == null, "none");
+
+        var pack = SectionManifestParser.Parse("RynthServerPack", """
+        { "servers": [ { "id": "frost", "name": "Frosthaven", "hosts": [ "frost.example" ] } ] }
+        """, out _);
+        var ilt = SectionManifestParser.Parse("RynthILT", """
+        { "contributions": [ { "section": "skills", "server": "ilt", "label": "A", "command": "/a" },
+                             { "section": "char", "server": "ilt", "label": "B", "command": "/b" } ] }
+        """, out _);
+        var ai = SectionManifestParser.Parse("RynthAi", """
+        { "contributions": [ { "section": "skills", "server": "ilt", "label": "C", "command": "/c" },
+                             { "section": "skills", "server": "frost", "label": "D", "command": "/d" } ] }
+        """, out _);
+        var engine = SectionManifestParser.Parse("RynthCore", """
+        { "servers": [ { "id": "ilt", "name": "Infinite Leaftide" } ] }
+        """, out _);
+        var all = new[] { engine, ai, ilt, pack };
+
+        Check(ServerSelection.OwnerPlugin(all, "frost", "RynthCore") == "RynthServerPack", "the declaring plugin owns a server");
+        Check(ServerSelection.OwnerPlugin(all, "ILT", "RynthCore") == "RynthILT", "else the most contributions (engine skipped)");
+        Check(ServerSelection.OwnerPlugin(all, "nowhere", "RynthCore") == "", "nobody");
+        var tie = SectionManifestParser.Parse("Alpha", """
+        { "contributions": [ { "section": "skills", "server": "x", "label": "A", "command": "/a" } ] }
+        """, out _);
+        var tie2 = SectionManifestParser.Parse("Beta", """
+        { "contributions": [ { "section": "skills", "server": "x", "label": "A", "command": "/a" } ] }
+        """, out _);
+        Check(ServerSelection.OwnerPlugin(new[] { tie2, tie }, "x", "RynthCore") == "Alpha", "ties go to the name that sorts first");
+    }
+
+    private static unsafe void StateJson()
+    {
+        Case("state json");
+        var ilt = SectionManifestParser.Parse("RynthILT", """
+        { "contributions": [ { "section": "skills", "server": "ilt", "label": "A", "command": "/a" } ] }
+        """, out _);
+        var servers = new[] { Srv("ilt", true, ServerForce.Auto, true), Srv("aelrynth", false, ServerForce.Auto, true) };
+        string json = ServerStateJson.Build(servers, new[] { ilt }, 7, "infiniteleaftide.online", "Infinite \"Leaf\"", "RynthCore");
+
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        Check(root.GetProperty("schema").GetInt32() == ServerStateJson.Schema && root.GetProperty("revision").GetInt32() == 7, "schema and revision");
+        Check(root.GetProperty("host").GetString() == "infiniteleaftide.online", "host");
+        Check(root.GetProperty("world").GetString() == "Infinite \"Leaf\"", "world (quotes escaped)");
+        Check(root.GetProperty("pick").GetString() == "auto", "pick auto");
+        Check(root.GetProperty("active").GetString() == "ilt" && root.GetProperty("activeName").GetString() == "ILT", "active server");
+        Check(root.GetProperty("activePlugin").GetString() == "RynthILT", "active server's owner plugin");
+        var rows = root.GetProperty("servers");
+        Check(rows.GetArrayLength() == 2, "every server listed");
+        var first = rows[0];
+        Check(first.GetProperty("id").GetString() == "ilt" && first.GetProperty("active").GetBoolean() && first.GetProperty("detected").GetBoolean(), "row state");
+        Check(first.GetProperty("force").GetString() == "auto" && first.GetProperty("builtIn").GetBoolean(), "row override and built-in");
+        Check(rows[1].GetProperty("plugin").GetString() == "" && rows[1].GetProperty("reason").GetString() == "", "row with no owner");
+
+        var mixed = new[] { Srv("ilt", true, ServerForce.On), Srv("ael", false, ServerForce.On) };
+        using (var m = System.Text.Json.JsonDocument.Parse(ServerStateJson.Build(mixed, Array.Empty<SectionManifest>(), 1, null, null, "RynthCore")))
+            Check(m.RootElement.GetProperty("pick").GetString() == "mixed" && m.RootElement.GetProperty("host").GetString() == "", "mixed pick, null host");
+        using (var n = System.Text.Json.JsonDocument.Parse(ServerStateJson.Build(new[] { Srv("ilt", false, ServerForce.Auto) }, Array.Empty<SectionManifest>(), 1, "h", "w", "RynthCore")))
+            Check(n.RootElement.GetProperty("active").GetString() == "" && n.RootElement.GetProperty("activePlugin").GetString() == "", "no active server");
+
+        // Write: the plugin API's buffer convention (length returned; nothing written when too small).
+        int length = System.Text.Encoding.UTF8.GetByteCount(json);
+        byte[] small = new byte[length];
+        fixed (byte* p = small)
+            Check(ServerStateJson.Write(json, p, small.Length) == length && small.All(b => b == 0), "too small: length only, nothing written");
+        Check(ServerStateJson.Write(json, null, 0) == length, "null buffer: length only");
+        byte[] big = new byte[length + 1];
+        fixed (byte* p = big)
+            Check(ServerStateJson.Write(json, p, big.Length) == length, "fits: length");
+        Check(System.Text.Encoding.UTF8.GetString(big, 0, length) == json && big[length] == 0, "fits: text and NUL");
     }
 
     // ── Harness ────────────────────────────────────────────────────────

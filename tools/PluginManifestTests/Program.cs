@@ -587,21 +587,24 @@ internal static class Program
             Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.TrainingEntryNative>(f.Name), (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.TrainingEntryNative>(f.Name), "TrainingEntryNative." + f.Name + " offset");
         Eq(RynthCore.PluginSdk.TrainingInfoFlags.Busy, RynthCore.Engine.Plugins.TrainingInfoFlags.Busy, "info flag bits");
         Eq(RynthCore.PluginSdk.TrainingEntryFlags.Trainable, RynthCore.Engine.Plugins.TrainingEntryFlags.Trainable, "entry flag bits");
-        // The three v79 slots follow v78's, then v80's two and v81's GetMergeStackResultFn (v82's one, v83's two and v84's two come after).
-        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(5).TakeLast(6).ToArray();
+        // The three v79 slots follow v78's, then v80's two and v81's GetMergeStackResultFn (v82's one, v83's two, v84's two and v85's one come after).
+        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(6).TakeLast(6).ToArray();
         Check(names.SequenceEqual(new[] { "GetTrainingInfoFn", "RaiseFn", "TrainSkillFn", "GetContainerOrderFn", "PutItemInContainerFn", "GetMergeStackResultFn" }),
             "v79, v80 then v81 slots last: " + string.Join(",", names));
-        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(5).TakeLast(6).ToArray();
+        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(6).TakeLast(6).ToArray();
         Check(sdkNames.SequenceEqual(names), "SDK v79, v80 and v81 slots in the same order");
     }
 
     // v80: GetContainerOrder and PutItemInContainer come right before v81's slot, engine and SDK alike;
-    // v81: GetMergeStackResult, v82: SalvageDirect, v83: the ghost-creature pair, v84: the confirmation pair last. The whole table has the same field names in the same
-    // order on both sides, and the same size.
+    // v81: GetMergeStackResult, v82: SalvageDirect, v83: the ghost-creature pair, v84: the confirmation pair, v85: GetServerStateJson last.
+    // The whole table has the same field names in the same order on both sides, and the same size.
     private static void ContainerOrderSlots()
     {
-        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).ToArray();
-        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).ToArray();
+        var allNames = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).ToArray();
+        // v85: GetServerStateJson ends the table; the checks below count back from the v84 slots before it.
+        Check(allNames.Last() == "GetServerStateJsonFn", "v85 slot last: " + allNames.Last());
+        var names = allNames.SkipLast(1).ToArray();
+        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(1).ToArray();
         // v81's GetMergeStackResultFn follows v80's two slots.
         Check(names.SkipLast(6).TakeLast(2).SequenceEqual(new[] { "GetContainerOrderFn", "PutItemInContainerFn" }), "v80 slots before v81's to v84's: " + string.Join(",", names.SkipLast(6).TakeLast(2)));
         Check(sdkNames.SkipLast(6).TakeLast(2).SequenceEqual(names.SkipLast(6).TakeLast(2)), "SDK v80 slots in the same order");
@@ -624,6 +627,8 @@ internal static class Program
            (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("ArmConfirmationFn"), "ArmConfirmationFn offset");
         Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("GetLastConfirmationFn"),
            (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetLastConfirmationFn"), "GetLastConfirmationFn offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("GetServerStateJsonFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetServerStateJsonFn"), "GetServerStateJsonFn offset");
     }
 
     private sealed class ProbePlugin : RynthCore.PluginCore.RynthPluginBase { }
