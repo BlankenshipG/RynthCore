@@ -25,6 +25,11 @@ Infinite Leaftide (ILT), or why:
 
   `IltInfo: world 'InfiniteLeaftide' is ILT-like (RynthILT loaded=True, says ILT=True, override=Auto)`
 
+## Install
+
+Installed locally on 2026-10-13 with RynthCore-Setup-2026.10.5.52.exe (silent),
+along with RynthAi 0.5.59-legacy-ui (Item Info self ratings, RynthSuite).
+
 ## Files
 
 - `src/RynthCore.Engine/RynthLog.cs`
