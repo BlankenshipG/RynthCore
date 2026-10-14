@@ -39,6 +39,7 @@ internal static class IltInfo
     private static volatile IltVerdict _verdict = IltVerdict.Unknown;
     private static long _nextRefreshMs;
     private static volatile bool _lastIlt;
+    private static string _loggedWorld = string.Empty;   // the world the last verdict line was for (Refresh only)
     private static volatile bool _pluginLoaded;
     private static volatile bool _pluginIlt;
     private static volatile string _pluginReason = "";
@@ -138,10 +139,14 @@ internal static class IltInfo
             // RynthILT's own list / override counts too (its verdict, when the engine's says no).
             if (Override == Mode.Auto) v = IltDetect.Combine(v, _pluginIlt, _pluginReason);
             _verdict = v;
-            if (v.IsIlt != _lastIlt)
+            // Logged on every change and once per announced world, so a session's log always
+            // says whether (and why) it counted as ILT - "not ILT" included.
+            string world = AccountHooks.AnnouncedWorldName ?? string.Empty;
+            if (v.IsIlt != _lastIlt || !string.Equals(world, _loggedWorld, StringComparison.Ordinal))
             {
                 _lastIlt = v.IsIlt;
-                RynthLog.Compat($"IltInfo: {v.Reason}");
+                _loggedWorld = world;
+                RynthLog.Milestone($"IltInfo: {v.Reason} (RynthILT loaded={_pluginLoaded}, says ILT={_pluginIlt}, override={Override})");
             }
         }
         catch (Exception ex)
