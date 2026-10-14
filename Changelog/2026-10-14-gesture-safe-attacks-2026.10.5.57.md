@@ -39,3 +39,11 @@ and were dropped.
 ## Files
 
 - `src/RynthCore.Engine/Compatibility/AcMainThreadQueue.cs`
+
+## Install
+
+Installed locally on 2026-10-14: `RynthCore.Engine.dll` and `.pdb` 2026.10.5.57 (RynthCore b8c84ad,
+published with `scripts\Publish-EngineCoreClr.ps1 -EngineOnly`) copied to
+C:\Games\RynthCore\Runtime. The 2026.10.5.55 engine was backed up to
+PreviousReleases\2026.10.5.55-engine. Running clients keep the old engine until
+they are restarted.
