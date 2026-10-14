@@ -35,7 +35,7 @@ internal static class ServerPickSettingsUi
         ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
         if (servers.Count == 0)
         {
-            SafeImGui.TextDisabled("No servers known yet (the list fills in after the first frames in game).");
+            SafeImGui.TextDisabled("No servers known yet (the list fills in once a character is in game).");
             return;
         }
 

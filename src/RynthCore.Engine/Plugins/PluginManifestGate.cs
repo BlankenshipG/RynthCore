@@ -31,6 +31,11 @@ internal static class PluginManifestGate
         public List<string> Log { get; } = new();
         /// <summary>Server plugins for another server, left out on purpose (logged, never said in chat).</summary>
         public List<string> SkippedForServer { get; } = new();
+        /// <summary>
+        /// The same plugins with their manifests (each has a <c>Server</c>): Options > Diagnostics lists
+        /// their servers, and forcing one On loads its plugin (PluginManager.RequestServerPluginLoad).
+        /// </summary>
+        public List<(string Path, RynthPluginManifest Manifest)> SkippedServerPlugins { get; } = new();
     }
 
     /// <summary>
@@ -80,6 +85,9 @@ internal static class PluginManifestGate
         HashSet<string> skip = SelectServerPlugins(candidates, connectHost, loadAllServerPlugins, plan.Log);
         if (skip.Count > 0)
         {
+            foreach (PluginCandidate c in candidates)
+                if (skip.Contains(c.Key) && c.Manifest?.Server != null)
+                    plan.SkippedServerPlugins.Add((c.Key, c.Manifest));
             candidates.RemoveAll(c => skip.Contains(c.Key));
             plan.SkippedForServer.AddRange(skip);
         }

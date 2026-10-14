@@ -24,6 +24,7 @@ internal static class Program
         CatalogPluginSections();
         DeclaredServers();
         SelectionPlan();
+        NotLoadedServerList();
         SelectionCurrentPick();
         SelectionActiveAndOwner();
         StateJson();
@@ -298,6 +299,35 @@ internal static class Program
         Check(ServerSelection.Plan(servers, null)!.All(p => p.Force == ServerForce.Auto), "null means auto");
         Check(ServerSelection.Plan(servers, "nowhere") == null, "an unknown id is refused");
         Check(ServerSelection.Plan(Array.Empty<ServerState>(), "auto")!.Count == 0, "no servers, empty plan");
+    }
+
+    private static void NotLoadedServerList()
+    {
+        Case("not-loaded server plugins");
+        var forces = new Dictionary<string, ServerForce>(StringComparer.OrdinalIgnoreCase) { ["coldeve"] = ServerForce.On };
+        ServerForce Force(string id) => forces.TryGetValue(id, out ServerForce f) ? f : ServerForce.Auto;
+        var notLoaded = new[]
+        {
+            new NotLoadedServer("frost", "Frosthaven", "RynthFrostACE"),
+            new NotLoadedServer("coldeve", "Coldeve", "RynthColdeve"),
+            new NotLoadedServer("ilt", "Infinite Leaftide", "RynthILT"),   // a built-in id: the built-in row wins
+            new NotLoadedServer("", "No id", "RynthBroken"),
+        };
+        var list = new List<ServerState> { Srv("ilt", true, ServerForce.Auto, true) };
+        NotLoadedServers.Append(list, notLoaded, Force);
+        Check(list.Count == 3, "each new id added once, the built-in and the blank id skipped");
+        ServerState frost = list.Single(s => s.Id == "frost");
+        Check(!frost.Active && !frost.Detected && !frost.BuiltIn && frost.Name == "Frosthaven", "not loaded: listed, not detected, not active");
+        Check(frost.Reason.Contains("RynthFrostACE") && frost.Reason.Contains("pick it"), "the reason names the plugin and how to load it");
+        ServerState coldeve = list.Single(s => s.Id == "coldeve");
+        Check(coldeve.Active && coldeve.Force == ServerForce.On && coldeve.Reason.Contains("loading RynthColdeve"), "forced On: active, loading its plugin");
+        Check(list.Single(s => s.Id == "ilt").BuiltIn, "the built-in ilt row is kept");
+        Check(ServerSelection.Plan(list, "frost") != null, "a not-loaded server can be picked");
+
+        var load = NotLoadedServers.ForcedOn(notLoaded, Force);
+        Check(load.Count == 1 && load[0] == "coldeve", "only the server forced On asks for its plugin");
+        forces["coldeve"] = ServerForce.Off;
+        Check(NotLoadedServers.ForcedOn(notLoaded, Force).Count == 0, "Off loads nothing");
     }
 
     private static void SelectionCurrentPick()

@@ -590,6 +590,10 @@ internal static partial class PluginManager
             RescanPlugins(imguiContext, d3dDevice, gameHwnd);
         }
 
+        // A server forced On whose plugin the connect host left out: load just that plugin.
+        if (_initialized)
+            LoadRequestedServerPlugins();
+
         if (_uiDispatchPending && _initialized)
             DispatchUIInitializedToLoadedPlugins();
 
@@ -2667,6 +2671,7 @@ internal static partial class PluginManager
             RynthLog.Plugin($"PluginManager: {line}");
         if (plan.SkippedForServer.Count > 0)
             RynthLog.Info($"PluginManager: {plan.SkippedForServer.Count} server plugin(s) for other servers not loaded (host {Compatibility.ServerInfo.HostDescription}).");
+        RememberSkippedServerPlugins(plan.SkippedServerPlugins);
         foreach (PluginRefusal refusal in plan.Refused)
             RefusePlugin(Path.GetFileName(refusal.Plugin.Key), refusal.Reason);
 
@@ -2788,56 +2793,58 @@ internal static partial class PluginManager
         RynthLog.Plugin($"PluginManager: Initializing {_plugins.Count} plugin(s)...");
 
         for (int i = 0; i < _plugins.Count; i++)
-        {
-            var plugin = _plugins[i];
-
-            // Manifest: a plugin whose required plugin didn't start isn't started either (they
-            // come first: LoadPluginsFromDisk ordered them). No manifest, no check.
-            string? blocked = PluginManifestGate.CheckRequiredStarted(plugin.Manifest, name =>
-                FindPlugin(name) is { } dep ? dep.Initialized && !dep.Failed : null);
-            if (blocked != null)
-            {
-                plugin.Failed = true;
-                plugin.NotStartedReason = blocked;
-                RefusePlugin(plugin.FileName, blocked);
-                continue;
-            }
-            plugin.NotStartedReason = "";
-
-            LoadedPlugin? outer = EnterDispatch(plugin);
-            try
-            {
-                int result = plugin.Init!(ref _api);
-                if (result == 0)
-                {
-                    plugin.Initialized = true;
-                    plugin.Failed = false;
-                    plugin.UIInitializedDispatched = false;
-                    plugin.LoginCompleteDispatched = false;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} initialized OK (api v{PluginContractVersion.Current}).");
-                }
-                else
-                {
-                    plugin.Failed = true;
-                    RynthLog.Plugin($"PluginManager: {plugin.DisplayName} Init returned {result} - marked as failed. (engine api version={PluginContractVersion.Current})");
-                }
-            }
-            catch (Exception ex)
-            {
-                plugin.Failed = true;
-                RynthLog.Plugin($"PluginManager: {plugin.DisplayName} Init threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
-            }
-            finally
-            {
-                LeaveDispatch(outer);
-            }
-        }
+            InitializePlugin(_plugins[i]);
 
         if (!_uiInitializedObserved)
             RynthLog.Plugin("PluginManager: Waiting for OnUIInitialized before starting UI-gated plugins.");
 
         if (!_loginCompleteObserved)
             RynthLog.Plugin("PluginManager: Waiting for OnLoginComplete before starting login-gated plugins.");
+    }
+
+    /// <summary>Calls one loaded plugin's Init (after checking its required plugins started). Pump thread.</summary>
+    private static void InitializePlugin(LoadedPlugin plugin)
+    {
+        // Manifest: a plugin whose required plugin didn't start isn't started either (they
+        // come first: LoadPluginsFromDisk ordered them). No manifest, no check.
+        string? blocked = PluginManifestGate.CheckRequiredStarted(plugin.Manifest, name =>
+            FindPlugin(name) is { } dep ? dep.Initialized && !dep.Failed : null);
+        if (blocked != null)
+        {
+            plugin.Failed = true;
+            plugin.NotStartedReason = blocked;
+            RefusePlugin(plugin.FileName, blocked);
+            return;
+        }
+        plugin.NotStartedReason = "";
+
+        LoadedPlugin? outer = EnterDispatch(plugin);
+        try
+        {
+            int result = plugin.Init!(ref _api);
+            if (result == 0)
+            {
+                plugin.Initialized = true;
+                plugin.Failed = false;
+                plugin.UIInitializedDispatched = false;
+                plugin.LoginCompleteDispatched = false;
+                RynthLog.Plugin($"PluginManager: {plugin.DisplayName} initialized OK (api v{PluginContractVersion.Current}).");
+            }
+            else
+            {
+                plugin.Failed = true;
+                RynthLog.Plugin($"PluginManager: {plugin.DisplayName} Init returned {result} - marked as failed. (engine api version={PluginContractVersion.Current})");
+            }
+        }
+        catch (Exception ex)
+        {
+            plugin.Failed = true;
+            RynthLog.Plugin($"PluginManager: {plugin.DisplayName} Init threw {ex.GetType().Name}: {ex.Message}{PluginTrace(ex)}");
+        }
+        finally
+        {
+            LeaveDispatch(outer);
+        }
     }
 
     private static void UnloadAllPlugins()

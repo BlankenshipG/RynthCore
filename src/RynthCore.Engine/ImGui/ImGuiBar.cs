@@ -264,8 +264,7 @@ internal static class ImGuiBar
 
     public static void Draw(float s)
     {
-        // The bar draws every frame the ImGui shell is up: keep RynthAi's server menu current.
-        RynthCore.Engine.UI.ServerMenus.Tick();
+        // ServerMenus.Tick runs from EngineFrameController every frame, bar shown or not.
         EnsureButtons();
         int step = ChromeStep(out float factor);
         s *= factor;

@@ -548,6 +548,10 @@ internal static class Program
         PluginManifestGate.LoadPlan onIlt = PluginManifestGate.Plan(paths, Api, null, "game.infiniteleaftide.online");
         Eq(string.Join(",", onIlt.Load.Select(l => RynthPluginManifest.NameFromFile(l.Path))), "RynthAi,RynthILT", "on ILT");
         Eq(onIlt.SkippedForServer.Count, 1, "Aelrynth's plugin skipped");
+        // The skipped one keeps its manifest: Options > Diagnostics lists its server, and forcing it loads it.
+        Eq(onIlt.SkippedServerPlugins.Count, 1, "skipped server plugin kept with its manifest");
+        Eq(onIlt.SkippedServerPlugins[0].Manifest.Server?.Id ?? "", "aelrynth", "its server id");
+        Eq(onIlt.SkippedServerPlugins[0].Path, P("RynthAelrynth"), "its path");
         Eq(onIlt.Refused.Count, 0, "skipping is not a refusal (no chat notice)");
         Check(onIlt.Log.Any(l => l.Contains("server ilt")), "the manifest line names the server");
         PluginManifestGate.LoadPlan onAelrynth = PluginManifestGate.Plan(paths, Api, null, "144.217.84.148");

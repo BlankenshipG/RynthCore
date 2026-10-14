@@ -10,6 +10,8 @@
 //               own detection, with the per-character override (ServerForceStore).
 //    declared   any other id a plugin's manifest names: detected from its host /
 //               world-name lists, with the same per-character override.
+//    not loaded installed server plugins the connect host left out (NotLoadedServers):
+//               listed so Options > Diagnostics can pick them; forced On, the plugin loads.
 //  RynthAi follows these verdicts (ServerMenus pushes them), so the engine and
 //  RynthAi can't disagree about which world this is.
 //
@@ -194,6 +196,14 @@ internal static class SectionRegistry
         foreach (var entry in PluginManifests.Values) manifests.Add(entry.Manifest);
 
         List<ServerState> servers = BuildServers(manifests);
+
+        // Installed server plugins the connect host left out: listed so they can be picked, and
+        // loaded as soon as this character forces their server On (picker, chat or saved override).
+        List<NotLoadedServer> notLoaded = NotLoadedServerPlugins();
+        NotLoadedServers.Append(servers, notLoaded, ServerForceStore.Get);
+        foreach (string id in NotLoadedServers.ForcedOn(notLoaded, ServerForceStore.Get))
+            Plugins.PluginManager.RequestServerPluginLoad(id);
+
         List<SectionView> sections = SectionCatalog.Build(manifests, ImGuiBackend.ImGuiPanelHost.CanEmbed, servers);
 
         // Bump the revision only when what the UI shows changed, so the menus and the push stay quiet.
@@ -234,6 +244,16 @@ internal static class SectionRegistry
                 list.Add(new ServerState(d.Id, d.Name, ServerForceText.Apply(force, detected), detected, force, false,
                     $"{reason} (declared by {m.Plugin})"));
             }
+        return list;
+    }
+
+    /// <summary>PluginManager's skipped server plugins, as the pure list NotLoadedServers takes.</summary>
+    private static List<NotLoadedServer> NotLoadedServerPlugins()
+    {
+        IReadOnlyList<Plugins.SkippedServerPlugin> skipped = Plugins.PluginManager.SkippedServerPlugins;
+        var list = new List<NotLoadedServer>(skipped.Count);
+        foreach (Plugins.SkippedServerPlugin s in skipped)
+            list.Add(new NotLoadedServer(SectionManifestParser.Id(s.ServerId), s.ServerName, s.PluginName));
         return list;
     }
 
