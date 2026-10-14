@@ -323,8 +323,9 @@ internal sealed class SettingsFace : IImGuiPanel
         ImGuiNET.ImGui.PopStyleColor();
     }
 
-    // Label | [caption]; Click posts its own work (never runs plugin code on AC's thread).
-    private static void ButtonRow(SettingRow row, float w)
+    // Label | [caption]; Edit changes the copy and saves it like any other row, Click posts its
+    // own work (never runs plugin code on AC's thread).
+    private void ButtonRow(SettingRow row, float w)
     {
         ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, TextDim);
@@ -333,7 +334,14 @@ internal sealed class SettingsFace : IImGuiPanel
         ImGuiNET.ImGui.PopStyleColor();
         ImGuiNET.ImGui.SameLine(Math.Max(ImGuiNET.ImGui.GetCursorPosX() + 8, w * 0.45f));
         if (ImGuiNET.ImGui.Button(row.ButtonText ?? row.Label))
+        {
+            if (row.Edit != null)
+            {
+                row.Edit(_data);
+                SettingsCommands.Save(_data.Clone());
+            }
             row.Click?.Invoke();
+        }
         Tooltip(row);
     }
 

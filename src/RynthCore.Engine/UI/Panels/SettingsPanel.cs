@@ -334,7 +334,18 @@ internal static class SettingsPanel
             case SettingKind.Spacer:
                 return Spacer();
             case SettingKind.Button:
-                return ButtonRow(row.Label, row.ButtonText ?? row.Label, () => row.Click?.Invoke(), row.Tooltip);
+                return ButtonRow(row.Label, row.ButtonText ?? row.Label, () =>
+                {
+                    // A settings edit is pushed like a typed value; the tab is rebuilt so the
+                    // number boxes show the new values.
+                    if (row.Edit != null)
+                    {
+                        row.Edit(state.Data);
+                        Push(state);
+                        state.Rebuild?.Invoke();
+                    }
+                    row.Click?.Invoke();
+                }, row.Tooltip);
             case SettingKind.TraceCategories:
                 return TraceCategoriesRow(state, row);
             case SettingKind.ServerPick:
