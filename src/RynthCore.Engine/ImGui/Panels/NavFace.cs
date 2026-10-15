@@ -157,19 +157,21 @@ internal sealed class NavFace : IImGuiPanel
 
         // Breadcrumbs | Route overlay (RynthAi's NavOverlaySettings; saved per character)
         p = ImGuiNET.ImGui.GetCursorScreenPos();
-        if (OverlayToggle("##crumbs", "Breadcrumbs", _data.TrackBreadcrumbs, p, half,
-                "Record the trail you walk and draw it on the ground (/ra navtrail on|off).\nTurning it off hides the trail; /ra navtrail clear wipes it."))
+        // Also on Settings > Navigation. The local settings copy takes the new value too, so a reach
+        // save from this panel before the next settings fetch doesn't send the old one back.
+        if (OverlayToggle("##crumbs", "Breadcrumbs", _data.TrackBreadcrumbs, p, half, SettingsSchema.BreadcrumbsTip))
         {
             bool on = !_data.TrackBreadcrumbs;
             NavCommands.Send(new NavCmd { Cmd = "setBreadcrumbs", On = on });
             _data.TrackBreadcrumbs = on;
+            if (_settings?.TrackBreadcrumbs != null) _settings.TrackBreadcrumbs = on;
         }
-        if (OverlayToggle("##routeovl", "Route overlay", _data.ShowRouteOverlay, new Vector2(p.X + half + 4, p.Y), half,
-                "Draw the route in the world: waypoint rings and lines, waypoint labels and the guide line\nto the active waypoint (/ra navoverlay on|off). The waypoint HUD window is separate."))
+        if (OverlayToggle("##routeovl", "Route overlay", _data.ShowRouteOverlay, new Vector2(p.X + half + 4, p.Y), half, SettingsSchema.RouteOverlayTip))
         {
             bool on = !_data.ShowRouteOverlay;
             NavCommands.Send(new NavCmd { Cmd = "setRouteOverlay", On = on });
             _data.ShowRouteOverlay = on;
+            if (_settings?.ShowRouteOverlay != null) _settings.ShowRouteOverlay = on;
         }
         NextLine(p, 26);
 

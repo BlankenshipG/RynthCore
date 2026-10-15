@@ -167,6 +167,11 @@ internal sealed class RynthAiSettings
     // RynthAi NavResumeNearest: macro start, route loads and resuming after a pause that moved
     // the character head for the closest waypoint. On by default; an older plugin ignores it.
     public bool NavResumeNearest { get; set; } = true;
+    // RynthAi NavOverlay.TrackBreadcrumbs / ShowRouteMarkers: the Nav panel's Breadcrumbs and Route
+    // overlay switches, also on Settings > Navigation. Null = a RynthAi that doesn't send them: the
+    // rows hide, and a save sends null back, which RynthAi reads as unchanged.
+    public bool? TrackBreadcrumbs { get; set; }
+    public bool? ShowRouteOverlay { get; set; }
     // RynthAi dungeon patrol (/ra dunnav-patrol; RynthAi DungeonPatrolOptions). The defaults are
     // the patrol as it was before these settings; an older plugin ignores them.
     public int DunPatrolCoverage { get; set; }               // 0 whole dungeon, 1 loops only, 2 everything
@@ -327,6 +332,7 @@ internal static unsafe class SettingsCommands
             try { _setSettingsJson(ansi); }
             finally { Marshal.FreeHGlobal(ansi); }
             UiSources.Settings.RequestRefresh();
+            UiSources.Nav.RequestRefresh();   // the Nav panel's Breadcrumbs / Route overlay switches
         });
     }
 }
@@ -476,6 +482,15 @@ internal static class SettingsSchema
         "Follow/Nav Min Distance (metas: FollowNavMin, or VTank's NavCloseStopRange). Follow stops this " +
         "close to its leader, and the nav marker ring shows it. Dungeon doorways use at most 1 yd. Up to 2 yd, " +
         "nav walks right up to each point before turning (tight dungeons); bigger values round corners.";
+
+    // The Nav panel's two overlay switches (ImGui/Panels/NavFace.cs), also on Settings > Navigation.
+    public const string BreadcrumbsTip =
+        "Record the trail you walk and draw it on the ground (/ra navtrail on|off).\n" +
+        "Turning it off hides the trail; /ra navtrail clear wipes it.";
+    public const string RouteOverlayTip =
+        "Draw the route in the world: waypoint rings and lines, waypoint labels and the guide line\n" +
+        "to the active waypoint (/ra navoverlay on|off). The waypoint HUD window is separate.";
+    private const string SameAsNavPanel = "\nThe same switch as on the Nav panel.";
 
     // Also shown by the dashboard's Ranges slide-out (ImGui/Panels/RangesSlideOut.cs), which
     // edits these same rows (found by label with Find).
@@ -971,6 +986,10 @@ internal static class SettingsSchema
             Float(NavPointReachLabel, s => s.FollowNavMin, (s, v) => s.FollowNavMin = v, 0.5f, 20f, 0.1f, NavPointReachTip),
             Spacer(),
             Section("Nav Marker Display"),
+            Bool("Breadcrumbs", s => s.TrackBreadcrumbs ?? true, (s, v) => s.TrackBreadcrumbs = v,
+                BreadcrumbsTip + SameAsNavPanel, when: s => s.TrackBreadcrumbs.HasValue),
+            Bool("Route Overlay", s => s.ShowRouteOverlay ?? true, (s, v) => s.ShowRouteOverlay = v,
+                RouteOverlayTip + SameAsNavPanel, when: s => s.ShowRouteOverlay.HasValue),
             Float("Ring Thickness", s => s.NavRingThickness, (s, v) => s.NavRingThickness = v, 1f, 16f, 1f),
             Float("Line Thickness", s => s.NavLineThickness, (s, v) => s.NavLineThickness = v, 1f, 16f, 1f),
             Float("Height Offset", s => s.NavHeightOffset, (s, v) => s.NavHeightOffset = v, -5f, 5f, 0.05f,
