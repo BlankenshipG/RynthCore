@@ -72,12 +72,13 @@ internal sealed class DungeonMapFace : IImGuiPanel
 
     // ── Palette (the plugin map's colours, ARGB) ──────────────────────────
     private const uint CanvasBgArgb = 0xFF0A121F, ToolbarBgArgb = 0xE00A121A;
-    private static readonly uint CanvasBorder = C(0xFF334D66), Wall = C(0xFF8CCCFF),
-        PlayerCol = C(0xFF33FF66), Portal = C(0xFFE673FF), PortalRing = C(0xB3FFBFFF), PortalLabel = C(0xFFFFE0FF),
-        Door = C(0xFFBF8C40), DoorRing = C(0xB3E6BF80), DoorLabel = C(0xFFF2D9A6),
-        Monster = C(0xFFFF4033), MonsterRing = C(0xB3FF8C80), Npc = C(0xFFFFD933), NpcRing = C(0xB3FFF28C),
-        CreatureLabel = C(0xFFFFE6E6), Hint = C(0xFF8FA3B8), ButtonBg = C(0xC0141F29), ButtonBorder = C(0xFF34587A),
+    private static readonly uint CanvasBorder = C(0xFF334D66), Wall = C(0xFF8CCCFF), PlayerCol = C(0xFF33FF66),
+        Portal = C(0xFFE673FF), PortalRing = C(0xB3FFBFFF), PortalLabel = C(0xFFFFE0FF), Door = C(0xFFBF8C40),
+        DoorRing = C(0xB3E6BF80), DoorLabel = C(0xFFF2D9A6), Monster = C(0xFFFF4033), MonsterRing = C(0xB3FF8C80),
+        Npc = C(0xFFFFD933), NpcRing = C(0xB3FFF28C), CreatureLabel = C(0xFFFFE6E6), Hint = C(0xFF8FA3B8),
         FloorOn = C(0xFF2673B3), FloorHere = C(0xFF1AA64D);
+    private static uint ButtonBg => RynthTheme.WithAlpha(RynthTheme.Field, 0xC0);
+    private static uint ButtonBorder => RynthTheme.Border;
     private const uint FillFlat = 0x662E8C38, FillUp = 0x668C1F14, FillDown = 0x661A8026, FillVisited = 0xB84D6B94;
     // Route (ARGB, alpha scaled per floor).
     private const uint RouteLegArgb = 0xD9FFA733, RoutePointArgb = 0xFFFFC266, RouteActiveArgb = 0xFFFFF04D,

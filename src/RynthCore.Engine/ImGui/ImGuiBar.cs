@@ -9,25 +9,39 @@
 //  asked for a button (WindowFlags.BarButton: RynthSort, Oracle, ...; tooltip =
 //  its title; the set is rebuilt as plugins come and go), reload (RL) and pop out.
 //  Dragging the grip moves the bar; the position is the shared bar= row in
-//  panel_state.txt. Right-click a panel button (or the grip for the bar
-//  itself) to choose which face shows it docked; the grip's menu also has the
-//  bar's size and "Report a problem". Pop out moves the ImGui bar
-//  into its own window (ImGuiPopOuts, sized to its content; dock back
-//  returns it); a bar whose face is Avalonia/Both still pops out as the
-//  Avalonia bar.
+//  panel_state.txt. Right-click the grip for the bar's menu: its size, its rows
+//  and "Report a problem" (panel buttons have no menu). Pop out moves the ImGui
+//  bar into its own window (ImGuiPopOuts, sized to its content; dock back
+//  returns it).
 //
 //  The bar's size is its own text size step (PanelTextScale chrome row): the bar's
 //  fonts come from that baked set and its metrics scale by the step's factor. Set it
 //  from the grip's right-click menu, Ctrl+wheel over the bar, Settings > Display or
 //  /rc ui barsize.
 //
-//  Face key "__bar" in panel_faces.txt; code default Avalonia. While the ImGui
-//  bar shows, the docked Avalonia bar is hidden and takes no clicks
-//  (AvaloniaOverlay.DockedBarSuppressed). AC thread except where noted.
+//  Rows (BarLayout): the player picks how many rows the bar has (1-6) and the most
+//  icons a row may hold (no limit, or 2-30): icons per row = ceil(icons / rows),
+//  capped at the limit, so the cap can add rows. The icons (panels, plugin windows,
+//  ILT, Scripts) fill rows left to right, top to bottom, each row starting under the
+//  first icon: the grip and the collapse caret lead the first row only. RL and pop out
+//  stay at the end of the first row, so one row looks as it always did and they keep
+//  their spot as icons come and go on the rows below. The window sizes to its content
+//  as before (AlwaysAutoResize; popped out, ImGuiPopOuts sizes to it); a folded bar is
+//  still just the grip and caret. Set from the grip's right-click menu, Settings >
+//  Display or /rc ui barrows / baricons; kept in panel_state.txt's barlayout= row.
+//
+//  The bar is always this ImGui face while the ImGui layer is on (Tom, 2026-10-14:
+//  the Avalonia and Both faces are gone). The old choice (face key "__bar" in
+//  panel_faces.txt, the grip's and panel buttons' Avalonia / ImGui / Both menu
+//  items) is no longer offered, and a saved Avalonia or Both is read as ImGui
+//  (ResolveFace); docked panels already ignore theirs (PanelRouter.ResolveDockedFace).
+//  While the ImGui bar shows, the docked Avalonia bar is hidden and takes no
+//  clicks (AvaloniaOverlay.DockedBarSuppressed). AC thread except where noted.
 // ============================================================================
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Numerics;
 using System.Threading;
 using ImGuiNET;
@@ -47,13 +61,10 @@ internal static class ImGuiBar
     private static readonly HashSet<string> LauncherOnly = new(StringComparer.OrdinalIgnoreCase)
         { "Monsters", "Damage", "Settings", "Nav", "Meta", "Items" };
 
-    private static readonly PanelFace[] Faces = { PanelFace.Avalonia, PanelFace.ImGui, PanelFace.Both };
-    private static readonly string[] FaceNames = { "Avalonia", "ImGui", "Both (side by side)" };
-
     // Window: a plugin's script window with a bar button of its own (WindowFlags.BarButton);
     // the button toggles it through ScriptWindowRegistry, like the Scripts menu does.
-    private sealed record ButtonInfo(string Title, string Id, string PopupId, string Icon, bool Letter, string Tooltip,
-        bool ImGuiOnly = false, ScriptWindow? Window = null);
+    private sealed record ButtonInfo(string Title, string Id, string Icon, bool Letter, string Tooltip,
+        ScriptWindow? Window = null);
 
     // Engine panels with an ImGui face only (no OverlayHost entry) that get a bar button.
     private static readonly string[] ImGuiOnlyBarPanels =
@@ -135,6 +146,51 @@ internal static class ImGuiBar
     private static bool _userMoved;
     private static int _lastStep, _sizeWatch;
 
+    // The bar's rows and icons-per-row limit (BarLayout). Read from panel_state once, then kept
+    // here so a change shows at once (the file is written in the background); one reference, so
+    // a reader on another thread never sees half a change.
+    private sealed record RowSettings(int Rows, int MaxPerRow);
+    private static RowSettings? _rowSettings, _lastRowSettings;
+    // Icons per row as last drawn: where the icons-per-row "-" starts from when there is no limit.
+    private static int _shownPerRow = 1;
+
+    private static RowSettings RowLayout
+    {
+        get
+        {
+            RowSettings? cur = Volatile.Read(ref _rowSettings);
+            if (cur != null) return cur;
+            var (rows, max) = PanelStateStore.BarRows;
+            Interlocked.CompareExchange(ref _rowSettings, new RowSettings(rows, max), null);
+            return Volatile.Read(ref _rowSettings)!;
+        }
+    }
+
+    /// <summary>The bar's rows (1-6). Any thread.</summary>
+    public static int Rows => RowLayout.Rows;
+
+    /// <summary>The most icons a bar row holds; 0 = no limit. Any thread.</summary>
+    public static int MaxPerRow => RowLayout.MaxPerRow;
+
+    /// <summary>Icons per row as the bar last drew them. Any thread.</summary>
+    public static int ShownPerRow => Volatile.Read(ref _shownPerRow);
+
+    /// <summary>Sets the bar's rows and icons-per-row limit (clamped; BarLayout) and saves them. Any thread.</summary>
+    public static void SetRowLayout(int rows, int maxPerRow)
+    {
+        var next = new RowSettings(BarLayout.ClampRows(rows), BarLayout.ClampMaxPerRow(maxPerRow));
+        if (next == RowLayout) return;
+        Volatile.Write(ref _rowSettings, next);
+        UiBackgroundWriter.Enqueue("persist bar rows", () => PanelStateStore.SetBarRows(next.Rows, next.MaxPerRow));
+    }
+
+    /// <summary>"Bar rows: 2, icons per row: no limit." for chat. Any thread.</summary>
+    public static string DescribeRowLayout()
+    {
+        RowSettings cur = RowLayout;
+        return $"Bar rows: {cur.Rows.ToString(CultureInfo.InvariantCulture)}, icons per row: {BarLayout.DescribeMaxPerRow(cur.MaxPerRow).ToLowerInvariant()}.";
+    }
+
     private const string PopOutTitle = "__bar";
     // Popped out (the ImGui bar in its own window). Read from panel_state once,
     // then kept here so a switch shows at once (the file is written in the background).
@@ -144,13 +200,12 @@ internal static class ImGuiBar
     /// <summary>True when the ImGui bar is popped out into its own window.</summary>
     public static bool PoppedOut => ResolveFace() == PanelFace.ImGui && Floating;
 
-    /// <summary>The bar's docked face. Any thread.</summary>
-    public static PanelFace ResolveFace()
-    {
-        if (!Plugins.EngineSettings.EnableImGuiBackend) return PanelFace.Avalonia;
-        if (!Plugins.EngineSettings.EnableAvaloniaOverlay) return PanelFace.ImGui;
-        return PanelFaceStore.TryGet(FaceKey, out PanelFace f) ? f : PanelFace.ImGui;
-    }
+    /// <summary>
+    /// The bar's docked face: ImGui whenever the ImGui layer is on, Avalonia only without it.
+    /// A face saved in panel_faces.txt (Avalonia or Both, from before) is ignored. Any thread.
+    /// </summary>
+    public static PanelFace ResolveFace() =>
+        Plugins.EngineSettings.EnableImGuiBackend ? PanelFace.ImGui : PanelFace.Avalonia;
 
     /// <summary>
     /// Shows/hides the docked Avalonia bar to match the bar's face. Call at
@@ -162,7 +217,7 @@ internal static class ImGuiBar
         _placed = false; // re-read the shared position next frame
     }
 
-    /// <summary>True when the ImGui bar should draw (docked face ImGui/Both, not popped out).</summary>
+    /// <summary>True when the ImGui bar should draw (the ImGui layer on, not popped out).</summary>
     public static bool Visible => ResolveFace() != PanelFace.Avalonia && !Floating;
 
     /// <summary>
@@ -218,7 +273,6 @@ internal static class ImGuiBar
         EnsureButtons();
         int step = ChromeStep(out float factor);
         s *= factor;
-        float place = AvaloniaOverlay.InputScale > 0 ? AvaloniaOverlay.InputScale : 1f;
         ImGuiNET.ImGui.SetNextWindowPos(ImGuiPopOuts.PanelOrigin, ImGuiCond.Always);
         PushBarWindowStyle(s);
         ImGuiNET.ImGui.Begin("##rc_bar", BarFlags);
@@ -226,7 +280,7 @@ internal static class ImGuiBar
         {
             ImGuiFonts.CurrentStep = step;
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
-            DrawContent(s, place, popped: true);
+            DrawContent(s, popped: true);
             ImGuiNET.ImGui.PopFont();
             // Not on its first frame: an auto-resizing window has no content size yet
             // and reports just its padding (8x6), which would shrink the window to it.
@@ -270,27 +324,29 @@ internal static class ImGuiBar
         int step = ChromeStep(out float factor);
         s *= factor;
         float place = AvaloniaOverlay.InputScale > 0 ? AvaloniaOverlay.InputScale : 1f;
-        bool both = ResolveFace() == PanelFace.Both;
 
         if (!_placed)
         {
             var saved = PanelStateStore.BarPosition;
             Vector2 logical = saved.HasValue ? new Vector2((float)saved.Value.Left, (float)saved.Value.Top) : new Vector2(50, 5);
-            if (both) logical += new Vector2(24, 24);
             _pos = _persistedPos = logical * place;
             ImGuiNET.ImGui.SetNextWindowPos(_pos, ImGuiCond.Always);
             _placed = true;
             _lastStep = step;   // the size the bar loads at is the baseline, not a change
+            _lastRowSettings = RowLayout;
         }
 
         if (step != _lastStep) { _lastStep = step; _sizeWatch = 4; }
+        // New rows reshape the bar (wider or taller): the same pull back on screen as a new size.
+        RowSettings rowsNow = RowLayout;
+        if (!ReferenceEquals(rowsNow, _lastRowSettings)) { _lastRowSettings = rowsNow; _sizeWatch = 4; }
         PushBarWindowStyle(s);
         ImGuiNET.ImGui.Begin("##rc_bar", BarFlags);
         try
         {
             ImGuiFonts.CurrentStep = step;
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
-            DrawContent(s, place, popped: false);
+            DrawContent(s, popped: false);
             ImGuiNET.ImGui.PopFont();
             KeepOnScreen();
         }
@@ -307,17 +363,17 @@ internal static class ImGuiBar
             _persistedPos = _pos;
             if (_userMoved || _sizeWatch > 0)
             {
-                Vector2 logical = _pos / place - (both ? new Vector2(24, 24) : Vector2.Zero);
+                Vector2 logical = _pos / place;
                 double left = logical.X, top = logical.Y;
                 UiBackgroundWriter.Enqueue("persist bar", () => PanelStateStore.SetBarPosition(left, top));
-                if (!both) AvaloniaOverlay.SyncDockedBarPosition(left, top);
+                AvaloniaOverlay.SyncDockedBarPosition(left, top);
             }
             _userMoved = false;
         }
         if (_sizeWatch > 0) _sizeWatch--;
     }
 
-    /// <summary>A bigger size can push the bar's right end off the screen: pull it back (not while it is being dragged).</summary>
+    /// <summary>A bigger size or new rows can push the bar's right or bottom end off the screen: pull it back (not while it is being dragged).</summary>
     private static void KeepOnScreen()
     {
         Vector2 display = ImGuiNET.ImGui.GetIO().DisplaySize;
@@ -327,7 +383,7 @@ internal static class ImGuiBar
         if (next != pos) ImGuiNET.ImGui.SetWindowPos(next);
     }
 
-    private static void DrawContent(float s, float place, bool popped)
+    private static void DrawContent(float s, bool popped)
     {
         // Ctrl+wheel over the bar steps its size (the panels' title bars do the same).
         ImGuiIOPtr io = ImGuiNET.ImGui.GetIO();
@@ -360,9 +416,9 @@ internal static class ImGuiBar
         }
         ImGuiNET.ImGui.SetItemTooltip(_tooltip);
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
-            ImGuiNET.ImGui.OpenPopup("##face_bar");
+            ImGuiNET.ImGui.OpenPopup("##bar_menu");
         PhosphorIcons.DrawCentered(dl, iconFont, PhosphorIcons.DotsSixVertical, rcPos, new Vector2(square.X * 0.8f, square.Y), RynthTheme.RcLabel);
-        FacePopup("##face_bar", FaceKey, hasImGuiFace: true, s);
+        BarMenu(s);
 
         // Collapse: the bar folds to its grip and this caret.
         bool collapsed = RynthAiDashboardState.BarCollapsed;
@@ -377,29 +433,37 @@ internal static class ImGuiBar
             caretHot ? RynthTheme.RcLabel : 0xFF9A9A9Au);
         if (collapsed) return;
 
+        // Rows (header): perRow icons a row, each row from iconsX (under the first icon);
+        // RL and pop out go at the end of the first row (NextSlot, or after the icons when
+        // they all fit on it).
+        int iltCount = IltPanelCount();
+        ScriptBarItem[] scripts = ScriptWindowRegistry.BarItems;
+        int icons = _buttons!.Length + (iltCount > 0 ? 1 : 0) + (scripts.Length > 0 ? 1 : 0);
+        RowSettings rows = RowLayout;
+        int perRow = BarLayout.PerRow(icons, rows.Rows, rows.MaxPerRow);
+        Volatile.Write(ref _shownPerRow, perRow);
+        ImGuiNET.ImGui.SameLine();
+        float iconsX = ImGuiNET.ImGui.GetCursorPosX();
+        int slot = 0;
+
         PushBarButtonStyle(s);
         ImFontPtr letterFont = ImGuiFonts.Get(UiFont.UiBold11);
         foreach (ButtonInfo b in _buttons!)
         {
-            ImGuiNET.ImGui.SameLine();
+            NextSlot(ref slot, perRow, iconsX, s, iconFont, popped);
             if (IconButton(b.Id, b.Letter ? letterFont : iconFont, b.Icon, square, RynthTheme.BarText))
             {
                 if (b.Window != null) ScriptWindowRegistry.PlayerSetVisible(b.Window, !ImGuiPanelHost.IsOpen(b.Window.PanelKey));
                 else PanelRouter.Toggle(b.Title);
             }
             ImGuiNET.ImGui.SetItemTooltip(b.Tooltip);   // a plugin window's title arrives with '%' doubled (EnsureButtons)
-            if (b.ImGuiOnly) continue;   // no Avalonia face: no face to choose
-            if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
-                ImGuiNET.ImGui.OpenPopup(b.PopupId);
-            FacePopup(b.PopupId, b.Title, ImGuiPanelHost.HasFace(b.Title));
         }
 
         // The ILT section: one button, only on Infinite Leaftide with ILT panels registered
         // (Bounties, Guardian). With one panel it toggles that panel; with more it opens a menu.
-        int iltCount = IltPanelCount();
         if (iltCount > 0)
         {
-            ImGuiNET.ImGui.SameLine();
+            NextSlot(ref slot, perRow, iconsX, s, iconFont, popped);
             string? only = iltCount == 1 ? FirstIltPanel() : null;
             if (IconButton("##ilt", iconFont, PhosphorIcons.Leaf, square, RynthTheme.BarText))
             {
@@ -412,15 +476,47 @@ internal static class ImGuiBar
         // Script windows (decision 2): one button with a menu, only while a ShowInBar
         // script window exists. A window that also sets BarButton (plugin windows such as
         // RynthSort's) has a button of its own instead (EnsureButtons) and isn't listed here.
-        ScriptBarItem[] scripts = ScriptWindowRegistry.BarItems;
         if (scripts.Length > 0)
         {
-            ImGuiNET.ImGui.SameLine();
+            NextSlot(ref slot, perRow, iconsX, s, iconFont, popped);
             if (IconButton("##scripts", iconFont, PhosphorIcons.AppWindow, square, RynthTheme.BarText))
                 ImGuiNET.ImGui.OpenPopup("##scripts_menu");
             ImGuiNET.ImGui.SetItemTooltip("Script windows");
         }
 
+        // Every icon fit on the first row: RL and pop out follow them.
+        if (slot <= perRow) DrawControls(s, iconFont, popped);
+        PopBarButtonStyle();
+
+        // Drawn after the bar buttons' style is popped, so the menu has the normal look.
+        ScriptsMenu(scripts);
+        IltMenu();
+    }
+
+    /// <summary>
+    /// Places the next icon: beside the last one, or at the start of a new row (under the first
+    /// icon) every <paramref name="perRow"/> icons. Leaving the first row, RL and pop out go at
+    /// its end first. AC thread, inside the bar window with the bar buttons' style pushed.
+    /// </summary>
+    private static void NextSlot(ref int slot, int perRow, float iconsX, float s, ImFontPtr iconFont, bool popped)
+    {
+        // Slot 0: DrawContent's SameLine after the caret already placed it.
+        if (slot > 0)
+        {
+            if (slot % perRow != 0) ImGuiNET.ImGui.SameLine();
+            else
+            {
+                if (slot == perRow) DrawControls(s, iconFont, popped);
+                ImGuiNET.ImGui.SetCursorPosX(iconsX);
+            }
+        }
+        slot++;
+    }
+
+    /// <summary>RL and pop out, after the first row's last icon (or the caret on a bar with no icons). AC thread.</summary>
+    private static void DrawControls(float s, ImFontPtr iconFont, bool popped)
+    {
+        var square = new Vector2(ButtonSize, ButtonSize) * s;
         ImGuiNET.ImGui.SameLine(0, 6 * s);
         if (IconButton("##reload", iconFont, PhosphorIcons.ArrowsClockwise, square, RynthTheme.ReloadLabel))
         {
@@ -430,28 +526,11 @@ internal static class ImGuiBar
         }
         ImGuiNET.ImGui.SetItemTooltip("Engine reload (RL) — shut down, FreeLibrary, reload from disk, re-init.");
 
-        if (ResolveFace() == PanelFace.ImGui)
-        {
-            ImGuiNET.ImGui.SameLine();
-            if (IconButton("##popout", iconFont, popped ? PhosphorIcons.ArrowSquareIn : PhosphorIcons.ArrowSquareOut, square, RynthTheme.PopOutLabel))
-                SetPoppedOut(!popped);
-            ImGuiNET.ImGui.SetItemTooltip(popped ? "Dock the bar back into the game window." : "Pop the bar out into its own floating window.");
-        }
-        else if (Plugins.EngineSettings.EnableAvaloniaOverlay)   // Avalonia/Both bar: pops out as the Avalonia bar
-        {
-            ImGuiNET.ImGui.SameLine();
-            if (IconButton("##popout", iconFont, PhosphorIcons.ArrowSquareOut, square, RynthTheme.PopOutLabel))
-            {
-                Vector2 logical = ImGuiNET.ImGui.GetWindowPos() / place;
-                AvaloniaOverlay.PopOutBarFrom(logical.X, logical.Y);
-            }
-            ImGuiNET.ImGui.SetItemTooltip("Pop the bar out into its own floating window.");
-        }
-        PopBarButtonStyle();
-
-        // Drawn after the bar buttons' style is popped, so the menu has the normal look.
-        ScriptsMenu(scripts);
-        IltMenu();
+        // The bar draws only as the ImGui face (ResolveFace), so it pops out as itself.
+        ImGuiNET.ImGui.SameLine();
+        if (IconButton("##popout", iconFont, popped ? PhosphorIcons.ArrowSquareIn : PhosphorIcons.ArrowSquareOut, square, RynthTheme.PopOutLabel))
+            SetPoppedOut(!popped);
+        ImGuiNET.ImGui.SetItemTooltip(popped ? "Dock the bar back into the game window." : "Pop the bar out into its own floating window.");
     }
 
     /// <summary>The ILT panels the bar offers now: 0 off Infinite Leaftide or without RynthILT. AC thread.</summary>
@@ -531,24 +610,14 @@ internal static class ImGuiBar
         return clicked;
     }
 
-    private static void FacePopup(string popupId, string title, bool hasImGuiFace, float s = 1f)
+    /// <summary>The grip's right-click menu: the bar's size, its rows and "Report a problem".</summary>
+    private static void BarMenu(float s)
     {
-        if (!ImGuiNET.ImGui.BeginPopup(popupId)) return;
-        ImGuiNET.ImGui.TextDisabled(title == FaceKey ? "Bar, docked, shows as" : "Docked, shows as");
-        PanelFace current = title == FaceKey ? ResolveFace() : PanelRouter.ResolveDockedFace(title);
-        for (int i = 0; i < Faces.Length; i++)
-        {
-            bool enabled = Faces[i] == PanelFace.Avalonia || hasImGuiFace;
-            if (ImGuiNET.ImGui.MenuItem(FaceNames[i], "", current == Faces[i], enabled))
-                PanelRouter.SetDockedFace(title, Faces[i]);
-        }
-        if (!hasImGuiFace)
-            ImGuiNET.ImGui.TextDisabled("(no ImGui version yet)");
-        if (title == FaceKey)
-        {
-            BarSizeRows(s);
-            ReportRow();
-        }
+        if (!ImGuiNET.ImGui.BeginPopup("##bar_menu")) return;
+        ImGuiNET.ImGui.TextDisabled("RynthCore bar");
+        BarSizeRows(s);
+        BarLayoutRows(s);
+        ReportRow();
         ImGuiNET.ImGui.EndPopup();
     }
 
@@ -587,6 +656,49 @@ internal static class ImGuiBar
         ImGuiNET.ImGui.SetItemTooltip("Back to normal size");
     }
 
+    /// <summary>
+    /// The grip menu's Rows and Icons per row steppers (BarLayout, header). Icons per row runs
+    /// 2..30 then No limit; its "-" from No limit caps one below what a row shows now.
+    /// </summary>
+    private static void BarLayoutRows(float s)
+    {
+        RowSettings cur = RowLayout;
+        ImGuiNET.ImGui.Separator();
+        int d = Stepper("##br_rows", "Rows", cur.Rows.ToString(CultureInfo.InvariantCulture),
+            cur.Rows > BarLayout.MinRows, cur.Rows < BarLayout.MaxRows, "Fewer rows", "More rows", s);
+        if (d != 0) SetRowLayout(cur.Rows + d, cur.MaxPerRow);
+        d = Stepper("##br_max", "Icons per row", BarLayout.DescribeMaxPerRow(cur.MaxPerRow),
+            cur.MaxPerRow != BarLayout.MinPerRow, cur.MaxPerRow != BarLayout.NoLimit,
+            "Fewer icons per row (more rows when the bar has more icons)", "More icons per row (past 30: no limit)", s);
+        if (d != 0) SetRowLayout(cur.Rows, BarLayout.StepMaxPerRow(cur.MaxPerRow, d, ShownPerRow));
+    }
+
+    /// <summary>A label, then - and + buttons and the value (the bar size row's look). -1, 0 or +1 for the click.</summary>
+    private static int Stepper(string id, string label, string value, bool canDown, bool canUp, string downTip, string upTip, float s)
+    {
+        float btn = ButtonSize * s;
+        ImFontPtr iconFont = ImGuiFonts.Get(UiFont.Ui14);
+        uint text = ImGuiNET.ImGui.GetColorU32(ImGuiCol.Text);
+        int delta = 0;
+
+        ImGuiNET.ImGui.TextUnformatted(label);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, Vector2.Zero);
+        ImGuiNET.ImGui.BeginDisabled(!canDown);
+        if (IconButton(id + "_down", iconFont, PhosphorIcons.Minus, new Vector2(btn, btn), text)) delta = -1;
+        ImGuiNET.ImGui.EndDisabled();
+        ImGuiNET.ImGui.SetItemTooltip(downTip);
+        ImGuiNET.ImGui.SameLine(0, 4 * s);
+        ImGuiNET.ImGui.BeginDisabled(!canUp);
+        if (IconButton(id + "_up", iconFont, PhosphorIcons.Plus, new Vector2(btn, btn), text)) delta = 1;
+        ImGuiNET.ImGui.EndDisabled();
+        ImGuiNET.ImGui.SetItemTooltip(upTip);
+        ImGuiNET.ImGui.PopStyleVar();
+        ImGuiNET.ImGui.SameLine(0, 8 * s);
+        ImGuiNET.ImGui.AlignTextToFramePadding();
+        ImGuiNET.ImGui.TextUnformatted(value);
+        return delta;
+    }
+
     /// <summary>The grip menu's "Report a problem" entry (Report/ProblemReport.cs).</summary>
     private static void ReportRow()
     {
@@ -603,8 +715,8 @@ internal static class ImGuiBar
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1f);
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 2f);
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Button, RynthTheme.BarButton);
-        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ButtonHovered, RynthTheme.Argb(0xFF2A3850));
-        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ButtonActive, RynthTheme.Argb(0xFF34466A));
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ButtonHovered, RynthTheme.FrameHover);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ButtonActive, RynthTheme.FrameActive);
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, RynthTheme.BarButtonBorder);
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, RynthTheme.BarText);
     }
@@ -641,14 +753,13 @@ internal static class ImGuiBar
             if (!LauncherOnly.Contains(title))
             {
                 string icon = IconFor(title, out bool letter);
-                list.Add(new ButtonInfo(title, "##bar_" + title, "##face_" + title, icon, letter,
-                    title + "\nRight-click: which face shows it docked."));
+                list.Add(new ButtonInfo(title, "##bar_" + title, icon, letter, title));
             }
         foreach (string title in ImGuiOnlyBarPanels)
             if (ImGuiPanelHost.HasFace(title) && !LauncherOnly.Contains(title))
             {
                 string icon = IconFor(title, out bool letter);
-                list.Add(new ButtonInfo(title, "##bar_" + title, "##face_" + title, icon, letter, title, ImGuiOnly: true));
+                list.Add(new ButtonInfo(title, "##bar_" + title, icon, letter, title));
             }
         // Plugin script windows that asked for a button (RynthSort, Oracle, ...): after the
         // engine's own. Only while the plugin is loaded and has submitted the window.
@@ -659,9 +770,9 @@ internal static class ImGuiBar
             string icon = IconFor(title, out bool letter);
             string id = "##bar_sw" + w.Hash.ToString("X8");
             // The tooltip goes through SetItemTooltip, a format function: the plugin's text with '%' doubled.
-            list.Add(new ButtonInfo(title, id, id + "_face", icon, letter, title.Replace("%", "%%"), ImGuiOnly: true, Window: w));
+            list.Add(new ButtonInfo(title, id, icon, letter, title.Replace("%", "%%"), Window: w));
         }
         _buttons = list.ToArray();
-        _tooltip = $"RynthCore {EntryPoint.BuildStamp}\nDrag here to move the bar. Right-click: bar face and size. Ctrl+wheel over the bar: size.";
+        _tooltip = $"RynthCore {EntryPoint.BuildStamp}\nDrag here to move the bar. Right-click: bar size and rows. Ctrl+wheel over the bar: size.";
     }
 }

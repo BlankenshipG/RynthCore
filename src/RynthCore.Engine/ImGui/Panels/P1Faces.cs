@@ -216,7 +216,7 @@ internal sealed class TrackerFace : IImGuiPanel
     private static readonly Vector4 TitleColor = RynthTheme.Vec(0xFFE6B450);
     private static readonly Vector4 LabelColor = RynthTheme.Vec(0xFF999999);
     private static readonly uint ResetBg = RynthTheme.Argb(0xFF1A2E40);
-    private static readonly uint ResetBorder = RynthTheme.Argb(0xFF264C59);
+    private static uint ResetBorder => RynthTheme.AccentFill;
     private int _opacity;
 
     public void OnShown()

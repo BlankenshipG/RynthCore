@@ -270,27 +270,27 @@ internal sealed unsafe class CodeEditor : IDisposable
         return new[]
         {
             C(0xFFD9E6F2), // Default
-            C(0xFF26D9E6), // Keyword
+            RynthTheme.Accent, // Keyword
             C(0xFF99E699), // Number
             C(0xFFE6C07B), // String
             C(0xFFE6C07B), // CharLiteral
             C(0xFFCC88CC), // Punctuation
             C(0xFF8CA6BF), // Preprocessor
             C(0xFFD9E6F2), // Identifier
-            C(0xFFE8B333), // KnownIdentifier
+            RynthTheme.Highlight, // KnownIdentifier
             C(0xFF7BB8FF), // PreprocIdentifier
             C(0xFF6A7A8A), // Comment
             C(0xFF6A7A8A), // MultiLineComment
-            C(0xFF141F29), // Background
+            RynthTheme.Field, // Background
             C(0xFFE6F2FF), // Cursor
             C(0x80305A80), // Selection
             C(0x80B02020), // ErrorMarker
-            C(0xFF3A4A5A), // ControlCharacter
+            RynthTheme.BarButtonBorder, // ControlCharacter
             C(0x40F08000), // Breakpoint
             C(0xFF4F6478), // LineNumber
             C(0x40263A50), // CurrentLineFill
             C(0x20263A50), // CurrentLineFillInactive
-            C(0x40264059), // CurrentLineEdge
+            RynthTheme.WithAlpha(RynthTheme.DashBorder, 0x40), // CurrentLineEdge
         };
     }
 }

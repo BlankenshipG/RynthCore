@@ -46,12 +46,18 @@ using Rule = RynthCore.Engine.UI.Panels.MonstersPanel.Rule;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
 
-internal sealed class RangesSlideOut : DashboardDrawer
+internal sealed class RangesSlideOut : RynthAiDrawer
 {
     // ── Palette (the dashboard's, ARGB) ────────────────────────────────
-    private static readonly uint Teal = C(0xFF26D9E6), TealSoft = C(0xFF264C59), Amber = C(0xFFE8B333),
-        Gold = C(0xFFFFD16A), Mute = C(0xFFB8C8D8), White = C(0xFFF2F7FC), BarBg = C(0xFF141F29),
-        BtnFill = C(0xFF16283A), BtnBord = C(0xFF34587A);
+    private static readonly uint Gold = C(0xFFFFD16A);
+    private static uint Teal => RynthTheme.Accent;
+    private static uint TealSoft => RynthTheme.AccentFill;
+    private static uint Amber => RynthTheme.Highlight;
+    private static uint Mute => RynthTheme.TextMuted;
+    private static uint White => RynthTheme.Text;
+    private static uint BarBg => RynthTheme.Field;
+    private static uint BtnFill => RynthTheme.Button;
+    private static uint BtnBord => RynthTheme.Border;
     private static uint C(uint argb) => RynthTheme.Argb(argb);
 
     // ── Rows: (Settings row label, short label here) ────────────────────
@@ -129,9 +135,8 @@ internal sealed class RangesSlideOut : DashboardDrawer
     public override bool SavedOpen => RynthAiDashboardState.RangesOpen;
     public override void SaveOpen(bool open) => RynthAiDashboardState.SetRangesOpen(open);
 
-    public override string TabTooltip(bool right) => right
-        ? "Ranges: monster range, nav point reach and more, and the selected monster.\nClick to slide them out (to the right: there's no room on the left)."
-        : "Ranges: monster range, nav point reach and more, and the selected monster.\nClick to slide them out.";
+    public override string TabTooltip(bool right) =>
+        "Ranges: monster range, nav point reach and more, and the selected monster.\nClick to slide them out.";
 
     public override float Width(float k) => 250 * k;
     public override float Height(float k) => PanelHeight(k);

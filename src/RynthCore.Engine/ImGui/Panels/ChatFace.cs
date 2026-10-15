@@ -65,11 +65,14 @@ internal sealed class ChatFace : IImGuiPanel
         new PanelSpec(new Vector2(460, 300), new Vector2(260, 140), Background: 0, EdgeToEdge: true, GripInBody: true),
         () => new ChatFace());
 
-    private static readonly uint TabActive = RynthTheme.Argb(0xFF264C59), TabAdd = RynthTheme.Argb(0xFF7AE09A),
-        InputBg = RynthTheme.Argb(0xFF0A121A), InputBorder = RynthTheme.Argb(0xFF264C59), InputActive = RynthTheme.Argb(0xFFFFD700),
-        SelBg = RynthTheme.Argb(0x663A6EA5), FlashBg = RynthTheme.Argb(0xE0264C59), TellBg = RynthTheme.Argb(0xFF0E2E3A),
+    private static readonly uint TabAdd = RynthTheme.Argb(0xFF7AE09A), InputActive = RynthTheme.Argb(0xFFFFD700),
+        SelBg = RynthTheme.Argb(0x663A6EA5), TellBg = RynthTheme.Argb(0xFF0E2E3A),
         TsColor = RynthTheme.Argb(0xFF6F8397), MentionBg = RynthTheme.Argb(0x33FFC857),
         BadgeBg = RynthTheme.Argb(0xFF1F6F7A), BadgeMention = RynthTheme.Argb(0xFFB8860B);
+    private static uint TabActive => RynthTheme.AccentFill;
+    private static uint InputBg => RynthTheme.BoxBg;
+    private static uint InputBorder => RynthTheme.AccentFill;
+    private static uint FlashBg => RynthTheme.WithAlpha(RynthTheme.AccentFill, 0xE0);
     private const float StickThreshold = 24f;
 
     // Visible lines for the current tab + search, with wrapped heights; _lay

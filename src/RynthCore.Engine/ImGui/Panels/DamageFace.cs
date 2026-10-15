@@ -45,11 +45,17 @@ internal sealed class DamageFace : IImGuiPanel
         () => new DamageFace());
 
     // ── Palette (MonsterDamagePanel's, a little brighter) ───────────────
-    private static readonly uint Teal = C(0xFF26D9E6), Gold = C(0xFFFFD16A), Dim = C(0xFFC8D4E0),
-        White = C(0xFFF2F7FC), HeaderBg = C(0xFF121C26), PanelBg = C(0xF0081018), RowBg = C(0x40203040),
-        PickerBg = C(0xFF0A141E), PickSel = C(0xFF1A2E42), EntryBg = C(0xFF16283A), EntryBorder = C(0xFF34587A),
-        SearchBg = C(0xFF16222E), ToggleOn = C(0xFF33CC66), ToggleOff = C(0xFF4D4D4D), DeleteRed = C(0xFFFF8A8A),
-        FilterBg = C(0xFF203A52), TargetBg = C(0x5026D9E6), NearbyBg = C(0x3833CC66), NearbyBar = C(0xFF33CC66), ResetBg = C(0xFF5A2020), ResetBorder = C(0xFFFF8A8A), ClearBg = C(0xFF6E1E1E);
+    private static readonly uint Gold = C(0xFFFFD16A), HeaderBg = C(0xFF121C26), PanelBg = C(0xF0081018),
+        RowBg = C(0x40203040), PickerBg = C(0xFF0A141E), SearchBg = C(0xFF16222E), ToggleOn = C(0xFF33CC66),
+        ToggleOff = C(0xFF4D4D4D), DeleteRed = C(0xFFFF8A8A), FilterBg = C(0xFF203A52), NearbyBg = C(0x3833CC66),
+        NearbyBar = C(0xFF33CC66), ResetBg = C(0xFF5A2020), ResetBorder = C(0xFFFF8A8A), ClearBg = C(0xFF6E1E1E);
+    private static uint Teal => RynthTheme.Accent;
+    private static uint Dim => RynthTheme.MuteAlt;
+    private static uint White => RynthTheme.Text;
+    private static uint PickSel => RynthTheme.Selected;
+    private static uint EntryBg => RynthTheme.Button;
+    private static uint EntryBorder => RynthTheme.Border;
+    private static uint TargetBg => RynthTheme.WithAlpha(RynthTheme.Accent, 0x50);
     private static uint C(uint argb) => RynthTheme.Argb(argb);
 
     // Column widths (the Avalonia grid's) and their left edges.
@@ -521,7 +527,7 @@ internal sealed class DamageFace : IImGuiPanel
         if (all == null || count == 0)
         {
             ImGuiNET.ImGui.Dummy(new Vector2(0, 3));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), all == null
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), all == null
                 ? "  Monster rules not loaded yet." : "  No name rules yet: add one below.");
         }
         else
@@ -708,7 +714,7 @@ internal sealed class DamageFace : IImGuiPanel
             bool filtering = _filterWid != 0 || _searchText.Length > 0;
             bool anyData = _view.Rows.Exists(r => !r.IsDefault);
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), anyData && filtering
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), anyData && filtering
                 ? "  No monsters match the current filter."
                 : "  No monsters yet: fight some and they show up here.");
         }
@@ -1006,16 +1012,16 @@ internal sealed class DamageFace : IImGuiPanel
         Rule? view = RuleFor(name, out bool custom);
         bool isDefault = name.Equals("Default", StringComparison.OrdinalIgnoreCase);
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), "Debuffs · " + name);
+        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Accent), "Debuffs · " + name);
         ImGuiNET.ImGui.PopFont();
         if (view == null)
         {
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), "Monster rules not loaded yet.");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "Monster rules not loaded yet.");
             ImGuiNET.ImGui.EndPopup();
             return;
         }
         ImGuiNET.ImGui.PushTextWrapPos(0);
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(custom || isDefault ? 0xFFFFD16A : 0xFFC8D4E0),
+        ImGuiNET.ImGui.TextColored((custom || isDefault ? RynthTheme.Vec(0xFFFFD16A) : RynthTheme.VecOf(RynthTheme.MuteAlt)),
             isDefault ? "Every monster set to Default uses these." : custom ? "This monster's own debuffs." : "Following Default: a change here gives it its own.");
         ImGuiNET.ImGui.PopTextWrapPos();
 
@@ -1031,7 +1037,7 @@ internal sealed class DamageFace : IImGuiPanel
             ImGuiNET.ImGui.SetItemTooltip(tip);
         }
 
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), "Extra Vuln");
+        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "Extra Vuln");
         ImGuiNET.ImGui.SameLine();
         string ex = string.IsNullOrEmpty(view.ExVuln) ? "None" : view.ExVuln;
         ImGuiNET.ImGui.SetNextItemWidth(ImGuiNET.ImGui.CalcTextSize("Lightning").X + 40);
@@ -1048,7 +1054,7 @@ internal sealed class DamageFace : IImGuiPanel
         ImGuiNET.ImGui.SetItemTooltip("A vulnerability of another element, on top of Vuln (which follows the attack's element).");
 
         ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), "Your own (comma separated):");
+        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "Your own (comma separated):");
         ImGuiNET.ImGui.SetNextItemWidth(-1);
         bool enter = ImGuiNET.ImGui.InputText("##db_custom", _customBuf, (uint)_customBuf.Length, ImGuiInputTextFlags.EnterReturnsTrue);
         if (enter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
@@ -1316,9 +1322,9 @@ internal sealed class DamageFace : IImGuiPanel
         if (ropen)
         {
             ImGuiNET.ImGui.PushTextWrapPos(0);
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), "Remove " + _removeName + "?");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Text), "Remove " + _removeName + "?");
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC),
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Text),
                 "Its learned numbers and your settings for it (weapon, offhand, pet, HP) are deleted. It comes back if you meet it again.");
             ImGuiNET.ImGui.PopTextWrapPos();
             ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
@@ -1354,9 +1360,9 @@ internal sealed class DamageFace : IImGuiPanel
         if (open)
         {
             ImGuiNET.ImGui.PushTextWrapPos(0);
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), "Reset ALL learned damage statistics?");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Text), "Reset ALL learned damage statistics?");
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC),
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Text),
                 "Monster names and your settings (manual HP, weapon/offhand picks, debuffs) are KEPT — only the learned damage, crit, casts-to-kill, kills and HP are cleared. This cannot be undone.");
             ImGuiNET.ImGui.PopTextWrapPos();
             ImGuiNET.ImGui.Dummy(new Vector2(0, 6));

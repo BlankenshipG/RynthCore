@@ -26,10 +26,16 @@ internal sealed class HotkeysSettingsUi
 {
     public const string TabName = "Hotkeys";
 
-    private static readonly uint Teal = C(0xFF26D9E6), Amber = C(0xFFE8B333), Mute = C(0xFFB8C8D8),
-        TextDim = C(0xFFF2F7FC), ShellBg = C(0xFF0A0F14), PanelBg = C(0xFF141F29), BtnFill = C(0xFF16283A),
-        BtnBord = C(0xFF34587A), ToggleOn = C(0xFF33FF33), ToggleOff = C(0xFF334455), TabActive = C(0xFF1A2E42),
-        Warn = C(0xFFFFB347);
+    private static readonly uint ToggleOn = C(0xFF33FF33), ToggleOff = C(0xFF334455), Warn = C(0xFFFFB347);
+    private static uint Teal => RynthTheme.Accent;
+    private static uint Amber => RynthTheme.Highlight;
+    private static uint Mute => RynthTheme.TextMuted;
+    private static uint TextDim => RynthTheme.Text;
+    private static uint ShellBg => RynthTheme.Background;
+    private static uint PanelBg => RynthTheme.Field;
+    private static uint BtnFill => RynthTheme.Button;
+    private static uint BtnBord => RynthTheme.Border;
+    private static uint TabActive => RynthTheme.Selected;
     private static uint C(uint argb) => RynthTheme.Argb(argb);
 
     private const string ChatCommandItem = "Chat command...";

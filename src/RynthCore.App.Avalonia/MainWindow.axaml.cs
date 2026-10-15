@@ -2462,6 +2462,100 @@ internal partial class MainWindow : Window
         }
     }
 
+    // ── World map sizes (RynthUpdater.MapPacks.cs) ───────────────────────
+
+    private string _mapPacksShown = "";
+
+    /// <summary>
+    /// The front page's "World map detail" card: a row per size the feed offers (name, download size, whether it is
+    /// installed) with Download / Update / Remove. Rebuilt only when what it shows changes; the buttons are off while
+    /// a download or an update runs. Called from RefreshUpdateCard, so it follows every check and download.
+    /// </summary>
+    private void RefreshMapPacksCard()
+    {
+        IReadOnlyList<RynthUpdater.MapPackStatus> packs = _updateCheck?.MapPacks ?? Array.Empty<RynthUpdater.MapPackStatus>();
+        MapPacksCard.IsVisible = packs.Count > 0;
+        bool busy = _updateBusy || _downloadCts != null;
+        string signature = busy + "|" + string.Join(";", packs.Select(p => $"{p.Entry.Key}:{p.State}:{p.Entry.Sha256}"));
+        if (signature == _mapPacksShown) return;
+        _mapPacksShown = signature;
+        MapPacksPanel.Children.Clear();
+        foreach (RynthUpdater.MapPackStatus st in packs)
+        {
+            RynthUpdater.MapPackEntry e = st.Entry;
+            string state = st.State switch
+            {
+                RynthUpdater.MapPackState.UpToDate => "installed",
+                RynthUpdater.MapPackState.NeedsUpdate => "installed, a newer one is available",
+                _ => "not installed",
+            };
+            var title = new TextBlock { Text = $"{e.Name}  -  {DownloadProgress.FormatMb(e.Size)}", FontWeight = global::Avalonia.Media.FontWeight.SemiBold, Foreground = global::Avalonia.Media.Brushes.White };
+            var detail = new TextBlock { Text = (e.Description.Length > 0 ? e.Description + "  " : "") + "(" + state + ")", TextWrapping = global::Avalonia.Media.TextWrapping.Wrap, Foreground = global::Avalonia.Media.Brush.Parse("#9AA8B3") };
+            var text = new StackPanel { Spacing = 2, VerticalAlignment = global::Avalonia.Layout.VerticalAlignment.Center };
+            text.Children.Add(title);
+            text.Children.Add(detail);
+
+            var buttons = new WrapPanel { Orientation = global::Avalonia.Layout.Orientation.Horizontal, VerticalAlignment = global::Avalonia.Layout.VerticalAlignment.Center, Margin = new global::Avalonia.Thickness(12, 0, 0, 0) };
+            if (st.State != RynthUpdater.MapPackState.UpToDate)
+            {
+                var get = new Button { Content = st.State == RynthUpdater.MapPackState.NeedsUpdate ? "Update" : "Download", IsEnabled = !busy, Margin = new global::Avalonia.Thickness(0, 0, 8, 0) };
+                get.Click += async (_, _) => await InstallMapPackAsync(st);
+                buttons.Children.Add(get);
+            }
+            if (st.State != RynthUpdater.MapPackState.NotInstalled)
+            {
+                var remove = new Button { Content = "Remove", IsEnabled = !busy };
+                remove.Click += async (_, _) => await RemoveMapPackAsync(st);
+                buttons.Children.Add(remove);
+            }
+            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+            Grid.SetColumn(text, 0);
+            Grid.SetColumn(buttons, 1);
+            row.Children.Add(text);
+            row.Children.Add(buttons);
+            MapPacksPanel.Children.Add(row);
+        }
+    }
+
+    private async Task InstallMapPackAsync(RynthUpdater.MapPackStatus st)
+    {
+        if (_updateBusy || _downloadCts != null) return;
+        _updateBusy = true;
+        RefreshUpdateCard();
+        try
+        {
+            string line = await RunDownloadAsync((progress, ct) => _updater.InstallMapPackAsync(st.Entry, progress, ct));
+            AppendActivity(line);
+        }
+        catch (OperationCanceledException)
+        {
+            AppendActivity($"World map ({st.Entry.Name}) download cancelled. Nothing was changed.");
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"World map ({st.Entry.Name}) download failed: {ex.Message}");
+        }
+        finally { _updateBusy = false; }
+        _updateCheck = await _updater.CheckAsync(_pluginDllPaths.ToList());
+        RefreshUpdateCard();
+    }
+
+    private async Task RemoveMapPackAsync(RynthUpdater.MapPackStatus st)
+    {
+        if (_updateBusy || _downloadCts != null) return;
+        try
+        {
+            bool had = await Task.Run(() => _updater.RemoveMapPack(st.Entry));
+            AppendActivity(had ? $"World map ({st.Entry.Name}) removed." : $"World map ({st.Entry.Name}) wasn't installed.");
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"World map ({st.Entry.Name}) couldn't be removed: {ex.Message} (a running game client may have it open).");
+        }
+        _updateCheck = await _updater.CheckAsync(_pluginDllPaths.ToList());
+        RefreshUpdateCard();
+    }
+
     private void CancelDownload()
     {
         if (_downloadCts is not { IsCancellationRequested: false } cts) return;
@@ -2491,6 +2585,7 @@ internal partial class MainWindow : Window
     /// <summary>Redraws the front page's update card, the Plugins tab's status line and the header.</summary>
     private void RefreshUpdateCard()
     {
+        RefreshMapPacksCard();
         RynthUpdater.CheckResult? c = _updateCheck;
         bool coreUpdate = c?.CoreUpdateAvailable == true;
         var card = UpdateCardModel.Build(new UpdateCardInput

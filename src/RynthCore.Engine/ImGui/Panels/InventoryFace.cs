@@ -58,9 +58,11 @@ internal sealed partial class InventoryFace : IImGuiPanel
     private const float Cell = 38, Icon = 32, RowH = 24, PackRowH = 38, ZoneH = 30, StatusH = 20;
     private const uint AllPacks = 0, WornPacks = 1;     // pseudo pack ids (real ids are never 0 or 1)
 
-    private static readonly uint CellBg = RynthTheme.Argb(0xFF101822), CellHot = RynthTheme.Argb(0xFF1C3148),
-        CellSel = RynthTheme.Argb(0xFF26D9E6), StackCol = RynthTheme.Argb(0xFFFFFFFF), StackShadow = RynthTheme.Argb(0xE0000000),
-        DropHot = RynthTheme.Argb(0xFF1F5A3A), Placeholder = RynthTheme.Argb(0xFF1A2633);
+    private static readonly uint CellHot = RynthTheme.Argb(0xFF1C3148), StackCol = RynthTheme.Argb(0xFFFFFFFF),
+        StackShadow = RynthTheme.Argb(0xE0000000), DropHot = RynthTheme.Argb(0xFF1F5A3A),
+        Placeholder = RynthTheme.Argb(0xFF1A2633);
+    private static uint CellBg => RynthTheme.RowAlt;
+    private static uint CellSel => RynthTheme.Accent;
 
     private static readonly string[] SortNames = { "Pack order", "Name", "Value", "Burden", "Type", "Stack" };
     private static readonly string[] SortLabels = Array.ConvertAll(SortNames, n => PhosphorIcons.SortAscending + " " + n);

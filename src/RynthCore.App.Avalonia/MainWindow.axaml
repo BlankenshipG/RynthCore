@@ -141,6 +141,17 @@
                 </StackPanel>
               </Border>
 
+              <!-- The World Map's optional sizes (MainWindow.RefreshMapPacksCard; the feed's "mappacks"). -->
+              <Border x:Name="MapPacksCard" Background="#132028" CornerRadius="16" Padding="18" IsVisible="False"
+                      BorderBrush="#243742" BorderThickness="1">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="World map detail" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
+                  <TextBlock TextWrapping="Wrap" Foreground="#9AA8B3"
+                             Text="The in-game World Map comes in sizes. The standard one is installed with RynthNav; the sharper ones are optional downloads. The map uses the best size you have installed, and its Show menu lets you switch between them." />
+                  <StackPanel x:Name="MapPacksPanel" Spacing="8" />
+                </StackPanel>
+              </Border>
+
               <Border Background="#132028" CornerRadius="16" Padding="18">
                 <StackPanel Spacing="8">
                   <TextBlock Text="Launch Targets" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />

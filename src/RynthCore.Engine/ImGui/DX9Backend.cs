@@ -50,6 +50,7 @@ internal static unsafe class DX9Backend
     private const uint D3DPT_TRIANGLELIST = 4;
     private const uint D3DFMT_INDEX16 = 101;
     private const uint D3DFMT_A8R8G8B8 = 21;
+    private const uint D3DFMT_DXT1 = 0x31545844;       // the FourCC 'DXT1'
     private const uint D3DPOOL_MANAGED = 1;
     private const uint D3DUSAGE_DYNAMIC = 0x200;
     private const uint D3DPOOL_DEFAULT = 0;
@@ -989,6 +990,38 @@ internal static unsafe class DX9Backend
                 dstRow[i + 3] = srcRow[i + 3]; // A
             }
         }
+        unlockRect(tex, 0);
+        return tex;
+    }
+
+    /// <summary>
+    /// A managed-pool DXT1 texture (4x4 blocks of 8 bytes: two RGB565 colours and sixteen 2-bit indices, a sixth
+    /// of A8R8G8B8's size) holding <paramref name="blocks"/> as they are: <paramref name="width"/> x
+    /// <paramref name="height"/> a multiple of 4, (w/4) * (h/4) * 8 bytes, top row of blocks first (the World
+    /// Map's tiles). Zero on failure or when the device can't make DXT1. AC's render thread.
+    /// </summary>
+    public static IntPtr CreateTextureDxt1(IntPtr pDevice, int width, int height, ReadOnlySpan<byte> blocks)
+    {
+        int rowBytes = width / 4 * 8, rows = height / 4;
+        if (_createTexture == null || pDevice == IntPtr.Zero || width <= 0 || height <= 0 || width % 4 != 0 || height % 4 != 0
+            || blocks.Length < rowBytes * rows)
+            return IntPtr.Zero;
+        int hr = _createTexture(pDevice, (uint)width, (uint)height, 1, 0,
+            D3DFMT_DXT1, D3DPOOL_MANAGED, out IntPtr tex, IntPtr.Zero);
+        if (hr < 0 || tex == IntPtr.Zero)
+            return IntPtr.Zero;
+
+        var lockRect = GetTexMethod<TexLockRectD>(tex, TextureVTableIndex.LockRect);
+        var unlockRect = GetTexMethod<TexUnlockRectD>(tex, TextureVTableIndex.UnlockRect);
+        D3DLOCKED_RECT locked;
+        if (lockRect(tex, 0, &locked, IntPtr.Zero, 0) < 0 || locked.pBits == IntPtr.Zero)
+        {
+            ReleaseComObject(tex);
+            return IntPtr.Zero;
+        }
+        byte* dst = (byte*)locked.pBits;
+        for (int y = 0; y < rows; y++)       // the pitch of a compressed surface is the bytes of one row of blocks
+            blocks.Slice(y * rowBytes, rowBytes).CopyTo(new Span<byte>(dst + y * locked.Pitch, rowBytes));
         unlockRect(tex, 0);
         return tex;
     }

@@ -106,6 +106,10 @@ internal sealed class RynthAiSettings
     public int DeathRecallSpellId { get; set; } = 48;   // Primary Portal Recall
     public string DeathRecallItem { get; set; } = string.Empty;
     public bool StopMacroOnNoComponents { get; set; }
+    // Recall When Low On Components (RynthAi's RynthAiPlugin.LowComponents.cs). An older RynthAi ignores them.
+    public bool LowCompsRecall { get; set; }
+    public int LowCompsTaperMin { get; set; } = 10;
+    public int LowCompsScarabMin { get; set; } = 2;
     public bool StopLootingWhenPackFull { get; set; } = true;
     public bool StopMacroWhenPackFull { get; set; }
     // Melee Combat
@@ -158,11 +162,12 @@ internal sealed class RynthAiSettings
     public bool NavResumeNearest { get; set; } = true;
     // RynthAi dungeon patrol (/ra dunnav-patrol; RynthAi DungeonPatrolOptions). The defaults are
     // the patrol as it was before these settings; an older plugin ignores them.
-    public int DunPatrolCoverage { get; set; }               // 0 whole dungeon, 1 loops only, 2 everything
+    public int DunPatrolCoverage { get; set; }               // 0 whole dungeon, 1 loops only, 2 everything, 3 sweep
     public int DunPatrolSkipDeadEnds { get; set; } = 10;     // dead-end areas of up to this many cells skipped (0 = none)
     public bool DunPatrolAvoidFloors { get; set; } = true;   // lava/acid floor cells kept out of the patrol
     public float DunPatrolWallDistance { get; set; } = 1f;   // every patrol point this far from walls where there is room
     public float DunPatrolLookInSize { get; set; } = 10f;    // rooms this big the patrol only skirts get a walk to their middle
+    public float DunPatrolSightYd { get; set; } = 20f;       // sweep: how far a monster notices you (lane spacing)
     public bool OpenDoors { get; set; }
     public float OpenDoorRange { get; set; } = 5f;
     public bool AutoUnlockDoors { get; set; }
@@ -322,7 +327,9 @@ internal static unsafe class SettingsCommands
 
 internal enum SettingKind { Bool, Int, Float, Double, Combo, Section, Spacer, Note, CraftingStatus, Button, TraceCategories, Text, Status,
     /// <summary>The user hotkeys editor (ImGui/Panels/HotkeysSettingsUi.cs; stored by the engine, not RynthAi).</summary>
-    Hotkeys }
+    Hotkeys,
+    /// <summary>A colour (#AARRGGBB in Get/Set): a swatch that opens a picker. The theme's colours (engine-stored).</summary>
+    Color }
 
 /// <summary>
 /// Reads and edits <see cref="RynthAiSettings.DiagCategories"/> ("Name=Level,..."). The category
@@ -444,7 +451,7 @@ internal static class SettingsSchema
     public static readonly string[] AttackHeights = { "Low", "Medium", "High" };
     public static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
     public static readonly string[] NavLabelModes = { "Off", "Numbers", "Numbers and names" };
-    public static readonly string[] DunPatrolCoverages = { "Whole dungeon", "Loops only", "Everything" };
+    public static readonly string[] DunPatrolCoverages = { "Whole dungeon", "Loops only", "Everything", "Sweep (by sight)" };
     public static readonly string[] DeathRecallModes = { "Off", "Cast a recall spell", "Use a recall item" };
 
     // The nav editor's recall spells. Filled with "Spell N (N)" and named from the client's spell
@@ -489,6 +496,11 @@ internal static class SettingsSchema
         Combo("   " + label, PanelTextScale.SizeNames, _ => PanelTextScale.GetOwn(panelTitle), (_, v) => PanelTextScale.Set(panelTitle, v),
             "Text size for this panel in the game: 0 = normal, each step 10% bigger, yourjokin = 2.5x.")
         with { VisibleWhen = _ => PanelTextScale.PerPanel };
+
+    // One of the theme's eight colours (ImGuiBackend.RynthTheme); the settings object is ignored.
+    private static SettingRow Colour(int index, string tip) =>
+        new(SettingKind.Color, ImGuiBackend.ThemePalette.PrimaryNames[index], tip,
+            _ => ImGuiBackend.RynthTheme.GetPrimary(index), (_, v) => ImGuiBackend.RynthTheme.SetPrimary(index, (uint)v));
 
     private static SettingRow Section(string text, Func<RynthAiSettings, bool>? when = null) =>
         new(SettingKind.Section, text, VisibleWhen: when);
@@ -582,11 +594,33 @@ internal static class SettingsSchema
                 (_, v) => { Plugins.EngineSettings.InsertReleasesUi = v; if (!v) ImGuiBackend.Win32Backend.ReclaimUi(); },
                 "On: Insert switches between UI and GAME (shown on the RynthCore bar). In GAME, clicks pass through\nRynth windows to the game and Rynth text boxes can't be typed in. Press Insert again to get the UI back.\nOff (default): Insert does nothing. Applies to all your clients; others pick it up when they start."),
             Spacer(),
+            // The colour theme is stored by the engine (theme.txt, ImGuiBackend.RynthTheme), not in the RynthAi profile.
+            Section("Colour Theme"),
+            Combo("Theme", ImGuiBackend.RynthTheme.PickerNames, _ => ImGuiBackend.RynthTheme.PickerIndex, (_, v) => ImGuiBackend.RynthTheme.SetPreset(v),
+                "The colours of every RynthCore window: RynthCore's own, a preset, or Custom (your own colours below).\nChanging any colour below makes the theme Custom. Applies to all your clients as they start."),
+            Colour(0, "The main highlight: outlines, selected tabs and buttons, toggles that are on, the dashboard's accent line."),
+            Colour(1, "Values, section headings and the bot's busy states (amber in RynthCore's colours)."),
+            Colour(2, "Window and drawer backgrounds. The fields, rows and popups are shades of it."),
+            Colour(3, "Panel title bars and table headers."),
+            Colour(4, "Button and tab backgrounds."),
+            Colour(5, "Button and field outlines; the dashboard's frame is a shade of it."),
+            Colour(6, "Main text."),
+            Colour(7, "Labels and quieter text."),
+            Button("Reset Colours", "Use RynthCore's", () => ImGuiBackend.RynthTheme.SetPreset(0),
+                "Back to RynthCore's own colours (the RynthCore theme)."),
+            Spacer(),
             Section("Text Size (in-game panels)"),
             Combo("All Panels", PanelTextScale.SizeNames, _ => PanelTextScale.GetAll(), (_, v) => PanelTextScale.SetAll(v),
                 "Text size for every in-game panel: 0 = normal, each step 10% bigger, yourjokin = 2.5x."),
             Combo("Toolbar", PanelTextScale.SizeNames, _ => PanelTextScale.GetChrome(), (_, v) => PanelTextScale.SetChrome(v),
                 "Size of the RynthCore icon bar (its icons and tooltips), separate from the panels: 0 = normal, each step 10% bigger.\nAlso: right-click the bar's grip, Ctrl+wheel over the bar, or /rc ui barsize."),
+            // The bar's rows are stored by the engine (panel_state.txt, ImGuiBar), not in the RynthAi profile.
+            Combo("Toolbar Rows", BarLayout.RowNames, _ => ImGuiBackend.ImGuiBar.Rows - BarLayout.MinRows,
+                (_, v) => ImGuiBackend.ImGuiBar.SetRowLayout(v + BarLayout.MinRows, ImGuiBackend.ImGuiBar.MaxPerRow),
+                "How many rows the RynthCore icon bar spreads its icons over (Icons Per Row can add more).\nAlso: right-click the bar's grip, or /rc ui barrows."),
+            Combo("Toolbar Icons Per Row", BarLayout.MaxPerRowNames, _ => BarLayout.MaxPerRowToIndex(ImGuiBackend.ImGuiBar.MaxPerRow),
+                (_, v) => ImGuiBackend.ImGuiBar.SetRowLayout(ImGuiBackend.ImGuiBar.Rows, BarLayout.IndexToMaxPerRow(v)),
+                "The most icons one row of the bar holds; more icons start another row. No limit: the rows share them evenly.\nAlso: right-click the bar's grip, or /rc ui baricons."),
             Bool("Size Each Panel Separately", _ => PanelTextScale.PerPanel, (_, v) => PanelTextScale.PerPanel = v,
                 "Off: every panel uses All Panels. On: set each panel's text size below.", gates: true),
             TextSize("RynthAi Dashboard", "RynthAi"),
@@ -762,6 +796,18 @@ internal static class SettingsSchema
                 "Stop the macro when you die. Off by default: most metas run back on their own."),
             Bool("Stop Macro On No Components", s => s.StopMacroOnNoComponents, (s, v) => s.StopMacroOnNoComponents = v,
                 "Stop the macro after 3 \"missing components\" failures within a minute."),
+            Bool("Recall When Low On Components", s => s.LowCompsRecall, (s, v) => s.LowCompsRecall = v,
+                "With the macro running: when your tapers (all kinds together) drop to Low Tapers At, or any one kind of\n" +
+                "scarab (not Diamond) drops to Low Scarabs At, stop the macro and recall to the lifestone, and say in chat\n" +
+                "which ran low. Only kinds you've carried this session count, so a character with no scarabs isn't 'low'.\n" +
+                "Off by default.", gates: true),
+            Int("Low Tapers At", s => s.LowCompsTaperMin, (s, v) => s.LowCompsTaperMin = v, 0, 500, 5,
+                "Recall when your tapers, all kinds together, are at or under this many. 0 = don't check tapers. Default 10.",
+                when: s => s.LowCompsRecall),
+            Int("Low Scarabs At", s => s.LowCompsScarabMin, (s, v) => s.LowCompsScarabMin = v, 0, 50, 1,
+                "Recall when any one kind of scarab (Lead, Iron, Copper, Silver, Gold, Pyreal, Platinum, Mana; not Diamond)\n" +
+                "is at or under this many. 0 = don't check scarabs. Default 2.",
+                when: s => s.LowCompsRecall),
             Bool("Stop Macro When Pack Full", s => s.StopMacroWhenPackFull, (s, v) => s.StopMacroWhenPackFull = v,
                 "Stop the macro when no pack has a free slot."),
             Spacer(),
@@ -906,7 +952,14 @@ internal static class SettingsSchema
                 "Loops only: just the corridors that go round in a loop or join two junctions. Every dead-end branch is left\n" +
                 "out, however long: quicker laps, but in a hive most of the dungeon is never visited.\n" +
                 "Everything: every dead end too, closets and all.\n" +
+                "Sweep: the same parts as Whole dungeon, but walked only close enough that every spot is within Sight\n" +
+                "Distance of the route with no wall in between. For open halls and pillar rooms, where Whole dungeon walks\n" +
+                "every lane: monsters a few lanes over notice you anyway. Corridors and crypts change little.\n" +
                 "A dungeon that is one long corridor is walked end to end whatever this says."),
+            Float("Sight Distance (yd)", s => s.DunPatrolSightYd, (s, v) => s.DunPatrolSightYd = Math.Clamp(v, 5f, 60f), 5f, 60f, 1f,
+                "Sweep: how far away a monster notices you, so how far apart the patrol's lanes may be. Bigger means wider\n" +
+                "lanes and a shorter lap; too big and monsters out of sight around pillars get missed. Default 20.",
+                when: s => s.DunPatrolCoverage == 3),
             Int("Skip Dead Ends Up To (cells)", s => s.DunPatrolSkipDeadEnds, (s, v) => s.DunPatrolSkipDeadEnds = v, 0, 30, 1,
                 "Dead-end areas this small are not walked into: a closet, a short corridor with a small room at its end,\n" +
                 "a little loop off a corridor. Counted in dungeon cells (the pieces a dungeon is built from: a stretch of\n" +

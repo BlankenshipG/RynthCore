@@ -33,7 +33,7 @@ namespace RynthCore.Engine.ImGuiBackend.Panels;
 internal sealed partial class RynthAiFace
 {
     /// <summary>Meta state, bot activity and the five file pickers.</summary>
-    private sealed class FilesDrawer : DashboardDrawer
+    private sealed class FilesDrawer : RynthAiDrawer
     {
         private readonly RynthAiFace _face;
         public FilesDrawer(RynthAiFace face) => _face = face;
@@ -51,7 +51,7 @@ internal sealed partial class RynthAiFace
                    "Profile: " + (v?.ProfileText ?? "Default") + "\nNav: " + (v?.NavText ?? "None") +
                    "\nLoot: " + (v?.LootText ?? "None") + "\nMeta: " + (v?.MetaText ?? "None") +
                    "\nBuffs: " + (v?.BuffText ?? "Built-in") +
-                   (right ? "\n\nClick to slide them out (to the right: there's no room on the left)." : "\n\nClick to slide them out.");
+                   "\n\nClick to slide them out.";
         }
 
         // The picker rows are the dashboard's own (Selector), so they take its size factor (_k);
@@ -100,10 +100,14 @@ internal sealed partial class RynthAiFace
         }
     }
 
-    /// <summary>Hazard cells and saved routes (the Patrol launcher's right-click).</summary>
-    private sealed class PatrolDrawer : DashboardDrawer
+    /// <summary>The Dungeon Patrol settings, hazard cells and saved routes (the Patrol launcher's right-click).</summary>
+    private sealed class PatrolDrawer : RynthAiDrawer
     {
         private bool _sub;
+        // Settings > Navigation > Dungeon Patrol, drawn here too (2026-10-14).
+        private readonly SettingsRows _rows = new();
+        private static SettingRow[]? _settingRows;
+        private static SettingRow[] SettingRows => _settingRows ??= QuickSettings.SectionRows("Navigation", "Dungeon Patrol");
 
         public override string Key => "patrol";
         public override string Icon => PhosphorIcons.Footprints;
@@ -111,19 +115,32 @@ internal sealed partial class RynthAiFace
         public override bool SavedOpen => RynthAiDashboardState.PatrolOpen;
         public override void SaveOpen(bool open) => RynthAiDashboardState.SetPatrolOpen(open);
 
-        public override string TabTooltip(bool right) => right
-            ? "Patrol: this dungeon's hazard cells, recorded hazards and saved routes (also: right-click Patrol).\nClick to slide it out (to the right: there's no room on the left)."
-            : "Patrol: this dungeon's hazard cells, recorded hazards and saved routes (also: right-click Patrol).\nClick to slide it out.";
+        public override string TabTooltip(bool right) =>
+            "Patrol: the Dungeon Patrol settings, this dungeon's hazard cells, recorded hazards and saved routes\n(also: right-click Patrol). Click to slide it out.";
 
-        public override float Width(float k) => 260 * k;
-        public override float Height(float k) => 320 * k;
+        public override float Width(float k) => 290 * k;
+
+        public override float Height(float k)
+        {
+            // Never taller than the screen: the body scrolls instead.
+            float screen = ImGuiNET.ImGui.GetIO().DisplaySize.Y;
+            return screen > 1 ? MathF.Min(500 * k, MathF.Max(200 * k, screen - 8 * k)) : 500 * k;
+        }
 
         public override void Update(bool showing)
         {
             if (showing == _sub) return;
             _sub = showing;
-            if (showing) { UiSources.Patrol.Subscribe(); UiSources.Patrol.RequestRefresh(); }
-            else UiSources.Patrol.Unsubscribe();
+            if (showing)
+            {
+                UiSources.Patrol.Subscribe(); UiSources.Patrol.RequestRefresh();
+                UiSources.Settings.Subscribe(); UiSources.Settings.RequestRefresh();
+            }
+            else
+            {
+                UiSources.Patrol.Unsubscribe();
+                UiSources.Settings.Unsubscribe();
+            }
         }
 
         public override void DrawPanel(Vector2 origin, float panelW, float panelH, float k)
@@ -141,6 +158,27 @@ internal sealed partial class RynthAiFace
             {
                 if (open)
                 {
+                    if (Mini(PhosphorIcons.Play + " Start patrol"))
+                        RynthAiCommands.SendNavCommand("{\"Cmd\":\"dunPatrol\"}");
+                    ImGuiNET.ImGui.SetItemTooltip("Start the Dungeon Patrol here (the same as left-clicking Patrol).");
+
+                    // The settings, with the Settings panel's rows (right-click one to pin it to My settings).
+                    Section("SETTINGS");
+                    _rows.Sync();
+                    float w = ImGuiNET.ImGui.GetContentRegionAvail().X - 2 * k;
+                    ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
+                    ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 0));
+                    SettingRow[] rows = SettingRows;
+                    for (int i = 0; i < rows.Length; i++)
+                    {
+                        if (!rows[i].IsVisible(_rows.Data)) continue;
+                        ImGuiNET.ImGui.PushID(i);
+                        _rows.DrawRow(rows[i], w);
+                        ImGuiNET.ImGui.PopID();
+                    }
+                    ImGuiNET.ImGui.PopStyleVar();
+                    ImGuiNET.ImGui.PopFont();
+
                     PatrolInfo info = UiSources.Patrol.Current?.Value ?? new PatrolInfo();
                     PatrolBody(info, withTitle: false);
                 }
@@ -150,7 +188,7 @@ internal sealed partial class RynthAiFace
     }
 
     /// <summary>RynthAi's Mini Remote, drawn by the plugin into this drawer (the Hub launcher's right-click).</summary>
-    private sealed class RemoteDrawer : DashboardDrawer
+    private sealed class RemoteDrawer : RynthAiDrawer
     {
         /// <summary>The plugin surface name, NUL-terminated for the export.</summary>
         private static ReadOnlySpan<byte> Surface => "miniremote\0"u8;
@@ -170,7 +208,7 @@ internal sealed partial class RynthAiFace
         public override string TabTooltip(bool right) =>
             "Mini Remote: session rates, attack target, summon, item slots, toggles, bank, rebuff, Translate.\n" +
             "Its Options button picks the sections (also: right-click Hub). RynthILT's ILT tabs are in the Mini Remote window.\n" +
-            (right ? "Click to slide it out (to the right: there's no room on the left)." : "Click to slide it out.");
+            "Click to slide it out.";
 
         public override float Width(float k) =>
             Math.Clamp(_want.X > 0 ? _want.X : MinW * k, MinW * k, MaxW * k) + 2 * Pad * k;

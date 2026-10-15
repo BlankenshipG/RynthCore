@@ -56,7 +56,7 @@ internal sealed partial class MetaFace
         Separator(w);
         if (sc == null)
         {
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), "  This RynthAi has no Meta Manager (update RynthAi).");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "  This RynthAi has no Meta Manager (update RynthAi).");
             return;
         }
 
@@ -183,9 +183,9 @@ internal sealed partial class MetaFace
             : sc.LastPollMs == 0 ? "Waiting for the first /myquests."
             : $"{sc.QuestCount} quest timer(s), /myquests {Span(now - sc.LastPollMs)} ago.";
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(sc.ServerDisabled ? 0xFFE8B333 : 0xFFC8D6E4), Fit(poll, w));
+        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(sc.ServerDisabled ? RynthTheme.Highlight : RynthTheme.MuteAlt), Fit(poll, w));
         if (sc.LastSwitch.Length > 0)
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6),
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Accent),
                 Fit($"Last: {sc.LastSwitch}{(sc.LastSwitchMs > 0 ? $", {Span(now - sc.LastSwitchMs)} ago" : "")}", w));
         ImGuiNET.ImGui.PopFont();
     }
@@ -195,8 +195,8 @@ internal sealed partial class MetaFace
         if (sc.Rules.Count == 0)
         {
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), "  No rules. New Rule: when a timer runs out, load a meta.");
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), "  The first due rule (top to bottom) wins.");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "  No rules. New Rule: when a timer runs out, load a meta.");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "  The first due rule (top to bottom) wins.");
             return;
         }
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
@@ -367,7 +367,7 @@ internal sealed partial class MetaFace
         ScheduleRuleDto r = _schedRule;
 
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), _schedEdit == -1 ? "New rule" : $"Edit rule {_schedEdit + 1}");
+        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Accent), _schedEdit == -1 ? "New rule" : $"Edit rule {_schedEdit + 1}");
         ImGuiNET.ImGui.PopFont();
 
         FieldLabel("When:");
@@ -436,7 +436,7 @@ internal sealed partial class MetaFace
         if (_schedEdit >= 0)
         {
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), "Saving re-arms the rule (clears fired / error).");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "Saving re-arms the rule (clears fired / error).");
             ImGuiNET.ImGui.PopFont();
         }
         ImGuiNET.ImGui.EndChild();

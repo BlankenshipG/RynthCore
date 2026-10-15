@@ -58,6 +58,8 @@ internal sealed partial class RynthUpdater
         /// signed with the rest). Empty for older feeds, which only have <see cref="Notes"/>.
         /// </summary>
         public IReadOnlyList<string> Changes { get; init; } = Array.Empty<string>();
+        /// <summary>The optional World Map sizes the feed offers (RynthUpdater.MapPacks.cs); empty for older feeds.</summary>
+        public IReadOnlyList<MapPackEntry> MapPacks { get; init; } = Array.Empty<MapPackEntry>();
     }
 
     /// <summary>One installed copy of a plugin the feed knows.</summary>
@@ -91,6 +93,8 @@ internal sealed partial class RynthUpdater
         /// <summary>RynthNav's tiles: null when the feed has none or RynthNav isn't in the plugin list.</summary>
         public NavDataStatus? NavData { get; init; }
         public bool NavDataUpdateAvailable => NavData is { State: NavDataState.NeedsUpdate };
+        /// <summary>The optional World Map sizes: what the feed offers and what is installed. Not part of "Update plugins": the player chooses.</summary>
+        public IReadOnlyList<MapPackStatus> MapPacks { get; init; } = Array.Empty<MapPackStatus>();
     }
 
     /// <summary>
@@ -213,6 +217,7 @@ internal sealed partial class RynthUpdater
         {
             Companions = companions,
             NavData = CheckNavData(manifest, pluginPaths),
+            MapPacks = CheckMapPacks(manifest),
             Available = available,
             NewlyAnnounced = available.Where(a => fresh.Contains(a.Entry.Name)).ToList(),
         };
@@ -396,6 +401,7 @@ internal sealed partial class RynthUpdater
             r.TryGetProperty("navdata", out JsonElement nd) && nd.ValueKind == JsonValueKind.Object ? TryParseNavData(nd) : null)
         {
             Changes = ReadChanges(r),
+            MapPacks = ReadMapPacks(r),
         };
     }
 

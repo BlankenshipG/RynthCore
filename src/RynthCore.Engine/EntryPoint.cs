@@ -1083,6 +1083,8 @@ public static class EntryPoint
                     ImGuiBackend.Panels.VisionFace.Register();
                 if (HasPluginDll("RynthCore.Plugin.RynthNav.dll"))
                     ImGuiBackend.Panels.RynthNavFace.Register();
+                if (HasPluginDll("RynthCore.Plugin.RynthNav.dll"))
+                    ImGuiBackend.Panels.WorldMapFace.Register();
                 // Characters (your other RynthCore clients, through RynthNet): only with RynthNet installed.
                 if (HasPluginDll("RynthCore.Plugin.RynthNet.dll"))
                     ImGuiBackend.Panels.CharactersFace.Register();
@@ -1119,6 +1121,8 @@ public static class EntryPoint
                     // RynthAiPanel: see the dispatcher invariant above ChatModel.EnsureSettingsLoaded.
                     RynthAiDashboardState.EnsureLoaded();
                 }
+                // The colour theme (theme.txt), here rather than on AC's thread; every ImGui face reads it.
+                ImGuiBackend.RynthTheme.EnsureLoaded();
                 RegisterServerMenus(HasPluginDll("RynthCore.Plugin.RynthAi.dll"), HasPluginDll("RynthCore.Plugin.RynthILT.dll"));
                 if (trackerPresent)
                     TrackerSettings.EnsureLoaded();

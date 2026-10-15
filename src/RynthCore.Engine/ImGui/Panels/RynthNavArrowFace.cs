@@ -51,8 +51,9 @@ internal sealed class RynthNavArrowFace : IImGuiPanel
     /// <summary>The arrow turns with you: redraw popped out often enough to look smooth.</summary>
     public int PopOutIdleHz => 20;
 
-    private static readonly uint Glass = RynthTheme.Argb(0xDC0A0F14), Ring = RynthTheme.Argb(0xFF1A2A39),
-        InputBg = RynthTheme.Argb(0xFF0E1822), Purple = RynthTheme.Argb(0xFFB48CF0), Done = Faded(Mute);
+    private static readonly uint Ring = RynthTheme.Argb(0xFF1A2A39), InputBg = RynthTheme.Argb(0xFF0E1822),
+        Purple = RynthTheme.Argb(0xFFB48CF0), Done = Faded(Mute);
+    private static uint Glass => RynthTheme.WithAlpha(RynthTheme.Background, 0xDC);
 
     private const int MaxRouteRows = 8;
 

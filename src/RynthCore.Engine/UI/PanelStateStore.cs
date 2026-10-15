@@ -7,13 +7,15 @@
 //
 //  File format:
 //    bar=<left>,<top>[,<docked|floating>,<floatingLeft>,<floatingTop>]
+//    barlayout=<rows>,<maxIconsPerRow>        (BarLayout; only when not 1,0)
 //    panel.<title>=<open|closed>,<left>,<top>,<width>,<height>
 //                  [,<docked|floating>,<screenLeft>,<screenTop>]
 //
 //  The trailing three columns on each row were added when panels (and later
 //  the bar itself) gained the ability to detach into their own top-level
 //  layered windows. Files that pre-date the feature still parse — the floating
-//  mode just defaults to docked and the screen coords default to 0.
+//  mode just defaults to docked and the screen coords default to 0. A file
+//  without a barlayout= row gives the toolbar one row, no icon limit.
 //
 //  Stored under %LocalAppData%\RynthCore\panel_state.txt — survives reloads
 //  and out-of-game (the Runtime dir might be wiped during deploy).
@@ -43,6 +45,7 @@ internal static class PanelStateStore
     private static (double Left, double Top)? _barPosition;
     private static bool _barFloating;
     private static (double Left, double Top)? _barFloatingPosition;
+    private static int _barRows = BarLayout.DefaultRows, _barMaxPerRow = BarLayout.NoLimit;
     private static bool _loaded;
 
     private static string FilePath
@@ -75,6 +78,26 @@ internal static class PanelStateStore
     public static (double Left, double Top)? BarFloatingPosition
     {
         get { lock (Sync) { Load(); return _barFloatingPosition; } }
+    }
+
+    /// <summary>The toolbar's rows and icons-per-row limit (BarLayout; 1 and no limit unless set).</summary>
+    public static (int Rows, int MaxPerRow) BarRows
+    {
+        get { lock (Sync) { Load(); return (_barRows, _barMaxPerRow); } }
+    }
+
+    public static void SetBarRows(int rows, int maxPerRow)
+    {
+        lock (Sync)
+        {
+            Load();
+            rows = BarLayout.ClampRows(rows);
+            maxPerRow = BarLayout.ClampMaxPerRow(maxPerRow);
+            if (rows == _barRows && maxPerRow == _barMaxPerRow) return;
+            _barRows = rows;
+            _barMaxPerRow = maxPerRow;
+            Save();
+        }
     }
 
     public static bool TryGetPanel(string title, out PanelEntry entry)
@@ -186,6 +209,11 @@ internal static class PanelStateStore
                         _barFloatingPosition = (floatingVals[0], floatingVals[1]);
                     }
                 }
+                else if (string.Equals(key, "barlayout", StringComparison.OrdinalIgnoreCase))
+                {
+                    // An unreadable row leaves the defaults (TryParse sets them).
+                    BarLayout.TryParse(value, out _barRows, out _barMaxPerRow);
+                }
                 else if (key.StartsWith("panel.", StringComparison.OrdinalIgnoreCase))
                 {
                     string title = key["panel.".Length..];
@@ -247,6 +275,10 @@ internal static class PanelStateStore
                     sw.WriteLine(FormattableString.Invariant($"bar={bar.Left:0.##},{bar.Top:0.##}"));
                 }
             }
+
+            // Only when changed: a file that never had the row reads back the same.
+            if (_barRows != BarLayout.DefaultRows || _barMaxPerRow != BarLayout.NoLimit)
+                sw.WriteLine("barlayout=" + BarLayout.Format(_barRows, _barMaxPerRow));
 
             foreach (var kv in Panels)
             {

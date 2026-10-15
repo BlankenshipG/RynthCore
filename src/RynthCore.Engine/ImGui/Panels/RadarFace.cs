@@ -43,9 +43,10 @@ internal sealed class RadarFace : IImGuiPanel
 
     // ── Palette (RadarPanel's, ARGB) ────────────────────────────────────
     private const uint FrameOuterArgb = 0xFF0A0D14, CanvasBgArgb = 0xFF0A121A;
-    private static readonly uint FrameInner = C(0xFF9E853D), FrameAccent = C(0xFFE6C766),
-        Crosshair = C(0x994D6680), Cardinal = C(0xFFFFFFFF), CoordText = C(0xFFF2F8FF), Outline = C(0xF2000000),
-        PlayerCol = C(0xFF33FF66), ButtonBg = C(0xC0141F29), ButtonBorder = C(0xFF34587A);
+    private static readonly uint FrameInner = C(0xFF9E853D), FrameAccent = C(0xFFE6C766), Crosshair = C(0x994D6680),
+        Cardinal = C(0xFFFFFFFF), CoordText = C(0xFFF2F8FF), Outline = C(0xF2000000), PlayerCol = C(0xFF33FF66);
+    private static uint ButtonBg => RynthTheme.WithAlpha(RynthTheme.Field, 0xC0);
+    private static uint ButtonBorder => RynthTheme.Border;
     // Marker colours per kind (RadarSettingsStore.KindColors, user-pickable), refreshed each frame.
     private static readonly uint[] KindCols = new uint[RadarKind.Count];
     private const uint WallUnseen = 0xFFFFFFFF, WallVisited = 0xFF4099FF, FloorFlat = 0x8C2E8C38,
@@ -535,7 +536,7 @@ internal sealed class RadarFace : IImGuiPanel
     private void SettingsWindow()
     {
         if (!_settingsOpen) return;
-        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.WindowBg, C(0xFF0A121A));
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.WindowBg, RynthTheme.BoxBg);
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, ButtonBorder);
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 4f);
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(10, 10));

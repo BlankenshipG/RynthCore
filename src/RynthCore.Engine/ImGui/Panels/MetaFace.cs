@@ -54,11 +54,18 @@ internal sealed partial class MetaFace : IImGuiPanel
         () => new MetaFace());
 
     // ── Palette (MetaPanel's, ARGB) ─────────────────────────────────────
-    private static readonly uint Teal = C(0xFF26D9E6), Amber = C(0xFFE8B333), Green = C(0xFF33CC66),
-        Red = C(0xFFE04848), Mute = C(0xFFC8D6E4), TextDim = C(0xFFF2F7FC), ShellBg = C(0xFF0A0F14),
-        PanelBg = C(0xFF141F29), RowAlt = C(0xFF101822), BtnFill = C(0xFF16283A), BtnBord = C(0xFF34587A),
-        Fired = C(0xFF3A1212), BtnOn = C(0xFF0E2E3A), StateHdrA = C(0xFF0E1E30),
-        DelFill = C(0xFF7A1414), NewFill = C(0xFF0E2E1A), PickSel = C(0xFF1A2E42);
+    private static readonly uint Green = C(0xFF33CC66), Red = C(0xFFE04848), Fired = C(0xFF3A1212),
+        BtnOn = C(0xFF0E2E3A), StateHdrA = C(0xFF0E1E30), DelFill = C(0xFF7A1414), NewFill = C(0xFF0E2E1A);
+    private static uint Teal => RynthTheme.Accent;
+    private static uint Amber => RynthTheme.Highlight;
+    private static uint Mute => RynthTheme.MuteAlt;
+    private static uint TextDim => RynthTheme.Text;
+    private static uint ShellBg => RynthTheme.Background;
+    private static uint PanelBg => RynthTheme.Field;
+    private static uint RowAlt => RynthTheme.RowAlt;
+    private static uint BtnFill => RynthTheme.Button;
+    private static uint BtnBord => RynthTheme.Border;
+    private static uint PickSel => RynthTheme.Selected;
     private static uint C(uint argb) => RynthTheme.Argb(argb);
     private static uint Faded(uint abgr) => (abgr & 0x00FFFFFF) | ((abgr >> 25) << 24);   // half alpha
 
@@ -464,12 +471,12 @@ internal sealed partial class MetaFace : IImGuiPanel
             ImGuiNET.ImGui.PopTextWrapPos();
         }
         if (_sourceStale)
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFE8B333), "The meta changed since you started editing. Revert loads it.");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Highlight), "The meta changed since you started editing. Revert loads it.");
 
         if (_editor == null || !CodeEditor.Available)
         {
             ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFCC3333),
-                "The source editor needs the new cimgui.dll (a full RynthCore deploy). Use the Avalonia face meanwhile: /rc ui Meta avalonia");
+                "The source editor needs the new cimgui.dll (a full RynthCore deploy).");
             return;
         }
 
@@ -987,7 +994,7 @@ internal sealed partial class MetaFace : IImGuiPanel
     private static void FieldLabel(string text)
     {
         ImGuiNET.ImGui.Dummy(new Vector2(0, 1));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), text);
+        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), text);
     }
 
     private static void Separator(float w)

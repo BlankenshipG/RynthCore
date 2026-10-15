@@ -77,6 +77,7 @@ internal static unsafe class ImGuiPopOuts
         public readonly List<InputMessage> Input = new(32);
         public readonly bool[] Buttons = new bool[3];
         public long LastFrameTicks;
+        public int ThemeApplied;                      // RynthTheme.Version this context's style was coloured at
         public int HotFrames = HotFramesAfterInput;
         public bool WantTextInput, DropTextFocus;
         public bool Hovered;
@@ -484,6 +485,7 @@ internal static unsafe class ImGuiPopOuts
 
             _current = pop;
             ImGuiTextFocus.BeginFrame();
+            RynthTheme.RefreshStyle(ref pop.ThemeApplied);   // this context's base style follows a theme change
             ImGuiNET.ImGui.NewFrame();
             started = true;
             if (pop.DropTextFocus)

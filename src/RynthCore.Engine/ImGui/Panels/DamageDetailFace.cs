@@ -57,10 +57,15 @@ internal sealed class DamageDetailFace : IImGuiPanel
     }
 
     private static uint C(uint argb) => RynthTheme.Argb(argb);
-    private static readonly uint Teal = C(0xFF26D9E6), Gold = C(0xFFFFD16A), Dim = C(0xFFC8D4E0), White = C(0xFFF2F7FC),
-        EntryBg = C(0xFF16283A), EntryBorder = C(0xFF34587A), ToggleOn = C(0xFF33CC66), ToggleOff = C(0xFF4D4D4D),
-        BarBg = C(0xFF16222E), Good = C(0xFF33CC66), Mid = C(0xFFE8B333), Bad = C(0xFFE05A5A), DeleteBg = C(0xFF6E1E1E),
+    private static readonly uint Gold = C(0xFFFFD16A), ToggleOn = C(0xFF33CC66), ToggleOff = C(0xFF4D4D4D),
+        BarBg = C(0xFF16222E), Good = C(0xFF33CC66), Bad = C(0xFFE05A5A), DeleteBg = C(0xFF6E1E1E),
         DeleteBorder = C(0xFFFF8A8A);
+    private static uint Teal => RynthTheme.Accent;
+    private static uint Dim => RynthTheme.MuteAlt;
+    private static uint White => RynthTheme.Text;
+    private static uint EntryBg => RynthTheme.Button;
+    private static uint EntryBorder => RynthTheme.Border;
+    private static uint Mid => RynthTheme.Highlight;
 
     private MonsterDetail? _detail;
     private long _seenVersion = -1, _seenRulesVersion = -1;

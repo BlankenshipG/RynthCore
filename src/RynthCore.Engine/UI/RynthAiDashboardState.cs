@@ -6,8 +6,10 @@
 //  minimized|expanded, line 2 unused, line 3 target|notarget, line 4
 //  vitals|novitals; line 5 filesopen|nofiles, the Loaded files drawer; line 9
 //  ranges|noranges, the Ranges drawer; line 10 patrol|nopatrol, the Patrol
-//  drawer; line 11 remote|noremote, the Mini Remote drawer: the left-edge
-//  drawers, ImGui/Panels/DashboardDrawers.cs). Line 2
+//  drawer; line 11 remote|noremote, the Mini Remote drawer; line 12 the
+//  drawers moved to the side they don't start on, "moved:key,key"; line 13
+//  quick|noquick, the My settings drawer: the drawers on the dashboard's
+//  edges, ImGui/Panels/DashboardDrawers.cs). Line 2
 //  was the Monsters button's Simple/Advanced mode, retired 2026-10-01 with the
 //  basic Monsters panel: it is still written ("advanced") so the lines after
 //  it keep their places, and ignored on read. Lines 7 and 8 (the dashboard's
@@ -39,6 +41,9 @@ internal static class RynthAiDashboardState
     private static volatile bool _rangesOpen;           // the Ranges drawer beside the dashboard is open
     private static volatile bool _patrolOpen;           // the Patrol drawer beside the dashboard is open
     private static volatile bool _remoteOpen;           // the Mini Remote drawer beside the dashboard is open
+    private static volatile bool _quickOpen;            // the My settings drawer beside the dashboard is open
+    // Drawer keys on the side they don't start on (a tab's right-click moves it). Copy-on-write.
+    private static volatile string[] _moved = Array.Empty<string>();
     // Lines 7 and 8, unused since 2026-10-05: written back as read.
     private static string _line7 = "-", _line8 = "-";
     private static bool _loaded;
@@ -155,6 +160,38 @@ internal static class RynthAiDashboardState
         UiBackgroundWriter.Enqueue("rynthai dashboard state", Save);
     }
 
+    /// <summary>The My settings drawer (pinned settings) is open beside the dashboard. Any thread.</summary>
+    public static bool QuickOpen
+    {
+        get { EnsureLoaded(); return _quickOpen; }
+    }
+
+    public static void SetQuickOpen(bool open)
+    {
+        EnsureLoaded();
+        _quickOpen = open;
+        UiBackgroundWriter.Enqueue("rynthai dashboard state", Save);
+    }
+
+    /// <summary>The drawer <paramref name="key"/> sits on the side it doesn't start on. Any thread.</summary>
+    public static bool DrawerMoved(string key)
+    {
+        EnsureLoaded();
+        return Array.IndexOf(_moved, key) >= 0;
+    }
+
+    public static void SetDrawerMoved(string key, bool moved)
+    {
+        EnsureLoaded();
+        string[] cur = _moved;
+        if ((Array.IndexOf(cur, key) >= 0) == moved) return;
+        var list = new System.Collections.Generic.List<string>(cur);
+        if (moved) list.Add(key);
+        else list.Remove(key);
+        _moved = list.ToArray();
+        UiBackgroundWriter.Enqueue("rynthai dashboard state", Save);
+    }
+
     /// <summary>Reads the file if it hasn't been read yet. Engine init calls this so AC's thread never does.</summary>
     public static void EnsureLoaded()
     {
@@ -179,6 +216,9 @@ internal static class RynthAiDashboardState
                     _rangesOpen = lines.Length >= 9 && lines[8].Trim().Equals("ranges", StringComparison.OrdinalIgnoreCase);
                     _patrolOpen = lines.Length >= 10 && lines[9].Trim().Equals("patrol", StringComparison.OrdinalIgnoreCase);
                     _remoteOpen = lines.Length >= 11 && lines[10].Trim().Equals("remote", StringComparison.OrdinalIgnoreCase);
+                    if (lines.Length >= 12 && lines[11].Trim().StartsWith("moved:", StringComparison.OrdinalIgnoreCase))
+                        _moved = lines[11].Trim().Substring(6).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    _quickOpen = lines.Length >= 13 && lines[12].Trim().Equals("quick", StringComparison.OrdinalIgnoreCase);
                 }
             }
             catch { /* corrupt cache: start expanded */ }
@@ -197,7 +237,8 @@ internal static class RynthAiDashboardState
                 + (_filesOpen ? "filesopen" : "nofiles") + "\n" + (_barCollapsed ? "barcollapsed" : "bar") + "\n"
                 + _line7 + "\n" + _line8 + "\n"
                 + (_rangesOpen ? "ranges" : "noranges") + "\n" + (_patrolOpen ? "patrol" : "nopatrol") + "\n"
-                + (_remoteOpen ? "remote" : "noremote") + "\n");
+                + (_remoteOpen ? "remote" : "noremote") + "\n"
+                + "moved:" + string.Join(",", _moved) + "\n" + (_quickOpen ? "quick" : "noquick") + "\n");
         }
         catch { /* best-effort */ }
     }

@@ -4,20 +4,24 @@ namespace RynthCore.App;
 
 internal sealed class AppSettings
 {
-    public string AcClientPath { get; set; } = string.Empty;
+    // A new install starts with the standard client folder (2026-10-14); a saved path always wins.
+    public string AcClientPath { get; set; } = DefaultAcClientPath;
+    public const string DefaultAcClientPath = @"C:\Turbine\Asheron's Call\acclient.exe";
     public string EnginePath { get; set; } = string.Empty;
     public string LaunchArguments { get; set; } = string.Empty;
     public string SelectedServerProfileId { get; set; } = string.Empty;
     public string SelectedAccountProfileId { get; set; } = string.Empty;
     public List<string> CheckedLaunchAccountProfileIds { get; set; } = [];
     public string SelectedMainTabId { get; set; } = "launcher";
-    public bool AllowMultipleClients { get; set; }
-    public bool SkipIntroVideos { get; set; }
-    public bool SkipLoginLogos { get; set; }
+    // New-install defaults (2026-10-14): multiple clients, no intro videos or logos, inject after
+    // launch, kill stuck clients; leave clients launched outside RynthCore alone.
+    public bool AllowMultipleClients { get; set; } = true;
+    public bool SkipIntroVideos { get; set; } = true;
+    public bool SkipLoginLogos { get; set; } = true;
     public bool AutoLaunch { get; set; }
     public bool AutoInjectAfterLaunch { get; set; } = true;
-    public bool WatchForAcStart { get; set; } = true;
-    public bool InjectAllRunningClients { get; set; } = true;
+    public bool WatchForAcStart { get; set; }
+    public bool InjectAllRunningClients { get; set; }
     public string LoggingLevel { get; set; } = "Info";
     public int LaunchStaggerMs { get; set; } = 250;
     public int CrashRelaunchLimitInWindow { get; set; } = 3;
@@ -48,7 +52,7 @@ internal sealed class AppSettings
     /// patcher hangs, and "you have been disconnected" failure screens at
     /// the front of the launch flow. Off by default — destructive.
     /// Decal-mode clients are skipped (no engine = no IsLoggedIn signal).
-    public bool KillStuckClients { get; set; }
+    public bool KillStuckClients { get; set; } = true;
     public int StuckClientTimeoutSeconds { get; set; } = 60;
 
     /// When true (default), the launcher kills+relaunches a RynthCore-mode

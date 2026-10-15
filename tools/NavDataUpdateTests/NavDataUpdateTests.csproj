@@ -18,6 +18,7 @@
     <Compile Include="..\..\src\RynthCore.App.Avalonia\RynthUpdater.cs" Link="Linked\RynthUpdater.cs" />
     <Compile Include="..\..\src\RynthCore.App.Avalonia\RynthUpdater.NavData.cs" Link="Linked\RynthUpdater.NavData.cs" />
     <Compile Include="..\..\src\RynthCore.App.Avalonia\RynthUpdater.Available.cs" Link="Linked\RynthUpdater.Available.cs" />
+    <Compile Include="..\..\src\RynthCore.App.Avalonia\RynthUpdater.MapPacks.cs" Link="Linked\RynthUpdater.MapPacks.cs" />
     <Compile Include="..\..\src\RynthCore.App.Avalonia\DownloadProgress.cs" Link="Linked\DownloadProgress.cs" />
     <Compile Include="..\..\src\RynthCore.App.Avalonia\UpdateTrust.cs" Link="Linked\UpdateTrust.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Plugins\PluginContractVersion.cs" Link="Linked\PluginContractVersion.cs" />

@@ -37,8 +37,8 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         new PanelSpec(new Vector2(600, 460), new Vector2(440, 260), EdgeToEdge: true, GripInBody: true),
         () => new ChatFiltersFace());
 
-    private static readonly uint AddBg = RynthTheme.Argb(0xFF264C59), CardBg = RynthTheme.Argb(0xFF0E1822),
-        FocusBorder = RynthTheme.Argb(0xFFFFD700);
+    private static readonly uint CardBg = RynthTheme.Argb(0xFF0E1822), FocusBorder = RynthTheme.Argb(0xFFFFD700);
+    private static uint AddBg => RynthTheme.AccentFill;
 
     private sealed class Buffers
     {

@@ -30,6 +30,9 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item><c>/rc ui barsize [0-10|+|-|status]</c> - the RynthCore bar's size (its own text
 ///         size step, <see cref="UI.PanelTextScale"/>; saved for the PC, also in Settings &gt;
 ///         Display). Alone it reports the size.</item>
+///   <item><c>/rc ui barrows [1-6|+|-|status]</c> and <c>/rc ui baricons [2-30|none|+|-|status]</c>
+///         - the bar's rows and the most icons a row holds (none = no limit; <see cref="UI.BarLayout"/>,
+///         saved for the PC, also in the grip's menu and Settings &gt; Display). Alone each reports both.</item>
 ///   <item><c>/rc vendor [list|info|status|buy &lt;id|sel&gt; [n]|sell &lt;id|sel&gt; [id ...]]</c>
 ///         — read / trade with the open vendor through the engine's vendor
 ///         primitives (<see cref="VendorTrade"/>); a manual test hook for the
@@ -142,7 +145,7 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
-        // /rc ui list | /rc ui <Panel> avalonia|imgui|both
+        // /rc ui list | open|close|popout|redock|snap <Panel> | bar settings (HandleUiCommand)
         if (sub.Equals("ui", StringComparison.OrdinalIgnoreCase)
             || sub.StartsWith("ui ", StringComparison.OrdinalIgnoreCase))
         {
@@ -513,9 +516,10 @@ internal static class RynthCoreChatCommands
     }
 
     /// <summary>
-    /// /rc ui list, or /rc ui &lt;Panel&gt; avalonia|imgui|both: which face shows a
-    /// panel while it is docked in the client (UI.PanelRouter). Replies are
-    /// queued to chat, not written from inside this outgoing-chat hook.
+    /// /rc ui list (each panel's face and placement, UI.PanelRouter), open/close/popout/
+    /// redock/snap a panel, and the bar's settings. /rc ui &lt;Panel|bar&gt; avalonia|imgui|both
+    /// no longer picks a face (2026-10-14: docked panels and the bar are always ImGui); it
+    /// says so. Replies are queued to chat, not written from inside this outgoing-chat hook.
     /// </summary>
     private static void HandleUiCommand(string args)
     {
@@ -565,6 +569,52 @@ internal static class RynthCoreChatCommands
             return;
         }
 
+        // /rc ui barrows [1-6|+|-|status]: the bar's rows. Alone it reports the rows and the limit.
+        if (parts[0].Equals("barrows", StringComparison.OrdinalIgnoreCase))
+        {
+            int cur = ImGuiBackend.ImGuiBar.Rows;
+            if (parts.Length >= 2 && !parts[1].Equals("status", StringComparison.OrdinalIgnoreCase))
+            {
+                int next;
+                // Bare + / -: one row. +n / -n: that many. Plain n: that many rows.
+                if (parts[1] == "+") next = cur + 1;
+                else if (parts[1] == "-") next = cur - 1;
+                else if (!int.TryParse(parts[1], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out next))
+                {
+                    Reply("Usage: /rc ui barrows [1-6|+|-|status]");
+                    return;
+                }
+                else if (parts[1][0] is '+' or '-')
+                    next += cur;
+                ImGuiBackend.ImGuiBar.SetRowLayout(next, ImGuiBackend.ImGuiBar.MaxPerRow);
+            }
+            Reply(ImGuiBackend.ImGuiBar.DescribeRowLayout());
+            return;
+        }
+
+        // /rc ui baricons [2-30|none|+|-|status]: the most icons a bar row holds (none or 0 = no
+        // limit). + / - step like the grip's menu (past 30 is no limit). Alone it reports both.
+        if (parts[0].Equals("baricons", StringComparison.OrdinalIgnoreCase))
+        {
+            int cur = ImGuiBackend.ImGuiBar.MaxPerRow;
+            if (parts.Length >= 2 && !parts[1].Equals("status", StringComparison.OrdinalIgnoreCase))
+            {
+                int next;
+                if (parts[1] == "+" || parts[1] == "-")
+                    next = UI.BarLayout.StepMaxPerRow(cur, parts[1] == "+" ? 1 : -1, ImGuiBackend.ImGuiBar.ShownPerRow);
+                else if (parts[1].Equals("none", StringComparison.OrdinalIgnoreCase) || parts[1].Equals("off", StringComparison.OrdinalIgnoreCase))
+                    next = UI.BarLayout.NoLimit;
+                else if (!int.TryParse(parts[1], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out next))
+                {
+                    Reply("Usage: /rc ui baricons [2-30|none|+|-|status]");
+                    return;
+                }
+                ImGuiBackend.ImGuiBar.SetRowLayout(ImGuiBackend.ImGuiBar.Rows, next);
+            }
+            Reply(ImGuiBackend.ImGuiBar.DescribeRowLayout());
+            return;
+        }
+
         // /rc ui open|close|popout|redock|snap <Panel>: drive a panel by name (tests,
         // dispatch.txt). Names may have spaces ("Monster Detail").
         string verb = parts[0].ToLowerInvariant();
@@ -595,13 +645,14 @@ internal static class RynthCoreChatCommands
             return;
         }
 
-        if (parts.Length != 2 || !UI.PanelFaceStore.TryParseFace(parts[1], out UI.PanelFace face))
+        // The old face choice: nothing to pick any more (nothing is stored either).
+        if (parts.Length == 2 && UI.PanelFaceStore.TryParseFace(parts[1], out _))
         {
-            Reply("Usage: /rc ui list  |  /rc ui <Panel|bar> avalonia|imgui|both  |  /rc ui open|close|popout|redock|snap <Panel>  |  /rc ui retailvitals [on|off]  |  /rc ui barsize [0-10|+|-|status]");
+            Reply("The Avalonia / Both faces are gone: docked panels and the bar always show their ImGui face.");
             return;
         }
 
-        Reply(UI.PanelRouter.SetDockedFace(parts[0], face));
+        Reply("Usage: /rc ui list  |  /rc ui open|close|popout|redock|snap <Panel>  |  /rc ui retailvitals [on|off]  |  /rc ui barsize [0-10|+|-|status]  |  /rc ui barrows [1-6|+|-]  |  /rc ui baricons [2-30|none|+|-]");
     }
 
     /// <summary>

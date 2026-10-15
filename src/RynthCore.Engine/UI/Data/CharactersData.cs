@@ -50,6 +50,9 @@ internal sealed class CharacterRow
     public string DistanceText = "";
     public string Compass = "";
     public string Location = "";
+    /// <summary>Where it is on the surface map, in degrees (the World Map's other-characters layer): set when it is outdoors or in an overworld building.</summary>
+    public bool HasMap;
+    public double MapNs, MapEw;
 
     public string StateText = "";
     public CharStateKind StateKind;
@@ -261,6 +264,13 @@ internal sealed unsafe class CharactersSource : UiSource<CharactersView>
         else if (e.Portal) row.Location = "portal space";
         else if (hasPose)
         {
+            if (_isOverworldBlock(cell >> 16))
+            {
+                // A pose is relative to its landblock, indoors too: the surface coordinates of the spot.
+                row.HasMap = true;
+                row.MapEw = (((cell >> 24) & 0xFF) * 8.0 + x / 24.0 - 1019.5) / 10.0;
+                row.MapNs = (((cell >> 16) & 0xFF) * 8.0 + y / 24.0 - 1019.5) / 10.0;
+            }
             CharPlace p = canMeasure
                 ? CharactersModel.Locate(myCell, mx, my, mz, cell, x, y, z, _isOverworldBlock, _dungeonName)
                 : CharactersModel.Locate(0, 0, 0, 0, cell, x, y, z, _isOverworldBlock, _dungeonName);
@@ -273,6 +283,7 @@ internal sealed unsafe class CharactersSource : UiSource<CharactersView>
         else if (e.HasCoords)
         {
             row.Location = CharactersModel.CoordsText(e.Ns, e.Ew);
+            row.HasMap = true; row.MapNs = e.Ns; row.MapEw = e.Ew;
         }
 
         row.Tooltip = Tooltip(e, row, cell, hasPose);

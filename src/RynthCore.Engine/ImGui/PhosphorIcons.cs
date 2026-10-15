@@ -111,6 +111,8 @@ internal static unsafe class PhosphorIcons
     public const string Play = "\uE3D0";
     public const string Package = "\uE390";
     public const string Plus = "\uE3D4";
+    public const string SlidersHorizontal = "\uE434";
+    public const string PushPin = "\uE3E2";
     public const string Power = "\uE3DA";
     public const string Resize = "\uED6E";
     public const string Robot = "\uE762";
@@ -169,7 +171,8 @@ internal static unsafe class PhosphorIcons
         + ArrowCircleUp + Barbell + Brain + GraduationCap + Hourglass + SortDescending + Package
         + Binoculars + Crown + Sun
         + CastleTurret + ClockCounterClockwise + GlobeHemisphereWest + Path + Star + Target + User
-        + TextAa + Leaf + Keyboard;
+        + TextAa + Leaf + Keyboard
+        + PushPin + SlidersHorizontal + Wrench;
 
     /// <summary>
     /// Draws <paramref name="glyph"/> (one icon) centred in the box at

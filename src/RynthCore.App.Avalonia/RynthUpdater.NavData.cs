@@ -20,7 +20,7 @@ namespace RynthCore.App.Avalonia;
 /// The signature covers it exactly like the plugins; the archive is checked against the signed
 /// size and SHA-256 before it is opened, and only plain file names RynthNav reads
 /// (nav_XXXX.tile, portals.tsv, locations.json, navgraph.bin: the long-range route graph,
-/// townnet.json: the Town Network's portals and the walks inside) are
+/// townnet.json: the Town Network's portals and the walks inside, worldmap.rmap and worldmap.vec: the World Map's tiles, buildings and roads) are
 /// accepted from it.
 ///
 /// Install: only when RynthNav is in the plugin list and the folder's navdata.id differs from the
@@ -40,7 +40,7 @@ internal sealed partial class RynthUpdater
     private const long MaxNavDataBytes = 3L << 30;       // the archive
     private const long MaxNavDataEntryBytes = 32L << 20; // one file in it
 
-    private static readonly Regex ShippedName = new(@"^(nav_[0-9A-Fa-f]{4}\.tile|portals\.tsv|locations\.json|navgraph\.bin|townnet\.json)$", RegexOptions.CultureInvariant);
+    private static readonly Regex ShippedName = new(@"^(nav_[0-9A-Fa-f]{4}\.tile|portals\.tsv|locations\.json|navgraph\.bin|townnet\.json|worldmap\.rmap|worldmap\.vec)$", RegexOptions.CultureInvariant);
     private static readonly Regex IdPattern = new(@"^[0-9a-f]{16,64}$", RegexOptions.CultureInvariant);
 
     public sealed record NavDataEntry(string Id, int Release, string Url, long Size, string Sha256, int Files, long Bytes);

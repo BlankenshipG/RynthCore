@@ -43,7 +43,12 @@ param(
     # portals.tsv and locations.json from this folder. Only re-uploaded when the set changes
     # (its id is a hash of every file); otherwise the live feed's entry is carried over.
     [string]$NavDataDir = "C:\Games\RynthCore\NavData",
-    [switch]$SkipNavData       # leave navdata out of this feed (launchers then keep what they have)
+    [switch]$SkipNavData,      # leave navdata out of this feed (launchers then keep what they have)
+    # The World Map's optional sizes (RynthNav.Baker --map-world): worldmap-hd.rmap, worldmap-ultra.rmap and worldmap-p32.rmap from this
+    # folder are offered by the launcher as separate downloads ("mappacks" in the feed). Each is uploaded once under
+    # mappacks/<first 16 hex of its SHA-256>/ and kept by later releases. Without this folder the live feed's packs are
+    # carried over unchanged, so a release that doesn't touch the maps never drops them.
+    [string]$MapPacksDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -202,12 +207,19 @@ Compress-Archive -Path "$zipRoot\*" -DestinationPath "$rel\RynthSuite-Plugins.zi
 $navData = $null
 $navZip = $null
 if (-not $SkipNavData) {
-    Step "RynthNav data (tiles, route graph, portals, Atlas, Town Network) from $NavDataDir"
-    $navFiles = @(Get-ChildItem $NavDataDir -File | Where-Object { $_.Name -match '^(nav_[0-9A-Fa-f]{4}\.tile|portals\.tsv|locations\.json|navgraph\.bin|townnet\.json)$' } | Sort-Object Name)
+    Step "RynthNav data (tiles, route graph, portals, Atlas, Town Network, World Map) from $NavDataDir"
+    $navFiles = @(Get-ChildItem $NavDataDir -File | Where-Object { $_.Name -match '^(nav_[0-9A-Fa-f]{4}\.tile|portals\.tsv|locations\.json|navgraph\.bin|townnet\.json|worldmap\.rmap|worldmap\.vec)$' } | Sort-Object Name)
     $tileCount = @($navFiles | Where-Object { $_.Extension -eq ".tile" }).Count
     if ($tileCount -eq 0) { throw "$NavDataDir has no tiles. Pass -NavDataDir, or -SkipNavData to publish without them." }
     # The long-range route graph (RynthNav.Baker --graph) must come from these very tiles: the
     # plugin ignores a graph whose tiles don't match (long gotos then walk the straight line).
+    # The World Map's picture (RynthNav.Baker --map --map-tiles from the dats; the terrain doesn't change between releases).
+    if (-not ($navFiles | Where-Object { $_.Name -eq "worldmap.rmap" })) {
+        Write-Warning "No worldmap.rmap in ${NavDataDir}: the World Map has no picture. Run: RynthNav.Baker --map --map-tiles --out <dir> and copy worldmap.rmap there."
+    }
+    if (-not ($navFiles | Where-Object { $_.Name -eq "worldmap.vec" })) {
+        Write-Warning "No worldmap.vec in ${NavDataDir}: the World Map has no buildings or roads. Run: RynthNav.Baker --map-vectors --out <dir> and copy worldmap.vec there."
+    }
     $graph = $navFiles | Where-Object { $_.Name -eq "navgraph.bin" }
     $newestTile = ($navFiles | Where-Object { $_.Extension -eq ".tile" } | Measure-Object LastWriteTimeUtc -Maximum).Maximum
     if (-not $graph) { Write-Warning "No navgraph.bin in ${NavDataDir}: long gotos will walk the straight line. Run: RynthNav.Baker --graph $NavDataDir" }
@@ -253,6 +265,41 @@ if (-not $SkipNavData) {
         }
         Write-Host ("  new set: {0} files ({1} tiles), {2:N0} MB packed into {3:N0} MB, id {4}" -f $navFiles.Count, $tileCount, ($navBytes / 1MB), ($zi.Length / 1MB), $navId)
     }
+}
+
+# ── World map packs (optional sizes) ─────────────────────────────────────────
+# key -> what the launcher shows; the file names are what RynthNav.Baker --map-world writes (extreme = --ppc 32, whose default name is worldmap-p32.rmap).
+$mapPackDefs = [ordered]@{
+    hd    = @{ name = "HD";    file = "worldmap-hd.rmap";    description = "Sharper ground, roads, rooftops and trees." }
+    ultra = @{ name = "Ultra"; file = "worldmap-ultra.rmap"; description = "Very sharp: individual roofs and trees. Large download." }
+    extreme = @{ name = "Extreme"; file = "worldmap-p32.rmap"; description = "Every roof, road and tree in detail. Very large download (about 1 GB)." }
+    # (The 64 px "Maximum" map, worldmap-p64.rmap, is deliberately NOT here: it is for private use only and is never offered to players.)
+}
+$mapPacks = @()
+$mapPackUploads = @()       # files to put on the server: @{ Path; Remote; Sha }
+if ($MapPacksDir) {
+    Step "World map packs from $MapPacksDir"
+    foreach ($key in $mapPackDefs.Keys) {
+        $def = $mapPackDefs[$key]
+        $f = Join-Path $MapPacksDir $def.file
+        if (-not (Test-Path $f)) { Write-Host "  $($def.name): no $($def.file) here, not offered by this feed"; continue }
+        $sha = Sha256 $f
+        $id = $sha.Substring(0, 16)
+        $mapPacks += [ordered]@{
+            key = $key; name = $def.name; file = $def.file
+            url = "$BaseUrl/mappacks/$id/$($def.file)"
+            size = [long](Get-Item $f).Length; sha256 = $sha; release = $release; description = $def.description
+        }
+        $mapPackUploads += @{ Path = $f; Remote = "mappacks/$id/$($def.file)"; Sha = $sha }
+        Write-Host ("  {0}: {1:N1} MB, {2}" -f $def.name, ((Get-Item $f).Length / 1MB), $id)
+    }
+} elseif ($liveManifest -and $liveManifest.mappacks) {
+    # Carried over from the live feed (ConvertFrom-Json): force the whole numbers back to integers.
+    $mapPacks = @($liveManifest.mappacks | ForEach-Object {
+        [ordered]@{ key = [string]$_.key; name = [string]$_.name; file = [string]$_.file; url = [string]$_.url; size = [long]$_.size
+                    sha256 = [string]$_.sha256; release = [long]$_.release; description = [string]$_.description }
+    })
+    Write-Host "  map packs: $($mapPacks.Count) carried over from the live feed"
 }
 
 # ── 3. Manifest + signature ──────────────────────────────────────────────────
@@ -327,6 +374,7 @@ $manifest = [ordered]@{
     plugins   = @($plugins)
 }
 if ($navData) { $manifest.navdata = $navData }
+if ($mapPacks.Count -gt 0) { $manifest.mappacks = @($mapPacks) }
 Set-Content "$rel\update.payload.json" ($manifest | ConvertTo-Json -Depth 5) -Encoding utf8NoBOM
 & (Join-Path $ScriptDir "Sign-Update.ps1") -PayloadPath "$rel\update.payload.json" -OutPath "$rel\update.json" -KeyDir $KeyDir
 if (-not (Test-Envelope "$rel\update.json" $trusted)) { throw "Signed feed does not verify against UpdateTrust.cs" }
@@ -360,6 +408,23 @@ if ($navZip) {
     scp -q $navZip "${SshHost}:$remoteRel/RynthNav-NavData.zip"
     if ($LASTEXITCODE -ne 0) { throw "scp of the RynthNav data archive failed" }
     $navSum = " RynthNav-NavData.zip"
+}
+
+# World map packs: content-addressed (the folder is the start of the file's SHA-256), so a pack already on the server
+# is not sent again and an old release's URL keeps working.
+foreach ($up in $mapPackUploads) {
+    $remoteFile = "$RemoteDir/$($up.Remote)"
+    ssh $SshHost "test -f '$remoteFile'"
+    if ($LASTEXITCODE -eq 0) { Write-Host "  $($up.Remote): already on the server"; continue }
+    ssh $SshHost "mkdir -p '$(Split-Path $remoteFile -Parent | ForEach-Object { $_ -replace '\\','/' })'"
+    if ($LASTEXITCODE -ne 0) { throw "ssh mkdir for $($up.Remote) failed" }
+    scp -q $up.Path "${SshHost}:$remoteFile.part"
+    if ($LASTEXITCODE -ne 0) { throw "scp of $($up.Remote) failed" }
+    $got = (ssh $SshHost "sha256sum '$remoteFile.part'") -split '\s+' | Select-Object -First 1
+    if ($got -ne $up.Sha) { ssh $SshHost "rm -f '$remoteFile.part'"; throw "Hash mismatch on the server for $($up.Remote) — feed NOT published" }
+    ssh $SshHost "mv -f '$remoteFile.part' '$remoteFile'"
+    if ($LASTEXITCODE -ne 0) { throw "Publishing $($up.Remote) failed" }
+    Write-Host "  $($up.Remote): uploaded and hash-checked"
 }
 
 $remoteSums = ssh $SshHost "cd '$remoteRel' && sha256sum RynthCore-Setup.exe plugins/*.dll$navSum"

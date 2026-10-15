@@ -57,7 +57,8 @@ internal sealed class RynthNavFace : IImGuiPanel
     }
 
     private static readonly uint RunGreen = RynthTheme.Argb(0xFF40D973), Sep = RynthTheme.Argb(0xFF1A2A39),
-        RowHot = RynthTheme.Argb(0xFF16283A), Gold = RynthTheme.Argb(0xFFFFD24D), Purple = RynthTheme.Argb(0xFFBF4DFF);
+        Gold = RynthTheme.Argb(0xFFFFD24D), Purple = RynthTheme.Argb(0xFFBF4DFF);
+    private static uint RowHot => RynthTheme.Button;
 
     private const int TabGo = 0, TabAtlas = 1, TabArrow = 2;
 
@@ -127,6 +128,16 @@ internal sealed class RynthNavFace : IImGuiPanel
         dl.AddText(big, big.FontSize, p + new Vector2(16, 1), Teal, "RynthNav");
         float tw = ImGuiNET.ImGui.CalcTextSize("RynthNav").X * big.FontSize / ImGuiNET.ImGui.GetFontSize();
         dl.AddText(p + new Vector2(24 + tw, 6), Mute, "go · atlas · arrow");
+        if (ImGuiPanelHost.HasFace(WorldMapFace.Title))
+        {
+            bool mapOpen = ImGuiPanelHost.IsOpen(WorldMapFace.Title), miniOpen = ImGuiPanelHost.IsOpen(MiniMapFace.Title);
+            if (Button("##rnav_worldmap", PhosphorIcons.GlobeHemisphereWest + " Map", new Vector2(p.X + w - 62, p.Y - 1), new Vector2(62, 22),
+                    mapOpen ? Teal : Text, mapOpen ? Selected : BtnFill, border: mapOpen ? Teal : 0))
+                UI.PanelRouter.Toggle(WorldMapFace.Title);
+            if (Button("##rnav_minimap", "Mini", new Vector2(p.X + w - 62 - 4 - 40, p.Y - 1), new Vector2(40, 22),
+                    miniOpen ? Teal : Text, miniOpen ? Selected : BtnFill, border: miniOpen ? Teal : 0))
+                UI.PanelRouter.Toggle(MiniMapFace.Title);
+        }
         NextLine(p, 22);
         DrawTabs(w);
         DrawStatusLine(w);

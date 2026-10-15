@@ -233,6 +233,8 @@ internal static class EngineFrameController
             // Its lists are drawn by DX9Backend from the DIP hook, which is still live.
             UnderUiLayer.Shutdown();
             ScriptIcons.Shutdown();   // script window icon textures, before the backend goes
+            WorldMapTiles.Shutdown(); // the world map's tile textures, likewise
+            WorldMapVectors.Shutdown();
             RetailSprites.Shutdown(); // retail UI pictures (Inventory Classic view), likewise
             DX9Backend.Shutdown();
             // Do NOT call Win32Backend.Shutdown() here. EngineLifecycle.Shutdown
@@ -594,6 +596,7 @@ internal static class EngineFrameController
 
     /// <summary>DPI scale the fonts and style were built for (see Init).</summary>
     private static float _uiScale = 1f;
+    private static int _themeApplied;   // RynthTheme.Version the base style was coloured at
 
     /// <summary>The scale the fonts and style were built for.</summary>
     internal static float FontScale => _uiScale;
@@ -705,6 +708,7 @@ internal static class EngineFrameController
             // Script window icons decoded since the last frame become textures, and the least
             // recently drawn go, before anything draws (no draw list points at them any more).
             ScriptIcons.BeginFrame(pDevice);
+            WorldMapTiles.BeginFrame(pDevice);   // world map tiles read since the last frame become textures
             RetailSprites.BeginFrame(pDevice);   // retail UI pictures decoded since the last frame (kept, never evicted)
             DX9Backend.NewFrame();
             Win32Backend.NewFrame(clientW, clientH);
@@ -721,6 +725,7 @@ internal static class EngineFrameController
             _lastFrameTicks = now;
             io.DeltaTime = dt > 0f ? dt : 1f / 60f;
 
+            RynthTheme.RefreshStyle(ref _themeApplied);   // a theme change re-colours the base style
             ImGuiNET.ImGui.NewFrame();
             frameStarted = true;
             // Before any window: a drag from a popped-out Inventory or AC's inventory becomes

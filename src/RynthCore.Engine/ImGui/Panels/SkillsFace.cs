@@ -58,8 +58,8 @@ internal sealed partial class SkillsFace : IImGuiPanel
 
     // ── Palette (FaceKit's, plus the vitals') ────────────────────────────
     private static readonly uint Mana = RynthTheme.Argb(0xFF4DA6FF), Dim = RynthTheme.Argb(0xFF7F8FA0),
-        ExpandedBg = RynthTheme.Argb(0xFF1A2E42), GroupBg = RynthTheme.Argb(0xFF0F1A24),
-        MasteryColor = RynthTheme.Argb(0xFFC9A2FF);
+        GroupBg = RynthTheme.Argb(0xFF0F1A24), MasteryColor = RynthTheme.Argb(0xFFC9A2FF);
+    private static uint ExpandedBg => RynthTheme.Selected;
 
     private const float RowH = 24f, IconSize = 20f, ColBuffed = 46f, ColBase = 46f, ColCost = 76f, ColButton = 52f,
         CaretW = 16f, MultiW = 190f;

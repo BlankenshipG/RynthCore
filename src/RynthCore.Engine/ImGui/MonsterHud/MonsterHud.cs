@@ -84,8 +84,9 @@ internal static class MonsterHud
     private static readonly uint BarBack = C(0xE00C1118), BarEdge = C(0xFF000000), Tick = C(0x70000000),
         Shine = C(0x38FFFFFF), Trail = C(0xFFF3E2A8), Gold = C(0xFFE6C766), GoldBright = C(0xFFFFD966),
         GoldGlow = C(0x55E6C766), NameText = C(0xFFF2E8DC), AttackerText = C(0xFFFF8A7A), Outline = C(0xE6000000),
-        HpText = C(0xFFFFFFFF), DimText = C(0xFFB8C4D0), BadgeBack = C(0xD0101820), BadgeEdge = C(0xFF34587A),
-        Leader = C(0x60FFFFFF), HoverEdge = C(0xC0FFFFFF), UnknownFill = C(0xFF5E8A6A), IconBack = C(0xD80B1219), OthersTint = C(0xFFFF8A7A);
+        HpText = C(0xFFFFFFFF), DimText = C(0xFFB8C4D0), BadgeBack = C(0xD0101820), Leader = C(0x60FFFFFF),
+        HoverEdge = C(0xC0FFFFFF), UnknownFill = C(0xFF5E8A6A), IconBack = C(0xD80B1219), OthersTint = C(0xFFFF8A7A);
+    private static uint BadgeEdge => RynthTheme.Border;
     private static readonly Vector3 HpHigh = new(0x3F, 0xD0, 0x6A), HpMid = new(0xE8, 0xB3, 0x33), HpLow = new(0xE0, 0x4A, 0x4A);
 
     // Element colours, shared by the "weak to" pill and the vulnerability icons.

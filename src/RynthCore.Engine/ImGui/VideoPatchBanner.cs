@@ -17,9 +17,9 @@ internal static class VideoPatchBanner
     private const string Line2 = "Type /rc video off, or Settings > Misc > Video patch";
 
     private static readonly uint Back = RynthTheme.Argb(0xC0101820);
-    private static readonly uint Border = RynthTheme.Argb(0xFF34587A);
-    private static readonly uint Title = RynthTheme.Argb(0xFF26D9E6);
-    private static readonly uint Text = RynthTheme.Argb(0xFFB8C8D8);
+    private static uint Border => RynthTheme.Border;
+    private static uint Title => RynthTheme.Accent;
+    private static uint Text => RynthTheme.TextMuted;
 
     public static void Draw()
     {

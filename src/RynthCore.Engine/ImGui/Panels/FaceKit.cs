@@ -20,10 +20,18 @@ internal static class FaceKit
 {
     private static uint C(uint argb) => RynthTheme.Argb(argb);
 
-    public static readonly uint Teal = C(0xFF26D9E6), Amber = C(0xFFE8B333), Green = C(0xFF33CC66),
-        Red = C(0xFFE05A5A), Mute = C(0xFFC8D6E4), Text = C(0xFFF2F7FC), ShellBg = C(0xFF0A0F14),
-        PanelBg = C(0xFF141F29), RowAlt = C(0xFF101822), BtnFill = C(0xFF16283A), BtnBord = C(0xFF34587A),
-        Selected = C(0xFF1A2E42), StartBg = C(0xFF196119), StopBg = C(0xFF801919), DeleteBg = C(0xFF801A1A);
+    public static readonly uint Green = C(0xFF33CC66), Red = C(0xFFE05A5A), StartBg = C(0xFF196119),
+        StopBg = C(0xFF801919), DeleteBg = C(0xFF801A1A);
+    public static uint Teal => RynthTheme.Accent;
+    public static uint Amber => RynthTheme.Highlight;
+    public static uint Mute => RynthTheme.MuteAlt;
+    public static uint Text => RynthTheme.Text;
+    public static uint ShellBg => RynthTheme.Background;
+    public static uint PanelBg => RynthTheme.Field;
+    public static uint RowAlt => RynthTheme.RowAlt;
+    public static uint BtnFill => RynthTheme.Button;
+    public static uint BtnBord => RynthTheme.Border;
+    public static uint Selected => RynthTheme.Selected;
 
     // ── Frame ────────────────────────────────────────────────────────────
 

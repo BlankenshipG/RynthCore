@@ -861,7 +861,7 @@ internal sealed partial class MetaFace
     private static void Note(string text)
     {
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), text);
+        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), text);
         ImGuiNET.ImGui.PopFont();
     }
 

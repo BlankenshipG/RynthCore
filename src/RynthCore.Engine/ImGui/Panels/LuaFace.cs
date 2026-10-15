@@ -555,7 +555,7 @@ internal sealed class LuaFace : IImGuiPanel
         ImGuiNET.ImGui.PushTextWrapPos(0);
         string text = _data?.Console ?? string.Empty;
         if (text.Length > 0) ImGuiNET.ImGui.TextUnformatted(text);
-        if (_note.Length > 0) ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFE8B333), "[panel] " + _note);
+        if (_note.Length > 0) ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Highlight), "[panel] " + _note);
         ImGuiNET.ImGui.PopTextWrapPos();
         ImGuiNET.ImGui.PopStyleColor();
         ImGuiNET.ImGui.PopFont();

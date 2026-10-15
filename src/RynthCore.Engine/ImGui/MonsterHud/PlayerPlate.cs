@@ -46,8 +46,9 @@ internal static class PlayerPlate
     private const float HeadHeight = 2.05f;          // metres above the feet (human-sized characters)
     private const float FirstPersonDistance = 1.3f;  // camera this close to the head = first person
 
-    private static readonly uint HealthCol = MonsterHud.C(0xFFE04A4A), StaminaCol = MonsterHud.C(0xFFE8B333),
-        ManaCol = MonsterHud.C(0xFF3F8FE8), NameCol = MonsterHud.C(0xFFF2E8DC), NumCol = MonsterHud.C(0xFFFFFFFF);
+    private static readonly uint HealthCol = MonsterHud.C(0xFFE04A4A), ManaCol = MonsterHud.C(0xFF3F8FE8),
+        NameCol = MonsterHud.C(0xFFF2E8DC), NumCol = MonsterHud.C(0xFFFFFFFF);
+    private static uint StaminaCol => RynthTheme.Highlight;
 
     private struct BarState
     {
@@ -217,7 +218,8 @@ internal static class PlayerPlate
         Paint(dl, ref l, left, y);
     }
 
-    private static readonly uint FrameCol = MonsterHud.C(0xB026D9E6), FrameHot = MonsterHud.C(0xFF26D9E6);
+    private static uint FrameCol => RynthTheme.WithAlpha(RynthTheme.Accent, 0xB0);
+    private static uint FrameHot => RynthTheme.Accent;
 
     /// <summary>Hover and a left-drag on the unlocked plate (the MonsterHud plate-click pattern).</summary>
     private static void Drag(bool unlocked, Vector2 r0, Vector2 r1, Vector2 centre)

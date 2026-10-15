@@ -84,6 +84,8 @@ internal sealed class RynthNavStatus
     public int OpenArrow;
     public RynthNavArrow? Arrow;
     public string RouteFor = "", RouteSummary = "";
+    /// <summary>The walking path RynthNav worked out for the trip: segments (one per walk), each a flat list of ns, ew pairs in degrees. Empty: none (older RynthNav, or no trip on the ground).</summary>
+    public float[][] PathSegments = Array.Empty<float[]>();
     public bool RouteActive;
     public int RouteIdx = -1;
     public RynthNavRouteStep[] Route = Array.Empty<RynthNavRouteStep>();
@@ -287,6 +289,23 @@ internal sealed class RynthNavStatus
             s.MarkerGuide = Int(mk, "guide") != 0;
             s.MarkersShown = Int(mk, "shown") != 0;
             s.MarkerStatus = Str(mk, "status");
+        }
+        if (r.TryGetProperty("path", out var pa) && pa.ValueKind == JsonValueKind.Array)
+        {
+            var segs = new List<float[]>();
+            foreach (JsonElement seg in pa.EnumerateArray())
+            {
+                if (seg.ValueKind != JsonValueKind.Array) continue;
+                var arr = new float[seg.GetArrayLength() & ~1];     // whole ns, ew pairs
+                int i = 0;
+                foreach (JsonElement v in seg.EnumerateArray())
+                {
+                    if (i >= arr.Length) break;
+                    arr[i++] = v.ValueKind == JsonValueKind.Number ? (float)v.GetDouble() : 0f;
+                }
+                if (arr.Length >= 4) segs.Add(arr);
+            }
+            s.PathSegments = segs.ToArray();
         }
         if (r.TryGetProperty("save", out var sv) && sv.ValueKind == JsonValueKind.Object)
         {

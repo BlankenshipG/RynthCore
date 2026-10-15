@@ -61,10 +61,11 @@ namespace RynthCore.Engine.ImGuiBackend.Panels;
 internal sealed partial class MetaFace
 {
     // ── Rule text colours (MetaTone) and list lines ──────────────────────
-    private static readonly uint ToneLabel = C(0xFF8FA9C2), ToneCode = C(0xFF9CC8FF), ToneJoin = C(0xFF4FC3CF),
-        RowLine = C(0x7034587A), ColLine = C(0x5834587A), GuideLine = C(0x6034587A), CurrentHdr = C(0xFF0D2B36),
-        // Every other rule a clearly different shade (Tom, 2026-10-11: the old pair was hard to tell apart).
+    private static readonly uint ToneLabel = C(0xFF8FA9C2), ToneCode = C(0xFF9CC8FF), ToneJoin = C(0xFF4FC3CF), CurrentHdr = C(0xFF0D2B36), // Every other rule a clearly different shade (Tom, 2026-10-11: the old pair was hard to tell apart).
         StripeA = C(0xFF121B25), StripeB = C(0xFF1C2B3A);
+    private static uint RowLine => RynthTheme.WithAlpha(RynthTheme.Border, 0x70);
+    private static uint ColLine => RynthTheme.WithAlpha(RynthTheme.Border, 0x58);
+    private static uint GuideLine => RynthTheme.WithAlpha(RynthTheme.Border, 0x60);
 
     private static uint ToneColor(MetaTone tone) => tone switch
     {
@@ -310,7 +311,7 @@ internal sealed partial class MetaFace
         if (_groups.Count == 0)
         {
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), "  No rules. Click New Rule to add one.");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "  No rules. Click New Rule to add one.");
             return;
         }
 
