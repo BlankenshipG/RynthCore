@@ -381,6 +381,96 @@ internal static class Program
                 UserPrefsSwapRecovery.Recover(swap, true, true, null, DateTime.Now);
                 Check(!File.Exists(swap.LivePath), "live file removed so the game writes its defaults");
             });
+
+            // ── First Login dialog rules (a new server: no password, no characters yet) ──
+            Scenario("first login on a new server", root, () =>
+            {
+                var withPw = new LaunchAccountProfile { Id = "ilt", AccountName = "silentkelpie" };
+                withPw.SetPassword(Pw);
+                var noPwSame = new LaunchAccountProfile { Id = "other", AccountName = "SilentKelpie" };
+                var conquest = new LaunchAccountProfile { Id = "new", AccountName = "SK", CharacterName = LaunchAccountProfile.NoneOption };
+                var all = new List<LaunchAccountProfile> { withPw, noPwSame, conquest };
+
+                Check(FirstLoginRules.KnownAccountNames(all, "new").SequenceEqual(new[] { "silentkelpie" }),
+                    "known names: the others, distinct ignoring case, not this profile's own");
+
+                Check(FirstLoginRules.SavedPasswordSource(all, "SILENTKELPIE", "new")?.Id == "ilt",
+                    "the same name with a saved password can be reused (case ignored)");
+                Check(FirstLoginRules.SavedPasswordSource(all, "SK", "new") == null, "a new name has none to reuse");
+                Check(FirstLoginRules.SavedPasswordSource(all, "silentkelpie", "ilt") == null, "never the profile itself");
+
+                var copy = new LaunchAccountProfile { AccountName = "silentkelpie" };
+                copy.CopyPasswordFrom(withPw);
+                Check(copy.PasswordProtected == withPw.PasswordProtected && copy.TryGetPasswordForLaunch(out string reused, out _) && reused == Pw,
+                    "reuse copies the encrypted blob, and it decrypts");
+
+                var none = new List<string>();
+                List<string> firstChoices = FirstLoginRules.LoginChoices(none, conquest.CharacterName);
+                Check(firstChoices.SequenceEqual(new[] { FirstLoginRules.StopAtCharacterSelect }),
+                    "no characters yet: only stop at character select (the old (None) isn't listed)");
+                Check(FirstLoginRules.CharacterNameFor(FirstLoginRules.StopAtCharacterSelect, none) == "",
+                    "stop with none known saves \"\" so the first character created is picked next time");
+
+                var chars = new List<string> { "Alpha", "Beta" };
+                Check(FirstLoginRules.LoginChoices(chars, "Gamma").SequenceEqual(new[] { FirstLoginRules.StopAtCharacterSelect, "Gamma", "Alpha", "Beta" }),
+                    "several characters: all listed, the saved one kept even if not seen yet");
+                Check(FirstLoginRules.CharacterNameFor("Beta", chars) == "Beta", "picking a character saves it");
+                Check(FirstLoginRules.CharacterNameFor(FirstLoginRules.StopAtCharacterSelect, chars) == LaunchAccountProfile.NoneOption,
+                    "stop with characters known saves the explicit (None)");
+
+                Check(FirstLoginRules.Problem("SK", "", "", false, AcEmulatorKind.Ace)?.StartsWith("Enter the password") == true, "a password is required");
+                Check(FirstLoginRules.Problem("SK", "a", "b", false, AcEmulatorKind.Ace)?.Contains("don't match") == true, "the confirmation must match");
+                Check(FirstLoginRules.Problem("SK", "pw", "pw", false, AcEmulatorKind.Ace) == null, "name + matching password: ready");
+                Check(FirstLoginRules.Problem("silentkelpie", "", "", true, AcEmulatorKind.Ace) == null, "reusing a saved password needs no typing");
+                Check(FirstLoginRules.Problem("a:b", "pw", "pw", false, AcEmulatorKind.Gdle) != null, "GDLE name with a colon refused");
+                Check(FirstLoginRules.Problem("", "pw", "pw", false, AcEmulatorKind.Ace) != null, "a name is required");
+            });
+
+            // A saved UserPreferences.ini whose display mode the PC can't use made every launch
+            // fail with "Could not initialize Direct3D"; a quick exit must undo that swap.
+            Scenario("prefs swap: did the swap change the live file", root, () =>
+            {
+                byte[] a = "[Display]\nResolution=2560x1440\n"u8.ToArray();
+                byte[] b = "[Display]\nResolution=1920x1080\n"u8.ToArray();
+                Check(!UserPrefsSwapRecovery.SwapChangedPrefs(new UserPrefsSwap("s", "l", a, (byte[])a.Clone())), "same bytes: not the cause");
+                Check(UserPrefsSwapRecovery.SwapChangedPrefs(new UserPrefsSwap("s", "l", a, b)), "different bytes: changed");
+                Check(UserPrefsSwapRecovery.SwapChangedPrefs(new UserPrefsSwap("s", "l", a, null)), "no live file before: changed");
+            });
+
+            Scenario("prefs swap: failed stash set aside, live file put back", root, () =>
+            {
+                var (swap, legacy) = PrefsSwapFiles(legacyMatches: true);
+                var now = new DateTime(2026, 10, 14, 16, 30, 5);
+                UserPrefsRecoveryResult r = UserPrefsSwapRecovery.Recover(swap, quarantineStash: true, restoreLive: true, legacy, now);
+                Check(!File.Exists(swap.StashPath), "stash no longer swappable");
+                Check(r.QuarantinedStashPath == swap.StashPath + ".failed-20261014-163005" && File.Exists(r.QuarantinedStashPath), "stash kept as .failed-<time>");
+                Check(!File.Exists(legacy) && r.QuarantinedLegacyPath != null, "identical name-only stash set aside too (it would re-seed)");
+                Check(r.LiveRestored && File.ReadAllBytes(swap.LivePath).SequenceEqual(swap.PreviousLiveBytes!), "live file back to its pre-swap bytes");
+            });
+
+            Scenario("prefs swap: different name-only stash kept", root, () =>
+            {
+                var (swap, legacy) = PrefsSwapFiles(legacyMatches: false);
+                UserPrefsRecoveryResult r = UserPrefsSwapRecovery.Recover(swap, true, true, legacy, DateTime.Now);
+                Check(File.Exists(legacy) && r.QuarantinedLegacyPath == null, "name-only stash with other settings left alone");
+            });
+
+            Scenario("prefs swap: later swap or profile override", root, () =>
+            {
+                var (swap, legacy) = PrefsSwapFiles(legacyMatches: true);
+                File.WriteAllText(swap.LivePath, "another account's settings");
+                UserPrefsRecoveryResult r = UserPrefsSwapRecovery.Recover(swap, quarantineStash: false, restoreLive: false, legacy, DateTime.Now);
+                Check(File.Exists(swap.StashPath) && File.Exists(legacy), "override: the user's file is never renamed");
+                Check(!r.LiveRestored && File.ReadAllText(swap.LivePath) == "another account's settings", "later swap: live file untouched");
+            });
+
+            Scenario("prefs swap: no live file before", root, () =>
+            {
+                var (swap, _) = PrefsSwapFiles(legacyMatches: false);
+                swap = swap with { PreviousLiveBytes = null };
+                UserPrefsSwapRecovery.Recover(swap, true, true, null, DateTime.Now);
+                Check(!File.Exists(swap.LivePath), "live file removed so the game writes its defaults");
+            });
         }
         finally
         {

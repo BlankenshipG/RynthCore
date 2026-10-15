@@ -236,14 +236,16 @@ internal sealed class RynthAiSettings
     // Salvage with the 0x027D request sent straight to the server, no salvage panel on screen
     // (default on; used when the engine has API v81; an older RynthAi doesn't send it).
     public bool SalvageWithoutPanel { get; set; } = true;
+    // Inter-Item Delay and Closing Delay: RynthAi's corpse looting never reads them (not shown in
+    // the panel since 2026.10.5.59), carried so a save doesn't send them missing.
     public int LootInterItemDelayMs { get; set; } = 50;
-    public int LootContentSettleMs { get; set; } = 100;
-    public int LootEmptyCorpseMs { get; set; } = 300;
+    public int LootContentSettleMs { get; set; } = LootTimerDefaults.ContentSettleMs;
+    public int LootEmptyCorpseMs { get; set; } = LootTimerDefaults.EmptyCorpseMs;
     public int LootClosingDelayMs { get; set; } = 200;
-    public int LootAssessWindowMs { get; set; } = 200;
-    public int LootRetryTimeoutMs { get; set; } = 500;
-    public int LootOpenRetryMs { get; set; } = 1500;
-    public int LootCorpseTimeoutMs { get; set; } = 12000;
+    public int LootAssessWindowMs { get; set; } = LootTimerDefaults.AssessWindowMs;
+    public int LootRetryTimeoutMs { get; set; } = LootTimerDefaults.RetryTimeoutMs;
+    public int LootOpenRetryMs { get; set; } = LootTimerDefaults.OpenRetryMs;
+    public int LootCorpseTimeoutMs { get; set; } = LootTimerDefaults.CorpseTimeoutMs;
     public int SalvageOpenDelayFirstMs { get; set; } = 400;
     public int SalvageOpenDelayFastMs { get; set; } = 50;
     public int SalvageAddDelayFirstMs { get; set; } = 600;
@@ -327,6 +329,43 @@ internal static unsafe class SettingsCommands
             UiSources.Nav.RequestRefresh();   // the Nav panel's Breadcrumbs / Route overlay switches
         });
     }
+}
+
+/// <summary>
+/// The optimized loot timer defaults, in ms: the same values as RynthSuite's LootBaseline.cs
+/// (RynthAi 0.5.65), measured from live corpse looting on ACE (226 corpses, 39 pickups). Keep
+/// the two in step. The Loot Timers rows show each one in brackets after the label.
+/// </summary>
+internal static class LootTimerDefaults
+{
+    public const int ContentSettleMs = 100;
+    public const int EmptyCorpseMs = 300;
+    /// <summary>Above the 256 ms 95th percentile of the measured appraisal replies.</summary>
+    public const int AssessWindowMs = 300;
+    /// <summary>No pickup needed a retry at 1000 ms (it counts from when the character is still).</summary>
+    public const int RetryTimeoutMs = 1000;
+    public const int OpenRetryMs = 1500;
+    public const int CorpseTimeoutMs = 12000;
+
+    /// <summary>A row label with its optimized default: "Assess Window (300)".</summary>
+    public static string Label(string name, int defaultMs) => $"{name} ({defaultMs})";
+
+    /// <summary>Writes the six optimized defaults into <paramref name="s"/>.</summary>
+    public static void Apply(RynthAiSettings s)
+    {
+        s.LootContentSettleMs = ContentSettleMs;
+        s.LootEmptyCorpseMs = EmptyCorpseMs;
+        s.LootAssessWindowMs = AssessWindowMs;
+        s.LootRetryTimeoutMs = RetryTimeoutMs;
+        s.LootOpenRetryMs = OpenRetryMs;
+        s.LootCorpseTimeoutMs = CorpseTimeoutMs;
+    }
+
+    /// <summary>True when all six timers are at the optimized defaults.</summary>
+    public static bool AllDefault(RynthAiSettings s) =>
+        s.LootContentSettleMs == ContentSettleMs && s.LootEmptyCorpseMs == EmptyCorpseMs &&
+        s.LootAssessWindowMs == AssessWindowMs && s.LootRetryTimeoutMs == RetryTimeoutMs &&
+        s.LootOpenRetryMs == OpenRetryMs && s.LootCorpseTimeoutMs == CorpseTimeoutMs;
 }
 
 // ── Schema ─────────────────────────────────────────────────────────────────
@@ -420,7 +459,10 @@ internal sealed record SettingRow(
     Func<RynthAiSettings, string>? GetText = null,
     Action<RynthAiSettings, string>? SetText = null,
     // Text rows: greyed hint shown while the box is empty.
-    string? Hint = null)
+    string? Hint = null,
+    // Button rows that change settings: applied to the panel's copy, which is then saved like
+    // any other edit (Click, when also set, runs after).
+    Action<RynthAiSettings>? Edit = null)
 {
     public bool IsVisible(RynthAiSettings s) => VisibleWhen == null || VisibleWhen(s);
 }
@@ -534,6 +576,10 @@ internal static class SettingsSchema
 
     private static SettingRow Button(string label, string buttonText, Action click, string? tip = null) =>
         new(SettingKind.Button, label, tip, ButtonText: buttonText, Click: click);
+
+    // A button that edits the settings (the panel saves the result like a typed value).
+    private static SettingRow EditButton(string label, string buttonText, Action<RynthAiSettings> edit, string? tip = null) =>
+        new(SettingKind.Button, label, tip, ButtonText: buttonText, Edit: edit);
 
     private static SettingRow Text(string label, Func<RynthAiSettings, string> get, Action<RynthAiSettings, string> set,
         string? tip = null, string? hint = null) =>
@@ -1100,15 +1146,30 @@ internal static class SettingsSchema
             Bool("Salvage Without The Panel", s => s.SalvageWithoutPanel, (s, v) => s.SalvageWithoutPanel = v,
                 "Salvage (and combine bags) by sending the salvage request to the server directly:\nAC's salvage panel never opens. When a request changes nothing, that batch is tried once\nthrough the panel. Needs an engine with plugin API v82; otherwise the panel is used."),
             Spacer(),
-            Section("Loot Timers (ms)"),
-            Int("Inter-Item Delay", s => s.LootInterItemDelayMs, (s, v) => s.LootInterItemDelayMs = v, 0, 5000, 25),
-            Int("Content Settle", s => s.LootContentSettleMs, (s, v) => s.LootContentSettleMs = v, 0, 5000, 25),
-            Int("Empty Corpse Wait", s => s.LootEmptyCorpseMs, (s, v) => s.LootEmptyCorpseMs = v, 0, 5000, 25),
-            Int("Closing Delay", s => s.LootClosingDelayMs, (s, v) => s.LootClosingDelayMs = v, 0, 5000, 25),
-            Int("Assess Window", s => s.LootAssessWindowMs, (s, v) => s.LootAssessWindowMs = v, 0, 5000, 25),
-            Int("Loot Retry Timeout", s => s.LootRetryTimeoutMs, (s, v) => s.LootRetryTimeoutMs = v, 0, 10000, 100),
-            Int("Corpse Open Retry", s => s.LootOpenRetryMs, (s, v) => s.LootOpenRetryMs = v, 0, 10000, 100),
-            Int("Corpse Timeout", s => s.LootCorpseTimeoutMs, (s, v) => s.LootCorpseTimeoutMs = v, 0, 60000, 500),
+            // The optimized default is in brackets after each label (LootTimerDefaults). Inter-Item
+            // Delay and Closing Delay are not shown: RynthAi's corpse looting never reads them.
+            Section("Loot Timers (ms) - (optimized default)"),
+            EditButton("Optimized defaults", "Use optimized defaults", LootTimerDefaults.Apply,
+                "Set all six loot timers to the optimized defaults, measured from live looting on ACE\n" +
+                "(226 corpses). RynthAi's log line [LootSettings] marks each timer baseline or custom."),
+            Int(LootTimerDefaults.Label("Content Settle", LootTimerDefaults.ContentSettleMs),
+                s => s.LootContentSettleMs, (s, v) => s.LootContentSettleMs = v, 0, 5000, 25,
+                "Wait after an open for the container's items. Only used when the items\naren't already known; on ACE they always were."),
+            Int(LootTimerDefaults.Label("Empty Corpse Wait", LootTimerDefaults.EmptyCorpseMs),
+                s => s.LootEmptyCorpseMs, (s, v) => s.LootEmptyCorpseMs = v, 0, 5000, 25,
+                "Wait for a corpse's contents before probing it or calling it empty."),
+            Int(LootTimerDefaults.Label("Assess Window", LootTimerDefaults.AssessWindowMs),
+                s => s.LootAssessWindowMs, (s, v) => s.LootAssessWindowMs = v, 0, 5000, 25,
+                "Hold items for their appraisal. Measured replies: 127 ms typical,\n256 ms at the 95th percentile, 350 ms at most."),
+            Int(LootTimerDefaults.Label("Loot Retry Timeout", LootTimerDefaults.RetryTimeoutMs),
+                s => s.LootRetryTimeoutMs, (s, v) => s.LootRetryTimeoutMs = v, 0, 10000, 100,
+                "Wait, once the character is still, before resending a pickup that hasn't\nlanded. Too short resends pickups the server is still doing."),
+            Int(LootTimerDefaults.Label("Corpse Open Retry", LootTimerDefaults.OpenRetryMs),
+                s => s.LootOpenRetryMs, (s, v) => s.LootOpenRetryMs = v, 0, 10000, 100,
+                "Wait before sending another open to a corpse that hasn't opened."),
+            Int(LootTimerDefaults.Label("Corpse Timeout", LootTimerDefaults.CorpseTimeoutMs),
+                s => s.LootCorpseTimeoutMs, (s, v) => s.LootCorpseTimeoutMs = v, 0, 60000, 500,
+                "Give up on a claimed corpse after this long. The clock stops during combat\nand buffing."),
             Spacer(),
             Section("Salvage Timers (ms) - First / Fast"),
             Int("Open (First)", s => s.SalvageOpenDelayFirstMs, (s, v) => s.SalvageOpenDelayFirstMs = v, 0, 5000, 50),
