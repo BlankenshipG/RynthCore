@@ -1,19 +1,19 @@
 {
     "schema":  1,
     "product":  "RynthCore + RynthSuite",
-    "version":  "2026.10.5.62",
-    "release":  2026100562,
-    "builtUtc":  "2026-10-15T15:34:36Z",
-    "previous":  "2026.10.5.61",
+    "version":  "2026.10.5.64",
+    "release":  2026100564,
+    "builtUtc":  "2026-10-15T16:38:29Z",
+    "previous":  "2026.10.5.62",
     "installer":  {
-                      "file":  "RynthCore-Setup-2026.10.5.62.exe",
-                      "size":  132674170,
-                      "sha256":  "4900e987010ce6be1fd524c9b489c852e3b4111d5c443985f8ffebe997c4ab18"
+                      "file":  "RynthCore-Setup-2026.10.5.64.exe",
+                      "size":  132679169,
+                      "sha256":  "2b95371d4d5b3f987c783d49460f06e4c7a22c0820d3794e6b037e470bf81d2b"
                   },
     "source":  {
                    "rynthCore":  {
                                      "branch":  "build-comp-10-11",
-                                     "commit":  "d996ed59e8ccab99bd5546637e4dda734681349e",
+                                     "commit":  "d5217d084c1dd1f486789f7e569c9ae580f5dde8",
                                      "dirty":  false
                                  },
                    "rynthSuite":  {
@@ -26,12 +26,12 @@
                        {
                            "name":  "Launcher (RynthCore.exe)",
                            "file":  "core\\RynthCore.exe",
-                           "version":  "2026.10.5.62+d996ed59e8ccab99bd5546637e4dda734681349e"
+                           "version":  "2026.10.5.64+d5217d084c1dd1f486789f7e569c9ae580f5dde8"
                        },
                        {
                            "name":  "Engine",
                            "file":  "core\\Runtime\\RynthCore.Engine.dll",
-                           "version":  "2026.10.5.62+d996ed59e8ccab99bd5546637e4dda734681349e"
+                           "version":  "2026.10.5.64+d5217d084c1dd1f486789f7e569c9ae580f5dde8"
                        },
                        {
                            "name":  "Loader",
@@ -41,7 +41,7 @@
                        {
                            "name":  "Loot Editor",
                            "file":  "core\\Tools\\LootEditor\\RynthCore.LootEditor.exe",
-                           "version":  "2026.10.5.62+8cac40bfb99a76513609c05a6f805afbb3439eca"
+                           "version":  "2026.10.5.64+8cac40bfb99a76513609c05a6f805afbb3439eca"
                        },
                        {
                            "name":  "RynthAi plugin",
@@ -51,7 +51,7 @@
                        {
                            "name":  "Monster Editor",
                            "file":  "suite\\RynthAi\\MonsterEditor\\RynthCore.MonsterEditor.exe",
-                           "version":  "2026.10.5.62+8cac40bfb99a76513609c05a6f805afbb3439eca"
+                           "version":  "2026.10.5.64+8cac40bfb99a76513609c05a6f805afbb3439eca"
                        },
                        {
                            "name":  "RynthChat (experimental)",
@@ -85,18 +85,11 @@
                        }
                    ],
     "changelog":  [
-                      "RynthCore/Changelog/2026-10-15-nav-settings-breadcrumbs-route-overlay-2026.10.5.62.md",
-                      "RynthSuite/Changelog/2026-10-14-boost-loot-one-kill-one-loot-0.5.66.md",
-                      "RynthSuite/Changelog/2026-10-14-dreamweave-server-features-0.1.5.md",
-                      "RynthSuite/Changelog/2026-10-15-combat-pointblank-settle-busy-wield-0.5.69.md",
-                      "RynthSuite/Changelog/2026-10-15-crafting-server-salvage-from-server-plugin-0.5.67.md",
-                      "RynthSuite/Changelog/2026-10-15-ilt-chunk-hammer-0.2.8.md",
-                      "RynthSuite/Changelog/2026-10-15-ilt-coalesced-aetheria-clap-0.2.9-nav-settings-0.5.70.md",
-                      "RynthSuite/Changelog/2026-10-15-pet-breeding-tracker-ilt-0.2.7.md"
+                      "RynthCore/Changelog/2026-10-15-dat-share-private-createfilew-slot-2026.10.5.64.md"
                   ],
     "changelogSince":  {
-                           "rynthCore":  "d3ad86d9dffb766a5702d4047d937d9ea56524a2",
-                           "rynthSuite":  "d86e33e139b367676d532b4a6faf47e71ab84095",
+                           "rynthCore":  "d996ed59e8ccab99bd5546637e4dda734681349e",
+                           "rynthSuite":  "8cac40bfb99a76513609c05a6f805afbb3439eca",
                            "date":  ""
                        }
 }
