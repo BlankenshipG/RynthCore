@@ -666,6 +666,8 @@ internal static partial class PluginManager
         ImGuiBackend.Hud.HudFeed.OnChat(text);
         // Who to /reply and /retell to (ChatCommandDispatcher rewrites those to a /tell).
         Compatibility.TellMemory.Shared.OnChatLine(text);
+        // Luminance deposited into ACECustom's bank isn't session income (SessionRates).
+        Compatibility.EngineStatusMetrics.OnChatLine(text);
 
         if (!_initialized || _plugins.Count == 0)
             return false;
@@ -2831,7 +2833,6 @@ internal static partial class PluginManager
                 plugin.UIInitializedDispatched = false;
                 plugin.LoginCompleteDispatched = false;
                 RynthLog.Plugin($"PluginManager: {plugin.DisplayName} initialized OK (api v{PluginContractVersion.Current}).");
-                Compatibility.MemoryUse.Mark($"{plugin.DisplayName} Init");
             }
             else
             {
@@ -4049,14 +4050,14 @@ internal static partial class PluginManager
         }
     }
 
-    // v85: arm one answer for the next server yes/no prompt (ConfirmationResponder).
+    // v81: arm one answer for the next server yes/no prompt (ConfirmationResponder).
     private static int ArmConfirmationAction(uint type, int minPercent, int timeoutMs)
     {
         try { return ConfirmationResponder.Arm(type, minPercent, timeoutMs); }
         catch { return 0; }
     }
 
-    // v85: the last server yes/no prompt and what happened to it.
+    // v81: the last server yes/no prompt and what happened to it.
     private static unsafe int GetLastConfirmationAction(uint* type, uint* contextId, int* percent, int* outcome, int* ageMs)
     {
         try

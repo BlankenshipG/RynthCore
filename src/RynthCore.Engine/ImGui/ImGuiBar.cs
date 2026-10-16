@@ -525,11 +525,28 @@ internal static class ImGuiBar
         }
         ImGuiNET.ImGui.SetItemTooltip("Engine reload (RL) — shut down, FreeLibrary, reload from disk, re-init.");
 
-        // The bar draws only as the ImGui face (ResolveFace), so it pops out as itself.
-        ImGuiNET.ImGui.SameLine();
-        if (IconButton("##popout", iconFont, popped ? PhosphorIcons.ArrowSquareIn : PhosphorIcons.ArrowSquareOut, square, RynthTheme.PopOutLabel))
-            SetPoppedOut(!popped);
-        SafeImGui.SetItemTooltip(popped ? "Dock the bar back into the game window." : "Pop the bar out into its own floating window.");
+        if (ResolveFace() == PanelFace.ImGui)
+        {
+            ImGuiNET.ImGui.SameLine();
+            if (IconButton("##popout", iconFont, popped ? PhosphorIcons.ArrowSquareIn : PhosphorIcons.ArrowSquareOut, square, RynthTheme.PopOutLabel))
+                SetPoppedOut(!popped);
+            SafeImGui.SetItemTooltip(popped ? "Dock the bar back into the game window." : "Pop the bar out into its own floating window.");
+        }
+        else if (Plugins.EngineSettings.EnableAvaloniaOverlay)   // Avalonia/Both bar: pops out as the Avalonia bar
+        {
+            ImGuiNET.ImGui.SameLine();
+            if (IconButton("##popout", iconFont, PhosphorIcons.ArrowSquareOut, square, RynthTheme.PopOutLabel))
+            {
+                Vector2 logical = ImGuiNET.ImGui.GetWindowPos() / place;
+                AvaloniaOverlay.PopOutBarFrom(logical.X, logical.Y);
+            }
+            ImGuiNET.ImGui.SetItemTooltip("Pop the bar out into its own floating window.");
+        }
+        PopBarButtonStyle();
+
+        // Drawn after the bar buttons' style is popped, so the menu has the normal look.
+        ScriptsMenu(scripts);
+        IltMenu();
     }
 
     /// <summary>The ILT panels the bar offers now: 0 off Infinite Leaftide or without RynthILT. AC thread.</summary>
@@ -612,11 +629,22 @@ internal static class ImGuiBar
     /// <summary>The grip's right-click menu: the bar's size, its rows and "Report a problem".</summary>
     private static void BarMenu(float s)
     {
-        if (!ImGuiNET.ImGui.BeginPopup("##bar_menu")) return;
-        ImGuiNET.ImGui.TextDisabled("RynthCore bar");
-        BarSizeRows(s);
-        BarLayoutRows(s);
-        ReportRow();
+        if (!ImGuiNET.ImGui.BeginPopup(popupId)) return;
+        SafeImGui.TextDisabled(title == FaceKey ? "Bar, docked, shows as" : "Docked, shows as");
+        PanelFace current = title == FaceKey ? ResolveFace() : PanelRouter.ResolveDockedFace(title);
+        for (int i = 0; i < Faces.Length; i++)
+        {
+            bool enabled = Faces[i] == PanelFace.Avalonia || hasImGuiFace;
+            if (ImGuiNET.ImGui.MenuItem(FaceNames[i], "", current == Faces[i], enabled))
+                PanelRouter.SetDockedFace(title, Faces[i]);
+        }
+        if (!hasImGuiFace)
+            ImGuiNET.ImGui.TextDisabled("(no ImGui version yet)");
+        if (title == FaceKey)
+        {
+            BarSizeRows(s);
+            ReportRow();
+        }
         ImGuiNET.ImGui.EndPopup();
     }
 

@@ -121,6 +121,17 @@ internal sealed class RynthAiSettings
     public bool UseNativeAttack { get; set; } = true;
     public bool SummonPets { get; set; }
     public int PetMinMonsters { get; set; } = 1;
+    // RynthAi 0.5.47 (2026-10-12): Variable attack power and the environment-impact throttle.
+    // Nullable in RynthAi's payload: an older RynthAi omits them and these defaults show.
+    public int VariablePowerMin { get; set; } = 50;
+    public int VariablePowerMax { get; set; } = 100;
+    public int MissileEnvironmentResponse { get; set; }
+    public int MagicEnvironmentResponse { get; set; }
+    public int EnvironmentImpactLimit { get; set; } = 2;
+    public int EnvironmentImpactWindowSec { get; set; } = 20;
+    public int EnvironmentApproachMeters { get; set; } = 6;
+    public int EnvironmentMinDistance { get; set; } = 3;
+    public int EnvironmentSkipSec { get; set; } = 30;
     // Spell Combat
     public int SpellCastIntervalMs { get; set; } = 400;
     public int AttackSpellIntervalMs { get; set; } = 1500;
@@ -160,6 +171,11 @@ internal sealed class RynthAiSettings
     // RynthAi NavResumeNearest: macro start, route loads and resuming after a pause that moved
     // the character head for the closest waypoint. On by default; an older plugin ignores it.
     public bool NavResumeNearest { get; set; } = true;
+    // RynthAi NavOverlay.TrackBreadcrumbs / ShowRouteMarkers: the Nav panel's Breadcrumbs and Route
+    // overlay switches, also on Settings > Navigation. Null = a RynthAi that doesn't send them: the
+    // rows hide, and a save sends null back, which RynthAi reads as unchanged.
+    public bool? TrackBreadcrumbs { get; set; }
+    public bool? ShowRouteOverlay { get; set; }
     // RynthAi dungeon patrol (/ra dunnav-patrol; RynthAi DungeonPatrolOptions). The defaults are
     // the patrol as it was before these settings; an older plugin ignores them.
     public int DunPatrolCoverage { get; set; }               // 0 whole dungeon, 1 loops only, 2 everything, 3 sweep
@@ -231,14 +247,16 @@ internal sealed class RynthAiSettings
     // Salvage with the 0x027D request sent straight to the server, no salvage panel on screen
     // (default on; used when the engine has API v81; an older RynthAi doesn't send it).
     public bool SalvageWithoutPanel { get; set; } = true;
+    // Inter-Item Delay and Closing Delay: RynthAi's corpse looting never reads them (not shown in
+    // the panel since 2026.10.5.59), carried so a save doesn't send them missing.
     public int LootInterItemDelayMs { get; set; } = 50;
-    public int LootContentSettleMs { get; set; } = 100;
-    public int LootEmptyCorpseMs { get; set; } = 300;
+    public int LootContentSettleMs { get; set; } = LootTimerDefaults.ContentSettleMs;
+    public int LootEmptyCorpseMs { get; set; } = LootTimerDefaults.EmptyCorpseMs;
     public int LootClosingDelayMs { get; set; } = 200;
-    public int LootAssessWindowMs { get; set; } = 200;
-    public int LootRetryTimeoutMs { get; set; } = 500;
-    public int LootOpenRetryMs { get; set; } = 1500;
-    public int LootCorpseTimeoutMs { get; set; } = 12000;
+    public int LootAssessWindowMs { get; set; } = LootTimerDefaults.AssessWindowMs;
+    public int LootRetryTimeoutMs { get; set; } = LootTimerDefaults.RetryTimeoutMs;
+    public int LootOpenRetryMs { get; set; } = LootTimerDefaults.OpenRetryMs;
+    public int LootCorpseTimeoutMs { get; set; } = LootTimerDefaults.CorpseTimeoutMs;
     public int SalvageOpenDelayFirstMs { get; set; } = 400;
     public int SalvageOpenDelayFastMs { get; set; } = 50;
     public int SalvageAddDelayFirstMs { get; set; } = 600;
@@ -319,8 +337,46 @@ internal static unsafe class SettingsCommands
             try { _setSettingsJson(ansi); }
             finally { Marshal.FreeHGlobal(ansi); }
             UiSources.Settings.RequestRefresh();
+            UiSources.Nav.RequestRefresh();   // the Nav panel's Breadcrumbs / Route overlay switches
         });
     }
+}
+
+/// <summary>
+/// The optimized loot timer defaults, in ms: the same values as RynthSuite's LootBaseline.cs
+/// (RynthAi 0.5.65), measured from live corpse looting on ACE (226 corpses, 39 pickups). Keep
+/// the two in step. The Loot Timers rows show each one in brackets after the label.
+/// </summary>
+internal static class LootTimerDefaults
+{
+    public const int ContentSettleMs = 100;
+    public const int EmptyCorpseMs = 300;
+    /// <summary>Above the 256 ms 95th percentile of the measured appraisal replies.</summary>
+    public const int AssessWindowMs = 300;
+    /// <summary>No pickup needed a retry at 1000 ms (it counts from when the character is still).</summary>
+    public const int RetryTimeoutMs = 1000;
+    public const int OpenRetryMs = 1500;
+    public const int CorpseTimeoutMs = 12000;
+
+    /// <summary>A row label with its optimized default: "Assess Window (300)".</summary>
+    public static string Label(string name, int defaultMs) => $"{name} ({defaultMs})";
+
+    /// <summary>Writes the six optimized defaults into <paramref name="s"/>.</summary>
+    public static void Apply(RynthAiSettings s)
+    {
+        s.LootContentSettleMs = ContentSettleMs;
+        s.LootEmptyCorpseMs = EmptyCorpseMs;
+        s.LootAssessWindowMs = AssessWindowMs;
+        s.LootRetryTimeoutMs = RetryTimeoutMs;
+        s.LootOpenRetryMs = OpenRetryMs;
+        s.LootCorpseTimeoutMs = CorpseTimeoutMs;
+    }
+
+    /// <summary>True when all six timers are at the optimized defaults.</summary>
+    public static bool AllDefault(RynthAiSettings s) =>
+        s.LootContentSettleMs == ContentSettleMs && s.LootEmptyCorpseMs == EmptyCorpseMs &&
+        s.LootAssessWindowMs == AssessWindowMs && s.LootRetryTimeoutMs == RetryTimeoutMs &&
+        s.LootOpenRetryMs == OpenRetryMs && s.LootCorpseTimeoutMs == CorpseTimeoutMs;
 }
 
 // ── Schema ─────────────────────────────────────────────────────────────────
@@ -328,8 +384,6 @@ internal static unsafe class SettingsCommands
 internal enum SettingKind { Bool, Int, Float, Double, Combo, Section, Spacer, Note, CraftingStatus, Button, TraceCategories, Text, Status,
     /// <summary>The user hotkeys editor (ImGui/Panels/HotkeysSettingsUi.cs; stored by the engine, not RynthAi).</summary>
     Hotkeys,
-    /// <summary>A colour (#AARRGGBB in Get/Set): a swatch that opens a picker. The theme's colours (engine-stored).</summary>
-    Color,
     /// <summary>
     /// The server picker and the server list (Diagnostics): which server this character counts
     /// as, from the servers the engine and the loaded plugins know (UI/Sections/ServerSelection.cs).
@@ -414,7 +468,10 @@ internal sealed record SettingRow(
     Func<RynthAiSettings, string>? GetText = null,
     Action<RynthAiSettings, string>? SetText = null,
     // Text rows: greyed hint shown while the box is empty.
-    string? Hint = null)
+    string? Hint = null,
+    // Button rows that change settings: applied to the panel's copy, which is then saved like
+    // any other edit (Click, when also set, runs after).
+    Action<RynthAiSettings>? Edit = null)
 {
     public bool IsVisible(RynthAiSettings s) => VisibleWhen == null || VisibleWhen(s);
 }
@@ -430,6 +487,15 @@ internal static class SettingsSchema
         "Follow/Nav Min Distance (metas: FollowNavMin, or VTank's NavCloseStopRange). Follow stops this " +
         "close to its leader, and the nav marker ring shows it. Dungeon doorways use at most 1 yd. Up to 2 yd, " +
         "nav walks right up to each point before turning (tight dungeons); bigger values round corners.";
+
+    // The Nav panel's two overlay switches (ImGui/Panels/NavFace.cs), also on Settings > Navigation.
+    public const string BreadcrumbsTip =
+        "Record the trail you walk and draw it on the ground (/ra navtrail on|off).\n" +
+        "Turning it off hides the trail; /ra navtrail clear wipes it.";
+    public const string RouteOverlayTip =
+        "Draw the route in the world: waypoint rings and lines, waypoint labels and the guide line\n" +
+        "to the active waypoint (/ra navoverlay on|off). The waypoint HUD window is separate.";
+    private const string SameAsNavPanel = "\nThe same switch as on the Nav panel.";
 
     // Also shown by the dashboard's Ranges slide-out (ImGui/Panels/RangesSlideOut.cs), which
     // edits these same rows (found by label with Find).
@@ -455,6 +521,8 @@ internal static class SettingsSchema
     }
 
     public static readonly string[] AttackHeights = { "Low", "Medium", "High" };
+    // RynthAi's EnvironmentResponse, in its order (0 Off .. 3).
+    public static readonly string[] EnvironmentResponses = { "Off", "Move closer", "New target", "Move closer, then new target" };
     public static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
     public static readonly string[] NavLabelModes = { "Off", "Numbers", "Numbers and names" };
     public static readonly string[] DunPatrolCoverages = { "Whole dungeon", "Loops only", "Everything", "Sweep (by sight)" };
@@ -519,6 +587,10 @@ internal static class SettingsSchema
 
     private static SettingRow Button(string label, string buttonText, Action click, string? tip = null) =>
         new(SettingKind.Button, label, tip, ButtonText: buttonText, Click: click);
+
+    // A button that edits the settings (the panel saves the result like a typed value).
+    private static SettingRow EditButton(string label, string buttonText, Action<RynthAiSettings> edit, string? tip = null) =>
+        new(SettingKind.Button, label, tip, ButtonText: buttonText, Edit: edit);
 
     private static SettingRow Text(string label, Func<RynthAiSettings, string> get, Action<RynthAiSettings, string> set,
         string? tip = null, string? hint = null) =>
@@ -856,6 +928,30 @@ internal static class SettingsSchema
             Int("Missile Power %", s => s.MissileAttackPower, (s, v) => s.MissileAttackPower = v, 0, 100, 5, when: s => s.MissileAttackPower >= 0),
             Combo("Missile Attack Height", AttackHeights, s => s.MissileAttackHeight, (s, v) => s.MissileAttackHeight = v),
             Spacer(),
+            Section("Variable Power (monster rules)"),
+            Int("Variable Min %", s => s.VariablePowerMin, (s, v) => s.VariablePowerMin = v, 0, 100, 5,
+                "A monster rule's Power picks per monster (Damage panel, a monster's detail):\n" +
+                "Default (the settings above), High (100%), Reckless (80%, needs Recklessness trained),\n" +
+                "Variable (a new random power each attack, between these two), or Reckless + Variable\n" +
+                "(random, kept inside the Recklessness band 20-80%)."),
+            Int("Variable Max %", s => s.VariablePowerMax, (s, v) => s.VariablePowerMax = v, 0, 100, 5),
+            Spacer(),
+            Section("Hitting the Environment"),
+            Combo("Missile Response", EnvironmentResponses, s => s.MissileEnvironmentResponse, (s, v) => s.MissileEnvironmentResponse = v,
+                "When arrows or bolts keep hitting walls or objects instead of the target\n" +
+                "(\"Your missile attack hit the environment.\"), stop shooting and:\n" +
+                "  Move closer - run toward the target for a clearer shot\n" +
+                "  New target - skip this one for a while and fight another\n" +
+                "  Move closer, then new target - one approach, then switch\n" +
+                "The only monster in reach is never skipped. Magic: Spell Combat tab."),
+            Int("Hits to trip", s => s.EnvironmentImpactLimit, (s, v) => s.EnvironmentImpactLimit = v, 1, 10, 1,
+                "Environment hits on one target, within the window, before combat reacts (missiles and magic)."),
+            Int("Window (s)", s => s.EnvironmentImpactWindowSec, (s, v) => s.EnvironmentImpactWindowSec = v, 5, 120, 5),
+            Int("Move closer by (m)", s => s.EnvironmentApproachMeters, (s, v) => s.EnvironmentApproachMeters = v, 1, 30, 1),
+            Int("Closest (m)", s => s.EnvironmentMinDistance, (s, v) => s.EnvironmentMinDistance = v, 1, 30, 1,
+                "Never moves nearer than this. Already this close, a new target is picked instead."),
+            Int("Skip target (s)", s => s.EnvironmentSkipSec, (s, v) => s.EnvironmentSkipSec = v, 5, 300, 5),
+            Spacer(),
             Bool("Use Native Attack", s => s.UseNativeAttack, (s, v) => s.UseNativeAttack = v,
                 "Uses the client's combat pipeline for attacks.\nThe client handles turn-to-face naturally (no backwards arrows)."),
             Spacer(),
@@ -886,6 +982,16 @@ internal static class SettingsSchema
                 "0 = off: walls are never cast.\nAbove 0: monsters with Wall on cast a wall when Min Wall Targets monsters stand in its\npath toward the target, within this range. RynthAi turns to face the target first\n(a wall flies straight ahead of the caster)."),
             Int("Min Wall Targets", s => s.MinWallTargets, (s, v) => s.MinWallTargets = v, 1, 20, 1,
                 "How many monsters (the target included) must be in the wall's path, within Wall Range."),
+            Spacer(),
+            Section("Hitting the Environment"),
+            Combo("Magic Response", EnvironmentResponses, s => s.MagicEnvironmentResponse, (s, v) => s.MagicEnvironmentResponse = v,
+                "When bolts, streaks, arcs or blasts keep stopping short of the target\n" +
+                "(a wall, a pillar, the ceiling) with no hit or resist, stop casting and:\n" +
+                "  Move closer - run toward the target for a clearer line\n" +
+                "  New target - skip this one for a while and fight another\n" +
+                "  Move closer, then new target - one approach, then switch\n" +
+                "Rings and walls aren't judged. The only monster in reach is never skipped.\n" +
+                "Hits to trip, the window, distances and the skip time: Melee Combat tab."),
             Spacer(),
             Section("Spell Difficulty (Min Buffed Skill)"),
             Tiers(
@@ -924,6 +1030,10 @@ internal static class SettingsSchema
             Float(NavPointReachLabel, s => s.FollowNavMin, (s, v) => s.FollowNavMin = v, 0.5f, 20f, 0.1f, NavPointReachTip),
             Spacer(),
             Section("Nav Marker Display"),
+            Bool("Breadcrumbs", s => s.TrackBreadcrumbs ?? true, (s, v) => s.TrackBreadcrumbs = v,
+                BreadcrumbsTip + SameAsNavPanel, when: s => s.TrackBreadcrumbs.HasValue),
+            Bool("Route Overlay", s => s.ShowRouteOverlay ?? true, (s, v) => s.ShowRouteOverlay = v,
+                RouteOverlayTip + SameAsNavPanel, when: s => s.ShowRouteOverlay.HasValue),
             Float("Ring Thickness", s => s.NavRingThickness, (s, v) => s.NavRingThickness = v, 1f, 16f, 1f),
             Float("Line Thickness", s => s.NavLineThickness, (s, v) => s.NavLineThickness = v, 1f, 16f, 1f),
             Float("Height Offset", s => s.NavHeightOffset, (s, v) => s.NavHeightOffset = v, -5f, 5f, 0.05f,
@@ -1081,15 +1191,30 @@ internal static class SettingsSchema
             Bool("Salvage Without The Panel", s => s.SalvageWithoutPanel, (s, v) => s.SalvageWithoutPanel = v,
                 "Salvage (and combine bags) by sending the salvage request to the server directly:\nAC's salvage panel never opens. When a request changes nothing, that batch is tried once\nthrough the panel. Needs an engine with plugin API v82; otherwise the panel is used."),
             Spacer(),
-            Section("Loot Timers (ms)"),
-            Int("Inter-Item Delay", s => s.LootInterItemDelayMs, (s, v) => s.LootInterItemDelayMs = v, 0, 5000, 25),
-            Int("Content Settle", s => s.LootContentSettleMs, (s, v) => s.LootContentSettleMs = v, 0, 5000, 25),
-            Int("Empty Corpse Wait", s => s.LootEmptyCorpseMs, (s, v) => s.LootEmptyCorpseMs = v, 0, 5000, 25),
-            Int("Closing Delay", s => s.LootClosingDelayMs, (s, v) => s.LootClosingDelayMs = v, 0, 5000, 25),
-            Int("Assess Window", s => s.LootAssessWindowMs, (s, v) => s.LootAssessWindowMs = v, 0, 5000, 25),
-            Int("Loot Retry Timeout", s => s.LootRetryTimeoutMs, (s, v) => s.LootRetryTimeoutMs = v, 0, 10000, 100),
-            Int("Corpse Open Retry", s => s.LootOpenRetryMs, (s, v) => s.LootOpenRetryMs = v, 0, 10000, 100),
-            Int("Corpse Timeout", s => s.LootCorpseTimeoutMs, (s, v) => s.LootCorpseTimeoutMs = v, 0, 60000, 500),
+            // The optimized default is in brackets after each label (LootTimerDefaults). Inter-Item
+            // Delay and Closing Delay are not shown: RynthAi's corpse looting never reads them.
+            Section("Loot Timers (ms) - (optimized default)"),
+            EditButton("Optimized defaults", "Use optimized defaults", LootTimerDefaults.Apply,
+                "Set all six loot timers to the optimized defaults, measured from live looting on ACE\n" +
+                "(226 corpses). RynthAi's log line [LootSettings] marks each timer baseline or custom."),
+            Int(LootTimerDefaults.Label("Content Settle", LootTimerDefaults.ContentSettleMs),
+                s => s.LootContentSettleMs, (s, v) => s.LootContentSettleMs = v, 0, 5000, 25,
+                "Wait after an open for the container's items. Only used when the items\naren't already known; on ACE they always were."),
+            Int(LootTimerDefaults.Label("Empty Corpse Wait", LootTimerDefaults.EmptyCorpseMs),
+                s => s.LootEmptyCorpseMs, (s, v) => s.LootEmptyCorpseMs = v, 0, 5000, 25,
+                "Wait for a corpse's contents before probing it or calling it empty."),
+            Int(LootTimerDefaults.Label("Assess Window", LootTimerDefaults.AssessWindowMs),
+                s => s.LootAssessWindowMs, (s, v) => s.LootAssessWindowMs = v, 0, 5000, 25,
+                "Hold items for their appraisal. Measured replies: 127 ms typical,\n256 ms at the 95th percentile, 350 ms at most."),
+            Int(LootTimerDefaults.Label("Loot Retry Timeout", LootTimerDefaults.RetryTimeoutMs),
+                s => s.LootRetryTimeoutMs, (s, v) => s.LootRetryTimeoutMs = v, 0, 10000, 100,
+                "Wait, once the character is still, before resending a pickup that hasn't\nlanded. Too short resends pickups the server is still doing."),
+            Int(LootTimerDefaults.Label("Corpse Open Retry", LootTimerDefaults.OpenRetryMs),
+                s => s.LootOpenRetryMs, (s, v) => s.LootOpenRetryMs = v, 0, 10000, 100,
+                "Wait before sending another open to a corpse that hasn't opened."),
+            Int(LootTimerDefaults.Label("Corpse Timeout", LootTimerDefaults.CorpseTimeoutMs),
+                s => s.LootCorpseTimeoutMs, (s, v) => s.LootCorpseTimeoutMs = v, 0, 60000, 500,
+                "Give up on a claimed corpse after this long. The clock stops during combat\nand buffing."),
             Spacer(),
             Section("Salvage Timers (ms) - First / Fast"),
             Int("Open (First)", s => s.SalvageOpenDelayFirstMs, (s, v) => s.SalvageOpenDelayFirstMs = v, 0, 5000, 50),

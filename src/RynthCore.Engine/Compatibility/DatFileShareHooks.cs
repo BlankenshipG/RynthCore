@@ -29,8 +29,13 @@ namespace RynthCore.Engine.Compatibility;
 ///
 /// Why IAT-hook instead of MinHook on the kernel32 export:
 ///   Only the modules that open AC's data files are hooked: acclient.exe
-///   (imports CreateFileA) and its CRT MSVCR70.dll (CreateFileA/W, behind
-///   fopen/_wfopen). A kernel32 export hook also caught every other module,
+///   (imports CreateFileA), its CRT MSVCR70.dll (CreateFileA/W, behind
+///   fopen/_wfopen), and acclient.exe's private CreateFileW slot, which the
+///   2025 client fills on first use and opens every DAT through (it is in no
+///   import table; <see cref="LazyImportSlotScanner"/>). Missing that slot let
+///   the first client open the DATs read/write, deny-write, and every later
+///   client failed with "Can't open the data files" (2026-10-15).
+///   A kernel32 export hook also caught every other module,
 ///   including d3d9.dll and the GPU driver while AC created its device: their
 ///   CreateFile calls went through managed code, could wait on the runtime
 ///   while plugins loaded, and on some PCs AC then failed with "Could not
@@ -138,11 +143,20 @@ internal static class DatFileShareHooks
                 return;
             }
 
-            // acclient.exe opens DATs with its own CreateFileA import; its CRT
+            // acclient.exe opens DATs with its own CreateFileA import, or (the 2025 client)
+            // through a private CreateFileW slot its Layer-for-Unicode stub fills; its CRT
             // (MSVCR70.dll, statically imported, so loaded by now) does fopen/_wfopen
             // opens through its CreateFileA/W imports. Nothing else is hooked.
             HookModuleImports("acclient.exe", moduleBase);
             HookModuleImports("MSVCR70.dll", GetModuleHandleW("MSVCR70.dll"));
+            try
+            {
+                HookLazySlots(moduleBase);
+            }
+            catch (Exception ex)
+            {
+                RynthLog.Compat($"Compat: DAT share - private slot scan failed: {ex.Message}");
+            }
 
             if (_iatHooks.Count == 0)
             {
@@ -177,20 +191,69 @@ internal static class DatFileShareHooks
             return;
         }
 
-        if (TryPatchIatSlot(moduleBase, "CreateFileW", out IntPtr wSlot, out IntPtr wCurrent))
+        foreach (string function in new[] { "CreateFileW", "CreateFileA" })
         {
-            CreateFileWDelegate original = Marshal.GetDelegateForFunctionPointer<CreateFileWDelegate>(wCurrent);
+            if (TryPatchIatSlot(moduleBase, function, out IntPtr slot, out IntPtr current))
+                HookSlot(moduleName, function, "import", slot, current, current);
+        }
+    }
+
+    /// <summary>
+    /// Points acclient.exe's private CreateFileA/W slots (filled on first use by a Layer-for-Unicode
+    /// style stub, see <see cref="LazyImportSlotScanner"/>) at the detours. The 2025 client opens
+    /// its DAT files through the CreateFileW one; it is not in any import table.
+    /// </summary>
+    private static unsafe void HookLazySlots(IntPtr moduleBase)
+    {
+        byte* basePtr = (byte*)moduleBase;
+        int peOffset = *(int*)(basePtr + 0x3C);
+        uint sizeOfImage = *(uint*)(basePtr + peOffset + 24 + 56);
+        var image = new ReadOnlySpan<byte>(basePtr, (int)sizeOfImage);
+        uint imageBase = (uint)moduleBase.ToInt32();
+        var sections = LazyImportSlotScanner.ReadSections(image);
+
+        foreach (string function in new[] { "CreateFileW", "CreateFileA" })
+        {
+            foreach (LazyImportSlot lazy in LazyImportSlotScanner.FindSlots(image, imageBase, sections, "kernel32.dll", function))
+            {
+                var slot = (IntPtr)(int)lazy.SlotVa;
+                IntPtr current = Marshal.ReadIntPtr(slot);
+                // Not resolved yet: the slot still points at its stub inside acclient.exe. Calling
+                // the stub would overwrite the slot with the real function (dropping the detour),
+                // so the detour calls the kernel32 export the stub would have resolved.
+                IntPtr target = current;
+                if ((uint)current.ToInt32() - imageBase < sizeOfImage)
+                    target = GetProcAddress(GetModuleHandleW("kernel32.dll"), function);
+                if (target == IntPtr.Zero)
+                {
+                    RynthLog.Compat($"Compat: DAT share - kernel32!{function} not found; private slot 0x{lazy.SlotVa:X8} left alone.");
+                    continue;
+                }
+                HookSlot("acclient.exe", function, $"private slot (stub 0x{lazy.StubVa:X8})", slot, current, target);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Builds the detour for <paramref name="function"/> calling <paramref name="callTarget"/>,
+    /// and points <paramref name="slot"/> at it. <paramref name="restoreValue"/> is what
+    /// <see cref="Uninstall"/> writes back.
+    /// </summary>
+    private static void HookSlot(string moduleName, string function, string kind, IntPtr slot, IntPtr restoreValue, IntPtr callTarget)
+    {
+        if (function == "CreateFileW")
+        {
+            CreateFileWDelegate original = Marshal.GetDelegateForFunctionPointer<CreateFileWDelegate>(callTarget);
             CreateFileWDelegate detour = (name, access, share, security, disposition, flags, template) =>
                 CreateFileWDetour(original, name, access, share, security, disposition, flags, template);
-            InstallSlot(moduleName, "CreateFileW", wSlot, wCurrent, detour, Marshal.GetFunctionPointerForDelegate(detour));
+            InstallSlot(moduleName, function, kind, slot, restoreValue, detour, Marshal.GetFunctionPointerForDelegate(detour));
         }
-
-        if (TryPatchIatSlot(moduleBase, "CreateFileA", out IntPtr aSlot, out IntPtr aCurrent))
+        else
         {
-            CreateFileADelegate original = Marshal.GetDelegateForFunctionPointer<CreateFileADelegate>(aCurrent);
+            CreateFileADelegate original = Marshal.GetDelegateForFunctionPointer<CreateFileADelegate>(callTarget);
             CreateFileADelegate detour = (name, access, share, security, disposition, flags, template) =>
                 CreateFileADetour(original, name, access, share, security, disposition, flags, template);
-            InstallSlot(moduleName, "CreateFileA", aSlot, aCurrent, detour, Marshal.GetFunctionPointerForDelegate(detour));
+            InstallSlot(moduleName, function, kind, slot, restoreValue, detour, Marshal.GetFunctionPointerForDelegate(detour));
         }
     }
 
@@ -198,7 +261,7 @@ internal static class DatFileShareHooks
     /// Records the hook (so the delegate stays reachable) before the slot is written: the
     /// detour can run on any thread the moment the pointer lands.
     /// </summary>
-    private static void InstallSlot(string moduleName, string function, IntPtr slot, IntPtr original, Delegate detour, IntPtr detourPtr)
+    private static void InstallSlot(string moduleName, string function, string kind, IntPtr slot, IntPtr original, Delegate detour, IntPtr detourPtr)
     {
         var hook = new IatHook(moduleName, function, slot, original, detour);
         _iatHooks.Add(hook);
@@ -206,7 +269,7 @@ internal static class DatFileShareHooks
 
         if (WriteIatPointer(slot, detourPtr))
         {
-            RynthLog.Info($"Compat: DAT share - hooked {moduleName}!{function} import (slot 0x{slot.ToInt32():X8}, was 0x{original.ToInt32():X8}).");
+            RynthLog.Info($"Compat: DAT share - hooked {moduleName}!{function} {kind} (slot 0x{slot.ToInt32():X8}, was 0x{original.ToInt32():X8}).");
             return;
         }
 

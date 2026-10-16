@@ -54,7 +54,7 @@ internal static class Program
             Run(nameof(ServerBlockRejectsBadIds), ServerBlockRejectsBadIds);
             Run(nameof(ServerHostMatching), ServerHostMatching);
             Run(nameof(ServerGateKeepsOnlyTheHostsPlugin), ServerGateKeepsOnlyTheHostsPlugin);
-            Run(nameof(ServerGateUnclaimedHost), ServerGateUnclaimedHost);
+            Run(nameof(ServerGateFailsOpen), ServerGateFailsOpen);
             Run(nameof(ServerGatePlanFromFiles), ServerGatePlanFromFiles);
             Run(nameof(SdkApiVersionCannotDrift), SdkApiVersionCannotDrift);
             Run(nameof(TrainingStructsMirror), TrainingStructsMirror);
@@ -519,7 +519,7 @@ internal static class Program
         Eq(PluginManifestGate.SelectServerPlugins(list, "leafdawn.hopto.org", true, log).Count, 0, "LoadAllServerPlugins keeps every one");
     }
 
-    private static void ServerGateUnclaimedHost()
+    private static void ServerGateFailsOpen()
     {
         var list = new List<PluginCandidate>
         {
@@ -528,7 +528,7 @@ internal static class Program
         };
         var log = new List<string>();
         Eq(PluginManifestGate.SelectServerPlugins(list, "", false, log).Count, 0, "no connect host: all load");
-        Eq(PluginManifestGate.SelectServerPlugins(list, "10.0.0.5", false, log).Count, 2, "a host nobody lists: none load now (late load by world name or a pick)");
+        Eq(PluginManifestGate.SelectServerPlugins(list, "10.0.0.5", false, log).Count, 0, "a host nobody lists: all load");
         Check(log.Any(l => l.Contains("none lists host 10.0.0.5")), "said why");
     }
 
@@ -591,7 +591,8 @@ internal static class Program
             Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.TrainingEntryNative>(f.Name), (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.TrainingEntryNative>(f.Name), "TrainingEntryNative." + f.Name + " offset");
         Eq(RynthCore.PluginSdk.TrainingInfoFlags.Busy, RynthCore.Engine.Plugins.TrainingInfoFlags.Busy, "info flag bits");
         Eq(RynthCore.PluginSdk.TrainingEntryFlags.Trainable, RynthCore.Engine.Plugins.TrainingEntryFlags.Trainable, "entry flag bits");
-        // The three v79 slots follow v78's, then v80's two and v81's GetMergeStackResultFn (v82-v85 follow).
+        // The three v79 slots follow v78's, then v80's two and v81's GetMergeStackResultFn (v82's one, v83's two,
+        // v84's one, v85's two and v86's one come after: 7 slots).
         var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(7).TakeLast(6).ToArray();
         Check(names.SequenceEqual(new[] { "GetTrainingInfoFn", "RaiseFn", "TrainSkillFn", "GetContainerOrderFn", "PutItemInContainerFn", "GetMergeStackResultFn" }),
             "v79, v80 then v81 slots last: " + string.Join(",", names));
@@ -600,24 +601,26 @@ internal static class Program
     }
 
     // v80: GetContainerOrder and PutItemInContainer come right before v81's slot, engine and SDK alike;
-    // v81: GetMergeStackResult, then v82: SalvageDirect, v83's two and v84's GetObjectProperties last. The whole table has the same field names in the same
-    // order on both sides, and the same size.
+    // v81: GetMergeStackResult, v82: SalvageDirect, v83: the ghost-creature pair, v84: GetObjectProperties,
+    // v85: the confirmation pair, v86: GetServerStateJson last.
+    // The whole table has the same field names in the same order on both sides, and the same size.
     private static void ContainerOrderSlots()
     {
-        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).ToArray();
-        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).ToArray();
+        var allNames = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).ToArray();
+        // v86: GetServerStateJson ends the table; the checks below count back from the v85 slots before it.
+        Check(allNames.Last() == "GetServerStateJsonFn", "v86 slot last: " + allNames.Last());
+        var names = allNames.SkipLast(1).ToArray();
+        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(1).ToArray();
         // v81's GetMergeStackResultFn follows v80's two slots.
-        Check(names.SkipLast(8).TakeLast(2).SequenceEqual(new[] { "GetContainerOrderFn", "PutItemInContainerFn" }), "v80 slots before v81's to v85's: " + string.Join(",", names.SkipLast(8).TakeLast(2)));
-        Check(sdkNames.SkipLast(8).TakeLast(2).SequenceEqual(names.SkipLast(8).TakeLast(2)), "SDK v80 slots in the same order");
-        Check(names.SkipLast(6).Last() == "SalvageDirectFn", "v82 slot before v83's");
-        // v83: GetObjectServerAge and RemoveClientObject (ghost creatures), then v84's slot.
-        Check(names.SkipLast(4).TakeLast(2).SequenceEqual(new[] { "GetObjectServerAgeFn", "RemoveClientObjectFn" }), "v83 slots before v84's: " + string.Join(",", names.SkipLast(4).TakeLast(2)));
-        // v84: GetObjectProperties (every property of an object, /ub propertydump), then v85's two.
-        Check(names.SkipLast(3).Last() == "GetObjectPropertiesFn", "v84 slot before v85's: " + names.SkipLast(3).Last());
-        // v85: ArmConfirmation and GetLastConfirmation (the server's yes/no prompts), then v86's slot.
-        Check(names.SkipLast(1).TakeLast(2).SequenceEqual(new[] { "ArmConfirmationFn", "GetLastConfirmationFn" }), "v85 slots before v86's: " + string.Join(",", names.SkipLast(1).TakeLast(2)));
-        // v86: GetServerStateJson ends the table (which server this is, for every plugin).
-        Check(names.Last() == "GetServerStateJsonFn", "v86 slot last: " + names.Last());
+        Check(names.SkipLast(7).TakeLast(2).SequenceEqual(new[] { "GetContainerOrderFn", "PutItemInContainerFn" }), "v80 slots before v81's to v85's: " + string.Join(",", names.SkipLast(7).TakeLast(2)));
+        Check(sdkNames.SkipLast(7).TakeLast(2).SequenceEqual(names.SkipLast(7).TakeLast(2)), "SDK v80 slots in the same order");
+        Check(names.SkipLast(5).Last() == "SalvageDirectFn", "v82 slot before v83's");
+        // v83: GetObjectServerAge and RemoveClientObject (ghost creatures).
+        Check(names.SkipLast(3).TakeLast(2).SequenceEqual(new[] { "GetObjectServerAgeFn", "RemoveClientObjectFn" }), "v83 slots before v84's: " + string.Join(",", names.SkipLast(3).TakeLast(2)));
+        // v84: GetObjectProperties (every property of an object, /ub propertydump).
+        Check(names.SkipLast(2).Last() == "GetObjectPropertiesFn", "v84 slot before v85's: " + names.SkipLast(2).Last());
+        // v85: ArmConfirmation and GetLastConfirmation (answer the craft-chance prompt), before v86's slot.
+        Check(names.TakeLast(2).SequenceEqual(new[] { "ArmConfirmationFn", "GetLastConfirmationFn" }), "v85 slots before v86's: " + string.Join(",", names.TakeLast(2)));
         Check(typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SequenceEqual(typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name)), "SDK table has the engine's slots in the same order");
         Eq(Marshal.SizeOf<RynthCore.PluginSdk.RynthCoreApiNative>(), Marshal.SizeOf<RynthCore.Engine.Plugins.RynthCoreAPI>(), "SDK table size = engine table size");
         Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("PutItemInContainerFn"),

@@ -941,8 +941,8 @@ internal struct RynthCoreAPI
     /// for every plugin: each server the engine knows (built in, or declared by a loaded plugin)
     /// with its verdict, this character's override, why, and the plugin that owns its settings;
     /// plus the active server and the Diagnostics pick (UI/Sections/ServerStateJson.cs has the
-    /// schema). Returns the UTF-8 byte length; when it is &gt;= capacity nothing was written (call
-    /// again with a bigger buffer). -1 on failure. Any thread. Requires API v86+.</summary>
+    /// schema). Copies NUL-terminated UTF-8 JSON when it fits and returns its byte length either
+    /// way (length &gt;= capacity: call again with a bigger buffer). Any thread. Requires API v86+.</summary>
     public IntPtr GetServerStateJsonFn;
 }
 

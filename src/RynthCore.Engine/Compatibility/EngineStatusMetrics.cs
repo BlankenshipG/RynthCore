@@ -42,13 +42,55 @@ internal static class EngineStatusMetrics
         _mReconciles = reconciles; _mForceClears = forceClears;
     }
 
-    // Per-process session baselines for the per-hour rates. Each client is its own
-    // process, so these naturally reset per launch; we also reset on an XP drop
-    // (relog / char swap).
-    private static long _xpBaseline = -1;
-    private static long _lumBaseline = -1;
+    // The session's XP / luminance totals and rates: RynthSuite's shared formula (SessionRates),
+    // a new session per character. Locked: the status JSON and the Mini Remote's Session Stats
+    // section read it from different threads, and chat lines arrive on a third.
+    private static readonly object _ratesLock = new();
+    private static readonly SessionRates _rates = new();
     private static int _deathsBaseline = -1;
-    private static DateTime _statsSessionStartUtc = DateTime.UtcNow;
+    private static uint _deathsCharacter;
+    private const uint Int64BankedLuminance = 9005;   // ACECustom bank
+    private const uint Int64AelLuminanceBanked = 9102; // Aelrynth bank: luminance auto-banked
+    private const uint Int64AelLuminanceDrawn = 9103;  // Aelrynth bank: luminance drawn
+
+    /// <summary>A chat line (PluginManager.QueueChatWindowText): luminance moved into the bank isn't income.</summary>
+    internal static void OnChatLine(string? text)
+    {
+        if (string.IsNullOrEmpty(text) || !SessionRates.TryMovedIntoBank(text, out _)) return;
+        lock (_ratesLock) _rates.OnChat(text, DateTime.UtcNow);
+    }
+
+    /// <summary>
+    /// Samples the player now and returns the session's totals and rates (the Mini Remote's
+    /// Session Stats section). Any thread; reads only the main-thread-cached player stats.
+    /// </summary>
+    internal static SessionRatesView SessionView()
+    {
+        try
+        {
+            ClientObjectHooks.TryGetPlayerStats(out long xp, out long lum, out _, out _, out _, out _, out _, out _, out _, out _);
+            return SampleRates(xp, lum);
+        }
+        catch
+        {
+            return new SessionRatesView(DateTime.UtcNow, 0, 0, 0, 0, 0);
+        }
+    }
+
+    /// <summary>Feeds one read to the shared-formula session (bank properties read from the property cache).</summary>
+    private static SessionRatesView SampleRates(long xp, long lum)
+    {
+        uint player = ClientHelperHooks.GetPlayerId();
+        long? Quad(uint stype) => player != 0 && ClientObjectHooks.TryGetObjectQuadProperty(player, stype, out long v) ? v : null;
+        var sample = new SessionRatesSample(xp > 0 ? xp : null, lum > 0 ? lum : null,
+                                            Quad(Int64BankedLuminance), Quad(Int64AelLuminanceBanked), Quad(Int64AelLuminanceDrawn));
+        DateTime now = DateTime.UtcNow;
+        lock (_ratesLock)
+        {
+            _rates.Sample(player, sample, now);
+            return _rates.View(now);
+        }
+    }
 
     /// <summary>
     /// Compose the engine-side status fields as a JSON object string, from the
@@ -120,17 +162,15 @@ internal static class EngineStatusMetrics
                                             out int encVal, out int encCap, out uint landcell,
                                             out float px, out float py, out float pz);
         double vitaePct = Math.Clamp((1.0 - vitae) * 100.0, 0.0, 100.0);
-        // Lazy baselines; reset on an XP drop (relog / char change).
-        if (xp > 0 && (_xpBaseline < 0 || xp < _xpBaseline))
-        {
-            _xpBaseline = xp; _deathsBaseline = deaths; _statsSessionStartUtc = DateTime.UtcNow;
-        }
-        if (_deathsBaseline < 0 && xp > 0) _deathsBaseline = deaths;
-        if (lum > 0 && (_lumBaseline < 0 || lum < _lumBaseline)) _lumBaseline = lum;
-        double hours = (DateTime.UtcNow - _statsSessionStartUtc).TotalHours;
-        double xpPerHour  = (hours > 1.0 / 3600.0 && _xpBaseline  >= 0 && xp  >= _xpBaseline)  ? (xp  - _xpBaseline)  / hours : 0;
-        double lumPerHour = (hours > 1.0 / 3600.0 && _lumBaseline >= 0 && lum >= _lumBaseline) ? (lum - _lumBaseline) / hours : 0;
-        long xpSession = (_xpBaseline >= 0 && xp >= _xpBaseline) ? xp - _xpBaseline : 0;
+        // XP and luminance: the shared formula (sum of rises, ACECustom / Aelrynth bank aware),
+        // one session per character, the same numbers RynthAi and RynthTracker show.
+        SessionRatesView rates = SampleRates(xp, lum);
+        double xpPerHour = rates.XpPerHour;
+        double lumPerHour = rates.LumPerHour;
+        long xpSession = rates.Xp;
+        // Deaths this session: from the first read for this character.
+        uint who = ClientHelperHooks.GetPlayerId();
+        if (who != 0 && who != _deathsCharacter) { _deathsCharacter = who; _deathsBaseline = deaths; }
         int deathsSession = (_deathsBaseline >= 0 && deaths >= _deathsBaseline) ? deaths - _deathsBaseline : 0;
         double burdenPct = encCap > 0 ? Math.Round((double)encVal / encCap * 100.0) : 0;
         w.WriteNumber("deaths", deaths);
@@ -139,6 +179,7 @@ internal static class EngineStatusMetrics
         w.WriteNumber("xpPerHour", Math.Round(xpPerHour));
         w.WriteNumber("luminancePerHour", Math.Round(lumPerHour));
         w.WriteNumber("xpSession", xpSession);
+        w.WriteNumber("luminanceSession", rates.Lum);   // additive (2026.10.5.54): the luminance total behind luminancePerHour
         w.WriteNumber("burdenPct", burdenPct);
         w.WriteString("area", landcell != 0 ? (landcell >> 16).ToString("X4") : "");
         // [status-export] live map-dot position. wx/wy are ABSOLUTE world coords (cell-local origin + the

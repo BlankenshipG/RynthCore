@@ -10,7 +10,7 @@
 //  With RynthAi loaded it hosts RynthAi's Mini Remote (session rates, target,
 //  summon, item slots, toggles, bank, rebuff, Translate, Guardian and its
 //  Options menu, its Quests and Pets tabs, plus on ILT worlds the RynthILT
-//  plugin's tabs Charms, Banking, Gear and Games (Character moved to RynthOracle, 2026.10.5.54), which RynthAi asks
+//  plugin's tabs Gear and Games (Character and Charms moved to RynthOracle, Banking to RynthInventory, 2026.10.5.54), which RynthAi asks
 //  RynthILT to draw), drawn by the plugin through
 //  RynthPluginRenderEmbed ("miniremote-window"). The window fits itself to what
 //  the plugin asks for whenever that changes (another tab, a section shown or

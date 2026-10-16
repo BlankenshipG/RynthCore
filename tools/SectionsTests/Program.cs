@@ -28,6 +28,9 @@ internal static class Program
         SelectionCurrentPick();
         SelectionActiveAndOwner();
         StateJson();
+        RatesRises();
+        RatesBank();
+        RatesChat();
 
         Console.WriteLine();
         Console.WriteLine($"{_checks - _failed}/{_checks} checks passed.");
@@ -325,19 +328,6 @@ internal static class Program
         Check(load.Count == 1 && load[0] == "coldeve", "only the server forced On asks for its plugin");
         forces["coldeve"] = ServerForce.Off;
         Check(NotLoadedServers.ForcedOn(notLoaded, Force).Count == 0, "Off loads nothing");
-
-        // The connect host is nobody's (none load at start); the world name the server announces
-        // loads its plugin late, unless that server is forced Off.
-        var byWorld = new[]
-        {
-            new NotLoadedServer("frost", "Frosthaven", "RynthFrostACE", new[] { "Frosthaven*" }),
-            new NotLoadedServer("coldeve", "Coldeve", "RynthColdeve", new[] { "Coldeve" }),
-        };
-        Check(NotLoadedServers.ToLoad(byWorld, Force, null).Count == 0, "before login: nothing loads by world name");
-        var hit = NotLoadedServers.ToLoad(byWorld, Force, "Frosthaven PvE");
-        Check(hit.Count == 1 && hit[0] == "frost", "the announced world name loads its server's plugin");
-        Check(NotLoadedServers.ToLoad(byWorld, Force, "Coldeve").Count == 0, "a server forced Off isn't loaded by its world name");
-        Check(NotLoadedServers.ToLoad(byWorld, Force, "Somewhere Else").Count == 0, "a world nobody lists loads nothing");
     }
 
     private static void SelectionCurrentPick()
@@ -432,6 +422,79 @@ internal static class Program
         fixed (byte* p = big)
             Check(ServerStateJson.Write(json, p, big.Length) == length, "fits: length");
         Check(System.Text.Encoding.UTF8.GetString(big, 0, length) == json && big[length] == 0, "fits: text and NUL");
+    }
+
+    // ── Session rates (status feed / Session Stats) ────────────────────
+
+    private static readonly DateTime T0 = new(2026, 10, 13, 12, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>XP and character luminance: only rises count, the first read is the baseline.</summary>
+    private static void RatesRises()
+    {
+        Case("rates rises");
+        var r = new SessionRates();
+        Check(r.View(T0).Xp == 0 && r.View(T0).Seconds == 0, "zeros before the first sample");
+        r.Sample(0, new SessionRatesSample(100, 5, null, null, null), T0);
+        Check(r.Character == 0, "character 0 is ignored");
+
+        r.Sample(7, new SessionRatesSample(1_000, 50, null, null, null), T0);
+        Check(r.View(T0).Xp == 0 && r.View(T0).Lum == 0, "first read is the baseline");
+        r.Sample(7, new SessionRatesSample(4_000, 80, null, null, null), T0.AddMinutes(30));
+        r.Sample(7, new SessionRatesSample(4_000, 10, null, null, null), T0.AddMinutes(45));   // spent 70 lum
+        r.Sample(7, new SessionRatesSample(5_000, 30, null, null, null), T0.AddHours(1));
+        SessionRatesView v = r.View(T0.AddHours(1));
+        Check(v.Xp == 4_000, "xp is the sum of rises: " + v.Xp);
+        Check(v.Lum == 50, "a spend moves the baseline, it doesn't take earnings back: " + v.Lum);
+        Check(Math.Abs(v.XpPerHour - 4_000) < 0.001 && Math.Abs(v.LumPerHour - 50) < 0.001, "per hour over one hour");
+        Check(r.View(T0).Seconds == 1, "a session is at least one second long");
+
+        r.Sample(8, new SessionRatesSample(9_000, 1, null, null, null), T0.AddHours(2));
+        v = r.View(T0.AddHours(2));
+        Check(r.Character == 8 && v.Xp == 0 && v.Lum == 0 && v.StartUtc == T0.AddHours(2), "a new character starts a new session");
+    }
+
+    /// <summary>ACECustom's bank (9005) and Aelrynth's banked (9102) / drawn (9103) totals.</summary>
+    private static void RatesBank()
+    {
+        Case("rates bank");
+        var r = new SessionRates();
+        r.Sample(1, new SessionRatesSample(null, 100, 1_000, null, null), T0);
+        r.Sample(1, new SessionRatesSample(null, 100, 1_500, null, null), T0.AddMinutes(1));
+        Check(r.View(T0.AddMinutes(1)).Lum == 500, "a bank rise is income");
+        r.Sample(1, new SessionRatesSample(null, 400, 1_200, null, null), T0.AddMinutes(2));
+        Check(r.View(T0.AddMinutes(2)).Lum == 500, "a withdrawal (bank down, character up) isn't income once the bank is tracked");
+
+        var a = new SessionRates();
+        a.Sample(2, new SessionRatesSample(null, 10, null, 0, 0), T0);
+        a.Sample(2, new SessionRatesSample(null, 10, null, 300, 0), T0.AddMinutes(1));
+        Check(a.View(T0.AddMinutes(1)).Lum == 300, "auto-banked luminance was earned");
+        a.Sample(2, new SessionRatesSample(null, 210, null, 300, 200), T0.AddMinutes(2));
+        Check(a.View(T0.AddMinutes(2)).Lum == 300, "drawn luminance landing on the character isn't earned");
+        a.Sample(2, new SessionRatesSample(null, 260, null, 300, 200), T0.AddMinutes(3));
+        Check(a.View(T0.AddMinutes(3)).Lum == 350, "a real character rise after a draw still counts");
+    }
+
+    /// <summary>Deposits and incoming transfers seen in chat aren't income; the marker expires.</summary>
+    private static void RatesChat()
+    {
+        Case("rates chat");
+        Check(SessionRates.TryMovedIntoBank("Deposited 1,234 luminance into your bank.", out long n) && n == 1_234, "a deposit line");
+        Check(SessionRates.TryMovedIntoBank("  Received 50 luminance from Kelpie.", out n) && n == 50, "a transfer line, padded");
+        Check(!SessionRates.TryMovedIntoBank("Kelpie tells you, \"Deposited 5 luminance\"", out _), "a quoted line isn't a deposit");
+        Check(!SessionRates.TryMovedIntoBank("Deposited luminance", out _) && !SessionRates.TryMovedIntoBank(null, out _), "no amount, null");
+        Check(!SessionRates.TryMovedIntoBank("Deposited 99999999999999999999 luminance", out _), "overflow is rejected");
+
+        var r = new SessionRates();
+        r.Sample(1, new SessionRatesSample(null, 1_000, 0, null, null), T0);
+        r.OnChat("Deposited 600 luminance", T0.AddSeconds(5));
+        r.Sample(1, new SessionRatesSample(null, 400, 600, null, null), T0.AddSeconds(6));
+        Check(r.View(T0.AddSeconds(6)).Lum == 0, "a deposit is moved money");
+        r.Sample(1, new SessionRatesSample(null, 400, 700, null, null), T0.AddSeconds(7));
+        Check(r.View(T0.AddSeconds(7)).Lum == 100, "the next bank rise after the deposit is income");
+
+        r.OnChat("Received 50 luminance from Someone", T0.AddSeconds(10));
+        r.Sample(1, new SessionRatesSample(null, 400, 800, null, null), T0.AddSeconds(100));
+        Check(r.View(T0.AddSeconds(100)).Lum == 200, "the marker expires after 60 seconds");
     }
 
     // ── Harness ────────────────────────────────────────────────────────

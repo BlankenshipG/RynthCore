@@ -371,6 +371,7 @@ internal static unsafe class RynthAiCommands
         finally { Marshal.FreeHGlobal(p); }
         if (refreshPatrol) UiSources.Patrol.RequestRefresh();
         UiSources.Nav.RequestRefresh();   // the plugin applied it: the Nav panels show it next poll
+        UiSources.Settings.RequestRefresh();   // Breadcrumbs / Route overlay are on Settings > Navigation too
     });
 
     /// <summary>

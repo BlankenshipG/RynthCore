@@ -353,9 +353,9 @@ internal static class RynthCoreChatCommands
         // /rc miniremote [show|hide|toggle|tab <tab>|section <id>] : the ImGui Mini Remote panel, like
         // its bar button (RynthAi's dashboard and "/ra hub" use show / hide). "tab" opens it on one of
         // its tabs (RynthAi's pets, crafting; RynthILT's gear, games; none = the remote). Quests are
-        // RynthOracle's window (/ro) since 2026-10-13. Since 2026.10.5.54 the old "character" tab
-        // (the generic overview) opens RynthOracle's Character tab (/ro character). Infinite
-        // Leaftide's own tabs ("charms", "banking", "gear", "games") stay RynthILT's, in this window.
+        // RynthOracle's window (/ro) since 2026-10-13. Since 2026.10.5.54 the old "character" and
+        // "charms" tabs open RynthOracle's Character tab (/ro character) and "banking" opens
+        // RynthInventory's Global Inventory on its Banking tab (/ginv bank).
         // "section" opens it on one of its sections (char = Session Stats, map, skills, ...; "remote" = the remote).
         if (IsVerb(sub, "miniremote", out string remoteArgs) || IsVerb(sub, "remote", out remoteArgs))
         {
@@ -1018,13 +1018,14 @@ internal static class RynthCoreChatCommands
     }
 
     /// <summary>
-    /// The command for a Mini Remote tab that moved out (2026.10.5.54): "character" (the generic
-    /// overview) is RynthOracle's Character tab. Null for a tab still in the Mini Remote, which
-    /// includes RynthILT's Leaftide tabs (Charms, Banking, Gear, Games): those stay RynthILT's.
+    /// The command for a Mini Remote tab that moved out (2026.10.5.54): "character" and "charms"
+    /// are RynthOracle's Character tab, "banking" is RynthInventory's Global Inventory Banking tab.
+    /// Null for a tab still in the Mini Remote.
     /// </summary>
     internal static string? MovedTabCommand(string tab) => tab.Trim().ToLowerInvariant() switch
     {
-        "character" or "char" => "/ro character",
+        "character" or "char" or "charms" => "/ro character",
+        "banking" or "bank" => "/ginv bank",
         _ => null,
     };
 

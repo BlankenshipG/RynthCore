@@ -1,7 +1,7 @@
 // ============================================================================
 //  RynthCore.Engine - Compatibility/ConfirmationResponder.cs
 //
-//  Plugin API v85: answer the server's yes/no prompts (craft chance, augmentation,
+//  Plugin API v81: answer the server's yes/no prompts (craft chance, augmentation,
 //  ...) for a plugin, the way UtilityBelt's helper clicks "Yes" on the tinkering
 //  dialog, without the client ever opening that dialog.
 //

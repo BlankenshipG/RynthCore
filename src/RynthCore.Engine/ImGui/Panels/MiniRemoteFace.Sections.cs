@@ -59,9 +59,6 @@ internal sealed partial class MiniRemoteFace
 
     private static bool IsRemote => _section.Equals(SectionCatalog.RemoteId, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Whether the window is on section <paramref name="sectionId"/> (the dashboard's lit Char launcher).</summary>
-    public static bool ShowsSection(string sectionId) => _section.Equals(sectionId, StringComparison.OrdinalIgnoreCase);
-
     private static bool RailShown => PanelColumnStore.Get(RailKey, 1f) >= 0.5f;
 
     // ── Requests (commands; render thread) ──────────────────────────────
@@ -459,9 +456,9 @@ internal sealed partial class MiniRemoteFace
     // ── Session Stats overview ──────────────────────────────────────────
 
     /// <summary>
-    /// The Session Stats section's stand-in, shown only while no plugin fills the section (RynthAi
-    /// does, with its session XP, luminance, kills and rates). The engine keeps no session totals
-    /// of its own here: it names the character and says where the numbers come from.
+    /// The Session Stats section's stand-in (shown only while no plugin fills the section; RynthAi
+    /// does): this session's XP and luminance with their per-hour rates, from the engine's
+    /// SessionRates, the same formula RynthAi, RynthTracker, RynthOracle and RynthILT use.
     /// Character details are RynthOracle's Character tab; server picks are Options > Diagnostics.
     /// </summary>
     private void DrawOverview(SectionRegistry.Snapshot snap, Vector2 box)
@@ -476,10 +473,20 @@ internal sealed partial class MiniRemoteFace
             Label(who.Length > 0 ? who : "No character logged in", Teal);
             float w = ImGuiNET.ImGui.GetContentRegionAvail().X;
             Separator(w);
+
+            SessionRatesView r = EngineStatusMetrics.SessionView();
+            if (r.Seconds <= 0)
+            {
+                ImGuiNET.ImGui.TextDisabled("The session starts once a character is in the world.");
+                return;
+            }
+            StatRow("Session", FormatDuration(r.Seconds));
+            StatRow("XP", $"{Compact(r.Xp)}  ({Compact(r.XpPerHour)}/hr)");
+            StatRow("Luminance", $"{Compact(r.Lum)}  ({Compact(r.LumPerHour)}/hr)");
+            ImGuiNET.ImGui.Spacing();
             ImGuiNET.ImGui.PushTextWrapPos(0f);
             ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Faded(Mute));
-            SafeImGui.TextWrapped("This session's XP, luminance, kills and their per-hour rates come with RynthAi's "
-                + "Session Stats; RynthAi isn't loaded (or is too old to show them here). "
+            SafeImGui.TextWrapped("Kills, deaths and per-kill XP come with RynthAi's session stats. "
                 + "Character details: RynthOracle's Character tab (/ro character). Server picks: Options > Diagnostics.");
             ImGuiNET.ImGui.PopStyleColor();
             ImGuiNET.ImGui.PopTextWrapPos();
@@ -490,6 +497,30 @@ internal sealed partial class MiniRemoteFace
         }
     }
 
+    /// <summary>One "label  value" row of the overview.</summary>
+    private static void StatRow(string label, string value)
+    {
+        Label(label, Mute);
+        ImGuiNET.ImGui.SameLine(90f);
+        ImGuiNET.ImGui.TextUnformatted(value);
+    }
+
+    /// <summary>12.3k, 4.5m, 1.2b (the Mini Remote's compact numbers).</summary>
+    private static string Compact(double v)
+    {
+        double a = Math.Abs(v);
+        if (a >= 1e9) return (v / 1e9).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "b";
+        if (a >= 1e6) return (v / 1e6).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "m";
+        if (a >= 1e4) return (v / 1e3).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "k";
+        return v.ToString("0", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>"1h 05m" or "4m 12s".</summary>
+    private static string FormatDuration(double seconds)
+    {
+        var t = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        return t.TotalHours >= 1 ? $"{(int)t.TotalHours}h {t.Minutes:00}m" : $"{t.Minutes}m {t.Seconds:00}s";
+    }
     // ── Menu ────────────────────────────────────────────────────────────
 
     /// <summary>The menu's section half: every section, the active servers' items, the rail switch.</summary>

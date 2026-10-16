@@ -42,3 +42,10 @@ kills the same way. The Tracker panel shows the new figures:
 
 - The engine builds in Release, and ItemHudTests pass (63 assertions).
 - Not yet checked in game.
+
+## Installed
+
+- 2026-10-11 22:30: published to `C:\Games\RynthCore\Runtime` (FileVersion 2026.10.5.32). No AC
+  client was running, so nothing hot-reloaded.
+- 2026.10.5.31 is saved in `C:\Games\Rynthcore\PreviousReleases\2026.10.5.31-engine` and
+  `C:\Games\_rynth-backups\20261011-pre-shared-stats\Runtime`.

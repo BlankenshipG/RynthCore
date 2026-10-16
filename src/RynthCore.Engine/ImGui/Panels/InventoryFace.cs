@@ -656,7 +656,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         ImGuiNET.ImGui.SetCursorScreenPos(pos);
         bool clicked = ImGuiNET.ImGui.InvisibleButton(id, size);
         bool hot = ImGuiNET.ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
-        SafeImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);   // the Give zone's tip carries the target's name
         bool dropHot = enabled && _dragItem != null && hot;
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         uint fill = dropHot ? DropHot : _dragItem != null && enabled ? Selected : hot && enabled ? Lighten(BtnFill) : BtnFill;

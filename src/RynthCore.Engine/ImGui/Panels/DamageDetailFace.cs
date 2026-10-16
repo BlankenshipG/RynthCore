@@ -409,6 +409,17 @@ internal sealed class DamageDetailFace : IImGuiPanel
             pick => DamageCommands.EditRule(name, r => r.ExVuln = pick),
             "A vulnerability of another element, on top of Vuln (which follows the attack's element).");
 
+        // Melee/missile attack power against it
+        string power = string.IsNullOrEmpty(view.AttackPower) ? "Default" : view.AttackPower;
+        Combo("Power", "##power", DamageCommands.AttackPowerModes, power,
+            pick => DamageCommands.EditRule(name, r => r.AttackPower = pick),
+            (isDefault
+                ? "Melee/missile attack power for every monster without its own. Default = the Power settings (Melee Combat).\n"
+                : "Melee/missile attack power against the monsters it covers. Default = the DEFAULT line's.\n") +
+            "High = 100%. Reckless = 80% (needs Recklessness trained, else 100%).\n" +
+            "Variable = a new random power each attack, between Variable Min and Max (Settings).\n" +
+            "Reckless + Variable = random, kept inside the Recklessness band (20-80%).");
+
         // Match expression (Default never matches by name, so it has none)
         if (!isDefault)
         {

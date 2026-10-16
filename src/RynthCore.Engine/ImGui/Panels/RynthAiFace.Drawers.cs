@@ -188,7 +188,7 @@ internal sealed partial class RynthAiFace
     }
 
     /// <summary>RynthAi's Mini Remote, drawn by the plugin into this drawer (its drawer tab).</summary>
-    private sealed class RemoteDrawer : RynthAiDrawer
+    private sealed class RemoteDrawer : DashboardDrawer
     {
         /// <summary>The plugin surface name, NUL-terminated for the export.</summary>
         private static ReadOnlySpan<byte> Surface => "miniremote\0"u8;
@@ -208,7 +208,7 @@ internal sealed partial class RynthAiFace
         public override string TabTooltip(bool right) =>
             "Mini Remote: session rates, attack target, summon, item slots, toggles, bank, rebuff, Translate.\n" +
             "Its Options button picks the sections. RynthILT's ILT tabs are in the Mini Remote window (Char, or the bar button).\n" +
-            "Click to slide it out.";
+            (right ? "Click to slide it out (to the right: there's no room on the left)." : "Click to slide it out.");
 
         public override float Width(float k) =>
             Math.Clamp(_want.X > 0 ? _want.X : MinW * k, MinW * k, MaxW * k) + 2 * Pad * k;

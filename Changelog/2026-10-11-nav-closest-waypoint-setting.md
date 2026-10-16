@@ -17,3 +17,10 @@
   engine doesn't send it.
 
 Not yet tested in game.
+
+## Installed
+
+- 2026-10-11 22:33: published to `C:\Games\RynthCore\Runtime` (FileVersion 2026.10.5.33). Both
+  running clients (pids 33684 and 61616) hot-reloaded to it (gen 2) without errors.
+- 2026.10.5.32 is saved in `C:\Games\Rynthcore\PreviousReleases\2026.10.5.32-engine` and
+  `C:\Games\_rynth-backups\20261011-pre-nav-closest\Runtime`.

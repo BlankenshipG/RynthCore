@@ -127,6 +127,10 @@ internal static class MonstersPanel
         public string PetDamage { get; set; } = "PAuto";
         /// <summary>Debuffs the player typed in, comma separated (spell base or full names).</summary>
         public string CustomDebuffs { get; set; } = string.Empty;
+        /// <summary>Melee/missile attack power for this monster: one of DamageData.AttackPowerModes
+        /// ("Default" follows the DEFAULT line, which follows the global Power settings). Rules saved
+        /// before 2026-10-12 load as Default.</summary>
+        public string AttackPower { get; set; } = "Default";
 
         public bool GetToggle(string field) => field switch
         {
@@ -1016,6 +1020,7 @@ internal static class MonstersPanel
             var x = a[i]; var y = b[i];
             if (x.Name != y.Name || x.Category != y.Category || x.Priority != y.Priority
                 || x.DamageType != y.DamageType || x.ExVuln != y.ExVuln || x.PetDamage != y.PetDamage
+                || (x.AttackPower ?? "") != (y.AttackPower ?? "")
                 || x.WeaponId != y.WeaponId || x.OffhandId != y.OffhandId
                 || x.MatchExpression != y.MatchExpression
                 || x.Fester != y.Fester || x.Broadside != y.Broadside || x.GravityWell != y.GravityWell

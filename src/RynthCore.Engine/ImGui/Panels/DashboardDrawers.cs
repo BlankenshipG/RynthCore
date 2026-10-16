@@ -388,7 +388,7 @@ internal sealed class DashboardDrawers
         bool rightClicked = d.CanMove && ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right);
         // Like SetItemTooltip (same delay), but the closed tooltip is only built while it shows.
         if (ImGuiNET.ImGui.IsItemHovered(ImGuiHoveredFlags.ForTooltip))
-            SafeImGui.SetTooltip(open ? d.HideTip : d.TabTooltip(right) + (d.CanMove ? MoveHint : ""));
+            SafeImGui.SetTooltip(open ? d.HideTip : d.TabTooltip(right));
         if (clicked) Toggle(d);
         if (rightClicked) ImGuiNET.ImGui.OpenPopup(d.SideMenuId);
 
