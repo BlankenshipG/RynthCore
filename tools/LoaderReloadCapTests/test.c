@@ -89,10 +89,23 @@ int main(void)
     CHECK(ReloadCapReached(0, 0), "cap 0: no hot reloads at all");
     CHECK(!ReloadCapReached(0, -1) && !ReloadCapReached(1000, -1), "negative cap: no cap");
 
+    // 1b. The address-space guard: free in all, and (CoreCLR) the largest free block.
+    CHECK(ReloadSpaceShort(1, 1800, 1600) == 0, "CoreCLR, 1800 MB free, 1600 MB block: room");
+    CHECK(ReloadSpaceShort(1, MIN_FREE_MB_CLR, MIN_LARGEST_MB_CLR) == 0, "CoreCLR, exactly both floors: room");
+    CHECK(ReloadSpaceShort(1, MIN_FREE_MB_CLR - 1, 300) == 1, "CoreCLR, under the free floor: short in all (checked first)");
+    CHECK(ReloadSpaceShort(1, 1200, MIN_LARGEST_MB_CLR - 1) == 2, "CoreCLR, 1200 MB free but a 399 MB largest block: refused");
+    CHECK(ReloadSpaceShort(0, 1500, 100) == 0, "NativeAOT: no largest-block floor");
+    CHECK(ReloadSpaceShort(0, MIN_FREE_MB_AOT - 1, 1000) == 1, "NativeAOT, under its free floor: short in all");
+    {
+        long largest = -1;
+        long freeNow = LoaderFreeAddressSpaceMb(&largest);
+        CHECK(largest > 0 && largest <= freeNow, "this process: largest block %ld MB of %ld MB free", largest, freeNow);
+    }
+
     // 2. Where the cap comes from: the engine's export, else the default.
     g_engineIsManaged = 0;
     g_engineModule = NULL;
-    CHECK(CurrentReloadCap() == DEFAULT_MAX_HOT_RELOADS && DEFAULT_MAX_HOT_RELOADS == 3,
+    CHECK(CurrentReloadCap() == DEFAULT_MAX_HOT_RELOADS && DEFAULT_MAX_HOT_RELOADS == 20,
         "no engine export: the default (%d)", CurrentReloadCap());
     g_engineModule = GetModuleHandleA(NULL);
     CHECK(EngineExport(ENGINE_MAXRELOADS_EXPORT) && EngineExport(ENGINE_CAPPED_EXPORT), "the fake engine's exports resolve");

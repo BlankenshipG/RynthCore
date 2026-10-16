@@ -339,6 +339,9 @@ internal sealed class ChatFace : IImGuiPanel
     /// <summary>The channels drawer on the chat window's left edge (DashboardDrawers' mechanics).</summary>
     private sealed class ChannelsDrawer : DashboardDrawer
     {
+        // The chat window often sits against the screen's left edge: the channels then open on its right.
+        public override bool FlipsWhenNoRoom => true;
+
         private const float RowH = 20;
         private static bool s_open;   // this session only
         private readonly ChatFace _face;

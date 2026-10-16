@@ -72,8 +72,8 @@ internal static class VideoPatchPolicy
         mode = VideoPatchMode.Off;
         switch (text?.Trim().ToLowerInvariant())
         {
-            case "off": case "0": case "false": case "none": mode = VideoPatchMode.Off; return true;
-            case "on": case "1": case "true": case "world": case "3d": mode = VideoPatchMode.World; return true;
+            case "off": case "0": case "false": case "none": case "disable": case "disabled": mode = VideoPatchMode.Off; return true;
+            case "on": case "1": case "true": case "world": case "3d": case "enable": case "enabled": mode = VideoPatchMode.World; return true;
             case "unfocused": case "focus": case "background": case "bg": mode = VideoPatchMode.Unfocused; return true;
             case "all": case "full": case "everything": mode = VideoPatchMode.All; return true;
             default: return false;

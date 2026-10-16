@@ -27,6 +27,8 @@ internal static class RadarSettingsStore
     public static float Opacity = 1.0f;
     public static bool RotateWithPlayer;
     public static bool ShowGoldRim = true;
+    /// <summary>ImGui face: a round radar (everything cut to a circle) instead of the square one.</summary>
+    public static bool RoundRadar;
     public static bool CtrlGatedClickThrough = false;
     public static bool ShowMonsters = true;
     public static bool ShowNpcs = true;
@@ -43,6 +45,37 @@ internal static class RadarSettingsStore
     public static bool ShowGroundItems = false;
     /// <summary>ImGui face: a left-click on a dot selects that object in game.</summary>
     public static bool ClickToSelect = true;
+
+    /// <summary>ImGui face: the World Map's picture drawn behind the radar while you're outdoors (off by default).</summary>
+    public static bool ShowWorldMap;
+    /// <summary>How strongly that picture shows (the radar's own Opacity applies on top).</summary>
+    public static float WorldMapOpacity = 0.8f;
+
+    // Text sizes of the compass letters and the coordinate strip (px at 100% UI scale).
+    public const float DefaultCompassSize = 14f, DefaultCoordSize = 11f, MinText = 8f, MaxText = 28f;
+    public static float CompassSize = DefaultCompassSize;
+    public static float CoordSize = DefaultCoordSize;
+
+    /// <summary>
+    /// Per-kind marker size and name label (added 2026-10-15). Names start on for the kinds you
+    /// look for by name - monsters, NPCs, vendors, players, fellows, portals - and off for the
+    /// rest, which would only add clutter.
+    /// </summary>
+    public static readonly MarkerStyleSettings Markers = new(new[]
+    {
+        true,  // monster
+        true,  // NPC
+        true,  // portal
+        false, // door
+        true,  // player
+        true,  // fellow
+        false, // your pet
+        true,  // vendor
+        false, // corpse
+        false, // your corpse
+        false, // lifestone
+        false, // item on the ground
+    });
 
     /// <summary>
     /// Default marker colour per <see cref="RadarKind"/> (ARGB). Chosen to stay apart for
@@ -69,11 +102,7 @@ internal static class RadarSettingsStore
     public static readonly uint[] KindColors = (uint[])DefaultKindColors.Clone();
 
     // Settings-file keys per kind (color.<key>=AARRGGBB).
-    private static readonly string[] KindKeys =
-    {
-        "monster", "npc", "portal", "door", "player", "fellow",
-        "pet", "vendor", "corpse", "ownCorpse", "lifestone", "groundItem",
-    };
+    private static readonly string[] KindKeys = MarkerStyleSettings.Keys;
 
     /// <summary>The show/hide flag of a kind (the radar's per-kind check boxes).</summary>
     public static ref bool ShowFlag(byte kind)
@@ -105,6 +134,14 @@ internal static class RadarSettingsStore
     public static uint KindColor(byte kind) => kind < KindColors.Length ? KindColors[kind] : 0xFFFFFFFF;
 
     public static void ResetKindColors() => Array.Copy(DefaultKindColors, KindColors, KindColors.Length);
+
+    /// <summary>Every marker size, name box and text size back to its default (show boxes and colours stay).</summary>
+    public static void ResetSizes()
+    {
+        Markers.Reset();
+        CompassSize = DefaultCompassSize;
+        CoordSize = DefaultCoordSize;
+    }
 
     // RYNTHCORE_RADAR_SETTINGS points a test at its own file instead of the real one.
     private static string FilePath
@@ -148,6 +185,7 @@ internal static class RadarSettingsStore
                             break;
                         case "rotate":           RotateWithPlayer        = val == "1"; break;
                         case "showGoldRim":      ShowGoldRim             = val == "1"; break;
+                        case "round":            RoundRadar              = val == "1"; break;
                         case "ctrlClickThrough": CtrlGatedClickThrough   = val == "1"; break;
                         case "showMonsters":     ShowMonsters            = val == "1"; break;
                         case "showNpcs":     ShowNpcs         = val == "1"; break;
@@ -162,7 +200,21 @@ internal static class RadarSettingsStore
                         case "showLifestones":  ShowLifestones  = val == "1"; break;
                         case "showGroundItems": ShowGroundItems = val == "1"; break;
                         case "clickSelect":  ClickToSelect    = val == "1"; break;
+                        case "worldMap":     ShowWorldMap     = val == "1"; break;
+                        case "worldMapOpacity":
+                            if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float wo) && float.IsFinite(wo))
+                                WorldMapOpacity = Math.Clamp(wo, 0.1f, 1.0f);
+                            break;
+                        case "compassSize":
+                            if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float cs) && float.IsFinite(cs))
+                                CompassSize = Math.Clamp(cs, MinText, MaxText);
+                            break;
+                        case "coordSize":
+                            if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float ds) && float.IsFinite(ds))
+                                CoordSize = Math.Clamp(ds, MinText, MaxText);
+                            break;
                         default:
+                            if (Markers.TryLoad(key, val)) break;
                             if (key.StartsWith("color.", StringComparison.Ordinal))
                             {
                                 int k = Array.IndexOf(KindKeys, key["color.".Length..]);
@@ -195,6 +247,7 @@ internal static class RadarSettingsStore
                 sw.WriteLine(FormattableString.Invariant($"opacity={Opacity:0.##}"));
                 sw.WriteLine($"rotate={(RotateWithPlayer ? "1" : "0")}");
                 sw.WriteLine($"showGoldRim={(ShowGoldRim ? "1" : "0")}");
+                sw.WriteLine($"round={(RoundRadar ? "1" : "0")}");
                 sw.WriteLine($"ctrlClickThrough={(CtrlGatedClickThrough ? "1" : "0")}");
                 sw.WriteLine($"showMonsters={(ShowMonsters ? "1" : "0")}");
                 sw.WriteLine($"showNpcs={(ShowNpcs ? "1" : "0")}");
@@ -209,6 +262,13 @@ internal static class RadarSettingsStore
                 sw.WriteLine($"showLifestones={(ShowLifestones ? "1" : "0")}");
                 sw.WriteLine($"showGroundItems={(ShowGroundItems ? "1" : "0")}");
                 sw.WriteLine($"clickSelect={(ClickToSelect ? "1" : "0")}");
+                sw.WriteLine($"worldMap={(ShowWorldMap ? "1" : "0")}");
+                sw.WriteLine(FormattableString.Invariant($"worldMapOpacity={WorldMapOpacity:0.##}"));
+                sw.WriteLine(FormattableString.Invariant($"compassSize={CompassSize:0.##}"));
+                sw.WriteLine(FormattableString.Invariant($"coordSize={CoordSize:0.##}"));
+                var styleLines = new System.Collections.Generic.List<string>();
+                Markers.AppendLines(styleLines);
+                foreach (string line in styleLines) sw.WriteLine(line);
                 // Only colours that differ from the default, so a later default change still lands.
                 for (int k = 0; k < KindColors.Length; k++)
                     if (KindColors[k] != DefaultKindColors[k])

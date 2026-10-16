@@ -27,7 +27,9 @@
 #include <windows.h>
 
 /* File version of this native module (bump with every behavioural change). */
-#define RC_SEH_TRAMPOLINE_VERSION 6   /* v6: AwfulWaffle's crash logger (per-address dedupe, pid/date,
+#define RC_SEH_TRAMPOLINE_VERSION 7   /* v7: stack sweeps bounded by this thread's stack (TEB), never
+                                         reading at or past StackBase;
+                                         v6: AwfulWaffle's crash logger (per-address dedupe, pid/date,
                                          flush ring, RC_FlushCrashLog, module cache) merged with v3-v5;
                                          v5: crash log handle opened once at install; no CreateFileW
                                          while an exception is being dispatched */
@@ -502,14 +504,34 @@ static char* cl_sym(char* p, unsigned int addr, int allowFallback)
     return p;
 }
 
+/*
+ * How many 32-bit words a stack read starting at esp may take on THIS thread (at most
+ * maxWords): up to the thread's stack base, never at or past it. 0 when esp is not on this
+ * thread's stack ([StackLimit, StackBase) from the TEB; no API call). The handlers run on
+ * the faulting thread, so the context's esp is on this stack. v7: before, the sweeps read a
+ * fixed count and relied on the fault past the stack top to stop them; a 2026-10-15 dump
+ * showed the sweep reading 0x12BF0000 (the stack base) inside CoreCLR's fatal path.
+ */
+static unsigned int cl_stack_words(unsigned int esp, unsigned int maxWords)
+{
+    NT_TIB* tib = (NT_TIB*)NtCurrentTeb();
+    unsigned int base = (unsigned int)(UINT_PTR)tib->StackBase;
+    unsigned int limit = (unsigned int)(UINT_PTR)tib->StackLimit;
+    unsigned int words;
+    if (esp < limit || esp >= base) return 0;
+    words = (base - esp) / 4;            /* the last word read ends at or below base */
+    return words < maxWords ? words : maxWords;
+}
+
 /* Class of the nearest cached-module code pointer on the stack (AC if none found). */
 static clf_class cl_first_frame_class(unsigned int esp)
 {
     clf_class result = CLF_CLASS_AC;
+    unsigned int words = cl_stack_words(esp, 512);
     __try {
         unsigned int* sp = (unsigned int*)(UINT_PTR)esp;
-        int i;
-        for (i = 0; i < 512; i++) {
+        unsigned int i;
+        for (i = 0; i < words; i++) {
             unsigned int v = sp[i];
             const cl_mod* m;
             if (v <= 0x00401000u || v >= 0x7FFF0000u) continue;
@@ -553,6 +575,7 @@ static void cl_write_entry(PEXCEPTION_POINTERS ep, const char* kind, unsigned in
     CONTEXT* c = ep->ContextRecord;
     DWORD code = ep->ExceptionRecord->ExceptionCode;
     unsigned int exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
+    unsigned int words;
     if (g_logHandle == INVALID_HANDLE_VALUE) return;
 
     p = cl_str(p, "\r\n==== NATIVE CRASH LOGGER (");
@@ -593,10 +616,16 @@ static void cl_write_entry(PEXCEPTION_POINTERS ep, const char* kind, unsigned in
     p = cl_str(p, "\r\n  stack code pointers (esp -> up):\r\n");
     cl_write(g_buf, (DWORD)(p - g_buf));
 
+    words = cl_stack_words(c->Esp, 4096);
+    if (words == 0) {
+        const char* m = "    <esp is not on this thread's stack; no sweep>\r\n";
+        cl_write(m, (DWORD)lstrlenA(m));
+    }
     __try {
         unsigned int* sp = (unsigned int*)(UINT_PTR)c->Esp;
-        int i, emitted = 0;
-        for (i = 0; i < 4096 && emitted < 96; i++) {
+        unsigned int i;
+        int emitted = 0;
+        for (i = 0; i < words && emitted < 96; i++) {
             unsigned int v = sp[i];
             if (v > 0x00401000u && v < 0x7FFF0000u && cl_mod_cached(v)) {
                 char* q = g_buf;

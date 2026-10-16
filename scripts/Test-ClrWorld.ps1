@@ -40,10 +40,10 @@ if (Test-Path $pidFile) {
     }
 }
 
-# The loader refuses hot reloads past engine.json MaxHotReloads (default 3, 2026-10-11): a soak
+# The loader refuses hot reloads past engine.json MaxHotReloads (default 20 since 2026-10-15): a soak
 # of more reloads needs "MaxHotReloads": -1 in the -Settings file.
-if ($Reloads -gt 3 -and -not ((Test-Path $Settings) -and (Select-String -Path $Settings -Pattern '"MaxHotReloads"' -Quiet))) {
-    Write-Warning "-Reloads $Reloads is over the default cap of 3 hot reloads per client: add ""MaxHotReloads"": -1 to $Settings, or reloads past the 3rd are refused."
+if ($Reloads -gt 20 -and -not ((Test-Path $Settings) -and (Select-String -Path $Settings -Pattern '"MaxHotReloads"' -Quiet))) {
+    Write-Warning "-Reloads $Reloads is over the default cap of 20 hot reloads per client: add ""MaxHotReloads"": -1 to $Settings, or reloads past the 20th are refused."
 }
 $env:RYNTHCORE_ENGINE_SETTINGS = $Settings
 $env:RYNTHCORE_TEST_CLIENT = "Test-ClrWorld"   # the loader logs "TestClient: ..." (monitors skip test clients)

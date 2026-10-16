@@ -382,94 +382,42 @@ internal static class Program
                 Check(!File.Exists(swap.LivePath), "live file removed so the game writes its defaults");
             });
 
-            // ── First Login dialog rules (a new server: no password, no characters yet) ──
-            Scenario("first login on a new server", root, () =>
+            // A kill while createdump.exe / WerFault.exe writes a client's crash dump cuts the dump
+            // short; the launcher's kills wait for the writer, then Grace more, at most MaxHold.
+            Scenario("crash dump writers: which client a command line names", root, () =>
             {
-                var withPw = new LaunchAccountProfile { Id = "ilt", AccountName = "silentkelpie" };
-                withPw.SetPassword(Pw);
-                var noPwSame = new LaunchAccountProfile { Id = "other", AccountName = "SilentKelpie" };
-                var conquest = new LaunchAccountProfile { Id = "new", AccountName = "SK", CharacterName = LaunchAccountProfile.NoneOption };
-                var all = new List<LaunchAccountProfile> { withPw, noPwSame, conquest };
-
-                Check(FirstLoginRules.KnownAccountNames(all, "new").SequenceEqual(new[] { "silentkelpie" }),
-                    "known names: the others, distinct ignoring case, not this profile's own");
-
-                Check(FirstLoginRules.SavedPasswordSource(all, "SILENTKELPIE", "new")?.Id == "ilt",
-                    "the same name with a saved password can be reused (case ignored)");
-                Check(FirstLoginRules.SavedPasswordSource(all, "SK", "new") == null, "a new name has none to reuse");
-                Check(FirstLoginRules.SavedPasswordSource(all, "silentkelpie", "ilt") == null, "never the profile itself");
-
-                var copy = new LaunchAccountProfile { AccountName = "silentkelpie" };
-                copy.CopyPasswordFrom(withPw);
-                Check(copy.PasswordProtected == withPw.PasswordProtected && copy.TryGetPasswordForLaunch(out string reused, out _) && reused == Pw,
-                    "reuse copies the encrypted blob, and it decrypts");
-
-                var none = new List<string>();
-                List<string> firstChoices = FirstLoginRules.LoginChoices(none, conquest.CharacterName);
-                Check(firstChoices.SequenceEqual(new[] { FirstLoginRules.StopAtCharacterSelect }),
-                    "no characters yet: only stop at character select (the old (None) isn't listed)");
-                Check(FirstLoginRules.CharacterNameFor(FirstLoginRules.StopAtCharacterSelect, none) == "",
-                    "stop with none known saves \"\" so the first character created is picked next time");
-
-                var chars = new List<string> { "Alpha", "Beta" };
-                Check(FirstLoginRules.LoginChoices(chars, "Gamma").SequenceEqual(new[] { FirstLoginRules.StopAtCharacterSelect, "Gamma", "Alpha", "Beta" }),
-                    "several characters: all listed, the saved one kept even if not seen yet");
-                Check(FirstLoginRules.CharacterNameFor("Beta", chars) == "Beta", "picking a character saves it");
-                Check(FirstLoginRules.CharacterNameFor(FirstLoginRules.StopAtCharacterSelect, chars) == LaunchAccountProfile.NoneOption,
-                    "stop with characters known saves the explicit (None)");
-
-                Check(FirstLoginRules.Problem("SK", "", "", false, AcEmulatorKind.Ace)?.StartsWith("Enter the password") == true, "a password is required");
-                Check(FirstLoginRules.Problem("SK", "a", "b", false, AcEmulatorKind.Ace)?.Contains("don't match") == true, "the confirmation must match");
-                Check(FirstLoginRules.Problem("SK", "pw", "pw", false, AcEmulatorKind.Ace) == null, "name + matching password: ready");
-                Check(FirstLoginRules.Problem("silentkelpie", "", "", true, AcEmulatorKind.Ace) == null, "reusing a saved password needs no typing");
-                Check(FirstLoginRules.Problem("a:b", "pw", "pw", false, AcEmulatorKind.Gdle) != null, "GDLE name with a colon refused");
-                Check(FirstLoginRules.Problem("", "pw", "pw", false, AcEmulatorKind.Ace) != null, "a name is required");
+                Check(CrashDumpWriterRule.TargetPid("createdump",
+                    "\"C:\\Games\\RynthCore\\Runtime\\dotnet\\createdump.exe\" -f \"C:\\Games\\RynthCore\\Logs\\dumps\\clr_29196_%t.dmp\" --withheap 29196") == 29196,
+                    "createdump: the positional pid after the options");
+                Check(CrashDumpWriterRule.TargetPid("createdump.exe", "createdump.exe 4321 -h") == 4321, "createdump: pid first, \".exe\" in the name");
+                Check(CrashDumpWriterRule.TargetPid("createdump", "createdump --crashthread 777 --signal 6 -f 1234.dmp 4321") == 4321,
+                    "createdump: numeric option values (--crashthread, --signal) aren't the pid");
+                Check(CrashDumpWriterRule.TargetPid("createdump", "createdump -f x.dmp --withheap") == null, "createdump without a pid: none");
+                Check(CrashDumpWriterRule.TargetPid("WerFault", @"C:\WINDOWS\SysWOW64\WerFault.exe -u -p 29196 -s 568") == 29196, "WerFault: the value after -p");
+                Check(CrashDumpWriterRule.TargetPid("WerFault", @"C:\WINDOWS\system32\WerFault.exe -pss -s 1234 -r 5678 -p 29196 -ip 4000") == 29196,
+                    "WerFault: -s/-r/-ip values aren't the pid");
+                Check(CrashDumpWriterRule.TargetPid("werfault", "WerFault.exe /p 99 /s 1") == 99, "WerFault: /p, any case");
+                Check(CrashDumpWriterRule.TargetPid("WerFault", "WerFault.exe -s 1234") == null, "WerFault without -p: none");
+                Check(CrashDumpWriterRule.TargetPid("notepad", "notepad.exe 1234") == null, "not a dump writer: none");
+                Check(CrashDumpWriterRule.TargetPid("createdump", null) == null && CrashDumpWriterRule.TargetPid("createdump", "") == null,
+                    "no command line: none");
             });
 
-            // A saved UserPreferences.ini whose display mode the PC can't use made every launch
-            // fail with "Could not initialize Direct3D"; a quick exit must undo that swap.
-            Scenario("prefs swap: did the swap change the live file", root, () =>
+            Scenario("crash dump writers: how long the kills wait", root, () =>
             {
-                byte[] a = "[Display]\nResolution=2560x1440\n"u8.ToArray();
-                byte[] b = "[Display]\nResolution=1920x1080\n"u8.ToArray();
-                Check(!UserPrefsSwapRecovery.SwapChangedPrefs(new UserPrefsSwap("s", "l", a, (byte[])a.Clone())), "same bytes: not the cause");
-                Check(UserPrefsSwapRecovery.SwapChangedPrefs(new UserPrefsSwap("s", "l", a, b)), "different bytes: changed");
-                Check(UserPrefsSwapRecovery.SwapChangedPrefs(new UserPrefsSwap("s", "l", a, null)), "no live file before: changed");
-            });
-
-            Scenario("prefs swap: failed stash set aside, live file put back", root, () =>
-            {
-                var (swap, legacy) = PrefsSwapFiles(legacyMatches: true);
-                var now = new DateTime(2026, 10, 14, 16, 30, 5);
-                UserPrefsRecoveryResult r = UserPrefsSwapRecovery.Recover(swap, quarantineStash: true, restoreLive: true, legacy, now);
-                Check(!File.Exists(swap.StashPath), "stash no longer swappable");
-                Check(r.QuarantinedStashPath == swap.StashPath + ".failed-20261014-163005" && File.Exists(r.QuarantinedStashPath), "stash kept as .failed-<time>");
-                Check(!File.Exists(legacy) && r.QuarantinedLegacyPath != null, "identical name-only stash set aside too (it would re-seed)");
-                Check(r.LiveRestored && File.ReadAllBytes(swap.LivePath).SequenceEqual(swap.PreviousLiveBytes!), "live file back to its pre-swap bytes");
-            });
-
-            Scenario("prefs swap: different name-only stash kept", root, () =>
-            {
-                var (swap, legacy) = PrefsSwapFiles(legacyMatches: false);
-                UserPrefsRecoveryResult r = UserPrefsSwapRecovery.Recover(swap, true, true, legacy, DateTime.Now);
-                Check(File.Exists(legacy) && r.QuarantinedLegacyPath == null, "name-only stash with other settings left alone");
-            });
-
-            Scenario("prefs swap: later swap or profile override", root, () =>
-            {
-                var (swap, legacy) = PrefsSwapFiles(legacyMatches: true);
-                File.WriteAllText(swap.LivePath, "another account's settings");
-                UserPrefsRecoveryResult r = UserPrefsSwapRecovery.Recover(swap, quarantineStash: false, restoreLive: false, legacy, DateTime.Now);
-                Check(File.Exists(swap.StashPath) && File.Exists(legacy), "override: the user's file is never renamed");
-                Check(!r.LiveRestored && File.ReadAllText(swap.LivePath) == "another account's settings", "later swap: live file untouched");
-            });
-
-            Scenario("prefs swap: no live file before", root, () =>
-            {
-                var (swap, _) = PrefsSwapFiles(legacyMatches: false);
-                swap = swap with { PreviousLiveBytes = null };
-                UserPrefsSwapRecovery.Recover(swap, true, true, null, DateTime.Now);
-                Check(!File.Exists(swap.LivePath), "live file removed so the game writes its defaults");
+                var now = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+                var H = CrashDumpWriterRule.Hold.Holding;
+                Check(CrashDumpWriterRule.Decide(false, null, null, now) == CrashDumpWriterRule.Hold.None, "no writer ever: kill checks run");
+                Check(CrashDumpWriterRule.Decide(true, null, null, now) == H, "a writer names the client: hold");
+                Check(CrashDumpWriterRule.Decide(true, now, now.AddMinutes(-5), now) == H, "still writing after 5 min: hold");
+                Check(CrashDumpWriterRule.Decide(false, now.AddSeconds(-59), now.AddMinutes(-1), now) == H, "writer gone 59 s ago: still held (60 s more)");
+                Check(CrashDumpWriterRule.Decide(false, now.AddSeconds(-60), now.AddMinutes(-1), now) == CrashDumpWriterRule.Hold.None,
+                    "writer gone 60 s ago: kill checks resume");
+                Check(CrashDumpWriterRule.Decide(true, now, now.AddMinutes(-15), now) == CrashDumpWriterRule.Hold.Expired,
+                    "held 15 min: expired, a writer that never ends can't shield a dead client");
+                Check(CrashDumpWriterRule.Decide(false, now.AddSeconds(-10), now.AddMinutes(-16), now) == CrashDumpWriterRule.Hold.Expired,
+                    "expired stays expired through the grace");
+                Check(CrashDumpWriterRule.Grace == TimeSpan.FromSeconds(60), "the grace is 60 s");
             });
         }
         finally

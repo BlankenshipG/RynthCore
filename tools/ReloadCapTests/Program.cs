@@ -3,9 +3,8 @@ using RynthCore.Engine;
 namespace ReloadCapTests;
 
 /// <summary>
-/// The engine's side of the hot-reload cap (ReloadCapNotice.cs). After 4+ engine hot reloads in
-/// one client, clients died with CoreCLR fatal error 0x80131506; the loader now refuses reloads
-/// past engine.json MaxHotReloads and the engine tells the player.
+/// The engine's side of the hot-reload cap (ReloadCapNotice.cs): the loader refuses reloads past
+/// engine.json MaxHotReloads (default 20, a backstop) and the engine tells the player.
 /// </summary>
 internal static class Program
 {
@@ -40,7 +39,7 @@ internal static class Program
         Check(ReloadCapNotice.ChatText(1) == "RynthCore: this client has hot reloaded 1 time; restart the client to pick up the new engine.",
               $"1: {ReloadCapNotice.ChatText(1)}");
         Check(ReloadCapNotice.ChatText(0).Contains("hot reloaded 0 times"), $"0 (MaxHotReloads 0): {ReloadCapNotice.ChatText(0)}");
-        Check(ReloadCapNotice.DefaultMaxHotReloads == 3, "the default cap is 3 (Loader.c DEFAULT_MAX_HOT_RELOADS)");
+        Check(ReloadCapNotice.DefaultMaxHotReloads == 20, "the default cap is 20 (Loader.c DEFAULT_MAX_HOT_RELOADS)");
     }
 
     private static void ToldOnceThenOnlyWhenAskedByHand()

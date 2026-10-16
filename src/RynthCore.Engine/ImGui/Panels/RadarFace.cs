@@ -8,8 +8,12 @@
 //  pop-out and settings (gear) buttons, wheel zoom, left-drag moves, left-click on a dot
 //  selects it in game by object id (hover: name, distance, health), right-click menu, settings
 //  popup. Settings are shared with the Avalonia face (RadarSettingsStore).
-//  Marker kinds (RadarKind) each have a shape (RadarMarkerStyle), a show box
-//  and a colour the user can pick; the settings popup doubles as the legend.
+//  Marker kinds (RadarKind) each have a shape (RadarMarkerStyle), a show box,
+//  a colour the user can pick, a size and an optional name label with its own
+//  text size (RadarSettingsStore.Markers); the settings popup doubles as the
+//  legend. Your own arrow, the compass letters and the coordinates have sizes too.
+//  Outdoors the World Map's picture can be drawn behind it (RadarSettingsStore.ShowWorldMap; the
+//  tiles come from WorldMapTiles through WorldMapTileDrawer, the same code as the World Map).
 //
 //  Data: UiSources.Radar (RadarView, lookups precomputed). World geometry is
 //  drawn without anti-aliasing (crisp tiling like the Avalonia face's aliased
@@ -61,12 +65,25 @@ internal sealed class RadarFace : IImGuiPanel
         { ("N", 0, 1), ("E", 1, 0), ("S", 0, -1), ("W", -1, 0) };
 
     private bool _settingsOpen;
+    private bool _settingsSub;                       // subscribed to RynthAi's settings (the retail radar switch) while the window is open
+    private bool? _hidePending;                      // the retail-radar switch as just set, until RynthAi's answer shows it
+    private long _hidePendingAt;
+
+    // The round radar (RadarSettingsStore.RoundRadar): this frame's circle, read by the drawing helpers.
+    private static bool _round;
+    private static RoundMask _mask;
 
     /// <summary>Markers move: popped out, redraw smoothly even when idle.</summary>
     public int PopOutIdleHz => 20;
 
+    // Docked click-through: the panel takes no input (the game gets the clicks) unless Ctrl is held or
+    // the mouse is over a dot or one of the buttons (_hot, worked out by the last frame's Draw), so a
+    // dot can always be hovered and clicked. A press that began on a dot keeps the panel interactive
+    // until the button is released.
+    private bool _hot, _pressHot, _downPrev;
+
     public bool ClickThrough =>
-        RadarSettingsStore.CtrlGatedClickThrough && !ImGuiNET.ImGui.GetIO().KeyCtrl;
+        RadarSettingsStore.CtrlGatedClickThrough && !ImGuiNET.ImGui.GetIO().KeyCtrl && !_hot;
 
     public void OnShown()
     {
@@ -75,7 +92,11 @@ internal sealed class RadarFace : IImGuiPanel
         UiSources.Radar.RequestRefresh();
     }
 
-    public void OnHidden() => UiSources.Radar.Unsubscribe();
+    public void OnHidden()
+    {
+        UiSources.Radar.Unsubscribe();
+        if (_settingsSub) { UiSources.Settings.Unsubscribe(); _settingsSub = false; }
+    }
 
     public void Draw()
     {
@@ -87,27 +108,57 @@ internal sealed class RadarFace : IImGuiPanel
 
         bool rim = RadarSettingsStore.ShowGoldRim;
         float canvasInset = rim ? 5 : 0;
-        const float coordStrip = 14;
         float opacity = Math.Clamp(RadarSettingsStore.Opacity, 0f, 1f);
-        Vector2 frameMax = origin + size;
+        // The coordinates sit in a strip of their own under the radar, clear of its frame: the text's height
+        // (its size at the UI scale) and a gap above it. The radar - frame, canvas, dial - is everything above.
+        float coordH = ImGuiFonts.Get(UiFont.UiBold11).FontSize * RadarSettingsStore.CoordSize / 11f;
+        float coordStrip = coordH + 5f;
+        Vector2 panelMax = origin + size;
+        Vector2 frameMax = new Vector2(panelMax.X, MathF.Max(origin.Y + 16f, panelMax.Y - coordStrip));
 
-        // ── Frame: outer black (fades) + gold inner border + accent ──
-        if (rim)
-        {
-            dl.AddRectFilled(origin, frameMax, MulAlpha(FrameOuterArgb, opacity));
-            dl.AddRect(origin + new Vector2(1, 1), frameMax - new Vector2(1, 1), FrameInner, 0, ImDrawFlags.None, 2);
-            dl.AddRect(origin + new Vector2(3, 3), frameMax - new Vector2(3, 3), FrameAccent, 0, ImDrawFlags.None, 1);
-        }
-
-        // ── Canvas and world playfield (canvas minus the coord strip) ──
+        // ── Canvas and world playfield ──
         Vector2 canvasMin = origin + new Vector2(canvasInset, canvasInset);
         Vector2 canvasMax = frameMax - new Vector2(canvasInset, canvasInset);
-        dl.AddRectFilled(canvasMin, canvasMax, MulAlpha(CanvasBgArgb, opacity));
         var worldMin = canvasMin;
-        var worldMax = new Vector2(canvasMax.X, canvasMax.Y - coordStrip);
+        var worldMax = canvasMax;
         Vector2 centre = (worldMin + worldMax) * 0.5f;
-        dl.AddLine(new Vector2(centre.X, worldMin.Y), new Vector2(centre.X, worldMax.Y), Crosshair);
-        dl.AddLine(new Vector2(worldMin.X, centre.Y), new Vector2(worldMax.X, centre.Y), Crosshair);
+        // Round: the circle (frame included) is as wide as the radar is tall or wide, whichever is less.
+        _round = RadarSettingsStore.RoundRadar;
+        float frameR = MathF.Max(10f, MathF.Min(frameMax.X - origin.X, frameMax.Y - origin.Y) * 0.5f);
+        float dial = MathF.Max(8f, frameR - canvasInset);
+        if (_round)
+        {
+            centre = (origin + frameMax) * 0.5f;
+            worldMin = centre - new Vector2(dial, dial);
+            worldMax = centre + new Vector2(dial, dial);
+        }
+        _mask = new RoundMask(centre, dial);
+
+        if (_round)
+        {
+            if (rim)
+            {
+                dl.AddCircleFilled(centre, frameR, MulAlpha(FrameOuterArgb, opacity), 72);
+                dl.AddCircle(centre, frameR - 1, FrameInner, 72, 2);
+                dl.AddCircle(centre, frameR - 3, FrameAccent, 72, 1);
+            }
+            dl.AddCircleFilled(centre, dial, MulAlpha(CanvasBgArgb, opacity), 72);
+            dl.AddLine(new Vector2(centre.X, centre.Y - dial), new Vector2(centre.X, centre.Y + dial), Crosshair);
+            dl.AddLine(new Vector2(centre.X - dial, centre.Y), new Vector2(centre.X + dial, centre.Y), Crosshair);
+        }
+        else
+        {
+            // ── Frame: outer black (fades) + gold inner border + accent ──
+            if (rim)
+            {
+                dl.AddRectFilled(origin, frameMax, MulAlpha(FrameOuterArgb, opacity));
+                dl.AddRect(origin + new Vector2(1, 1), frameMax - new Vector2(1, 1), FrameInner, 0, ImDrawFlags.None, 2);
+                dl.AddRect(origin + new Vector2(3, 3), frameMax - new Vector2(3, 3), FrameAccent, 0, ImDrawFlags.None, 1);
+            }
+            dl.AddRectFilled(canvasMin, canvasMax, MulAlpha(CanvasBgArgb, opacity));
+            dl.AddLine(new Vector2(centre.X, worldMin.Y), new Vector2(centre.X, worldMax.Y), Crosshair);
+            dl.AddLine(new Vector2(worldMin.X, centre.Y), new Vector2(worldMax.X, centre.Y), Crosshair);
+        }
 
         if (view != null)
         {
@@ -119,36 +170,36 @@ internal sealed class RadarFace : IImGuiPanel
             dl.Flags = saved;
 
             DrawOutlinedText(dl, ImGuiFonts.Get(UiFont.UiBold11), view.CoordText,
-                new Vector2((canvasMin.X + canvasMax.X) * 0.5f, canvasMax.Y), CoordText, alignBottom: true);
+                new Vector2((origin.X + panelMax.X) * 0.5f, panelMax.Y), CoordText, alignBottom: true,
+                scale: RadarSettingsStore.CoordSize / 11f);
             DrawCardinals(dl, view, centre, (worldMax.X - worldMin.X) * 0.5f, (worldMax.Y - worldMin.Y) * 0.5f);
         }
 
         // ── Buttons (submitted before the surface so they win the hover) ──
-        const float btn = 22, gap = 4, inset = 6;
-        var gearPos = new Vector2(frameMax.X - inset - btn, origin.Y + inset);
-        var popPos = gearPos - new Vector2(btn + gap, 0);
+        // Small and flat, like the Arrow's corner buttons: settings, pop out, close.
+        const float btn = 14, gap = 2, inset = 3;
+        uint btnFg = FaceKit.Faded(FaceKit.Mute), btnBg = RynthTheme.WithAlpha(RynthTheme.Background, 0xDC);
+        var closePos = new Vector2(frameMax.X - inset - btn, origin.Y + inset);
+        var popPos = closePos - new Vector2(btn + gap, 0);
+        var gearPos = (PanelRouter.CanPopOut ? popPos : closePos) - new Vector2(btn + gap, 0);
+        if (FaceKit.IconButton("##radar_close", PhosphorIcons.X, closePos, new Vector2(btn, btn), btnFg, btnBg, font: UiFont.Ui9))
+            ImGuiPanelHost.Close(Title);
+        ImGuiNET.ImGui.SetItemTooltip("Close the radar");
         if (PanelRouter.CanPopOut)
         {
-            if (IconButton("##radar_pop", popPos, ImGuiPanelHost.PopOutGlyph))
+            if (FaceKit.IconButton("##radar_pop", ImGuiPanelHost.PopOutGlyph, popPos, new Vector2(btn, btn), btnFg, btnBg, font: UiFont.Ui9))
                 ImGuiPanelHost.TogglePopOut(Title);
             SafeImGui.SetItemTooltip(ImGuiPanelHost.PopOutTooltip);
         }
-        bool gear = IconButton("##radar_gear", gearPos, PhosphorIcons.Gear);
+        bool gear = FaceKit.IconButton("##radar_gear", PhosphorIcons.Gear, gearPos, new Vector2(btn, btn), btnFg, btnBg, font: UiFont.Ui9);
         ImGuiNET.ImGui.SetItemTooltip("Radar settings");
-        if (gear)
-        {
-            if (_settingsOpen) _settingsOpen = false;
-            else
-            {
-                _settingsOpen = true;
-                ImGuiNET.ImGui.SetNextWindowPos(new Vector2(gearPos.X + btn, gearPos.Y + btn + 4), ImGuiCond.Always, new Vector2(1, 0));
-            }
-        }
+        if (gear) ToggleSettings(new Vector2(closePos.X + btn, closePos.Y + btn + 4));
 
         // ── Surface: drag moves the panel, a click on a dot selects, wheel zooms, right-click menu ──
         ImGuiNET.ImGui.SetCursorScreenPos(origin);
         bool surfaceClicked = ImGuiNET.ImGui.InvisibleButton("##radar_surface", size);
         ImGuiPanelHost.DragWindowWithLastItem();
+        UpdateHot(view, centre, worldMin, worldMax, gearPos, new Vector2(closePos.X + btn, closePos.Y + btn));
         if (view != null && RadarSettingsStore.ClickToSelect)
             MarkerInput(dl, view, centre, worldMin, worldMax, surfaceClicked);
         if (ImGuiNET.ImGui.IsItemHovered())
@@ -164,6 +215,7 @@ internal sealed class RadarFace : IImGuiPanel
         {
             if (PanelRouter.CanPopOut && ImGuiNET.ImGui.MenuItem(ImGuiPopOuts.InPopOutFrame ? "Dock back" : "Pop out"))
                 ImGuiPanelHost.TogglePopOut(Title);
+            if (ImGuiNET.ImGui.MenuItem("Radar settings...")) ToggleSettings(ImGuiNET.ImGui.GetMousePos());
             ImGuiNET.ImGui.Separator();
             if (ImGuiNET.ImGui.MenuItem("Rotate with player", "", RadarSettingsStore.RotateWithPlayer))
             {
@@ -178,6 +230,14 @@ internal sealed class RadarFace : IImGuiPanel
         }
 
         SettingsWindow();
+    }
+
+    /// <summary>Opens the settings window with its top-right corner at <paramref name="corner"/>, or closes it.</summary>
+    private void ToggleSettings(Vector2 corner)
+    {
+        if (_settingsOpen) { _settingsOpen = false; return; }
+        _settingsOpen = true;
+        ImGuiNET.ImGui.SetNextWindowPos(corner, ImGuiCond.Always, new Vector2(1, 0));
     }
 
     // ── World ─────────────────────────────────────────────────────────────
@@ -218,6 +278,9 @@ internal sealed class RadarFace : IImGuiPanel
         bool rotate = RadarSettingsStore.RotateWithPlayer;
         var proj = new Projection(centre, live.Player, rotate, MathF.Max(0.5f, RadarSettingsStore.Zoom));
 
+        if (RadarSettingsStore.ShowWorldMap && !live.IsIndoor)
+            DrawWorldMapBackdrop(dl, live, centre, clipMin, clipMax, rotate);
+
         int cur = view.CurrentLayer, count = live.LayerZs.Count;
         // Same order as the Avalonia/ImGui-era radar: below, above (dimmed), current.
         if (cur - 1 >= 0) DrawLayer(dl, view, cur - 1, 0.30f, false, proj, rotate, clipMin, clipMax);
@@ -226,6 +289,7 @@ internal sealed class RadarFace : IImGuiPanel
 
         // Markers (shapes: RadarMarkerStyle). Corpses and items first, creatures on top.
         RadarMarkerStyle.FillColors(KindCols);
+        MarkerStyleSettings markers = RadarSettingsStore.Markers;
         for (int pass = 0; pass < 2; pass++)
         {
             foreach (RadarMarker m in live.Markers)
@@ -233,15 +297,64 @@ internal sealed class RadarFace : IImGuiPanel
                 if (!RadarSettingsStore.ShowKind(m.Kind)) continue;
                 if ((pass == 1) != (RadarKind.IsCreature(m.Kind) || m.Kind is RadarKind.Portal or RadarKind.Door)) continue;
                 Vector2 pp = proj.P(m.X, m.Y);
-                if (pp.X < clipMin.X || pp.X > clipMax.X || pp.Y < clipMin.Y || pp.Y > clipMax.Y) continue;
-                RadarMarkerStyle.Draw(dl, m.Kind, pp, KindCols[m.Kind]);
+                if (_round ? !_mask.Contains(pp) : (pp.X < clipMin.X || pp.X > clipMax.X || pp.Y < clipMin.Y || pp.Y > clipMax.Y)) continue;
+                RadarMarkerStyle.Draw(dl, m.Kind, pp, KindCols[m.Kind], markers.SizeOf(m.Kind));
+            }
+        }
+
+        // Names last, over every marker.
+        bool anyName = false;
+        for (byte k = 0; k < RadarKind.Count; k++) anyName |= markers.ShowName[k] && RadarSettingsStore.ShowKind(k);
+        if (anyName)
+        {
+            ImFontPtr nameFont = ImGuiFonts.Get(UiFont.UiBold11);
+            foreach (RadarMarker m in live.Markers)
+            {
+                if (!markers.NameShown(m.Kind) || !RadarSettingsStore.ShowKind(m.Kind)) continue;
+                Vector2 pp = proj.P(m.X, m.Y);
+                if (pp.X < clipMin.X - 8 || pp.X > clipMax.X || pp.Y < clipMin.Y - 8 || pp.Y > clipMax.Y + 8) continue;
+                if (_round && !_mask.Contains(pp)) continue;
+                RadarMarkerStyle.DrawName(dl, nameFont, pp, RadarMarkerStyle.Radius(m.Kind) * markers.SizeOf(m.Kind),
+                    RadarMarkerStyle.NameColor(KindCols[m.Kind]), m.Label, markers.NameSizeOf(m.Kind), _round ? _mask : null);
             }
         }
 
         // Player dot + 10 px heading arrow (always up when rotating).
-        dl.AddCircleFilled(centre, 3.5f, PlayerCol, 10);
-        Vector2 tip = rotate ? centre + new Vector2(0, -10) : centre + new Vector2(proj.Cos * 10, -proj.Sin * 10);
+        float me = markers.SelfSize;
+        dl.AddCircleFilled(centre, 3.5f * me, PlayerCol, 10);
+        Vector2 tip = rotate ? centre + new Vector2(0, -10 * me) : centre + new Vector2(proj.Cos * 10 * me, -proj.Sin * 10 * me);
         dl.AddLine(centre, tip, PlayerCol, 2);
+    }
+
+    // ── World map backdrop ─────────────────────────────────────────────────
+    // The radar's world coordinates are yards from the world's south-west corner; the World Map's cells
+    // are 24 yards, so cell = yards / 24 on both axes, and the radar's zoom (px per yard) is 24x that
+    // in px per cell. The rotation is the Mini Map's (the way you face is up).
+
+    private static readonly WorldMapTileDrawer Backdrop = new();
+    private static long _mapsAskedAtMs;
+
+    private static void DrawWorldMapBackdrop(ImDrawListPtr dl, RadarSnapshot live, Vector2 centre, Vector2 clipMin, Vector2 clipMax,
+        bool rotate)
+    {
+        if (!WorldMapTiles.IsOpen)
+        {
+            // Find and open the picture (a pool thread does the file work); asked again every few seconds
+            // while it isn't open, which also covers the switch being turned on later.
+            long now = Environment.TickCount64;
+            if (now - _mapsAskedAtMs > 5000)
+            {
+                _mapsAskedAtMs = now;
+                WorldMapSettings.Load();
+                WorldMapMaps.Refresh();
+            }
+            return;
+        }
+        float alpha = Math.Clamp(RadarSettingsStore.WorldMapOpacity, 0.1f, 1f) * Math.Clamp(RadarSettingsStore.Opacity, 0f, 1f);
+        uint tint = ((uint)(alpha * 255f + 0.5f) << 24) | 0x00FFFFFFu;
+        float phi = rotate ? MapProjection.PhiForHeading(live.Player.Heading) : 0f;
+        Backdrop.Draw(dl, clipMin, clipMax, centre, live.Player.WorldX / 24.0, live.Player.WorldY / 24.0,
+            MathF.Max(0.5f, RadarSettingsStore.Zoom) * 24f, phi, tint, _round ? _mask : null);
     }
 
     private static void DrawLayer(ImDrawListPtr dl, RadarView view, int layer, float a, bool current,
@@ -269,7 +382,11 @@ internal sealed class RadarFace : IImGuiPanel
             {
                 Vector2 pa = proj.P(segs[i], segs[i + 1]);
                 Vector2 pb = proj.P(segs[i + 2], segs[i + 3]);
-                if (MathF.Max(pa.X, pb.X) < clipMin.X || MathF.Min(pa.X, pb.X) > clipMax.X ||
+                if (_round)
+                {
+                    if (!CircleClip.Segment(_mask, ref pa, ref pb)) continue;
+                }
+                else if (MathF.Max(pa.X, pb.X) < clipMin.X || MathF.Min(pa.X, pb.X) > clipMax.X ||
                     MathF.Max(pa.Y, pb.Y) < clipMin.Y || MathF.Min(pa.Y, pb.Y) > clipMax.Y) continue;
                 bool v = flags != null && w < flags.Length && flags[w];
                 dl.AddLine(pa, pb, v ? visited : unseen, thick);
@@ -289,6 +406,11 @@ internal sealed class RadarFace : IImGuiPanel
         uint col, Vector2 clipMin, Vector2 clipMax)
     {
         Vector2 p00 = proj.P(x0, y0), p11 = proj.P(x1, y1);
+        if (_round)
+        {
+            FillRound(dl, p00, proj.P(x1, y0), p11, proj.P(x0, y1), col);
+            return;
+        }
         if (rotate)
         {
             Vector2 p10 = proj.P(x1, y0), p01 = proj.P(x0, y1);
@@ -306,6 +428,19 @@ internal sealed class RadarFace : IImGuiPanel
             if (b.X < clipMin.X || a.X > clipMax.X || b.Y < clipMin.Y || a.Y > clipMax.Y) return;
             dl.AddRectFilled(a, b, col);
         }
+    }
+
+    /// <summary>A floor strip (four corners, in order round it) on the round radar: whole, skipped or cut to the circle.</summary>
+    private static void FillRound(ImDrawListPtr dl, Vector2 a, Vector2 b, Vector2 c, Vector2 d, uint col)
+    {
+        Vector2 min = Vector2.Min(Vector2.Min(a, b), Vector2.Min(c, d)), max = Vector2.Max(Vector2.Max(a, b), Vector2.Max(c, d));
+        if (!_mask.OverlapsBox(min, max)) return;
+        if (_mask.ContainsBox(min, max)) { dl.AddQuadFilled(a, b, c, d, col); return; }
+        Span<Vector2> q = stackalloc Vector2[4];
+        q[0] = a; q[1] = b; q[2] = c; q[3] = d;
+        Span<Vector2> p = stackalloc Vector2[CircleClip.MaxPoints];
+        int n = CircleClip.Polygon(_mask, q, default, p, default);
+        if (n >= 3) dl.AddConvexPolyFilled(ref p[0], n, col);
     }
 
     // ── Click-to-select ─────────────────────────────────────────────────────
@@ -355,11 +490,7 @@ internal sealed class RadarFace : IImGuiPanel
         if (!hovered && !clicked) return;
         if (mouse.X < clipMin.X || mouse.X > clipMax.X || mouse.Y < clipMin.Y || mouse.Y > clipMax.Y) return;
 
-        float zoom = MathF.Max(0.5f, RadarSettingsStore.Zoom);
-        var proj = new Projection(centre, view.Live.Player, RadarSettingsStore.RotateWithPlayer, zoom);
-        // Hit radius: a little more than the dot, growing with zoom, in UI-scaled pixels.
-        float radius = Math.Clamp(5f + 1.5f * zoom, 6f, 14f) * MathF.Max(1f, EngineFrameController.FontScale);
-        RadarMarker? hit = MarkerAt(view, proj, mouse, radius, clipMin, clipMax, out Vector2 hitPos);
+        RadarMarker? hit = HitTest(view, centre, clipMin, clipMax, mouse, out Vector2 hitPos);
         if (hit == null) return;
 
         if (clicked && _pressTravel <= ClickSlop)
@@ -379,20 +510,57 @@ internal sealed class RadarFace : IImGuiPanel
         ImGuiNET.ImGui.EndTooltip();
     }
 
+    /// <summary>The marker under <paramref name="mouse"/> (a dot's hit radius grows with the zoom and the marker's size), or null.</summary>
+    private static RadarMarker? HitTest(RadarView view, Vector2 centre, Vector2 clipMin, Vector2 clipMax, Vector2 mouse, out Vector2 hitPos)
+    {
+        hitPos = default;
+        if (_round && !_mask.Contains(mouse)) return null;
+        if (mouse.X < clipMin.X || mouse.X > clipMax.X || mouse.Y < clipMin.Y || mouse.Y > clipMax.Y) return null;
+        float zoom = MathF.Max(0.5f, RadarSettingsStore.Zoom);
+        var proj = new Projection(centre, view.Live.Player, RadarSettingsStore.RotateWithPlayer, zoom);
+        // Hit radius: a little more than the dot, growing with zoom, in UI-scaled pixels.
+        float radius = Math.Clamp(5f + 1.5f * zoom, 6f, 14f) * MathF.Max(1f, EngineFrameController.FontScale);
+        return MarkerAt(view, proj, mouse, radius, clipMin, clipMax, out hitPos);
+    }
+
+    /// <summary>
+    /// Whether the mouse is over a selectable dot or one of the two buttons: the next frame's
+    /// <see cref="ClickThrough"/> answer. Once a press has begun, it holds until the button is up.
+    /// </summary>
+    private void UpdateHot(RadarView? view, Vector2 centre, Vector2 clipMin, Vector2 clipMax, Vector2 buttonsMin, Vector2 buttonsMax)
+    {
+        var io = ImGuiNET.ImGui.GetIO();
+        Vector2 m = io.MousePos;
+        bool over = m.X >= buttonsMin.X && m.X <= buttonsMax.X && m.Y >= buttonsMin.Y && m.Y <= buttonsMax.Y;
+        if (!over && view != null && RadarSettingsStore.ClickToSelect)
+            over = HitTest(view, centre, clipMin, clipMax, m, out _) != null;
+        bool down = io.MouseDown[0];
+        if (down)
+        {
+            if (!_downPrev) _pressHot = over;
+            _hot = _pressHot;
+        }
+        else _hot = over;
+        _downPrev = down;
+    }
+
     /// <summary>The shown marker nearest <paramref name="mouse"/> within <paramref name="radius"/> px, or null.</summary>
     private static RadarMarker? MarkerAt(RadarView view, in Projection proj, Vector2 mouse, float radius,
         Vector2 clipMin, Vector2 clipMax, out Vector2 at)
     {
         RadarMarker? best = null;
-        float bestD2 = radius * radius;
+        float bestD2 = float.MaxValue;
         at = default;
+        float uiScale = MathF.Max(1f, EngineFrameController.FontScale);
         foreach (RadarMarker m in view.Live.Markers)
         {
             if (!RadarSettingsStore.ShowKind(m.Kind)) continue;
             Vector2 pp = proj.P(m.X, m.Y);
             if (pp.X < clipMin.X || pp.X > clipMax.X || pp.Y < clipMin.Y || pp.Y > clipMax.Y) continue;
+            // A big marker is grabbed anywhere on it, not only near its centre.
+            float reach = MathF.Max(radius, (RadarMarkerStyle.Radius(m.Kind) * RadarSettingsStore.Markers.SizeOf(m.Kind) + 2f) * uiScale);
             float d2 = Vector2.DistanceSquared(pp, mouse);
-            if (d2 > bestD2) continue;
+            if (d2 > reach * reach || d2 >= bestD2) continue;
             bestD2 = d2;
             best = m;
             at = pp;
@@ -475,7 +643,7 @@ internal sealed class RadarFace : IImGuiPanel
 
     private static void DrawCardinals(ImDrawListPtr dl, RadarView view, Vector2 centre, float halfW, float halfH)
     {
-        const float sz = 14;
+        float sz = RadarSettingsStore.CompassSize;
         bool rotate = RadarSettingsStore.RotateWithPlayer;
         float h = view.Live.Player.Heading * MathF.PI / 180f;
         float sinH = MathF.Sin(h), cosH = MathF.Cos(h);
@@ -498,19 +666,24 @@ internal sealed class RadarFace : IImGuiPanel
             // Onto the rectangular perimeter: max(|dx t|/effW, |dy t|/effH) = 1.
             float m = MathF.Max(MathF.Abs(dirX) / effW, MathF.Abs(dirY) / effH);
             if (m < 1e-4f) continue;
-            float t = 1 / m;
-            DrawOutlinedText(dl, font, c.Label, new Vector2(centre.X + dirX * t, centre.Y + dirY * t), Cardinal, alignBottom: false);
+            float t = _round ? MathF.Max(1f, _mask.Radius - sz * 0.6f) / MathF.Sqrt(dirX * dirX + dirY * dirY) : 1 / m;
+            DrawOutlinedText(dl, font, c.Label, new Vector2(centre.X + dirX * t, centre.Y + dirY * t), Cardinal, alignBottom: false,
+                scale: sz / 14f);
         }
     }
 
-    /// <summary>Text with a 1 px 4-way black outline, centred on x; centred or bottom-aligned on y.</summary>
-    private static void DrawOutlinedText(ImDrawListPtr dl, ImFontPtr font, string text, Vector2 anchor, uint col, bool alignBottom)
+    /// <summary>
+    /// Text with a 1 px 4-way black outline, centred on x; centred or bottom-aligned on y.
+    /// <paramref name="scale"/> stretches the font's baked size (1 = as baked).
+    /// </summary>
+    private static void DrawOutlinedText(ImDrawListPtr dl, ImFontPtr font, string text, Vector2 anchor, uint col, bool alignBottom,
+        float scale = 1f)
     {
         ImGuiNET.ImGui.PushFont(font);
-        Vector2 ts = ImGuiNET.ImGui.CalcTextSize(text);
+        Vector2 ts = ImGuiNET.ImGui.CalcTextSize(text) * scale;
         ImGuiNET.ImGui.PopFont();
         var pos = new Vector2(anchor.X - ts.X * 0.5f, alignBottom ? anchor.Y - ts.Y - 1 : anchor.Y - ts.Y * 0.5f);
-        float fs = font.FontSize;
+        float fs = font.FontSize * scale;
         dl.AddText(font, fs, pos + new Vector2(-1, 0), Outline, text);
         dl.AddText(font, fs, pos + new Vector2(1, 0), Outline, text);
         dl.AddText(font, fs, pos + new Vector2(0, -1), Outline, text);
@@ -518,24 +691,21 @@ internal sealed class RadarFace : IImGuiPanel
         dl.AddText(font, fs, pos, col, text);
     }
 
-    private static bool IconButton(string id, Vector2 pos, string glyph)
-    {
-        var dl = ImGuiNET.ImGui.GetWindowDrawList();
-        var size = new Vector2(22, 22);
-        ImGuiNET.ImGui.SetCursorScreenPos(pos);
-        bool clicked = ImGuiNET.ImGui.InvisibleButton(id, size);
-        uint bg = ImGuiNET.ImGui.IsItemActive() ? C(0xE0101820) : ImGuiNET.ImGui.IsItemHovered() ? C(0xE0243444) : ButtonBg;
-        dl.AddRectFilled(pos, pos + size, bg, 3);
-        dl.AddRect(pos, pos + size, ButtonBorder, 3);
-        PhosphorIcons.DrawCentered(dl, ImGuiFonts.Get(UiFont.Ui14), glyph, pos, size, CoordText);
-        return clicked;
-    }
-
     // ── Settings (gear) ─────────────────────────────────────────────────────
 
     private void SettingsWindow()
     {
-        if (!_settingsOpen) return;
+        if (!_settingsOpen)
+        {
+            if (_settingsSub) { UiSources.Settings.Unsubscribe(); _settingsSub = false; }
+            return;
+        }
+        if (!_settingsSub)
+        {
+            UiSources.Settings.Subscribe();
+            UiSources.Settings.RequestRefresh();
+            _settingsSub = true;
+        }
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.WindowBg, RynthTheme.BoxBg);
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, ButtonBorder);
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 4f);
@@ -552,19 +722,39 @@ internal sealed class RadarFace : IImGuiPanel
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
             ImGuiNET.ImGui.TextUnformatted("Radar Settings");
             ImGuiNET.ImGui.PopFont();
+            // The small close X, in the top-right corner of the content (the width of the kind rows' last column).
+            float uiScale = MathF.Max(1f, EngineFrameController.FontScale);
+            ImGuiNET.ImGui.SameLine(350 * uiScale + MarkerStyleEditor.SizeSliderWidth - 14);
+            if (FaceKit.IconButton("##radar_settings_close", PhosphorIcons.X, ImGuiNET.ImGui.GetCursorScreenPos(), new Vector2(14, 14),
+                    FaceKit.Faded(FaceKit.Mute), RynthTheme.WithAlpha(RynthTheme.Background, 0xDC), font: UiFont.Ui9))
+                _settingsOpen = false;
+            ImGuiNET.ImGui.SetItemTooltip("Close");
             ImGuiNET.ImGui.Separator();
 
             bool changed = false;
             changed |= Check("Rotate with player", ref RadarSettingsStore.RotateWithPlayer);
             changed |= Check("Show gold rim", ref RadarSettingsStore.ShowGoldRim);
-            changed |= Check("Docked click-through (hold Ctrl to interact)", ref RadarSettingsStore.CtrlGatedClickThrough);
+            changed |= Check("Round radar", ref RadarSettingsStore.RoundRadar);
             if (ImGuiNET.ImGui.IsItemHovered())
-                ImGuiNET.ImGui.SetTooltip("On: docked clicks pass through to the game; hold Ctrl to drag, open the gear, or resize.");
+                ImGuiNET.ImGui.SetTooltip("A circle instead of a square: the picture, the dots and the world map are all cut to it.");
+            changed |= Check("Docked click-through (dots still work; Ctrl for the rest)", ref RadarSettingsStore.CtrlGatedClickThrough);
+            if (ImGuiNET.ImGui.IsItemHovered())
+                ImGuiNET.ImGui.SetTooltip("On: docked clicks pass through to the game, except on a dot (hover it, click to select) and the two buttons; hold Ctrl to drag or resize.");
             changed |= Check("Click a dot to select it", ref RadarSettingsStore.ClickToSelect);
             if (ImGuiNET.ImGui.IsItemHovered())
                 ImGuiNET.ImGui.SetTooltip("Left-click a dot to select that object in game. Hover a dot for its name and distance.");
             changed |= Slider("Opacity", ref RadarSettingsStore.Opacity, 0.05f, 1.0f, "%.2f");
             changed |= Slider("Zoom", ref RadarSettingsStore.Zoom, 0.5f, 6.0f, "%.1f");
+            changed |= Check("World map behind the radar (outdoors)", ref RadarSettingsStore.ShowWorldMap);
+            if (ImGuiNET.ImGui.IsItemHovered())
+                ImGuiNET.ImGui.SetTooltip("Draws the World Map's picture of the ground behind the dots while you're outdoors.\nIts sharpness follows the World Map's Detail setting (the bigger map packs look best zoomed in).");
+            if (RadarSettingsStore.ShowWorldMap)
+            {
+                changed |= Slider("Map", ref RadarSettingsStore.WorldMapOpacity, 0.1f, 1.0f, "%.2f");
+                if (!WorldMapTiles.IsOpen && WorldMapTiles.Status.Length > 0)
+                    SafeImGui.TextDisabled(WorldMapTiles.Status);
+            }
+            RetailRadarRow();
             ImGuiNET.ImGui.Separator();
             changed |= KindRows();
             if (changed)
@@ -572,9 +762,6 @@ internal sealed class RadarFace : IImGuiPanel
                 AvaloniaOverlay.RadarCtrlGatedClickThrough = RadarSettingsStore.CtrlGatedClickThrough;
                 RadarSettingsStore.Save();
             }
-            // The gear toggles this window too; Close is the obvious way out (changes are already saved).
-            ImGuiNET.ImGui.Separator();
-            if (ImGuiNET.ImGui.Button("Close")) _settingsOpen = false;
             ImGuiNET.ImGui.PopFont();
         }
         ImGuiNET.ImGui.End();
@@ -582,8 +769,41 @@ internal sealed class RadarFace : IImGuiPanel
 
     private static bool Check(string label, ref bool value) => ImGuiNET.ImGui.Checkbox(label, ref value);
 
+    /// <summary>
+    /// "Hide the retail radar": RynthAi's own SuppressRetailRadar setting (RynthAi pushes it to the engine every
+    /// tick), the same switch as Settings > UI > Hide retail radar. This reads it from RynthAi's settings payload
+    /// and saves it back through the same command, so the two always agree whichever is changed; saved with the
+    /// character's RynthAi settings. Greyed out until RynthAi has answered. The box shows the new value at once,
+    /// until RynthAi's answer catches up.
+    /// </summary>
+    private void RetailRadarRow()
+    {
+        RynthAiSettings? ra = UiSources.Settings.Current?.Value;
+        bool actual = ra?.SuppressRetailRadar ?? false;
+        if (_hidePending is bool pending && (pending == actual || Environment.TickCount64 - _hidePendingAt > 3000))
+            _hidePending = null;
+        bool hide = _hidePending ?? actual;
+        ImGuiNET.ImGui.BeginDisabled(ra == null);
+        if (ImGuiNET.ImGui.Checkbox("Hide the retail radar", ref hide) && ra != null)
+        {
+            RynthAiSettings copy = ra.Clone();
+            copy.SuppressRetailRadar = hide;
+            SettingsCommands.Save(copy);
+            _hidePending = hide;
+            _hidePendingAt = Environment.TickCount64;
+        }
+        ImGuiNET.ImGui.EndDisabled();
+        if (ImGuiNET.ImGui.IsItemHovered())
+            ImGuiNET.ImGui.SetTooltip("Hides the game's built-in radar (bezel, compass, coordinates, blips).\nThe same switch as RynthAi's Settings > UI > Hide retail radar: change it in either place.");
+        if (ra == null)
+        {
+            ImGuiNET.ImGui.SameLine();
+            ImGuiNET.ImGui.TextDisabled("(waiting for RynthAi)");
+        }
+    }
+
     // Legend order: creatures, then corpses, then places, then items.
-    private static readonly (byte Kind, string Label)[] KindRowsOrder =
+    internal static readonly (byte Kind, string Label)[] KindRowsOrder =
     {
         (RadarKind.Monster, "Monsters"), (RadarKind.Player, "Players"), (RadarKind.Fellow, "Fellows"),
         (RadarKind.Npc, "NPCs"), (RadarKind.Vendor, "Vendors"), (RadarKind.Pet, "Your pets"),
@@ -608,8 +828,9 @@ internal sealed class RadarFace : IImGuiPanel
     };
 
     /// <summary>
-    /// The legend and per-kind settings: show box, the marker as drawn, its name and a colour
-    /// swatch (click to pick). One row per kind, then "Reset colours". True when something changed.
+    /// The legend and per-kind settings: show box, the marker as drawn, its name, a colour swatch
+    /// (click to pick), then the name box and the marker and name sizes (MarkerStyleEditor). One row
+    /// per kind, then your own arrow's size, the reset buttons. True when something changed.
     /// </summary>
     private static bool KindRows()
     {
@@ -620,6 +841,10 @@ internal sealed class RadarFace : IImGuiPanel
         RadarMarkerStyle.FillColors(KindCols);
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         float scale = MathF.Max(1f, EngineFrameController.FontScale);
+        // Columns after the colour swatch (at 190): name box, marker size, name text size.
+        float xName = 232 * scale, xSize = 268 * scale, xText = 350 * scale;
+        MarkerStyleSettings markers = RadarSettingsStore.Markers;
+        MarkerStyleEditor.HeaderRow(xName, xSize, xText);
         const ImGuiColorEditFlags pickFlags = ImGuiColorEditFlags.NoInputs | ImGuiColorEditFlags.NoLabel
             | ImGuiColorEditFlags.AlphaBar | ImGuiColorEditFlags.AlphaPreviewHalf;
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6, 3));
@@ -630,6 +855,7 @@ internal sealed class RadarFace : IImGuiPanel
             bool sub = kind == RadarKind.OwnCorpse;
             if (sub) { ImGuiNET.ImGui.Indent(14 * scale); ImGuiNET.ImGui.BeginDisabled(!RadarSettingsStore.ShowCorpses); }
             changed |= ImGuiNET.ImGui.Checkbox("##show", ref RadarSettingsStore.ShowFlag(kind));
+            if (sub) ImGuiNET.ImGui.EndDisabled();      // the sizes below stay adjustable
             if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(KindTips[kind]);
             ImGuiNET.ImGui.SameLine();
             // The marker exactly as the radar draws it; faded while the kind is hidden, so the
@@ -652,10 +878,19 @@ internal sealed class RadarFace : IImGuiPanel
                 RadarSettingsStore.KindColors[kind] = ToArgb(v);
                 _colorDirty = true;
             }
-            if (sub) { ImGuiNET.ImGui.EndDisabled(); ImGuiNET.ImGui.Unindent(14 * scale); }
+            changed |= MarkerStyleEditor.KindCells(markers, kind, xName, xSize, xText);
+            if (sub) ImGuiNET.ImGui.Unindent(14 * scale);
             ImGuiNET.ImGui.PopID();
         }
         ImGuiNET.ImGui.PopStyleVar();
+        // Everything else drawn on the radar that has a size.
+        ImGuiNET.ImGui.Separator();
+        changed |= MarkerStyleEditor.SliderRow("You (heading arrow)", ref markers.SelfSize,
+            MarkerStyleSettings.MinSize, MarkerStyleSettings.MaxSize, "%.1fx", xSize);
+        changed |= MarkerStyleEditor.SliderRow("Compass letters", ref RadarSettingsStore.CompassSize,
+            RadarSettingsStore.MinText, RadarSettingsStore.MaxText, "%.0f px", xText);
+        changed |= MarkerStyleEditor.SliderRow("Coordinates", ref RadarSettingsStore.CoordSize,
+            RadarSettingsStore.MinText, RadarSettingsStore.MaxText, "%.0f px", xText);
         // The picker reports every drag step: save once no colour edit is in progress.
         if (_colorDirty && !ImGuiNET.ImGui.IsAnyItemActive())
         {
@@ -668,6 +903,13 @@ internal sealed class RadarFace : IImGuiPanel
             changed = true;
         }
         if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip("Every kind back to its default colour (show boxes stay as they are).");
+        ImGuiNET.ImGui.SameLine();
+        if (ImGuiNET.ImGui.SmallButton("Reset sizes and names"))
+        {
+            RadarSettingsStore.ResetSizes();
+            changed = true;
+        }
+        if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip("Every marker, name, arrow, compass and coordinate size, and the name boxes, back to their defaults.");
         return changed;
     }
 

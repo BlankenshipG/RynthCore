@@ -341,6 +341,7 @@ internal sealed class RynthNavFace : IImGuiPanel
             NextLine(p, 28);
             if (st.HasAvoid) AvoidRows(st, w);
             if (st.HasMarkers) MarkerRow(st, w);
+            if (st.HasMesh) MeshRows(st, w);
         }
         Line(w);
 
@@ -705,6 +706,46 @@ internal sealed class RynthNavFace : IImGuiPanel
         if (Toggle("##mk_guide", "Guide line", st.MarkerGuide, new Vector2(p.X + w1 + w2 + 8, p.Y), w3))
             RynthNavCommands.Command(st.MarkerGuide ? "markers guide off" : "markers guide on");
         ImGuiNET.ImGui.SetItemTooltip("A line from your feet to the next waypoint (to the nearest marker for a plan you're not walking).");
+        NextLine(p, 26);
+    }
+
+    // The navmesh drawn in the world (RynthNav 0.6.7+): green where nav can walk, red walls where
+    // the mesh ends. Each click sends /rnav mesh ... (saved in rynthnav.json by RynthNav).
+    private static void MeshRows(RynthNavStatus st, float w)
+    {
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        float w1 = (w - 8) * 0.44f, w2 = (w - 8) * 0.26f, w3 = w - 8 - w1 - w2;
+        if (Toggle("##ms_on", "Show navmesh", st.MeshOn, p, w1))
+            RynthNavCommands.Command(st.MeshOn ? "mesh off" : "mesh on");
+        SafeImGui.SetItemTooltip("Draw the navigation mesh in the world: green where nav can walk, red walls where the mesh ends\n"
+            + "(buildings, trees, rocks, cliffs, steep ground and the margin round them). Not drawn in dungeons."
+            + (st.MeshOn ? $"\n\nNow: {st.MeshDrawn} triangles drawn." : ""));
+        if (Toggle("##ms_floor", "Green", st.MeshFloor, new Vector2(p.X + w1 + 4, p.Y), w2))
+            RynthNavCommands.Command(st.MeshFloor ? "mesh floor off" : "mesh floor on");
+        ImGuiNET.ImGui.SetItemTooltip("The walkable ground, in green.");
+        if (Toggle("##ms_walls", "Red walls", st.MeshWalls, new Vector2(p.X + w1 + w2 + 8, p.Y), w3))
+            RynthNavCommands.Command(st.MeshWalls ? "mesh walls off" : "mesh walls on");
+        ImGuiNET.ImGui.SetItemTooltip("Upright red strips along every edge nav will not cross.");
+        NextLine(p, 26);
+        MeshStepRow("radius", "Mesh radius", st.MeshRadius, 10, 10, 150, " m", st.MeshOn, w,
+            "How far around you the mesh is drawn.");
+        MeshStepRow("triangles", "Mesh detail", st.MeshTriangles, 500, 200, 7000, "", st.MeshOn, w,
+            "The most triangles the mesh may use. The game's 3D buffer holds 8192 for every plugin, so keep this under about 5000\n"
+            + "when RynthVision's slope overlay is on. The nearest ground and walls are kept first.");
+    }
+
+    private static void MeshStepRow(string key, string label, int value, int step, int min, int max, string unit, bool active, float w, string tip)
+    {
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        float bw = 22, vw = 54, lw = w - 2 * bw - vw - 12;
+        Button("##ms_" + key, label, p, new Vector2(lw, 22), active ? Text : Faded(Mute), BtnFill, enabled: false, leftAlign: true);
+        SafeImGui.SetItemTooltip(tip);
+        float x = p.X + lw + 4;
+        if (Button("##ms_" + key + "_dn", "-", new Vector2(x, p.Y), new Vector2(bw, 22), Text, BtnFill, enabled: value > min))
+            RynthNavCommands.Command($"mesh {key} {Math.Max(min, value - step)}");
+        Button("##ms_" + key + "_v", value + unit, new Vector2(x + bw + 4, p.Y), new Vector2(vw, 22), active ? Text : Faded(Mute), PanelBg, enabled: false);
+        if (Button("##ms_" + key + "_up", "+", new Vector2(x + bw + vw + 8, p.Y), new Vector2(bw, 22), Text, BtnFill, enabled: value < max))
+            RynthNavCommands.Command($"mesh {key} {Math.Min(max, value + step)}");
         NextLine(p, 26);
     }
 

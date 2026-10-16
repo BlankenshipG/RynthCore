@@ -3,7 +3,7 @@
   <!--
     Offline checks for the engine's side of the hot-reload cap (2026-10-11):
     src\RynthCore.Engine\ReloadCapNotice.cs, compiled in. When the loader refuses a hot reload
-    (engine.json MaxHotReloads, default 3), the player hears about it in chat once, and again only
+    (engine.json MaxHotReloads, default 20), the player hears about it in chat once, and again only
     when they asked for the reload by hand (RL, /rc rl) within the last 10 s; the chat line is the
     plain sentence agreed for it. The loader's own rule (refuse once reloads >= cap, negative = no
     cap; nothing staged on a refusal) is checked in tools\LoaderReloadCapTests (C).

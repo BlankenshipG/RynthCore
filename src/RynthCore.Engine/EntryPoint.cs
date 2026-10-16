@@ -83,17 +83,18 @@ public static class EntryPoint
     /// </summary>
     /// <summary>
     /// The loader refused a hot-reload because this client is short of address
-    /// space (each reload keeps the old engine and plugins mapped). Says so in
-    /// chat. Loader thread.
+    /// space: too little free in all, or (CoreCLR engine, 2026-10-15) no free block
+    /// big enough. <paramref name="freeMb"/> is the figure that fell short (the loader
+    /// log says which). Says so in chat. Loader thread.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthCoreReloadRefused")]
     public static uint ReloadRefused(int freeMb)
     {
         try
         {
-            RynthLog.Warn($"Hot-reload refused by the loader: {freeMb} MB of address space free.");
+            RynthLog.Warn($"Hot-reload refused by the loader: short of address space ({freeMb} MB free in all, or in the largest free block; see the loader line).");
             Compatibility.AcMainThreadQueue.EnqueueWriteToChat(
-                $"[RynthCore] A new RynthCore build is ready but wasn't loaded: this client has only {freeMb} MB of memory address space left, and reloading could crash it. Restart the client to use the new build.", 2);
+                $"[RynthCore] A new RynthCore build is ready but wasn't loaded: this client is low on memory address space ({freeMb} MB usable), and reloading could crash it. Restart the client to use the new build.", 2);
         }
         catch { }
         return 0;
@@ -102,7 +103,7 @@ public static class EntryPoint
     /// <summary>
     /// The reload cap (ReloadCapNotice): the loader asks this before every hot reload, and
     /// refuses the reload once this client has done that many. engine.json MaxHotReloads,
-    /// default 3; negative = no cap. Loader thread.
+    /// default 20; negative = no cap. Loader thread.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthCoreMaxHotReloads")]
     public static int MaxHotReloads()

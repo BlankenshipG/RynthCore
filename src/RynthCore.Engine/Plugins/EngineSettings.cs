@@ -459,11 +459,12 @@ internal static class EngineSettings
         }
     }
 
-    /// <summary>"MaxHotReloads" in engine.json (default 3, 2026-10-11): how many engine hot reloads
-    /// one client takes; the loader asks before each one (RynthCoreMaxHotReloads) and refuses the
-    /// rest, so a newer engine then needs a client restart. Clients died with CoreCLR fatal error
-    /// 0x80131506 after 4+ reloads in one process. Negative = no cap (test clients soaking
-    /// reloads), 0 = no hot reloads at all. Read at each engine init; edited in the file.</summary>
+    /// <summary>"MaxHotReloads" in engine.json (default 20 since 2026-10-15; 3 from 10-11): how many
+    /// engine hot reloads one client takes; the loader asks before each one (RynthCoreMaxHotReloads)
+    /// and refuses the rest, so a newer engine then needs a client restart. A backstop: the 0x80131506
+    /// deaths after 4+ reloads that set it at 3 were the v1 crash logger (fixed 10-12). Negative = no
+    /// cap (test clients soaking reloads), 0 = no hot reloads at all. Read at each engine init; edited
+    /// in the file.</summary>
     public static int MaxHotReloads
     {
         get

@@ -712,7 +712,9 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         float y = ImGuiNET.ImGui.GetCursorScreenPos().Y;
         // Nav and Meta left the row (2026-10-14): right-click the Navigation and Meta toggles.
         // Hub left it 2026-10-15 (the Mini Remote: the bar button, Char's menu, its drawer tab).
-        const int buttons = 7;
+        // World joins them when the engine has the world map (WorldMapFace; its tiles may not be installed).
+        bool worldMap = ImGuiPanelHost.HasFace(WorldMapFace.Title);
+        int buttons = worldMap ? 8 : 7;
         float gap = Px(LauncherGap);
         float bw = MathF.Floor((width - buttons * gap) / buttons);
         // Short labels only when every button has room for its icon and label.
@@ -733,6 +735,12 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         Launcher("##l_map", PhosphorIcons.MapPin, "Map", "Dungeon Map (shows while you're in a dungeon)", x, y, bw, labels,
             () => PanelRouter.Toggle(DungeonMapFace.Title), ImGuiPanelHost.IsOpen(DungeonMapFace.Title));
         x += bw + gap;
+        if (worldMap)
+        {
+            Launcher("##l_world", PhosphorIcons.GlobeHemisphereWest, "World", "World Map: Dereth, with your position, the route and places (also in the RynthNav panel)", x, y, bw, labels,
+                () => PanelRouter.Toggle(WorldMapFace.Title), ImGuiPanelHost.IsOpen(WorldMapFace.Title));
+            x += bw + gap;
+        }
         Launcher("##l_items", PhosphorIcons.Backpack, "Items", "Items", x, y, bw, labels, () => PanelRouter.Toggle("Items"),
             ImGuiPanelHost.IsOpen("Items"));
         x += bw + gap;

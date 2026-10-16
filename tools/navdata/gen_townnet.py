@@ -325,7 +325,7 @@ def main(argv=None):
         'version': FORMAT_VERSION,
         'setId': '',
         'generated': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        'source': args.db,
+        'source': 'world database',
         'landblocks': net['landblocks'],
         'counts': {'arrivals': len(net['arrivals']), 'entries': len(net['entries']), 'exits': len(net['exits']),
                    'npcs': len(net['npcs'])},

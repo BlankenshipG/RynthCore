@@ -37,11 +37,12 @@
 #define STAGING_SUBDIR         ".engine_loads"
 // Hot reloads one client takes before it refuses the rest (until it restarts). The engine
 // says the real number (engine.json MaxHotReloads, RynthCoreMaxHotReloads export); this is
-// for an engine without the export. After 4+ reloads in one process, clients died with
-// CoreCLR fatal error 0x80131506 at coreclr+0x256E19 (2026-10-08..10, gens 5-6 or the 4th
-// reload itself) although every generation unloaded and address space stayed flat: treated
-// as a CoreCLR limit on repeated collectible loads, so the loader stops short of it.
-#define DEFAULT_MAX_HOT_RELOADS 3
+// for an engine without the export. 3 from 2026-10-11, after clients died with CoreCLR fatal
+// error 0x80131506 at coreclr+0x256E19 after 4+ reloads in one process (2026-10-08..10). The
+// 10-15 dump triage put those on the v1 SehTrampoline crash logger (ReversePInvokeBadTransition,
+// fixed by db645ba on 10-12), not on reloading: none since, and address space was healthy at
+// every crash. So 20 since 2026-10-15: a backstop, not a known CoreCLR limit.
+#define DEFAULT_MAX_HOT_RELOADS 20
 // CoreCLR's own crash dump (createdump.exe, DOTNET_DbgEnableMiniDump): clr_<pid>_<time>.dmp
 // in Logs\dumps, newest DUMP_KEEP kept. With the heap (type 2) only while the volume keeps
 // DUMP_HEAP_MIN_FREE_MB free (a heap dump of a client is ~1 GB); else a normal one (stacks).
@@ -54,6 +55,10 @@
 // room for one more generation; the NativeAOT engine leaks every generation.
 #define MIN_FREE_MB_AOT        1200
 #define MIN_FREE_MB_CLR        500
+// ...and (CoreCLR, 2026-10-15) one free block that size: the new generation's images and the
+// GC's segments each need a contiguous range, so a fragmented space can fail a reload that
+// the free total allows. Every crash triaged 10-15 still had >= 1.6 GB in one block.
+#define MIN_LARGEST_MB_CLR     400
 
 typedef unsigned int (__stdcall *engine_u32_fn)(void* param);
 typedef unsigned int (__stdcall *engine_refused_fn)(int freeMb);
@@ -135,6 +140,16 @@ long LoaderFreeAddressSpaceMb(long* largestMb)
     }
     if (largestMb) *largestMb = (long)(largest / (1024 * 1024));
     return (long)(total / (1024 * 1024));
+}
+
+// Why a hot reload would be refused for address space (LoaderFreeAddressSpaceMb's figures):
+// 0 = room for it, 1 = too little free in all, 2 = a CoreCLR engine with enough free in all but
+// no single free block of MIN_LARGEST_MB_CLR.
+static int ReloadSpaceShort(int managed, long freeMb, long largestMb)
+{
+    if (freeMb < (managed ? MIN_FREE_MB_CLR : MIN_FREE_MB_AOT)) return 1;
+    if (managed && largestMb < MIN_LARGEST_MB_CLR) return 2;
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +505,7 @@ static DWORD WINAPI ReloadWatcher(LPVOID unused)
         if (ReloadCapReached(reloadsDone, cap)) {
             LoaderLog("WRN", "ReloadWatcher: reload REFUSED - this client has hot reloaded %d time(s), the cap "
                 "(engine.json MaxHotReloads) is %d. Staying on engine gen %d; restart the client to load the "
-                "new engine. (Repeated hot reloads in one client ended in CoreCLR fatal error 0x80131506.)",
+                "new engine. (The cap is a backstop against piling up hot reloads in one client.)",
                 reloadsDone, cap, g_initCount);
             engine_capped_fn capped = (engine_capped_fn)EngineExport(ENGINE_CAPPED_EXPORT);
             if (capped) capped(reloadsDone, cap);
@@ -498,12 +513,20 @@ static DWORD WINAPI ReloadWatcher(LPVOID unused)
         }
 
         long minFree = g_engineIsManaged ? MIN_FREE_MB_CLR : MIN_FREE_MB_AOT;
-        long freeMb = LoaderFreeAddressSpaceMb(NULL);
-        if (freeMb < minFree) {
+        long largestMb;
+        long freeMb = LoaderFreeAddressSpaceMb(&largestMb);
+        int shortOf = ReloadSpaceShort(g_engineIsManaged, freeMb, largestMb);
+        if (shortOf == 1)
             LoaderLog("WRN", "ReloadWatcher: reload REFUSED - only %ld MB of address space free (need %ld MB). "
                 "Restart the client to load the new engine.", freeMb, minFree);
+        else if (shortOf == 2)
+            LoaderLog("WRN", "ReloadWatcher: reload REFUSED - the largest free block of address space is only %ld MB "
+                "(need %ld MB; %ld MB free in all). Restart the client to load the new engine.",
+                largestMb, (long)MIN_LARGEST_MB_CLR, freeMb);
+        if (shortOf) {
+            // The engine is told the figure that fell short; it says so in chat.
             engine_refused_fn refused = (engine_refused_fn)EngineExport(ENGINE_REFUSED_EXPORT);
-            if (refused) refused((int)freeMb);
+            if (refused) refused((int)(shortOf == 1 ? freeMb : largestMb));
             continue;
         }
 

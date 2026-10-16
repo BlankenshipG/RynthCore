@@ -295,7 +295,7 @@ namespace EngineSettingsTests
             Eq(ReadJson(emptyPath).GetProperty("DisabledUiHooks")[0].GetString(), "StartTooltip", "empty: rewritten with the change");
         }
 
-        // engine.json "MaxHotReloads" (the loader's hot-reload cap): default 3, a hand-set value
+        // engine.json "MaxHotReloads" (the loader's hot-reload cap): default 20, a hand-set value
         // (including -1 = no cap) is read and survives the engine's own saves, the default is
         // never written, and a value that isn't a whole number is ignored.
         private static void MaxHotReloadsReadAndKept()
@@ -306,7 +306,7 @@ namespace EngineSettingsTests
             File.WriteAllText(path, LauncherFile);
             var (exit, output) = RunChild(path, "dump");
             Eq(exit, 0, "dump (missing)");
-            Eq(DumpValue(output, "MaxHotReloads"), "3", "missing: the default");
+            Eq(DumpValue(output, "MaxHotReloads"), "20", "missing: the default");
             Eq(RunChild(path, "hook-off", "StartTooltip").Exit, 0, "save with the default");
             Check(!ReadJson(path).TryGetProperty("MaxHotReloads", out _), "the default isn't written to the file");
 
@@ -326,7 +326,7 @@ namespace EngineSettingsTests
                 File.WriteAllText(path, LauncherFile.Replace("\"LoggingLevel\"", $"\"MaxHotReloads\": {bad}, \"LoggingLevel\""));
                 (exit, output) = RunChild(path, "dump");
                 Eq(exit, 0, $"{bad}: dump");
-                Eq(DumpValue(output, "MaxHotReloads"), "3", $"{bad}: ignored, the default");
+                Eq(DumpValue(output, "MaxHotReloads"), "20", $"{bad}: ignored, the default");
             }
         }
 

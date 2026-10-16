@@ -1,3 +1,4 @@
+using RynthCore.Engine.ImGuiBackend.Panels;
 using RynthCore.Engine.UI.Data;
 using RynthCore.Engine.UI.Panels;
 
@@ -40,6 +41,11 @@ namespace RadarSettingsTests
                 Run("UnknownKindsHidden", UnknownKindsHidden);
                 Run("SnapshotFiltersPerBox", SnapshotFiltersPerBox);
                 Run("FileRoundTrip", () => FileRoundTrip(root));
+                Run("NameAndSizeDefaults", NameAndSizeDefaults);
+                Run("NameAndSizeFileRoundTrip", () => NameAndSizeFileRoundTrip(root));
+                Run("StyleKeysClampAndIgnore", StyleKeysClampAndIgnore);
+                Run("WorldMapBackdropSettings", () => WorldMapBackdropSettings(root));
+                Run("RoundRadarAndClipping", () => RoundRadarAndClipping(root));
             }
             finally
             {
@@ -154,6 +160,157 @@ namespace RadarSettingsTests
                 string want = $"{FileKeys[k]}={(k == RadarKind.Fellow ? 1 : 0)}";
                 Check(text.Contains(want + "\n") || text.Contains(want + "\r\n"), $"saved {want}");
             }
+        }
+        // Names start on for the kinds you look for by name; sizes at 1x; nothing is written for defaults.
+        private static void NameAndSizeDefaults()
+        {
+            RadarSettingsStore.ResetSizes();
+            MarkerStyleSettings st = RadarSettingsStore.Markers;
+            byte[] named = { RadarKind.Monster, RadarKind.Npc, RadarKind.Portal, RadarKind.Player, RadarKind.Fellow, RadarKind.Vendor };
+            for (byte k = 0; k < RadarKind.Count; k++)
+            {
+                Check(st.NameShown(k) == named.Contains(k), $"{RadarKind.Name(k)} name default {st.NameShown(k)}");
+                Check(st.SizeOf(k) == 1f, $"{RadarKind.Name(k)} size default");
+                Check(st.NameSizeOf(k) == MarkerStyleSettings.DefaultName, $"{RadarKind.Name(k)} name size default");
+            }
+            Check(st.SelfSize == 1f, "your arrow default size");
+            Check(RadarSettingsStore.CompassSize == 14f && RadarSettingsStore.CoordSize == 11f, "compass 14 px, coordinates 11 px");
+            var lines = new List<string>();
+            st.AppendLines(lines);
+            Check(lines.Count == 0, $"defaults write no style lines ({lines.Count})");
+            // A kind this engine doesn't know: 1x, no name.
+            Check(st.SizeOf(200) == 1f && !st.NameShown(200), "unknown kind: 1x, no name");
+        }
+
+        // Every size, name box and the compass/coordinate sizes save under their key and load back.
+        private static void NameAndSizeFileRoundTrip(string root)
+        {
+            string saved = Path.Combine(root, "styles.txt");
+            Environment.SetEnvironmentVariable("RYNTHCORE_RADAR_SETTINGS", saved);
+            RadarSettingsStore.ResetSizes();
+            MarkerStyleSettings st = RadarSettingsStore.Markers;
+            st.Size[RadarKind.Portal] = 2.5f;
+            st.ShowName[RadarKind.Monster] = false;
+            st.ShowName[RadarKind.Corpse] = true;
+            st.NameSize[RadarKind.Player] = 16f;
+            st.SelfSize = 1.5f;
+            RadarSettingsStore.CompassSize = 20f;
+            RadarSettingsStore.CoordSize = 9f;
+            RadarSettingsStore.Save();
+            string text = File.ReadAllText(saved).Replace("\r\n", "\n");
+            foreach (string want in new[] { "size.portal=2.5", "name.monster=0", "name.corpse=1", "nameSize.player=16",
+                         "size.self=1.5", "compassSize=20", "coordSize=9" })
+                Check(text.Contains(want + "\n"), $"saved {want}");
+            Check(!text.Contains("size.monster") && !text.Contains("name.npc"), "defaults are not written");
+
+            // Load into a fresh settings object, as the store's own Load does line by line.
+            var again = new MarkerStyleSettings(new bool[RadarKind.Count]);
+            foreach (string line in text.Split('\n'))
+            {
+                int eq = line.IndexOf('=');
+                if (eq > 0) again.TryLoad(line[..eq], line[(eq + 1)..]);
+            }
+            Check(again.Size[RadarKind.Portal] == 2.5f, "portal size loaded");
+            Check(again.ShowName[RadarKind.Corpse], "corpse name loaded");
+            Check(!again.ShowName[RadarKind.Monster], "monster name off loads");
+            Check(again.NameSize[RadarKind.Player] == 16f, "player name size loaded");
+            Check(again.SelfSize == 1.5f, "your arrow size loaded");
+        }
+
+        // Out-of-range values are pulled in, junk is ignored, other keys are left alone.
+        private static void StyleKeysClampAndIgnore()
+        {
+            var st = new MarkerStyleSettings(new bool[RadarKind.Count]);
+            Check(st.TryLoad("size.door", "99") && st.Size[RadarKind.Door] == MarkerStyleSettings.MaxSize, "huge size clamped");
+            Check(st.TryLoad("size.door", "0.01") && st.Size[RadarKind.Door] == MarkerStyleSettings.MinSize, "tiny size clamped");
+            Check(st.TryLoad("nameSize.npc", "500") && st.NameSize[RadarKind.Npc] == MarkerStyleSettings.MaxName, "huge name size clamped");
+            Check(st.TryLoad("nameSize.npc", "1") && st.NameSize[RadarKind.Npc] == MarkerStyleSettings.MinName, "tiny name size clamped");
+            st.Size[RadarKind.Pet] = 2f;
+            Check(st.TryLoad("size.pet", "abc") && st.Size[RadarKind.Pet] == 2f, "junk number keeps the value");
+            Check(st.TryLoad("size.pet", "NaN") && st.Size[RadarKind.Pet] == 2f, "NaN keeps the value");
+            Check(!st.TryLoad("size.nonsense", "2"), "unknown kind key is not ours");
+            Check(!st.TryLoad("color.monster", "FFFF0000"), "colour keys are not ours");
+            Check(!st.TryLoad("zoom", "2"), "plain keys are not ours");
+        }
+        // The world map backdrop: off by default, and its switch and strength save under their keys.
+        private static void WorldMapBackdropSettings(string root)
+        {
+            Check(!RadarSettingsStore.ShowWorldMap, "backdrop off by default");
+            Check(RadarSettingsStore.WorldMapOpacity == 0.8f, "backdrop strength default 0.8");
+            string saved = Path.Combine(root, "backdrop.txt");
+            Environment.SetEnvironmentVariable("RYNTHCORE_RADAR_SETTINGS", saved);
+            RadarSettingsStore.ShowWorldMap = true;
+            RadarSettingsStore.WorldMapOpacity = 0.35f;
+            RadarSettingsStore.Save();
+            string text = File.ReadAllText(saved).Replace("\r\n", "\n");
+            Check(text.Contains("worldMap=1\n"), "saved worldMap=1");
+            Check(text.Contains("worldMapOpacity=0.35\n"), "saved worldMapOpacity=0.35");
+            RadarSettingsStore.ShowWorldMap = false;
+            RadarSettingsStore.WorldMapOpacity = 0.8f;
+            RadarSettingsStore.Save();
+            text = File.ReadAllText(saved).Replace("\r\n", "\n");
+            Check(text.Contains("worldMap=0\n"), "saved worldMap=0 when off");
+        }
+        // The round radar: the setting saves, and the geometry cuts shapes to the circle.
+        private static void RoundRadarAndClipping(string root)
+        {
+            Check(!RadarSettingsStore.RoundRadar, "round off by default");
+            string saved = Path.Combine(root, "round.txt");
+            Environment.SetEnvironmentVariable("RYNTHCORE_RADAR_SETTINGS", saved);
+            RadarSettingsStore.RoundRadar = true;
+            RadarSettingsStore.Save();
+            Check(File.ReadAllText(saved).Replace("\r\n", "\n").Contains("round=1\n"), "saved round=1");
+            RadarSettingsStore.RoundRadar = false;
+
+            var m = new RoundMask(new System.Numerics.Vector2(100, 100), 50);
+            Check(m.Contains(new System.Numerics.Vector2(100, 149)) && !m.Contains(new System.Numerics.Vector2(100, 151)), "Contains: the edge");
+            Check(m.ContainsBox(new System.Numerics.Vector2(80, 80), new System.Numerics.Vector2(120, 120)), "a small box in the middle is inside");
+            Check(!m.ContainsBox(new System.Numerics.Vector2(60, 60), new System.Numerics.Vector2(140, 140)), "a box with its corners out is not inside");
+            Check(m.OverlapsBox(new System.Numerics.Vector2(60, 60), new System.Numerics.Vector2(140, 140)), "...but it overlaps");
+            Check(!m.OverlapsBox(new System.Numerics.Vector2(0, 0), new System.Numerics.Vector2(40, 40)), "a far corner box doesn't overlap");
+
+            // Segments: inside stays, outside goes, across is cut at the circle.
+            var a = new System.Numerics.Vector2(90, 100); var b = new System.Numerics.Vector2(110, 100);
+            Check(CircleClip.Segment(m, ref a, ref b) && a.X == 90 && b.X == 110, "a segment inside is unchanged");
+            a = new System.Numerics.Vector2(0, 0); b = new System.Numerics.Vector2(20, 20);
+            Check(!CircleClip.Segment(m, ref a, ref b), "a segment outside is dropped");
+            a = new System.Numerics.Vector2(0, 100); b = new System.Numerics.Vector2(200, 100);
+            Check(CircleClip.Segment(m, ref a, ref b) && Math.Abs(a.X - 50) < 0.01f && Math.Abs(b.X - 150) < 0.01f, $"a segment across is cut to x 50..150 ({a.X}..{b.X})");
+
+            // Polygons: inside unchanged in area, outside dropped, a big square cut to about the circle's area.
+            var outP = new System.Numerics.Vector2[CircleClip.MaxPoints];
+            var outUv = new System.Numerics.Vector2[CircleClip.MaxPoints];
+            var small = new[] { new System.Numerics.Vector2(90, 90), new System.Numerics.Vector2(110, 90), new System.Numerics.Vector2(110, 110), new System.Numerics.Vector2(90, 110) };
+            int n = CircleClip.Polygon(m, small, default, outP, default);
+            Check(n == 4 && Math.Abs(Area(outP, n) - 400) < 0.01f, $"a small square inside keeps its area ({n} points, {Area(outP, n)})");
+            var far = new[] { new System.Numerics.Vector2(0, 0), new System.Numerics.Vector2(10, 0), new System.Numerics.Vector2(10, 10), new System.Numerics.Vector2(0, 10) };
+            Check(CircleClip.Polygon(m, far, default, outP, default) == 0, "a square outside is dropped");
+            var big = new[] { new System.Numerics.Vector2(0, 0), new System.Numerics.Vector2(200, 0), new System.Numerics.Vector2(200, 200), new System.Numerics.Vector2(0, 200) };
+            var uvs = new[] { new System.Numerics.Vector2(0, 0), new System.Numerics.Vector2(1, 0), new System.Numerics.Vector2(1, 1), new System.Numerics.Vector2(0, 1) };
+            n = CircleClip.Polygon(m, big, uvs, outP, outUv);
+            float circle = MathF.PI * 50 * 50, area = Area(outP, n);
+            Check(n >= 40 && area > circle * 0.99f && area <= circle, $"a square round the circle is cut to the circle's area ({area} of {circle}, {n} points)");
+            bool onCircle = true, uvOk = true;
+            for (int i = 0; i < n; i++)
+            {
+                float d = (outP[i] - m.Centre).Length();
+                if (d > 50.01f) onCircle = false;
+                // the uv follows the position: x/200, y/200
+                if (Math.Abs(outUv[i].X - outP[i].X / 200f) > 0.001f || Math.Abs(outUv[i].Y - outP[i].Y / 200f) > 0.001f) uvOk = false;
+            }
+            Check(onCircle, "every cut point is within the circle");
+            Check(uvOk, "texture coordinates follow the cut points");
+            // Half in: a rect from x 100 to 200 keeps the half circle.
+            var half = new[] { new System.Numerics.Vector2(100, 0), new System.Numerics.Vector2(200, 0), new System.Numerics.Vector2(200, 200), new System.Numerics.Vector2(100, 200) };
+            n = CircleClip.Polygon(m, half, default, outP, default);
+            Check(n >= 3 && Math.Abs(Area(outP, n) - circle / 2) < circle * 0.01f, $"half the circle ({Area(outP, n)} of {circle / 2})");
+        }
+
+        private static float Area(System.Numerics.Vector2[] p, int n)
+        {
+            float a = 0;
+            for (int i = 0; i < n; i++) { var u = p[i]; var v = p[(i + 1) % n]; a += u.X * v.Y - v.X * u.Y; }
+            return Math.Abs(a) * 0.5f;
         }
     }
 }

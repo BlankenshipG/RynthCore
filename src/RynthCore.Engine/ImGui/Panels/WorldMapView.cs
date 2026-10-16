@@ -125,7 +125,6 @@ internal sealed class WorldMapView
     private readonly List<(Vector2 Min, Vector2 Max)> _labelRects = new(128);
     private readonly List<(Vector2 Pos, int Index)> _drawn = new(256);
     private readonly List<(Vector2 Pos, int Index)> _drawnChars = new(16);
-    private readonly List<(int Dist, int Col, int Row)> _tileOrder = new(128);
     private CharacterRow[] _chars = Array.Empty<CharacterRow>();
 
     public WorldMapView(bool mini)
@@ -239,86 +238,11 @@ internal sealed class WorldMapView
         DrawContextMenu();
     }
 
-    // ── Tiles ────────────────────────────────────────────────────────────
-    private void DrawTiles(ImDrawListPtr dl, Vector2 canvasMin, Vector2 canvasMax)
-    {
-        var levels = WorldMapTiles.Levels;
-        if (!WorldMapTiles.IsOpen || levels.Count == 0) return;
-        int ppc0 = WorldMapTiles.PixelsPerCell, top = levels.Count - 1;
-        double cellsHigh = WorldMapTiles.CellsHigh;
-        // The map area in view: the canvas as it is, or (turned) the circle around it.
-        double halfW = (canvasMax.X - canvasMin.X) * 0.5, halfH = (canvasMax.Y - canvasMin.Y) * 0.5;
-        if (_phi != 0f) { halfW = halfH = Math.Sqrt(halfW * halfW + halfH * halfH); }
-        double cxMin = _ccx - halfW / _scale, cxMax = _ccx + halfW / _scale;
-        double cyMin = _ccy - halfH / _scale, cyMax = _ccy + halfH / _scale;
+    // ── Tiles (WorldMapTileDrawer, shared with the Radar's world map backdrop) ──
+    private readonly WorldMapTileDrawer _tiles = new();
 
-        // The sharpest level whose pixels are at least as dense as the screen's; a coarser one if that is too many tiles.
-        int L = Math.Clamp((int)Math.Floor(Math.Log2(ppc0 / (double)_scale)), 0, top);
-        while (L < top && VisibleTiles(L, ppc0, cellsHigh, cxMin, cxMax, cyMin, cyMax) > 80) L++;
-
-        // Coarse to fine: the top level (always loaded) first, so whatever hasn't arrived shows blurry, not blank.
-        for (int lv = top; lv >= L; lv--)
-            DrawLevel(dl, lv, ppc0, cellsHigh, cxMin, cxMax, cyMin, cyMax, request: lv <= Math.Min(top, L + 1));
-    }
-
-    private static int VisibleTiles(int lv, int ppc0, double cellsHigh, double cxMin, double cxMax, double cyMin, double cyMax)
-    {
-        double cpt = WorldMapTiles.TileSize * (double)(1 << lv) / ppc0;
-        int cols = (int)Math.Floor(Math.Min(cxMax, WorldMapTiles.CellsWide) / cpt) - (int)Math.Floor(Math.Max(cxMin, 0) / cpt) + 1;
-        int rows = (int)Math.Floor((cellsHigh - Math.Max(cyMin, 0)) / cpt) - (int)Math.Floor((cellsHigh - Math.Min(cyMax, cellsHigh)) / cpt) + 1;
-        return Math.Max(cols, 0) * Math.Max(rows, 0);
-    }
-
-    private void DrawLevel(ImDrawListPtr dl, int lv, int ppc0, double cellsHigh, double cxMin, double cxMax, double cyMin, double cyMax, bool request)
-    {
-        var lvl = WorldMapTiles.Levels[lv];
-        double cpt = WorldMapTiles.TileSize * (double)(1 << lv) / ppc0;
-        int c0 = Math.Max(0, (int)Math.Floor(cxMin / cpt)), c1 = Math.Min(lvl.Cols - 1, (int)Math.Floor(cxMax / cpt));
-        int r0 = Math.Max(0, (int)Math.Floor((cellsHigh - cyMax) / cpt)), r1 = Math.Min(lvl.Rows - 1, (int)Math.Floor((cellsHigh - cyMin) / cpt));
-        if (c1 < c0 || r1 < r0) return;
-
-        // Centre-out, so the tiles you're looking at load first.
-        _tileOrder.Clear();
-        double ccol = _ccx / cpt, crow = (cellsHigh - _ccy) / cpt;
-        for (int r = r0; r <= r1; r++)
-            for (int c = c0; c <= c1; c++)
-            {
-                double dx = c + 0.5 - ccol, dy = r + 0.5 - crow;
-                _tileOrder.Add(((int)((dx * dx + dy * dy) * 1000), c, r));
-            }
-        _tileOrder.Sort(static (a, b) => a.Dist.CompareTo(b.Dist));
-
-        bool turned = _phi != 0f;
-        for (int i = _tileOrder.Count - 1; i >= 0; i--)      // draw far to near; nothing overlaps within a level
-        {
-            var (_, c, r) = _tileOrder[i];
-            IntPtr tex;
-            if (!(request ? WorldMapTiles.TryGet(lv, c, r, out tex) : WorldMapTiles.Peek(lv, c, r, out tex))) continue;
-            double left = c * cpt, right = (c + 1) * cpt, topCell = cellsHigh - r * cpt, bottomCell = cellsHigh - (r + 1) * cpt;
-            if (!turned)
-            {
-                // Edges from the same formula for both neighbours, rounded to whole pixels: no seams, no gaps.
-                float x0 = MathF.Round(_centre.X + (float)((left - _ccx) * _scale)), x1 = MathF.Round(_centre.X + (float)((right - _ccx) * _scale));
-                float y0 = MathF.Round(_centre.Y - (float)((topCell - _ccy) * _scale)), y1 = MathF.Round(_centre.Y - (float)((bottomCell - _ccy) * _scale));
-                dl.AddImage(tex, new Vector2(x0, y0), new Vector2(x1, y1));
-            }
-            else
-            {
-                // Turned: a quad, grown by a pixel so neighbours overlap instead of showing a hairline.
-                Vector2 tl = Project(left, topCell), tr = Project(right, topCell), br = Project(right, bottomCell), bl = Project(left, bottomCell);
-                Vector2 mid = (tl + br) * 0.5f;
-                tl = Grow(tl, mid); tr = Grow(tr, mid); br = Grow(br, mid); bl = Grow(bl, mid);
-                dl.AddImageQuad(tex, tl, tr, br, bl, new Vector2(0, 0), new Vector2(1, 0), new Vector2(1, 1), new Vector2(0, 1));
-            }
-        }
-    }
-
-    private static Vector2 Grow(Vector2 p, Vector2 mid)
-    {
-        Vector2 d = p - mid;
-        float len = d.Length();
-        return len < 1f ? p : p + d / len * 0.8f;
-    }
+    private void DrawTiles(ImDrawListPtr dl, Vector2 canvasMin, Vector2 canvasMax) =>
+        _tiles.Draw(dl, canvasMin, canvasMax, _centre, _ccx, _ccy, _scale, _phi);
 
     // ── Grid ─────────────────────────────────────────────────────────────
     private void DrawGrid(ImDrawListPtr dl, Vector2 canvasMin, Vector2 canvasMax, bool turned)
