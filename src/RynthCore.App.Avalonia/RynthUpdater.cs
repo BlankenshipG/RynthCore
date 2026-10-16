@@ -184,10 +184,14 @@ internal sealed partial class RynthUpdater
         Manifest manifest = ParseManifest(payload);
 
         // Replay guard: a signed but older feed (an attacker re-serving last month's) is refused.
-        int floor = Math.Max(ReadHighestRelease(), InstalledCoreRelease);
-        if (manifest.Release < floor)
-            throw new InvalidDataException($"the feed is older ({manifest.Release}) than one already seen ({floor})");
-        if (manifest.Release > ReadHighestRelease())
+        // Floor is only the highest *feed* we have already accepted — not InstalledCoreRelease.
+        // A local/test install ahead of the published feed (e.g. 2026.10.16.18 with feed still
+        // at 2026.10.15.7) must still check: there is no core update, but plugins and the card
+        // should not hard-error as "Couldn't check for updates".
+        int seenFloor = ReadHighestRelease();
+        if (manifest.Release < seenFloor)
+            throw new InvalidDataException($"the feed is older ({manifest.Release}) than one already seen ({seenFloor})");
+        if (manifest.Release > seenFloor)
             WriteHighestRelease(manifest.Release);
 
         var statuses = new List<PluginStatus>();
