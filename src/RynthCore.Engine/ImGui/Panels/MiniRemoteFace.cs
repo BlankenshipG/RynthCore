@@ -48,6 +48,7 @@ using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.Plugins;
 using RynthCore.Engine.UI.Data;
 using RynthCore.Engine.UI.ScriptWindows;
+using RynthCore.Engine.UI.Sections;
 using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
@@ -136,6 +137,11 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
         float w = Begin(out Vector2 origin, out Vector2 size);
         UI.Sections.SectionRegistry.Snapshot snap = UI.Sections.SectionRegistry.Current;
         TakeRequestedSection(snap);
+
+        // Safety: rail-off + non-Remote draws only that section's body (no hub tabs). Snap
+        // back to Remote so undocked/docked Mini Remote keeps Pets/Crafting/Gear/Games/Vaulted.
+        if (!RailShown && !IsRemote)
+            SelectSection(SectionCatalog.RemoteId);
 
         // The rail, then everything else to its right (the indent keeps each line there).
         float railW = RailShown ? DrawRail(snap, origin, size) : 0f;
