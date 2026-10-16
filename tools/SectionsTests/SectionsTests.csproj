@@ -31,6 +31,7 @@
     <!-- Installed server plugins the connect host left out: listed in the picker, loaded when forced On. -->
     <Compile Include="..\..\src\RynthCore.Engine\UI\Sections\NotLoadedServers.cs" Link="Engine\NotLoadedServers.cs" />
     <!-- The status feed's / Session Stats' XP and luminance session formula (pure). -->
+    <Compile Include="..\..\src\RynthCore.Engine\Compatibility\SessionRates.cs" Link="Engine\SessionRates.cs" />
   </ItemGroup>
 
 </Project>

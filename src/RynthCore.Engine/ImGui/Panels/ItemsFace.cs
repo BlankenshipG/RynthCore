@@ -71,7 +71,7 @@ internal sealed class ItemsFace : IImGuiPanel
             {
                 ItemsPanel.WeaponEntry wpn = _data.Weapons[i];
                 ImGuiNET.ImGui.PushID("w" + i);
-                int r = Row(wpn.Name, wpn.Element, i, bw, _data.MissingIds.Contains(wpn.Id));
+                int r = Row(wpn.Name, wpn.Element, i, bw, _data.MissingIds.Contains(wpn.Id), DamageTypeColors.For(wpn.Element, Text));
                 ImGuiNET.ImGui.PopID();
                 if (r == 1)
                 {
@@ -103,7 +103,7 @@ internal sealed class ItemsFace : IImGuiPanel
             {
                 ItemsPanel.ConsumableEntry c = _data.Consumables[i];
                 ImGuiNET.ImGui.PushID("c" + i);
-                int r = Row(c.Name, c.Type, i, bw, missing: false);
+                int r = Row(c.Name, c.Type, i, bw, missing: false, Text);
                 ImGuiNET.ImGui.PopID();
                 if (r == 1)
                 {
@@ -214,9 +214,10 @@ internal sealed class ItemsFace : IImGuiPanel
     /// <summary>
     /// Name | [value picker] | Del. Returns 1 when the picker was clicked, 2 for Del, else 0.
     /// <paramref name="missing"/>: the item isn't carried any more (amber, a warning icon,
-    /// "(missing)" and a tooltip saying what to do).
+    /// "(missing)" and a tooltip saying what to do). Otherwise the name and value are drawn in
+    /// <paramref name="tint"/> (a weapon's damage-type colour, as UB-ILT's Items tab).
     /// </summary>
-    private static int Row(string name, string value, int index, float w, bool missing)
+    private static int Row(string name, string value, int index, float w, bool missing, uint tint)
     {
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
@@ -235,14 +236,14 @@ internal sealed class ItemsFace : IImGuiPanel
         }
         else
         {
-            dl.AddText(new Vector2(p.X + 6, ty), Text, name);
+            dl.AddText(new Vector2(p.X + 6, ty), tint, name);
         }
         dl.PopClipRect();
         if (missing && ImGuiNET.ImGui.IsWindowHovered() && ImGuiNET.ImGui.IsMouseHoveringRect(p, p + new Vector2(nameW, 24)))
-            ImGuiNET.ImGui.SetTooltip("Not in your pack any more - select the item in your inventory and click\n"
+            SafeImGui.SetTooltip("Not in your pack any more - select the item in your inventory and click\n"
                 + "Add Selected Weapon again, or remove this entry.");
         int result = 0;
-        if (Button("##pick", value, new Vector2(p.X + nameW + 2, p.Y + 2), new Vector2(96, 20), Text, BtnFill)) result = 1;
+        if (Button("##pick", value, new Vector2(p.X + nameW + 2, p.Y + 2), new Vector2(96, 20), tint, BtnFill)) result = 1;
         if (IconButton("##del", PhosphorIcons.Trash, new Vector2(p.X + nameW + 102, p.Y + 2), new Vector2(42, 20), Red, BtnFill)) result = 2;
         ImGuiNET.ImGui.SetItemTooltip("Remove");
         NextLine(p, 24);

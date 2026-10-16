@@ -1,12 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Launcher assembly version (bump when changing launcher-only behavior). Previous: 0.1.5.
+    <!-- Launcher assembly version (bump when changing launcher-only behavior). Previous: 0.1.7.
          No hard-coded InformationalVersion: release builds pass -p:Version=yyyy.m.d.n, and the
          product version derived from it is what the launcher/About show (BuildVersion.Format). -->
-    <Version>0.1.6</Version>
-    <AssemblyVersion>0.1.6.0</AssemblyVersion>
-    <FileVersion>0.1.6.0</FileVersion>
+    <Version>0.1.8</Version>
+    <AssemblyVersion>0.1.8.0</AssemblyVersion>
+    <FileVersion>0.1.8.0</FileVersion>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows7.0</TargetFramework>
     <PlatformTarget>x86</PlatformTarget>
@@ -43,6 +43,7 @@
 
   <ItemGroup>
     <Compile Include="..\RynthCore.App\LaunchServerProfile.cs" Link="Shared\LaunchServerProfile.cs" />
+    <Compile Include="..\RynthCore.App\KnownServerCatalog.cs" Link="Shared\KnownServerCatalog.cs" />
     <Compile Include="..\RynthCore.App\LaunchAccountProfile.cs" Link="Shared\LaunchAccountProfile.cs" />
     <Compile Include="..\RynthCore.App\AccountPasswordProtection.cs" Link="Shared\AccountPasswordProtection.cs" />
     <Compile Include="..\RynthCore.App\InjectionMode.cs" Link="Shared\InjectionMode.cs" />
@@ -55,6 +56,7 @@
     <Compile Include="..\RynthCore.App\FirstLoginRules.cs" Link="Shared\FirstLoginRules.cs" />
     <Compile Include="..\RynthCore.App\CrashDumpWriterRule.cs" Link="Shared\CrashDumpWriterRule.cs" />
     <Compile Include="..\RynthCore.App\AcClientLaunchSettingsService.cs" Link="Shared\AcClientLaunchSettingsService.cs" />
+    <Compile Include="..\RynthCore.App\DxvkPackageService.cs" Link="Shared\DxvkPackageService.cs" />
     <Compile Include="..\RynthCore.App\UserPrefsSwapRecovery.cs" Link="Shared\UserPrefsSwapRecovery.cs" />
     <Compile Include="..\RynthCore.App\AcClientLoginAutomationService.cs" Link="Shared\AcClientLoginAutomationService.cs" />
     <Compile Include="..\RynthCore.App\CharacterCacheStore.cs" Link="Shared\CharacterCacheStore.cs" />

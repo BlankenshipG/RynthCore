@@ -465,7 +465,7 @@ internal sealed partial class MetaFace
             dl.AddRect(a, b, Teal, 8);
             dl.AddText(small, small.FontSize, new Vector2(a.X + 5, a.Y + 2), Teal, tag);
             if (_stateClock.Known && ImGuiNET.ImGui.IsMouseHoveringRect(a, b))
-                ImGuiNET.ImGui.SetTooltip("The meta's current state, and how long it has been in it (what \"In state >= N s\" rules count).");
+                SafeImGui.SetTooltip("The meta's current state, and how long it has been in it (what \"In state >= N s\" rules count).");
             rx = a.X - 6;
 
             // The Watchdog, while one is set: it sends the meta to its state when the time runs out

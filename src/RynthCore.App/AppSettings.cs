@@ -18,6 +18,13 @@ internal sealed class AppSettings
     public bool AllowMultipleClients { get; set; } = true;
     public bool SkipIntroVideos { get; set; } = true;
     public bool SkipLoginLogos { get; set; } = true;
+
+    /// <summary>
+    /// When true, each launch (and Save Launch Behavior) installs DXVK's x86
+    /// <c>d3d9.dll</c> next to <see cref="AcClientPath"/>. Off by default — opt-in.
+    /// Package lives under &lt;RynthCore&gt;\Runtime\dxvk\ (installer seed or GitHub fetch).
+    /// </summary>
+    public bool EnableDxvk { get; set; }
     public bool AutoLaunch { get; set; }
     public bool AutoInjectAfterLaunch { get; set; } = true;
     public bool WatchForAcStart { get; set; }

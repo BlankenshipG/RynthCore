@@ -600,11 +600,10 @@ public static class EntryPoint
         {
             // RynthILT's ILT tabs in RynthAi's Mini Remote (shown once the server reports each on).
             // A RynthAi that doesn't publish sections gets these stand-ins; one that does lists them itself.
-            // Character (the generic overview) is RynthOracle's Character tab since 2026.10.5.54;
-            // the Leaftide tabs (Charms, Banking, Gear, Games) stay RynthILT's.
+            // Character and Charms are RynthOracle's Character tab and Banking is RynthInventory's
+            // Global Inventory since 2026.10.5.54, so only Gear and Games are left here.
             foreach ((string label, string tab, string section) in new[]
             {
-                ("Charms", "charms", "inventory"), ("Banking", "banking", "inventory"),
                 ("Gear", "gear", "inventory"), ("Games", "games", "fellowship"),
             })
             {

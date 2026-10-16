@@ -46,8 +46,10 @@ using System.Numerics;
 using ImGuiNET;
 using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.Plugins;
+using RynthCore.Engine.UI;
 using RynthCore.Engine.UI.Data;
 using RynthCore.Engine.UI.ScriptWindows;
+using RynthCore.Engine.UI.Sections;
 using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
@@ -62,6 +64,35 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
             new PanelSpec(new Vector2(184, 150), new Vector2(110, 96), EdgeToEdge: true, GripInBody: true),
             () => new MiniRemoteFace());
         ItemHudStore.EnsureLoadQueued();
+    }
+
+    /// <summary>
+    /// Opens on Remote and pops out into its own window (room for Options / sections).
+    /// Safe if already open or already undocked. AC / chat thread.
+    /// </summary>
+    public static void OpenUndocked()
+    {
+        RequestSection(SectionCatalog.RemoteId);
+        if (!ImGuiPanelHost.IsOpen(Title))
+            ImGuiPanelHost.Open(Title);
+        // Open queues into _open immediately, so PopOut is allowed in the same turn.
+        if (PanelRouter.CanPopOut && !ImGuiPanelHost.IsPopped(Title))
+            ImGuiPanelHost.PopOut(Title);
+    }
+
+    /// <summary>
+    /// Docks a popped-out Mini Remote back into the client, or opens it docked when closed.
+    /// AC / chat thread.
+    /// </summary>
+    public static void DockOrOpen()
+    {
+        if (ImGuiPanelHost.IsPopped(Title))
+            ImGuiPanelHost.Redock(Title);
+        else if (!ImGuiPanelHost.IsOpen(Title))
+        {
+            RequestSection(SectionCatalog.RemoteId);
+            ImGuiPanelHost.Open(Title);
+        }
     }
 
     /// <summary>
@@ -137,6 +168,11 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
         UI.Sections.SectionRegistry.Snapshot snap = UI.Sections.SectionRegistry.Current;
         TakeRequestedSection(snap);
 
+        // Safety: rail-off + non-Remote draws only that section's body (no hub tabs). Snap
+        // back to Remote so undocked/docked Mini Remote keeps Pets/Crafting/Gear/Games/Vaulted.
+        if (!RailShown && !IsRemote)
+            SelectSection(SectionCatalog.RemoteId);
+
         // The rail, then everything else to its right (the indent keeps each line there).
         float railW = RailShown ? DrawRail(snap, origin, size) : 0f;
         if (railW > 0)
@@ -180,7 +216,7 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
         FitGrid(data, w, haveH);
     }
 
-    // ── RynthAi's Mini Remote ───────────────────────────────────────────
+    // â”€â”€ RynthAi's Mini Remote â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
     /// Lets RynthAi draw its Mini Remote here. True when it did (or is mid-layout after
@@ -236,10 +272,10 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
         if (result == PluginManager.EmbedFailed) _embedOff = true;
     }
 
-    // ── Window fit ──────────────────────────────────────────────────────
+    // â”€â”€ Window fit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
-    /// Sizes the window so the body area (<paramref name="haveW"/> × <paramref name="haveH"/>
+    /// Sizes the window so the body area (<paramref name="haveW"/> Ã— <paramref name="haveH"/>
     /// now) becomes <paramref name="wantPx"/>; never taller than the screen. Docked only:
     /// popped out the OS window keeps its size, as other faces do (RynthNavArrowFace).
     /// </summary>
@@ -276,7 +312,7 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
         FitWindow(body, w, haveH);
     }
 
-    // ── Engine grid ─────────────────────────────────────────────────────
+    // â”€â”€ Engine grid â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private void Resolve(ItemHudCharacter data, HudItem[] items)
     {
@@ -409,7 +445,7 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
         if (!ItemHudStore.Update(d => d.WithSlot(i, new RemoteSlot(itemId, name)), out string why)) ShowMessage(why, Amber);
     }
 
-    // ── Status ──────────────────────────────────────────────────────────
+    // â”€â”€ Status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private void ShowMessage(string text, uint color)
     {
@@ -441,7 +477,7 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
 
     private static float BodyGripRoom() => ImGuiPanelHost.BodyGripReserve;
 
-    // ── Right-click menu ────────────────────────────────────────────────
+    // â”€â”€ Right-click menu â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
     /// The right-click menu: a slot's options (the engine grid), then the sections, the active

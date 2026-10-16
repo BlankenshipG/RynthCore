@@ -646,11 +646,11 @@ public readonly unsafe struct RynthCoreHost
     }
 
     /// <summary>
-    /// v85: answer the next server prompt of <paramref name="type"/> (a
+    /// v81: answer the next server prompt of <paramref name="type"/> (a
     /// <see cref="ConfirmationKind"/>) that arrives within <paramref name="timeoutMs"/>,
     /// without the client opening its dialog: Yes when the server's "N percent chance" is at
     /// least <paramref name="minPercent"/> (or it is 0), else No. One-shot; timeoutMs &lt;= 0
-    /// disarms. 1 armed, 0 unavailable (engine before v85, sender or hook missing), -3 bad
+    /// disarms. 1 armed, 0 unavailable (engine before v81, sender or hook missing), -3 bad
     /// arguments.
     /// </summary>
     public int ArmConfirmation(uint type, int minPercent, int timeoutMs)
@@ -661,26 +661,21 @@ public readonly unsafe struct RynthCoreHost
     }
 
     /// <summary>
-    /// v85: the last prompt the server sent. <paramref name="seq"/> counts them (0 = none yet);
-    /// <paramref name="contextId"/> is the server's context for it; <paramref name="percent"/> is
-    /// -1 when the text has none; <paramref name="outcome"/> is a <see cref="ConfirmationOutcome"/>.
-    /// False on an engine before v85.
+    /// v81: the last prompt the server sent. <paramref name="seq"/> counts them (0 = none yet);
+    /// <paramref name="percent"/> is -1 when the text has none; <paramref name="outcome"/> is a
+    /// <see cref="ConfirmationOutcome"/>. False on an engine before v81.
     /// </summary>
-    public bool TryGetLastConfirmation(out int seq, out uint type, out uint contextId, out int percent, out int outcome, out int ageMs)
+    public bool TryGetLastConfirmation(out int seq, out uint type, out int percent, out int outcome, out int ageMs)
     {
-        seq = 0; type = 0; contextId = 0; percent = -1; outcome = 0; ageMs = 0;
+        seq = 0; type = 0; percent = -1; outcome = 0; ageMs = 0;
         if (!HasConfirmationAnswers)
             return false;
         uint t = 0, ctx = 0;
         int pct = -1, oc = 0, age = 0;
         seq = ((delegate* unmanaged[Cdecl]<uint*, uint*, int*, int*, int*, int>)_api.GetLastConfirmationFn)(&t, &ctx, &pct, &oc, &age);
-        type = t; contextId = ctx; percent = pct; outcome = oc; ageMs = age;
+        type = t; percent = pct; outcome = oc; ageMs = age;
         return true;
     }
-
-    /// <summary>v85: <see cref="TryGetLastConfirmation(out int, out uint, out uint, out int, out int, out int)"/> without the context id.</summary>
-    public bool TryGetLastConfirmation(out int seq, out uint type, out int percent, out int outcome, out int ageMs)
-        => TryGetLastConfirmation(out seq, out type, out _, out percent, out outcome, out ageMs);
 
     /// <summary>
     /// Gives an item to an NPC or another player by sending the F7B1 give

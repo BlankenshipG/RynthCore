@@ -1000,7 +1000,7 @@ internal sealed class ChatFace : IImGuiPanel
             ChatModel.SetHistoryLines(_historyEdit);
             _historyEdit = 0;
         }
-        ImGuiNET.ImGui.SetItemTooltip("How many lines the chat keeps, all tabs together (default 2000).\n" +
+        SafeImGui.SetItemTooltip("How many lines the chat keeps, all tabs together (default 2000).\n" +
             "About 2 MB of memory per 1000 lines. Lowering it drops the oldest lines.");
         ImGuiNET.ImGui.PopItemWidth();
 
@@ -1031,7 +1031,7 @@ internal sealed class ChatFace : IImGuiPanel
             ChatModel.LogEnabled = log;
             ChatModel.SaveSettings();
         }
-        ImGuiNET.ImGui.SetItemTooltip("%%AppData%%\\RynthCore\\ChatLogs\\<character>.log"); // a format string: %% is a literal %
+        SafeImGui.SetItemTooltip("%AppData%\\RynthCore\\ChatLogs\\<character>.log"); // SafeImGui doubles the % itself
         bool through = ChatModel.CtrlGatedClickThrough;
         if (ImGuiNET.ImGui.Checkbox("Click-through (hold Ctrl to interact)", ref through))
             ChatModel.SetCtrlGatedClickThrough(through);

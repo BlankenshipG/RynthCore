@@ -200,7 +200,7 @@ internal static class SmartBoxHooks
                 ParseGameEvent(eventType, data, (uint)len);
                 if ((eventType >= 0x02C2 && eventType <= 0x02C8) || eventType == 0x0312)
                     enchantment = CaptureEnchantmentEvent(eventType, data, (uint)len);
-                // v85: a prompt a plugin armed an answer for is answered here instead of
+                // v81: a prompt a plugin armed an answer for is answered here instead of
                 // opening AC's dialog.
                 if (eventType == ConfirmationResponder.EventConfirmationRequest)
                     answered = ConfirmationResponder.OnRequest(data, (uint)len);

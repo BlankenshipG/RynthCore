@@ -95,7 +95,7 @@ internal static partial class PluginManager
             return;
         }
 
-        RynthLog.Plugin($"PluginManager: {s.ServerName} ({s.ServerId}) is this server (its world name, or forced On) - loading {file} (va before: {Compatibility.AddressSpace.Describe()})");
+        RynthLog.Plugin($"PluginManager: {s.ServerName} ({s.ServerId}) forced On - loading {file} (va before: {Compatibility.AddressSpace.Describe()})");
         LoadedPlugin? plugin = PluginLoader.LoadSingle(s.Path, _shadowRootDir, _loadGeneration);
         RynthLog.Plugin($"PluginManager: loaded {file}{(plugin == null ? " (FAILED)" : "")} (va after: {Compatibility.AddressSpace.Describe()})");
         if (plugin == null)
@@ -113,7 +113,7 @@ internal static partial class PluginManager
         UI.Sections.SectionRegistry.RefreshManifests();
 
         if (plugin.Initialized && !plugin.Failed)
-            AcMainThreadQueue.EnqueueWriteToChat($"[RynthCore] Loaded {s.PluginName} for {s.ServerName} (its world name, or picked in Options > Diagnostics).", 1);
+            AcMainThreadQueue.EnqueueWriteToChat($"[RynthCore] Loaded {s.PluginName} for {s.ServerName} (forced On in Options > Diagnostics).", 1);
     }
 
     /// <summary>

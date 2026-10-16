@@ -1,12 +1,10 @@
 // ============================================================================
 //  RynthCore.Engine - ImGui/Panels/SkillsFace.Progression.cs
 //  The Skills panel's Progression tab, shown on ILT-like worlds only:
-//    - XP planner: exact XP for the next N raises of every attribute and vital,
-//      from the client's XP tables (raising stays on the Attributes & Vitals tab).
-//    - Attribute raiser: infinite attributes past the retail cap. RynthILT reads the
-//      server's costs ("/xp all") and raises with "/attr", by hand or on a timer from
-//      unassigned XP, in the order and mode set here. Laid out like UB's Leaftide XP
-//      tab: "+1 Level" / "+10 Levels" buttons labelled with their (projected) cost.
+//    - Attributes: one section - client XP-table planner for retail ranks, plus (when the
+//      server supports infinite attributes) the ILT raiser to auto-raise past the retail
+//      cap with "/xp all" + "/attr" (UB Leaftide XP tab layout). RynthILT reads the
+//      server's costs and raises, by hand or on a timer from unassigned XP.
 //    - Augmentations: UB's Augs tab - Refresh current (/aug), Current / Target / Inc /
 //      Luminance / Coins with a totals row, Reset targets, Copy Discord / In-Game.
 //    - Augmentations / Enlightenment: the ILT Hub's planners (RynthILT's since
@@ -100,15 +98,14 @@ internal sealed partial class SkillsFace
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6, 4));
         try
         {
-            DrawXpPlanner(w);
+            // One Attributes section: retail XP planner + (when supported) infinite-attr raiser.
+            DrawAttributes(info?.Attr, w);
             ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
             if (info == null || !info.Available)
             {
                 Message("Augmentations and Enlightenment need RynthILT's ILT features on an ILT world.", w);
                 return;
             }
-            DrawAttrRaiser(info.Attr, w);
-            ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
             DrawAugPlanner(info.Aug, w);
             ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
             DrawEnlPlanner(info.Enl, w);
@@ -120,15 +117,50 @@ internal sealed partial class SkillsFace
         }
     }
 
-    private void DrawXpPlanner(float w)
+    /// <summary>
+    /// Single Attributes section: client XP-table costs up to the retail cap, and - when the
+    /// server supports infinite attributes - the controls to auto-raise past that cap.
+    /// </summary>
+    private void DrawAttributes(AttrRaiser? a, float w)
     {
-        Section("XP planner", w);
+        Section("Attributes", w);
+        ImGuiNET.ImGui.Indent(8);
+        float wrap = ImGuiNET.ImGui.GetCursorPosX() + w - 24;
+        ImGuiNET.ImGui.PushTextWrapPos(wrap);
+        try
+        {
+            DrawRetailXpPlanner(w);
+
+            // Infinite-attributes segment: only when RynthILT reports the server can raise past retail.
+            bool infiniteOk = a != null && !a.Off;
+            ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+            ImGuiNET.ImGui.Separator();
+            Label(infiniteOk
+                    ? "Infinite attributes (past retail max)"
+                    : "Infinite attributes",
+                infiniteOk ? Amber : Mute);
+            if (a == null)
+                Label("Update RynthILT to raise attributes past the retail cap on this server.", Mute);
+            else if (a.Off)
+                Label(a.Reason.Length > 0 ? a.Reason : "This server does not support infinite attributes (/xp /attr).", Mute);
+            else
+                DrawInfiniteAttrControls(a, w);
+        }
+        finally
+        {
+            ImGuiNET.ImGui.PopTextWrapPos();
+            ImGuiNET.ImGui.Unindent(8);
+        }
+    }
+
+    /// <summary>Client XP tables for the next N retail raises (Attributes & Vitals tab still spends them).</summary>
+    private void DrawRetailXpPlanner(float w)
+    {
         if (_snap == null || _dat == null || _attributes.Count == 0)
         {
             Message("Waiting for your character's data...", w);
             return;
         }
-        ImGuiNET.ImGui.Indent(8);
         long have = _snap.UnassignedXp;
         Label($"Unassigned XP: {have:N0}", have > 0 ? Teal : Mute);
         ImGuiNET.ImGui.SetNextItemWidth(160);
@@ -146,9 +178,7 @@ internal sealed partial class SkillsFace
             foreach (Row r in _vitals) PlannerRow(r, have);
             ImGuiNET.ImGui.EndTable();
         }
-        Label("Exact costs from the client's XP tables. Raise on the Attributes & Vitals tab"
-              + (ProgressionTabVisible ? ", or past the cap with the Attribute raiser below." : "."), Dim);
-        ImGuiNET.ImGui.Unindent(8);
+        Label("Exact costs from the client's XP tables (up to the retail cap). Raise those on the Attributes & Vitals tab.", Dim);
     }
 
     private void PlannerRow(Row r, long have)
@@ -180,89 +210,76 @@ internal sealed partial class SkillsFace
     private string? _attrKeepEdit;   // reserve box being typed in (null = show RynthAi's value)
     private int? _attrEveryEdit;     // interval box being typed in
 
-    private void DrawAttrRaiser(AttrRaiser? a, float w)
+    /// <summary>Infinite-attribute raiser controls (only drawn when the server supports /xp + /attr past retail).</summary>
+    private void DrawInfiniteAttrControls(AttrRaiser a, float w)
     {
-        Section("Attribute raiser (infinite attributes)", w);
-        ImGuiNET.ImGui.Indent(8);
-        float wrap = ImGuiNET.ImGui.GetCursorPosX() + w - 24;
-        ImGuiNET.ImGui.PushTextWrapPos(wrap);
-        try
+        Label(a.XpHeader.Length > 0 ? a.XpHeader : a.Unassigned, Teal);
+        if (a.XpHeader.Length > 0 && a.Unassigned.Contains("spendable", StringComparison.Ordinal)) Label(a.Unassigned, Dim);
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        if (a.Running)
         {
-            if (a == null) { Label("Update RynthAi to use the attribute raiser.", Mute); return; }
-            if (a.Off) { Label(a.Reason, Mute); return; }
-
-            Label(a.XpHeader.Length > 0 ? a.XpHeader : a.Unassigned, Teal);
-            if (a.XpHeader.Length > 0 && a.Unassigned.Contains("spendable", StringComparison.Ordinal)) Label(a.Unassigned, Dim);
-            Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
-            if (a.Running)
-            {
-                if (Button("##attr_stop", "Stop", p, new Vector2(90, 24), Text, StopBg)) SendProg("attrstop");
-            }
-            else if (Button("##attr_run", "Raise now", p, new Vector2(110, 24), Text, StartBg, border: Teal))
-                SendProg("attrrun");
-            if (Button("##attr_costs", "Refresh XP", new Vector2(p.X + 116, p.Y), new Vector2(100, 24), Text, BtnFill, enabled: !a.Running))
-                SendProg("attrcosts");
-            ImGuiNET.ImGui.SetItemTooltip("Re-reads every next-level cost with /xp all.");
-            if (a.Updated.Length > 0)
-            {
-                ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + 224, p.Y + 4));
-                Label("Last updated: " + a.Updated, Dim);
-            }
-            NextLine(p, 28);
-            if (a.Status.Length > 0) SafeImGui.TextWrapped(a.Status);
-            if (a.LastRun.Length > 0) Label("Last run: " + a.LastRun, Dim);
-
-            ImGuiNET.ImGui.Separator();
-            bool auto = a.Auto;
-            if (ImGuiNET.ImGui.Checkbox("Auto-raise from unassigned XP##attr_auto", ref auto))
-                SendProg("attrauto " + (auto ? "on" : "off"));
-            ImGuiNET.ImGui.SameLine();
-            // Commit on Enter, the +/- buttons or focus loss (not on every keystroke: each send
-            // restarts the auto-raise timer).
-            int every = _attrEveryEdit ?? a.Every;
-            ImGuiNET.ImGui.SetNextItemWidth(90);
-            bool everyCommit = ImGuiNET.ImGui.InputInt("every (min)##attr_every", ref every, 1, 10, ImGuiInputTextFlags.EnterReturnsTrue);
-            bool everyActive = ImGuiNET.ImGui.IsItemActive();
-            if (everyCommit || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
-            {
-                _attrEveryEdit = null;
-                if (every != a.Every) SendProg("attrevery " + Math.Clamp(every, 1, 1440).ToString(CultureInfo.InvariantCulture));
-            }
-            else _attrEveryEdit = everyActive ? every : null;
-            if (a.Auto && a.Next.Length > 0) Label($"Next auto-raise: {a.Next}", Dim);
-
-            int mode = Math.Clamp(a.Mode, 0, AttrModes.Length - 1);
-            ImGuiNET.ImGui.SetNextItemWidth(260);
-            if (ImGuiNET.ImGui.Combo("Raise order##attr_mode", ref mode, AttrModes, AttrModes.Length))
-                SendProg("attrmode " + mode.ToString(CultureInfo.InvariantCulture));
-
-            // The box holds the exact reserve (KeepFull); it is sent only when the text changed, so an
-            // Enter on an untouched box can't round the reserve.
-            string shownKeep = a.KeepFull.Length > 0 ? a.KeepFull : a.Keep;
-            string keep = _attrKeepEdit ?? shownKeep;
-            ImGuiNET.ImGui.SetNextItemWidth(140);
-            bool enter = ImGuiNET.ImGui.InputTextWithHint("Keep in reserve (XP)##attr_keep", "0, 500m, 2b", ref keep, 32u,
-                ImGuiInputTextFlags.EnterReturnsTrue);
-            bool keepActive = ImGuiNET.ImGui.IsItemActive();
-            if (enter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
-            {
-                _attrKeepEdit = null;
-                if (!string.Equals(keep.Trim(), shownKeep, StringComparison.Ordinal))
-                    SendProg("attrkeep " + keep.Replace(" ", "", StringComparison.Ordinal).Replace(",", "", StringComparison.Ordinal));
-            }
-            else _attrKeepEdit = keepActive ? keep : null;
-            ImGuiNET.ImGui.SetItemTooltip("Unassigned XP the raiser never spends. Accepts k / m / b / t suffixes.");
-
-            DrawAttrTable(a, w);
-            Label("Auto: the stats Raise now / auto-raise may spend on; arrows set the order. "
-                  + "+1 / +10 raise by hand (red = not enough unassigned XP). "
-                  + "+10 is an estimate (7.7% dearer per level); the server charges the real cost. " + a.CostsAge + ".", Dim);
+            if (Button("##attr_stop", "Stop", p, new Vector2(90, 24), Text, StopBg)) SendProg("attrstop");
         }
-        finally
+        else if (Button("##attr_run", "Raise now", p, new Vector2(110, 24), Text, StartBg, border: Teal))
+            SendProg("attrrun");
+        if (Button("##attr_costs", "Refresh XP", new Vector2(p.X + 116, p.Y), new Vector2(100, 24), Text, BtnFill, enabled: !a.Running))
+            SendProg("attrcosts");
+        ImGuiNET.ImGui.SetItemTooltip("Re-reads every next-level cost with /xp all.");
+        if (a.Updated.Length > 0)
         {
-            ImGuiNET.ImGui.PopTextWrapPos();
-            ImGuiNET.ImGui.Unindent(8);
+            ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + 224, p.Y + 4));
+            Label("Last updated: " + a.Updated, Dim);
         }
+        NextLine(p, 28);
+        if (a.Status.Length > 0) ImGuiNET.ImGui.TextWrapped(a.Status);
+        if (a.LastRun.Length > 0) Label("Last run: " + a.LastRun, Dim);
+
+        ImGuiNET.ImGui.Separator();
+        bool auto = a.Auto;
+        if (ImGuiNET.ImGui.Checkbox("Auto-raise past retail max##attr_auto", ref auto))
+            SendProg("attrauto " + (auto ? "on" : "off"));
+        ImGuiNET.ImGui.SetItemTooltip("Spends unassigned XP with /attr past the retail attribute cap (server costs from /xp all).");
+        ImGuiNET.ImGui.SameLine();
+        // Commit on Enter, the +/- buttons or focus loss (not on every keystroke: each send
+        // restarts the auto-raise timer).
+        int every = _attrEveryEdit ?? a.Every;
+        ImGuiNET.ImGui.SetNextItemWidth(90);
+        bool everyCommit = ImGuiNET.ImGui.InputInt("every (min)##attr_every", ref every, 1, 10, ImGuiInputTextFlags.EnterReturnsTrue);
+        bool everyActive = ImGuiNET.ImGui.IsItemActive();
+        if (everyCommit || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
+        {
+            _attrEveryEdit = null;
+            if (every != a.Every) SendProg("attrevery " + Math.Clamp(every, 1, 1440).ToString(CultureInfo.InvariantCulture));
+        }
+        else _attrEveryEdit = everyActive ? every : null;
+        if (a.Auto && a.Next.Length > 0) Label($"Next auto-raise: {a.Next}", Dim);
+
+        int mode = Math.Clamp(a.Mode, 0, AttrModes.Length - 1);
+        ImGuiNET.ImGui.SetNextItemWidth(260);
+        if (ImGuiNET.ImGui.Combo("Raise order##attr_mode", ref mode, AttrModes, AttrModes.Length))
+            SendProg("attrmode " + mode.ToString(CultureInfo.InvariantCulture));
+
+        // The box holds the exact reserve (KeepFull); it is sent only when the text changed, so an
+        // Enter on an untouched box can't round the reserve.
+        string shownKeep = a.KeepFull.Length > 0 ? a.KeepFull : a.Keep;
+        string keep = _attrKeepEdit ?? shownKeep;
+        ImGuiNET.ImGui.SetNextItemWidth(140);
+        bool enter = ImGuiNET.ImGui.InputTextWithHint("Keep in reserve (XP)##attr_keep", "0, 500m, 2b", ref keep, 32u,
+            ImGuiInputTextFlags.EnterReturnsTrue);
+        bool keepActive = ImGuiNET.ImGui.IsItemActive();
+        if (enter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
+        {
+            _attrKeepEdit = null;
+            if (!string.Equals(keep.Trim(), shownKeep, StringComparison.Ordinal))
+                SendProg("attrkeep " + keep.Replace(" ", "", StringComparison.Ordinal).Replace(",", "", StringComparison.Ordinal));
+        }
+        else _attrKeepEdit = keepActive ? keep : null;
+        ImGuiNET.ImGui.SetItemTooltip("Unassigned XP the raiser never spends. Accepts k / m / b / t suffixes.");
+
+        DrawAttrTable(a, w);
+        Label("Auto: the stats Raise now / auto-raise may spend on; arrows set the order. "
+              + "+1 / +10 raise by hand (red = not enough unassigned XP). "
+              + "+10 is an estimate (7.7% dearer per level); the server charges the real cost. " + a.CostsAge + ".", Dim);
     }
 
     /// <summary>

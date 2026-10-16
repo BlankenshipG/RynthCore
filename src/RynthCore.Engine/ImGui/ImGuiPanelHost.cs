@@ -512,6 +512,8 @@ internal static class ImGuiPanelHost
     {
         if (_restored) return;
         _restored = true;
+        // Settings > Display "Remember open windows and positions" (default on).
+        if (!Plugins.EngineSettings.RememberWindowLayout) return;
         List<string> titles = new();
         // Script windows (dynamic) open when their owner says so, not from the saved state.
         lock (Sync)
@@ -632,8 +634,12 @@ internal static class ImGuiPanelHost
         Vector2 size = entry.Size;
         Vector2 origin = ImGuiPopOuts.ClientOriginOnScreen();
         int left = (int)(origin.X + entry.Pos.X), top = (int)(origin.Y + entry.Pos.Y);
+        // Prefer the last floating screen spot whenever we have one — including after a
+        // redock (Persist keeps FloatingLeft/Top while Floating goes false). The old gate
+        // required (fromSaved || Floating), so Float → move → Dock → Float reopened over the
+        // docked client spot and PersistPopped overwrote the saved floating coords.
         if (PanelStateStore.TryGetPanel(entry.Title, out PanelStateStore.PanelEntry saved)
-            && (saved.FloatingLeft != 0 || saved.FloatingTop != 0) && (fromSaved || saved.Floating))
+            && (fromSaved || saved.Floating || saved.FloatingLeft != 0 || saved.FloatingTop != 0))
         {
             left = (int)Math.Round(saved.FloatingLeft);
             top = (int)Math.Round(saved.FloatingTop);

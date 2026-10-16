@@ -13,7 +13,12 @@ internal sealed class AcClientLaunchSettingsService
     private const string IntroVideoFileName = "turbine_logo_ac.avi";
     private const string DisabledIntroVideoSuffix = ".rynthcore-disabled";
 
-    public void Apply(string acClientPath, bool allowMultipleClients, bool skipIntroVideos, Action<string>? log = null)
+    public void Apply(
+        string acClientPath,
+        bool allowMultipleClients,
+        bool skipIntroVideos,
+        bool enableDxvk = false,
+        Action<string>? log = null)
     {
         if (string.IsNullOrWhiteSpace(acClientPath) || !File.Exists(acClientPath))
             return;
@@ -21,6 +26,8 @@ internal sealed class AcClientLaunchSettingsService
         string gameDirectory = Path.GetDirectoryName(acClientPath) ?? string.Empty;
         UpdateUserPreferences(allowMultipleClients, log);
         UpdateIntroVideoState(gameDirectory, skipIntroVideos, log);
+        // Drop-in DXVK d3d9.dll beside acclient (or remove a Rynth-managed copy).
+        DxvkPackageService.ApplyToClient(acClientPath, enableDxvk, log);
     }
 
     /// <summary>

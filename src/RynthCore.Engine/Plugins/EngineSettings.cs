@@ -41,6 +41,10 @@ internal static class EngineSettings
     private static bool _serverMessageStream = true;
     private static bool _flightRecorder = true;
     private static bool _insertReleasesUi;
+    // Settings > Display: strip AC window chrome while windowed (default off).
+    private static bool _borderlessWindowed;
+    // Settings > Display: persist open panels / AC placement / HUD layout (default on).
+    private static bool _rememberWindowLayout = true;
     // "LoadAllServerPlugins": hand-set only, written back only when true (PluginManifestGate).
     private static bool _loadAllServerPlugins;
     // Read-only, like EnableLargeAddressAlignmentFix: only a hand-set value is written back.
@@ -414,6 +418,47 @@ internal static class EngineSettings
         }
     }
 
+    /// <summary>"BorderlessWindowed" in engine.json (default false, 2026-10-15): strip the AC
+    /// window caption and thick frame while staying windowed. Exclusive fullscreen is left alone.
+    /// Set in game in Settings > Display.</summary>
+    public static bool BorderlessWindowed
+    {
+        get
+        {
+            EnsureLoaded();
+            return _borderlessWindowed;
+        }
+        set
+        {
+            EnsureLoaded();
+            if (_borderlessWindowed == value) return;
+            _borderlessWindowed = value;
+            Save();
+            // AcWindowChrome.Tick / Settings > Display apply the style; keep this
+            // file free of HWND / UI refs so EngineSettingsTests can compile it alone.
+        }
+    }
+
+    /// <summary>"RememberWindowLayout" in engine.json (default true, 2026-10-15): reopen Rynth
+    /// panels where they were, keep Vision HUD / imgui.ini / AC window placement across launches.
+    /// Off: do not overwrite panel_state.txt or restore open panels / AC placement.
+    /// Set in game in Settings > Display.</summary>
+    public static bool RememberWindowLayout
+    {
+        get
+        {
+            EnsureLoaded();
+            return _rememberWindowLayout;
+        }
+        set
+        {
+            EnsureLoaded();
+            if (_rememberWindowLayout == value) return;
+            _rememberWindowLayout = value;
+            Save();
+        }
+    }
+
     /// <summary>"MaxHotReloads" in engine.json (default 20 since 2026-10-15; 3 from 10-11): how many
     /// engine hot reloads one client takes; the loader asks before each one (RynthCoreMaxHotReloads)
     /// and refuses the rest, so a newer engine then needs a client restart. A backstop: the 0x80131506
@@ -661,6 +706,14 @@ internal static class EngineSettings
                 (iruEl.ValueKind == JsonValueKind.True || iruEl.ValueKind == JsonValueKind.False))
                 _insertReleasesUi = iruEl.GetBoolean();
 
+            if (doc.RootElement.TryGetProperty("BorderlessWindowed", out var blwEl) &&
+                (blwEl.ValueKind == JsonValueKind.True || blwEl.ValueKind == JsonValueKind.False))
+                _borderlessWindowed = blwEl.GetBoolean();
+
+            if (doc.RootElement.TryGetProperty("RememberWindowLayout", out var rwlEl) &&
+                (rwlEl.ValueKind == JsonValueKind.True || rwlEl.ValueKind == JsonValueKind.False))
+                _rememberWindowLayout = rwlEl.GetBoolean();
+
             if (doc.RootElement.TryGetProperty("MaxHotReloads", out var mhrEl) &&
                 mhrEl.ValueKind == JsonValueKind.Number &&
                 mhrEl.TryGetInt32(out int mhr))
@@ -742,7 +795,8 @@ internal static class EngineSettings
         "EnableAvaloniaOverlay", "EnableD3D9Hook", "EnableEngine", "EngineHookCount",
         "EnableImGuiBackend", "EnableHangMinidump", "PreventIdleLogoff", "DecalBridge",
         "DecalInGameImGui", "DecalStandDown", "DisabledUiHooks", "ServerMessageStream",
-        "FlightRecorder", "InsertReleasesUi", "IltServerNames", "IltHosts", "EnableLargeAddressAlignmentFix",
+        "FlightRecorder", "InsertReleasesUi", "BorderlessWindowed", "RememberWindowLayout",
+        "IltServerNames", "IltHosts", "EnableLargeAddressAlignmentFix",
         "MaxHotReloads", "ReportEndpoint", "CloseOnServerDisconnect", "AutoIdMode", "EnablePluginOverlayWindows", "LoggingLevel",
         "LoadAllServerPlugins",
     };
@@ -796,6 +850,10 @@ internal static class EngineSettings
                     w.WriteBoolean("EnableLargeAddressAlignmentFix", false);
                 if (_insertReleasesUi)     // default false: leave the file as it was
                     w.WriteBoolean("InsertReleasesUi", true);
+                if (_borderlessWindowed)   // default false: leave the file as it was
+                    w.WriteBoolean("BorderlessWindowed", true);
+                if (!_rememberWindowLayout) // default true: leave the file as it was
+                    w.WriteBoolean("RememberWindowLayout", false);
                 if (!_closeOnServerDisconnect)   // default true: leave the file as it was
                     w.WriteBoolean("CloseOnServerDisconnect", false);
                 if (_loadAllServerPlugins) // default false: only a hand-set true is written

@@ -23,6 +23,9 @@
 //            arrow overlay (RynthNavArrowFace), Go / Stop / Clear / favorite,
 //            set it to a place or coordinates, the arrival radius.
 //
+//  Header also toggles the World Map, Mini Map and Radar (Radar left the top
+//  bar 2026-10-16; same PanelRouter path as /rc radar and /rc ui open Radar).
+//
 //  Our take on GoArrow's arrow, atlas and routes (Digero 2006, Virindi 2011,
 //  MIT). RynthNav (the plugin) owns the arrow, favorites, recent, routing and
 //  recalls; this face shows its status and sends it /rnav commands
@@ -127,16 +130,35 @@ internal sealed class RynthNavFace : IImGuiPanel
         ImFontPtr big = ImGuiFonts.Get(UiFont.UiBold14);
         dl.AddText(big, big.FontSize, p + new Vector2(16, 1), Teal, "RynthNav");
         float tw = ImGuiNET.ImGui.CalcTextSize("RynthNav").X * big.FontSize / ImGuiNET.ImGui.GetFontSize();
-        dl.AddText(p + new Vector2(24 + tw, 6), Mute, "go · atlas · arrow");
+        dl.AddText(p + new Vector2(24 + tw, 6), Mute, "go · atlas · arrow · radar");
+        // Right-side toggles: Radar (left of Mini), Mini, Map — same open path as the old bar.
+        float hx = p.X + w;
         if (ImGuiPanelHost.HasFace(WorldMapFace.Title))
         {
-            bool mapOpen = ImGuiPanelHost.IsOpen(WorldMapFace.Title), miniOpen = ImGuiPanelHost.IsOpen(MiniMapFace.Title);
-            if (Button("##rnav_worldmap", PhosphorIcons.GlobeHemisphereWest + " Map", new Vector2(p.X + w - 62, p.Y - 1), new Vector2(62, 22),
+            bool mapOpen = ImGuiPanelHost.IsOpen(WorldMapFace.Title);
+            hx -= 62;
+            if (Button("##rnav_worldmap", PhosphorIcons.GlobeHemisphereWest + " Map", new Vector2(hx, p.Y - 1), new Vector2(62, 22),
                     mapOpen ? Teal : Text, mapOpen ? Selected : BtnFill, border: mapOpen ? Teal : 0))
                 UI.PanelRouter.Toggle(WorldMapFace.Title);
-            if (Button("##rnav_minimap", "Mini", new Vector2(p.X + w - 62 - 4 - 40, p.Y - 1), new Vector2(40, 22),
+            hx -= 4;
+        }
+        if (ImGuiPanelHost.HasFace(MiniMapFace.Title))
+        {
+            bool miniOpen = ImGuiPanelHost.IsOpen(MiniMapFace.Title);
+            hx -= 40;
+            if (Button("##rnav_minimap", "Mini", new Vector2(hx, p.Y - 1), new Vector2(40, 22),
                     miniOpen ? Teal : Text, miniOpen ? Selected : BtnFill, border: miniOpen ? Teal : 0))
                 UI.PanelRouter.Toggle(MiniMapFace.Title);
+            hx -= 4;
+        }
+        if (ImGuiPanelHost.HasFace(RadarFace.Title))
+        {
+            bool radarOpen = ImGuiPanelHost.IsOpen(RadarFace.Title);
+            hx -= 58;
+            if (Button("##rnav_radar", PhosphorIcons.Compass + " Radar", new Vector2(hx, p.Y - 1), new Vector2(58, 22),
+                    radarOpen ? Teal : Text, radarOpen ? Selected : BtnFill, border: radarOpen ? Teal : 0))
+                UI.PanelRouter.Toggle(RadarFace.Title);
+            ImGuiNET.ImGui.SetItemTooltip("Radar (/rc radar): nearby objects, walls and floor overlay");
         }
         NextLine(p, 22);
         DrawTabs(w);

@@ -524,7 +524,7 @@ internal sealed partial class MetaFace
             ImGuiNET.ImGui.SetCursorScreenPos(p);
             DataBox(id, c, action: false, MetaVocabulary.ConditionHint(c.Condition), width, height);
             if (c.Condition == MetaRuleEdit.NoKillsWithinMinutes)
-                SafeImGui.SetItemTooltip(MetaRuleEdit.NoKillsTooltip(c.ConditionData));
+                SafeImGui.SetItemTooltip(MetaRuleEdit.NoKillsTooltip(c.ConditionData));   // typed text may hold %: SafeImGui escapes it
         }
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + height));
         ImGuiNET.ImGui.Dummy(new Vector2(0, 0));
@@ -861,7 +861,7 @@ internal sealed partial class MetaFace
     private static void Note(string text)
     {
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-        SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), text);
+        SafeImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), text);
         ImGuiNET.ImGui.PopFont();
     }
 

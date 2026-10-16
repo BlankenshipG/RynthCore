@@ -527,7 +527,7 @@ internal sealed class DamageFace : IImGuiPanel
         if (all == null || count == 0)
         {
             ImGuiNET.ImGui.Dummy(new Vector2(0, 3));
-            SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), all == null
+            SafeImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), all == null
                 ? "  Monster rules not loaded yet." : "  No name rules yet: add one below.");
         }
         else
@@ -714,7 +714,7 @@ internal sealed class DamageFace : IImGuiPanel
             bool filtering = _filterWid != 0 || _searchText.Length > 0;
             bool anyData = _view.Rows.Exists(r => !r.IsDefault);
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
-            SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), anyData && filtering
+            SafeImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), anyData && filtering
                 ? "  No monsters match the current filter."
                 : "  No monsters yet: fight some and they show up here.");
         }
@@ -1012,7 +1012,7 @@ internal sealed class DamageFace : IImGuiPanel
         Rule? view = RuleFor(name, out bool custom);
         bool isDefault = name.Equals("Default", StringComparison.OrdinalIgnoreCase);
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.Accent), "Debuffs · " + name);
+        SafeImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), "Debuffs · " + name);
         ImGuiNET.ImGui.PopFont();
         if (view == null)
         {
@@ -1021,7 +1021,7 @@ internal sealed class DamageFace : IImGuiPanel
             return;
         }
         ImGuiNET.ImGui.PushTextWrapPos(0);
-        SafeImGui.TextColored((custom || isDefault ? RynthTheme.Vec(0xFFFFD16A) : RynthTheme.VecOf(RynthTheme.MuteAlt)),
+        SafeImGui.TextColored(RynthTheme.Vec(custom || isDefault ? 0xFFFFD16A : 0xFFC8D4E0),
             isDefault ? "Every monster set to Default uses these." : custom ? "This monster's own debuffs." : "Following Default: a change here gives it its own.");
         ImGuiNET.ImGui.PopTextWrapPos();
 
@@ -1322,7 +1322,7 @@ internal sealed class DamageFace : IImGuiPanel
         if (ropen)
         {
             ImGuiNET.ImGui.PushTextWrapPos(0);
-            SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.Text), "Remove " + _removeName + "?");
+            SafeImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), "Remove " + _removeName + "?");
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
             ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Text),
                 "Its learned numbers and your settings for it (weapon, offhand, pet, HP) are deleted. It comes back if you meet it again.");

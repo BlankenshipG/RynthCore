@@ -323,6 +323,10 @@ internal partial class MainWindow : Window
         AllowMultipleClientsCheckBox.IsChecked = _settings.AllowMultipleClients;
         SkipIntroVideosCheckBox.IsChecked = _settings.SkipIntroVideos;
         SkipLoginLogosCheckBox.IsChecked = _settings.SkipLoginLogos;
+        EnableDxvkCheckBox.IsChecked = _settings.EnableDxvk;
+        RefreshDxvkCacheStatus();
+        EnableDxvkCheckBox.IsCheckedChanged += OnEnableDxvkChanged;
+        FetchDxvkButton.Click += async (_, _) => await FetchDxvkAsync();
         AutoLaunchHeaderCheckBox.IsChecked = _settings.AutoLaunch;
         AutoInjectAfterLaunchCheckBox.IsChecked = _settings.AutoInjectAfterLaunch;
         WatchForAcStartCheckBox.IsChecked = _settings.WatchForAcStart;
@@ -370,6 +374,73 @@ internal partial class MainWindow : Window
         catch (Exception ex)
         {
             AppendActivity($"Failed to save EnableDcompOverlay to engine.json: {ex.Message}");
+        }
+    }
+
+    private void RefreshDxvkCacheStatus()
+    {
+        if (DxvkCacheStatusText == null)
+            return;
+        if (DxvkPackageService.IsCached)
+        {
+            string ver = DxvkPackageService.CachedVersion ?? "?";
+            DxvkCacheStatusText.Text = $"DXVK cache: {ver}";
+        }
+        else
+        {
+            DxvkCacheStatusText.Text = "DXVK: not cached";
+        }
+    }
+
+    private async void OnEnableDxvkChanged(object? sender, global::Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        bool enable = EnableDxvkCheckBox.IsChecked == true;
+        _settings.EnableDxvk = enable;
+        SaveSettings();
+
+        string acPath = AcClientPathTextBox.Text?.Trim() ?? _settings.AcClientPath;
+        if (enable && !DxvkPackageService.IsCached)
+        {
+            AppendActivity("DXVK enabled — cache empty, fetching latest…");
+            string? ver = await DxvkPackageService.EnsureCachedOrFetchAsync(AppendActivity);
+            RefreshDxvkCacheStatus();
+            if (ver == null)
+            {
+                AppendActivity("DXVK: could not fetch a package; leave the checkbox on and use Fetch later, or reinstall.");
+                return;
+            }
+        }
+
+        DxvkPackageService.ApplyToClient(acPath, enable, AppendActivity);
+        RefreshDxvkCacheStatus();
+        AppendActivity(enable
+            ? "DXVK on — relaunch AC clients to load the drop-in d3d9.dll."
+            : "DXVK off — relaunch AC clients to return to System32 d3d9.");
+    }
+
+    private async Task FetchDxvkAsync()
+    {
+        try
+        {
+            FetchDxvkButton.IsEnabled = false;
+            AppendActivity("Fetching latest DXVK (x32) from GitHub…");
+            string version = await DxvkPackageService.EnsureLatestAsync(new Progress<string>(AppendActivity));
+            RefreshDxvkCacheStatus();
+            AppendActivity($"DXVK {version} ready in {DxvkPackageService.CacheDirectory}.");
+            if (EnableDxvkCheckBox.IsChecked == true)
+            {
+                string acPath = AcClientPathTextBox.Text?.Trim() ?? _settings.AcClientPath;
+                DxvkPackageService.ApplyToClient(acPath, enable: true, AppendActivity);
+                AppendActivity("DXVK cache applied to the current AC client path (relaunch clients).");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"DXVK fetch failed: {ex.Message}");
+        }
+        finally
+        {
+            FetchDxvkButton.IsEnabled = true;
         }
     }
 
@@ -1500,6 +1571,7 @@ internal partial class MainWindow : Window
         _settings.AllowMultipleClients = AllowMultipleClientsCheckBox.IsChecked == true;
         _settings.SkipIntroVideos = SkipIntroVideosCheckBox.IsChecked == true;
         _settings.SkipLoginLogos = SkipLoginLogosCheckBox.IsChecked == true;
+        _settings.EnableDxvk = EnableDxvkCheckBox.IsChecked == true;
         _settings.AutoLaunch = AutoLaunchHeaderCheckBox.IsChecked == true;
         _settings.AutoInjectAfterLaunch = AutoInjectAfterLaunchCheckBox.IsChecked == true;
         _settings.WatchForAcStart = WatchForAcStartCheckBox.IsChecked == true;
@@ -1520,6 +1592,10 @@ internal partial class MainWindow : Window
             _settings.EnabledPluginIds.Add("rynthcore-engine");
         SaveSettings();
         SyncPluginPathsToEngineSettings();
+        // Keep the AC folder in sync with the DXVK toggle even when not launching yet.
+        string acPath = AcClientPathTextBox.Text?.Trim() ?? _settings.AcClientPath;
+        DxvkPackageService.ApplyToClient(acPath, _settings.EnableDxvk, appendActivity ? AppendActivity : null);
+        RefreshDxvkCacheStatus();
         if (appendActivity)
         {
             AppendActivity($"Logging level saved: {_settings.LoggingLevel}.");
@@ -1682,7 +1758,12 @@ internal partial class MainWindow : Window
         try
         {
             SetOperationState(true);
-            _launchSettings.Apply(acPath, _settings.AllowMultipleClients, _settings.SkipIntroVideos, AppendActivity);
+            _launchSettings.Apply(
+                acPath,
+                _settings.AllowMultipleClients,
+                _settings.SkipIntroVideos,
+                _settings.EnableDxvk,
+                AppendActivity);
             AppendActivity($"Preparing {launchLabel}.");
             HashSet<string> activeAccountKeys = GetActiveAccountKeys();
 

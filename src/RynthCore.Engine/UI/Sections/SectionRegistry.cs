@@ -201,7 +201,7 @@ internal static class SectionRegistry
         // loaded as soon as this character forces their server On (picker, chat or saved override).
         List<NotLoadedServer> notLoaded = NotLoadedServerPlugins();
         NotLoadedServers.Append(servers, notLoaded, ServerForceStore.Get);
-        foreach (string id in NotLoadedServers.ToLoad(notLoaded, ServerForceStore.Get, AccountHooks.AnnouncedWorldName))
+        foreach (string id in NotLoadedServers.ForcedOn(notLoaded, ServerForceStore.Get))
             Plugins.PluginManager.RequestServerPluginLoad(id);
 
         List<SectionView> sections = SectionCatalog.Build(manifests, ImGuiBackend.ImGuiPanelHost.CanEmbed, servers);
@@ -253,7 +253,7 @@ internal static class SectionRegistry
         IReadOnlyList<Plugins.SkippedServerPlugin> skipped = Plugins.PluginManager.SkippedServerPlugins;
         var list = new List<NotLoadedServer>(skipped.Count);
         foreach (Plugins.SkippedServerPlugin s in skipped)
-            list.Add(new NotLoadedServer(SectionManifestParser.Id(s.ServerId), s.ServerName, s.PluginName, s.Manifest.Server!.WorldNames.ToArray()));
+            list.Add(new NotLoadedServer(SectionManifestParser.Id(s.ServerId), s.ServerName, s.PluginName));
         return list;
     }
 

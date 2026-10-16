@@ -222,17 +222,26 @@ internal static class FaceKit
     /// <summary>
     /// One popup list per face, opened from any button: call Open from the
     /// button's click and Draw once per frame at the end of the face's Draw
-    /// (outside any child window, so the popup id always matches).
+    /// (outside any child window, so the popup id always matches). Long lists
+    /// (Slayer Type's creature names, materials, long keys…) get a type-to-filter
+    /// box so players can pick by name instead of scrolling.
     /// </summary>
     internal sealed class Picker
     {
+        /// <summary>Show the filter box when the list is at least this long.</summary>
+        private const int FilterAt = 12;
+        private const float FilterH = 22f;
+        private const float RowH = 20f;
+
         private readonly string _popupId;
+        private readonly byte[] _filter = new byte[64];
         private string[] _items = Array.Empty<string>();
         private int _selected = -1;
         private Action<int>? _onPick;
         private Vector2 _pos;
         private float _width = 220;
         private bool _openRequested;
+        private bool _focusFilter;
 
         public Picker(string popupId) => _popupId = popupId;
 
@@ -244,6 +253,8 @@ internal static class FaceKit
             _pos = below;
             _width = width;
             _openRequested = items.Length > 0;
+            _filter[0] = 0;          // clear the previous open's filter
+            _focusFilter = items.Length >= FilterAt;
         }
 
         public void Draw()
@@ -255,37 +266,73 @@ internal static class FaceKit
                 ImGuiNET.ImGui.SetNextWindowPos(new Vector2(Math.Clamp(_pos.X, 0, Math.Max(0, display.X - _width)), _pos.Y));
                 ImGuiNET.ImGui.OpenPopup(_popupId);
             }
+            bool filterOn = _items.Length >= FilterAt;
+            string filterText = filterOn ? Utf8(_filter) : string.Empty;
+            // Count matches so the popup height tracks a short filtered list.
+            int shown = 0;
+            if (!filterOn) shown = _items.Length;
+            else
+            {
+                for (int i = 0; i < _items.Length; i++)
+                    if (FilterMatch(_items[i], filterText)) shown++;
+            }
+            float listH = Math.Min(Math.Max(shown, 1) * RowH + 4, 340);
+            float totalH = listH + (filterOn ? FilterH + 4 : 0);
+
             ImGuiNET.ImGui.PushStyleColor(ImGuiCol.PopupBg, ShellBg);
             ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, Teal);
             ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.PopupRounding, 4f);
             ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(2, 2));
             ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(0, 1));
-            ImGuiNET.ImGui.SetNextWindowSize(new Vector2(_width, Math.Min(_items.Length * 21 + 4, 340)));
+            ImGuiNET.ImGui.SetNextWindowSize(new Vector2(_width, totalH));
             bool open = ImGuiNET.ImGui.BeginPopup(_popupId);
             ImGuiNET.ImGui.PopStyleVar(3);
             ImGuiNET.ImGui.PopStyleColor(2);
             if (!open) return;
+
+            if (filterOn)
+            {
+                Vector2 fp = ImGuiNET.ImGui.GetCursorScreenPos();
+                if (_focusFilter)
+                {
+                    _focusFilter = false;
+                    ImGuiNET.ImGui.SetKeyboardFocusHere(0);   // next widget = the filter box
+                }
+                TextBox("##pick_filter", _filter, fp, ImGuiNET.ImGui.GetContentRegionAvail().X, "Type to filter…", out _,
+                    ImGuiInputTextFlags.None, FilterH);
+                ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(fp.X, fp.Y + FilterH + 2));
+                filterText = Utf8(_filter);
+            }
+
             var dl = ImGuiNET.ImGui.GetWindowDrawList();
             float iw = ImGuiNET.ImGui.GetContentRegionAvail().X;
             for (int i = 0; i < _items.Length; i++)
             {
+                if (filterOn && !FilterMatch(_items[i], filterText)) continue;
                 ImGuiNET.ImGui.PushID(i);
                 Vector2 ip = ImGuiNET.ImGui.GetCursorScreenPos();
-                bool click = ImGuiNET.ImGui.InvisibleButton("##it", new Vector2(iw, 20));
+                bool click = ImGuiNET.ImGui.InvisibleButton("##it", new Vector2(iw, RowH));
                 bool hot = ImGuiNET.ImGui.IsItemHovered();
                 ImGuiNET.ImGui.PopID();
                 bool sel = i == _selected;
-                dl.AddRectFilled(ip, ip + new Vector2(iw, 20), sel ? Selected : hot ? Lighten(BtnFill) : BtnFill);
-                dl.AddRect(ip, ip + new Vector2(iw, 20), BtnBord);
-                dl.AddText(ip + new Vector2(6, (20 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), sel ? Teal : Text, _items[i]);
+                dl.AddRectFilled(ip, ip + new Vector2(iw, RowH), sel ? Selected : hot ? Lighten(BtnFill) : BtnFill);
+                dl.AddRect(ip, ip + new Vector2(iw, RowH), BtnBord);
+                dl.AddText(ip + new Vector2(6, (RowH - ImGuiNET.ImGui.GetFontSize()) * 0.5f), sel ? Teal : Text, _items[i]);
                 if (click)
                 {
                     Action<int>? act = _onPick;
                     ImGuiNET.ImGui.CloseCurrentPopup();
-                    act?.Invoke(i);
+                    act?.Invoke(i);   // still the original index for the caller
                 }
             }
             ImGuiNET.ImGui.EndPopup();
+        }
+
+        /// <summary>Case-insensitive substring match; empty filter shows everything.</summary>
+        private static bool FilterMatch(string item, string filter)
+        {
+            if (filter.Length == 0) return true;
+            return item.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0;
         }
     }
 

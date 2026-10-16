@@ -25,6 +25,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using RynthCore.Engine.Plugins;
 
 namespace RynthCore.Engine.UI;
 
@@ -170,6 +171,17 @@ internal static class PanelStateStore
         }
     }
 
+    /// <summary>Rewrite panel_state.txt from the in-memory snapshot (Settings >
+    /// Display "Save layout now"). No-op when RememberWindowLayout is off.</summary>
+    public static void Flush()
+    {
+        lock (Sync)
+        {
+            Load();
+            Save(force: true);
+        }
+    }
+
     private static void Load()
     {
         if (_loaded) return;
@@ -249,8 +261,13 @@ internal static class PanelStateStore
         }
     }
 
-    private static void Save()
+    private static void Save(bool force = false)
     {
+        // Settings > Display "Remember open windows and HUD positions" (default on).
+        // Off: keep the last file; do not overwrite it while the user is rearranging.
+        if (!force && !EngineSettings.RememberWindowLayout)
+            return;
+
         try
         {
             string path = FilePath;

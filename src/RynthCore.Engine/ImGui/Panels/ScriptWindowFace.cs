@@ -36,7 +36,14 @@ internal sealed unsafe class ScriptWindowFace : IImGuiPanel
     public void OnShown() => NoteVisibility(visible: true);
 
     /// <summary>Closed: as OnShown; a close the owner didn't ask for is the player's X unless the bar said otherwise.</summary>
-    public void OnHidden() => NoteVisibility(visible: false);
+    public void OnHidden()
+    {
+        // Leaving Oracle clears the Skills embed so a later non-Oracle script window
+        // never inherits ActiveTab and paints SkillsFace by mistake.
+        if (OracleSkillsEmbed.IsOraclePanel(_window.PanelKey))
+            OracleSkillsEmbed.Clear();
+        NoteVisibility(visible: false);
+    }
 
     private void NoteVisibility(bool visible)
     {
@@ -60,6 +67,13 @@ internal sealed unsafe class ScriptWindowFace : IImGuiPanel
             ScriptWindowMetrics.Refresh();
             ReportGeometry();
             ScriptWindowReplay.Draw(_window);
+            // Oracle Skills / Attributes / Progress: after the script tab strip, draw the
+            // engine SkillsFace body (raise/train/progression) into the remaining space.
+            if (OracleSkillsEmbed.IsOraclePanel(_window.PanelKey))
+            {
+                int tab = OracleSkillsEmbed.ActiveTab;
+                if (tab >= 0) SkillsFace.DrawEmbedded(tab);
+            }
         }
         finally
         {

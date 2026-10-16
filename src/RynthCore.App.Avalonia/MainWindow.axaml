@@ -370,6 +370,18 @@
                     <CheckBox x:Name="AllowMultipleClientsCheckBox" Content="Allow multiple clients" />
                     <CheckBox x:Name="SkipIntroVideosCheckBox" Content="Skip intro videos" />
                     <CheckBox x:Name="SkipLoginLogosCheckBox" Content="Skip login logos" />
+                    <CheckBox x:Name="EnableDxvkCheckBox"
+                              Content="Enable DXVK (Vulkan D3D9) for AC clients"
+                              ToolTip.Tip="Copies DXVK's 32-bit d3d9.dll next to acclient.exe so AC renders through Vulkan. Rynth forces the software overlay path under DXVK. Off by default. Requires a restart of AC after toggle. Package: &lt;RynthCore&gt;\Runtime\dxvk\ (installer or Fetch)." />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <Button x:Name="FetchDxvkButton"
+                              Content="Fetch / update DXVK"
+                              ToolTip.Tip="Downloads the latest official DXVK release (x32 d3d9.dll) into Runtime\dxvk. Then enable the checkbox (or re-launch) to install it beside AC." />
+                      <TextBlock x:Name="DxvkCacheStatusText"
+                                 VerticalAlignment="Center"
+                                 Foreground="#9AA8B3"
+                                 Text="DXVK: not cached" />
+                    </StackPanel>
                     <CheckBox x:Name="AutoInjectAfterLaunchCheckBox" Content="Auto inject after launch" />
                     <CheckBox x:Name="WatchForAcStartCheckBox"
                               Content="Auto-inject into externally-launched AC"
