@@ -670,7 +670,37 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         float sq = Px(Square);
         if (IconButton(id, pos, new Vector2(sq, sq), icon, UiFont.Dash14, on ? TealSoft : BarBg, on ? Teal : Off, on ? Teal : BtnBord, Px(3)))
             RynthAiCommands.SetSubsystemEnabled(subsystem, !on);
-        SafeImGui.SetItemTooltip(on ? name + " on. Click to turn it off." : name + " off. Click to turn it on.");
+        bool right = ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right);
+        SafeImGui.SetItemTooltip((on ? name + " on. Click to turn it off." : name + " off. Click to turn it on.") +
+                                      "\nRight-click: " + rightWhat + ".");
+        if (on)
+            ImGuiNET.ImGui.GetWindowDrawList().AddRectFilled(new Vector2(pos.X + Px(5), pos.Y + sq - Px(3.5f)),
+                new Vector2(pos.X + sq - Px(5), pos.Y + sq - Px(1.5f)), Teal, Px(1));
+        if (right) onRight();
+    }
+
+    /// <summary>Opens Settings (if closed) on tab <paramref name="tab"/>.</summary>
+    private static void ShowSettingsTab(string tab)
+    {
+        SettingsFace.RequestTab(tab);
+        if (!ImGuiPanelHost.IsOpen(SettingsFace.Title)) PanelRouter.Toggle(SettingsFace.Title);
+    }
+
+    /// <summary>The activity pill's colours and icon: red in a fight, gold looting, teal moving, and so on; grey idle.</summary>
+    private static void ActivityStyle(string activity, out uint fg, out uint bg, out string icon)
+    {
+        switch (activity)
+        {
+            case "Combat": fg = C(0xFFFF7A7A); bg = C(0xFF4A1A1A); icon = PhosphorIcons.Sword; break;
+            case "Looting":
+            case "Salvaging": fg = Amber; bg = FrFill; icon = PhosphorIcons.Bag; break;
+            case "Navigating": fg = Teal; bg = TealSoft; icon = PhosphorIcons.SneakerMove; break;
+            case "Buffing": fg = C(0xFFC2A8FF); bg = C(0xFF2E2350); icon = PhosphorIcons.Sparkle; break;
+            case "Healing": fg = C(0xFFFF8A8A); bg = C(0xFF4A1A1A); icon = PhosphorIcons.Heart; break;
+            case "Restoring mana": fg = C(0xFF6CB4FF); bg = C(0xFF15304D); icon = PhosphorIcons.Drop; break;
+            case "Restoring stamina": fg = Green; bg = C(0xFF173D24); icon = PhosphorIcons.Lightning; break;
+            default: fg = Mute; bg = C(0xFF1C2733); icon = ""; break;
+        }
     }
 
     // ── Launchers: one row of icon buttons ──────────────────────────────
@@ -680,7 +710,9 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     private void Launchers(float x0, float width)
     {
         float y = ImGuiNET.ImGui.GetCursorScreenPos().Y;
-        const int buttons = 9;
+        // Nav and Meta left the row (2026-10-14): right-click the Navigation and Meta toggles.
+        // Hub left it 2026-10-15 (the Mini Remote: the bar button, Char's menu, its drawer tab).
+        const int buttons = 7;
         float gap = Px(LauncherGap);
         float bw = MathF.Floor((width - buttons * gap) / buttons);
         // Short labels only when every button has room for its icon and label.
@@ -721,13 +753,15 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         }
         x += bw + gap;
 
-        // Char opens RynthOracle's Character tab (character, level XP, session rates and, on
-        // Infinite Leaftide, the charms) since 2026.10.5.54; without RynthOracle, the Mini Remote's
+        // Char opens RynthOracle's Character tab (character, level XP, session rates) since
+        // 2026.10.5.54 (Infinite Leaftide's charms stay RynthILT's, in the Mini Remote's ILT tabs,
+        // Char's right-click > Server); without RynthOracle, the Mini Remote's
         // Session Stats section. The Mini Remote as it was left is the bar button (/rc miniremote)
-        // and "Mini Remote" in Char's right-click menu; its drawer is the drawer tab on the dashboard's edge.
+        // and "Mini Remote" in Char's right-click menu; its drawer is the drawer tab on the dashboard's
+        // edge. (The Hub launcher, which opened the same window, left the row 2026-10-15.)
         Launcher("##l_char", PhosphorIcons.User, "Char",
-            "Char. Left-click: RynthOracle's Character tab (charms on Infinite Leaftide).  Right-click: Character windows (Mini Remote, Spells, Quests, Pets, Crafting, Fellowship, Skills, Inventory...), then Server: this server's plugin windows.",
-            x, y, bw, labels, ShowCharacter);
+            "Char. Left-click: RynthOracle's Character tab (Infinite Leaftide's charms and banking: the Mini Remote's ILT tabs).  Right-click: Character windows (Mini Remote, Spells, Quests, Pets, Crafting, Fellowship, Skills, Inventory...), then Server: this server's plugin windows.",
+            x, y, bw, labels, ShowCharacter, CharacterOpen());
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
         {
             ImGuiNET.ImGui.SetNextWindowPos(ImGuiNET.ImGui.GetItemRectMin(), ImGuiCond.Always, new Vector2(0, 1));
@@ -745,9 +779,12 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         var size = new Vector2(Math.Max(Px(10), w), lh);
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         ImGuiNET.ImGui.SetCursorScreenPos(pos);
-        bool clicked = ImGuiNET.ImGui.InvisibleButton(id, size);
+        bool clicked = ImGuiNET.ImGui.InvisibleButton(id, size, ImGuiButtonFlags.MouseButtonLeft | ImGuiButtonFlags.MouseButtonRight)
+                       && ImGuiNET.ImGui.IsMouseReleased(ImGuiMouseButton.Left);
         SafeImGui.SetItemTooltip(tooltip);
-        uint fill = ImGuiNET.ImGui.IsItemActive() ? Darken(BtnFill) : ImGuiNET.ImGui.IsItemHovered() ? Lighten(BtnFill) : BtnFill;
+        bool hot = ImGuiNET.ImGui.IsItemHovered();
+        uint fill = ImGuiNET.ImGui.IsItemActive() ? Darken(BtnFill) : hot ? Lighten(BtnFill) : BtnFill;
+        uint fg = lit ? Teal : hot ? White : Mute;
         dl.AddRectFilled(pos, pos + size, fill, Px(3));
         dl.AddRect(pos, pos + size, lit ? Teal : BtnBord, Px(3));
         if (lit) dl.AddRectFilled(new Vector2(pos.X + Px(3), pos.Y + lh - Px(2)), new Vector2(pos.X + size.X - Px(3), pos.Y + lh - Px(0.5f)), Teal);
@@ -952,13 +989,20 @@ internal sealed partial class RynthAiFace : IImGuiPanel
 
     /// <summary>
     /// RynthOracle's Character tab ("/ro character"), or the Mini Remote's Session Stats section
-    /// when RynthOracle isn't loaded. Every "Character" / "Charms" link goes here.
+    /// when RynthOracle isn't loaded. Every generic "Character" link goes here (Leaftide's Charms
+    /// and Banking are RynthILT's Mini Remote tabs, in the menu's server half).
     /// </summary>
     private static void ShowCharacter()
     {
         if (UI.ScriptWindows.ScriptWindowRegistry.Has(OracleMainKey)) UI.ServerMenus.Run("/ro character");
         else UI.ServerMenus.Run("/rc miniremote section char");
     }
+
+    /// <summary>The Char launcher is lit: RynthOracle's window is open (else the Mini Remote on Session Stats).</summary>
+    private static bool CharacterOpen() =>
+        UI.ScriptWindows.ScriptWindowRegistry.Has(OracleMainKey)
+            ? UI.ScriptWindows.ScriptWindowRegistry.IsOpen(OracleMainKey)
+            : ImGuiPanelHost.IsOpen(MiniRemoteFace.Title) && MiniRemoteFace.ShowsSection("char");
 
     /// <summary>A Char menu item that toggles a registered ImGui panel (checked while open).</summary>
     private static void PanelMenuItem(string title, string command)
@@ -982,7 +1026,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         bool open = has && UI.ScriptWindows.ScriptWindowRegistry.IsOpen(key);
         if (ImGuiNET.ImGui.MenuItem(label, command, open, has))
             UI.ScriptWindows.ScriptWindowRegistry.PlayerSetVisible(key, !open);
-        ImGuiNET.ImGui.SetItemTooltip(has ? tooltip : tooltip + " (RynthOracle isn't loaded.)");
+        SafeImGui.SetItemTooltip(has ? tooltip : tooltip + " (RynthOracle isn't loaded.)");
     }
 
     private static void CharMenu()
@@ -999,8 +1043,8 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             ImGuiNET.ImGui.TextDisabled("Character");
             bool hasOracle = UI.ScriptWindows.ScriptWindowRegistry.Has(OracleMainKey);
             if (ImGuiNET.ImGui.MenuItem("Character", "/ro character", false, hasOracle)) ShowCharacter();
-            ImGuiNET.ImGui.SetItemTooltip(hasOracle
-                ? "RynthOracle's Character tab: level, XP, session rates and (Infinite Leaftide) your charms."
+            SafeImGui.SetItemTooltip(hasOracle
+                ? "RynthOracle's Character tab: level, XP and session rates. Infinite Leaftide's charms and banking are the Mini Remote's ILT tabs (Server, below)."
                 : "RynthOracle's Character tab (RynthOracle isn't loaded).");
             if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote", ImGuiPanelHost.IsOpen(MiniRemoteFace.Title)))
                 ShowMiniRemoteTab("");
@@ -1018,9 +1062,8 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             if (ImGuiNET.ImGui.MenuItem("Crafting", "/rc miniremote tab crafting")) ShowMiniRemoteTab("crafting");
             ImGuiNET.ImGui.SetItemTooltip("The Mini Remote's Crafting tab: armor, weapon, jewelry and item tinkering, chunking and arrows (RynthAi).");
             // Fellowship is RynthOracle's Fellowship tab ("/ro fellowship" opens the window on it).
-            bool oracle = hasOracle;
-            if (ImGuiNET.ImGui.MenuItem("Fellowship", "/ro fellowship", false, oracle)) UI.ServerMenus.Run("/ro fellowship");
-            ImGuiNET.ImGui.SetItemTooltip(oracle
+            if (ImGuiNET.ImGui.MenuItem("Fellowship", "/ro fellowship", false, hasOracle)) UI.ServerMenus.Run("/ro fellowship");
+            SafeImGui.SetItemTooltip(hasOracle
                 ? "RynthOracle's Fellowship tab: members, leader, open / locked, XP sharing and (Infinite Leaftide) the /fship commands."
                 : "RynthOracle's Fellowship tab (RynthOracle isn't loaded).");
             PanelMenuItem(SkillsFace.Title, "/rc skills");
@@ -1069,14 +1112,14 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         if (withTitle)
         {
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Dash11));
-            SafeImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), PatrolTitle);
+            SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.Accent), PatrolTitle);
             ImGuiNET.ImGui.PopFont();
         }
 
         Section("THIS DUNGEON");
         if (info.InDungeon)
         {
-            SafeImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), $"0x{info.CurrentLandblock}  ·  {info.CurrentHazards} hazard cell(s)");
+            SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.Text), $"0x{info.CurrentLandblock}  ·  {info.CurrentHazards} hazard cell(s)");
             if (info.CurrentHazards > 0)
             {
                 ImGuiNET.ImGui.SameLine();
@@ -1106,7 +1149,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         {
             DungeonHazards d = info.Dungeons[i];
             ImGuiNET.ImGui.PushID(i);
-            SafeImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), $"0x{d.Landblock}  ·  {d.Cells} cell(s)");
+            SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.Text), $"0x{d.Landblock}  ·  {d.Cells} cell(s)");
             ImGuiNET.ImGui.SameLine();
             if (Mini("Clear"))
                 RynthAiCommands.SendNavCommand($"{{\"Cmd\":\"clearHazards\",\"NavName\":\"{d.Landblock}\"}}", refreshPatrol: true);
@@ -1119,7 +1162,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         if (info.Routes.Length == 0)
             ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.TextMuted), "No .nav routes saved.");
         foreach (string name in info.Routes)
-            SafeImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), "• " + name);
+            SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.Text), "• " + name);
 
         ImGuiNET.ImGui.PopFont();
     }
@@ -1131,7 +1174,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
     {
         ImGuiNET.ImGui.Dummy(new Vector2(0, Px(4)));
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Dash9));
-        SafeImGui.TextColored(RynthTheme.Vec(0xFFB8C8D8), text);
+        SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.TextMuted), text);
         ImGuiNET.ImGui.PopFont();
     }
 

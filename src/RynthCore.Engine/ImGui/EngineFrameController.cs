@@ -278,6 +278,10 @@ internal static class EngineFrameController
             // in ImGui-off mode so Avalonia owner-window binding works.
             EnsureCore(pDevice);
 
+            // Settings > Display: borderless windowed + restore AC placement (throttled).
+            try { UI.AcWindowChrome.Tick(_gameHwnd); }
+            catch (Exception ex) { RynthLog.UI($"AcWindowChrome.Tick threw {ex.GetType().Name}: {ex.Message}"); }
+
             // Cache the D3D9 device function pointers used by Nav3DRenderInjector,
             // RenderNav3D, and the always-on render path. This is a strict subset
             // of what InitImGui needs and is safe to run without ImGui state.

@@ -10,7 +10,7 @@
 //  With RynthAi loaded it hosts RynthAi's Mini Remote (session rates, target,
 //  summon, item slots, toggles, bank, rebuff, Translate, Guardian and its
 //  Options menu, its Quests and Pets tabs, plus on ILT worlds the RynthILT
-//  plugin's tabs Gear and Games (Character and Charms moved to RynthOracle, Banking to RynthInventory, 2026.10.5.54), which RynthAi asks
+//  plugin's tabs Charms, Banking, Gear and Games (Character moved to RynthOracle, 2026.10.5.54), which RynthAi asks
 //  RynthILT to draw), drawn by the plugin through
 //  RynthPluginRenderEmbed ("miniremote-window"). The window fits itself to what
 //  the plugin asks for whenever that changes (another tab, a section shown or
@@ -180,7 +180,7 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
         FitGrid(data, w, haveH);
     }
 
-    // ── RynthAi's Mini Remote ───────────────────────────────────────────
+    // â”€â”€ RynthAi's Mini Remote â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
     /// Lets RynthAi draw its Mini Remote here. True when it did (or is mid-layout after
@@ -236,10 +236,10 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
         if (result == PluginManager.EmbedFailed) _embedOff = true;
     }
 
-    // ── Window fit ──────────────────────────────────────────────────────
+    // â”€â”€ Window fit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
-    /// Sizes the window so the body area (<paramref name="haveW"/> × <paramref name="haveH"/>
+    /// Sizes the window so the body area (<paramref name="haveW"/> Ã— <paramref name="haveH"/>
     /// now) becomes <paramref name="wantPx"/>; never taller than the screen. Docked only:
     /// popped out the OS window keeps its size, as other faces do (RynthNavArrowFace).
     /// </summary>
@@ -276,7 +276,7 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
         FitWindow(body, w, haveH);
     }
 
-    // ── Engine grid ─────────────────────────────────────────────────────
+    // â”€â”€ Engine grid â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private void Resolve(ItemHudCharacter data, HudItem[] items)
     {
@@ -409,7 +409,7 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
         if (!ItemHudStore.Update(d => d.WithSlot(i, new RemoteSlot(itemId, name)), out string why)) ShowMessage(why, Amber);
     }
 
-    // ── Status ──────────────────────────────────────────────────────────
+    // â”€â”€ Status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private void ShowMessage(string text, uint color)
     {
@@ -441,7 +441,7 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
 
     private static float BodyGripRoom() => ImGuiPanelHost.BodyGripReserve;
 
-    // ── Right-click menu ────────────────────────────────────────────────
+    // â”€â”€ Right-click menu â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
     /// The right-click menu: a slot's options (the engine grid), then the sections, the active

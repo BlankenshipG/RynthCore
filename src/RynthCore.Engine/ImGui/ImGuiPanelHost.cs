@@ -512,6 +512,8 @@ internal static class ImGuiPanelHost
     {
         if (_restored) return;
         _restored = true;
+        // Settings > Display "Remember open windows and positions" (default on).
+        if (!Plugins.EngineSettings.RememberWindowLayout) return;
         List<string> titles = new();
         // Script windows (dynamic) open when their owner says so, not from the saved state.
         lock (Sync)

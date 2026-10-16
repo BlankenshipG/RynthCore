@@ -159,6 +159,11 @@ internal sealed class RynthAiSettings
     public double CorpseApproachRangeMin { get; set; } = 2.0;
     // Navigation
     public bool BoostNavPriority { get; set; }
+    /// <summary>
+    /// RynthAi / RynthILT: show the Mini Remote "Vaulted Dungeons" tab on ILT worlds (off by default).
+    /// Absent from an older plugin: the row still writes false.
+    /// </summary>
+    public bool EnableVaultedDungeons { get; set; }
     public float FollowNavMin { get; set; } = 1.5f;
     public float NavRingThickness { get; set; } = 6f;
     public float NavLineThickness { get; set; } = 6f;
@@ -384,6 +389,8 @@ internal static class LootTimerDefaults
 internal enum SettingKind { Bool, Int, Float, Double, Combo, Section, Spacer, Note, CraftingStatus, Button, TraceCategories, Text, Status,
     /// <summary>The user hotkeys editor (ImGui/Panels/HotkeysSettingsUi.cs; stored by the engine, not RynthAi).</summary>
     Hotkeys,
+    /// <summary>A colour (#AARRGGBB in Get/Set): a swatch that opens a picker. The theme's colours (engine-stored).</summary>
+    Color,
     /// <summary>
     /// The server picker and the server list (Diagnostics): which server this character counts
     /// as, from the servers the engine and the loaded plugins know (UI/Sections/ServerSelection.cs).
@@ -671,6 +678,25 @@ internal static class SettingsSchema
             Bool("Insert Key Releases the UI", _ => Plugins.EngineSettings.InsertReleasesUi,
                 (_, v) => { Plugins.EngineSettings.InsertReleasesUi = v; if (!v) ImGuiBackend.Win32Backend.ReclaimUi(); },
                 "On: Insert switches between UI and GAME (shown on the RynthCore bar). In GAME, clicks pass through\nRynth windows to the game and Rynth text boxes can't be typed in. Press Insert again to get the UI back.\nOff (default): Insert does nothing. Applies to all your clients; others pick it up when they start."),
+            Bool("Borderless Windowed", _ => Plugins.EngineSettings.BorderlessWindowed,
+                (_, v) =>
+                {
+                    Plugins.EngineSettings.BorderlessWindowed = v;
+                    try
+                    {
+                        // ResolveGameHwnd covers EntryPoint + Win32Backend; Tick retries if zero.
+                        AcWindowChrome.ApplyBorderlessDesired(AcWindowChrome.ResolveGameHwndForSettings());
+                    }
+                    catch { /* HWND may not be ready; Tick applies later */ }
+                },
+                "On: hide the Asheron's Call window title bar and borders while staying windowed (no exclusive fullscreen).\nOff (default): normal window chrome. Applies to all your clients; others pick it up when they start."),
+            Spacer(),
+            Section("Window and HUD Layout"),
+            Bool("Remember Open Windows and Positions", _ => Plugins.EngineSettings.RememberWindowLayout,
+                (_, v) => Plugins.EngineSettings.RememberWindowLayout = v,
+                "On (default): reopen Rynth panels where you left them, keep the Vision self-plate / ImGui layout, and restore the\nAC window position across launches.\nOff: do not overwrite the saved layout or reopen panels from the last session. Applies to all your clients."),
+            Button("Save Layout Now", "Save", () => AcWindowChrome.SaveLayoutNow(),
+                "Write the current open panels, AC window placement, Vision HUD, and ImGui window positions to disk now.\nNeeds Remember Open Windows and Positions on to keep updating panel_state afterward."),
             Spacer(),
             // The colour theme is stored by the engine (theme.txt, ImGuiBackend.RynthTheme), not in the RynthAi profile.
             Section("Colour Theme"),
@@ -1028,6 +1054,13 @@ internal static class SettingsSchema
         {
             Bool("Boost Nav Priority", s => s.BoostNavPriority, (s, v) => s.BoostNavPriority = v),
             Float(NavPointReachLabel, s => s.FollowNavMin, (s, v) => s.FollowNavMin = v, 0.5f, 20f, 0.1f, NavPointReachTip),
+            Spacer(),
+            Section("Infinite Leaftide"),
+            Bool("Vaulted Dungeons", s => s.EnableVaultedDungeons, (s, v) => s.EnableVaultedDungeons = v,
+                "Show the Mini Remote \"Vaulted Dungeons\" tab on Infinite Leaftide / ACECustom worlds.\n"
+                + "Keeps the character in one Vaulted Dungeon via a tied Portal Recall Gem, with optional\n"
+                + "Kill Client (/rc quit) after N minutes without a \"You've banked N Luminance.\" kill.\n"
+                + "Settings are per character (RynthILT\\…\\VaultedDungeons\\settings.json). Off by default."),
             Spacer(),
             Section("Nav Marker Display"),
             Bool("Breadcrumbs", s => s.TrackBreadcrumbs ?? true, (s, v) => s.TrackBreadcrumbs = v,
