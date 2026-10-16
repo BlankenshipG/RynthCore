@@ -64,7 +64,7 @@ internal sealed partial class MiniRemoteFace
 
     private static bool RailShown => PanelColumnStore.Get(RailKey, 1f) >= 0.5f;
 
-    // ── Requests (commands; render thread) ──────────────────────────────
+    // â”€â”€ Requests (commands; render thread) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>Shows section <paramref name="sectionId"/> ("remote" = the remote) on the next draw.</summary>
     public static void RequestSection(string sectionId)
@@ -149,7 +149,7 @@ internal sealed partial class MiniRemoteFace
         if (PanelColumnStore.Get(SectionKey, -1f) != index) PanelColumnStore.Set(SectionKey, index);
     }
 
-    // ── Rail ────────────────────────────────────────────────────────────
+    // â”€â”€ Rail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>Draws the rail at the body's left; returns the width it takes (with its gap).</summary>
     private float DrawRail(SectionRegistry.Snapshot snap, Vector2 origin, Vector2 size)
@@ -233,7 +233,7 @@ internal sealed partial class MiniRemoteFace
         _ => "nothing installed adds to it on this world.",
     };
 
-    // ── Section body ────────────────────────────────────────────────────
+    // â”€â”€ Section body â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private void DrawSection(SectionRegistry.Snapshot snap, float w, Vector2 origin, Vector2 size)
     {
@@ -456,7 +456,7 @@ internal sealed partial class MiniRemoteFace
         return result == PluginManager.EmbedDrawn ? want : Vector2.Zero;
     }
 
-    // ── Session Stats overview ──────────────────────────────────────────
+    // â”€â”€ Session Stats overview â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
     /// The Session Stats section's stand-in, shown only while no plugin fills the section (RynthAi
@@ -490,7 +490,7 @@ internal sealed partial class MiniRemoteFace
         }
     }
 
-    // ── Menu ────────────────────────────────────────────────────────────
+    // â”€â”€ Menu â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>The menu's section half: every section, the active servers' items, the rail switch.</summary>
     private void DrawSectionsMenuItems()

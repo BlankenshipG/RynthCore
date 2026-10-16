@@ -1513,6 +1513,11 @@ internal class RynthOverlayWindow : Window
     {
         try
         {
+            // Settings > Display "Remember open windows and positions" (default on).
+            // Off: leave panels closed so a hand-arranged layout is not forced back.
+            if (!Plugins.EngineSettings.RememberWindowLayout)
+                return;
+
             // Bar floating mode restores once AC's HWND is available. If we
             // pop out before that, the FloatingPanelHost ctor takes its
             // legacy code path (no marshal to game thread) and the layered
