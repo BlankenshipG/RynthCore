@@ -165,12 +165,29 @@ internal partial class MainWindow : Window
         _updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync();
         _updateTimer.Start();
         _ = CheckForUpdatesAsync();
+        // Keep Updates + Launch Targets reachable: a bad * row under this scroll used to
+        // leave Offset stuck with those cards clipped above the viewport.
+        MainTabs.SelectionChanged += (_, _) =>
+        {
+            if (MainTabs.SelectedIndex == 0)
+                ResetLauncherScrollToTop();
+        };
         Opened += async (_, _) =>
         {
+            ResetLauncherScrollToTop();
             await AskAboutUsageStatsOnceAsync();
             await CleanUpDecalBridgeIfUnusedAsync(atStartup: true);
             await CheckFolderAccessAtStartupAsync();   // MainWindow.FolderAccess.cs: can the game client save?
         };
+    }
+
+    /// <summary>
+    /// Scroll the Launcher tab back to the top so Updates and Launch Targets stay reachable.
+    /// </summary>
+    private void ResetLauncherScrollToTop()
+    {
+        try { LauncherScroll.Offset = new global::Avalonia.Vector(0, 0); }
+        catch { /* designer / pre-init */ }
     }
 
     private void WireEvents()
