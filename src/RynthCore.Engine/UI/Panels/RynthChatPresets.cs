@@ -1,14 +1,19 @@
 // ============================================================================
 //  RynthCore.Engine — UI/Panels/RynthChatPresets.cs
 //  Canned ("standard") RynthChat filters, modelled on UtilityBelt-IT's
-//  ChatFilter / Mag ChatFilter categories. Each preset is a tick-box in the
-//  ChatFilters panel that hides its lines or moves them to a tab.
+//  ChatFilterTool (Mag ChatFilter parity) plus the classic ChatFilter /
+//  ChatHandler categories. Each preset is a tick-box in the ChatFilters
+//  panel that hides its lines or moves them to a tab.
 //
 //  Presets match the raw line text (no timestamp / sender prefix). Most are
 //  limited to non-chat channels so a player typing the same words in Local or
 //  a channel is never eaten. ChatRouter evaluates them on the plugin pump
 //  (after the custom rules); editors change Enabled / Tab from any thread and
 //  then call ChatModel.FiltersChanged so every kept line is routed again.
+//
+//  Not ported as text presets (need Decal WorldFilter / StatusTextIntercept):
+//  VendorTells, MonsterTell, NpcChatter, StatusTextAll. Use custom rules if
+//  you want a blunt "tells you" / "says," filter.
 // ============================================================================
 
 using System;
@@ -87,24 +92,70 @@ internal static class RynthChatPresets
         @"|Your killing blow nearly turns .+ inside-out!|The thunder of crushing .+ is followed by the deafening silence of death!" +
         @"|Your attack stops .+ cold!)";
 
-    // Optional combat prefixes such as "Critical hit! " / "Sneak Attack! ".
-    private const string HitPrefix = @"^(?:[A-Z][\w ]{2,20}! )*";
+    // Optional combat prefixes: "Critical hit! ", "Sneak Attack! ", "Recklessness! ".
+    private const string HitPrefix = @"^(?:(?:Critical [Hh]it|Sneak Attack|Recklessness)!\s+)*";
+
+    // Outgoing physical (melee / missile): "... for N points of X damage!"
+    private const string DealtMelee =
+        HitPrefix + @"You \S+ .+ for \d+ points? of .+ damage";
+    // Outgoing war / void magic: "... for N points with SpellName."
+    private const string DealtMagic =
+        HitPrefix + @"You \S+ .+ for \d+ points? with ";
+    // Incoming melee / missile: body-part hits ("... your foot for N points of ...").
+    private const string TakenMelee =
+        HitPrefix + @"(?!You ).+ your [a-z ]+ for \d+ points? of .+ damage";
+    // Incoming spell damage: "... you for N points with SpellName."
+    private const string TakenMagic =
+        HitPrefix + @"(?!You ).+ you for \d+ points? with ";
 
     private static readonly Preset[] _all =
     {
-        // ── Combat ────────────────────────────────────────────────────────
+        // ── Combat (specific before umbrella: FirstMatch order) ───────────
         new("combat.attack_evades", "Combat", "Your attacks evaded",
             "A monster evades your melee or missile attack.",
             "Drudge Slinker evaded your attack.", Scope.NotPlayerChat, @" evaded your attack\.\s*$"),
         new("combat.defense_evades", "Combat", "You evade attacks",
             "You evade a monster's attack.",
             "You evaded Drudge Slinker!", Scope.NotPlayerChat, @"^You evaded "),
-        new("combat.damage_dealt", "Combat", "Damage you deal",
-            "Your melee, missile and war-spell hits (including critical / sneak attack prefixes).",
-            "You slash Drudge Slinker for 54 points of slashing damage!", Scope.NotPlayerChat, HitPrefix + @"You .+ for \d+ points? of "),
-        new("combat.damage_taken", "Combat", "Damage you take",
-            "Monster hits and spell damage landing on you.",
-            "Drudge Slinker slashes you for 12 points of slashing damage!", Scope.NotPlayerChat, HitPrefix + @"(?!You ).+ you (?:with .+ )?for \d+ points? of "),
+
+        // Prefix-tagged hits (can filter these alone without hiding every swing).
+        new("combat.recklessness", "Combat", "Recklessness hits",
+            "Lines prefixed with \"Recklessness!\" (your reckless swings).",
+            "Recklessness! You slash Drudge Slinker for 54 points of slashing damage!", Scope.NotPlayerChat,
+            @"^((?:Critical [Hh]it!|Sneak Attack!)\s+)*Recklessness!"),
+        new("combat.sneak_attack", "Combat", "Sneak Attack hits",
+            "Lines prefixed with \"Sneak Attack!\" (your sneak swings / shots).",
+            "Sneak Attack! You slash Drudge Slinker for 54 points of slashing damage!", Scope.NotPlayerChat,
+            @"^((?:Critical [Hh]it!|Recklessness!)\s+)*Sneak Attack!"),
+        new("combat.critical", "Combat", "Critical hits",
+            "Lines prefixed with \"Critical hit!\" / \"Critical Hit!\".",
+            "Critical hit! You slash Drudge Slinker for 100 points of slashing damage!", Scope.NotPlayerChat,
+            @"^Critical [Hh]it!"),
+
+        // Melee / missile vs magic (UB ChatHandler DamageMelee / DamageSpell / DamageOnTarget).
+        new("combat.melee_dealt", "Combat", "Melee / missile damage you deal",
+            "Your weapon hits: \"You slash … for N points of … damage!\" (missile uses the same form).",
+            "You slash Drudge Slinker for 54 points of slashing damage!", Scope.NotPlayerChat, DealtMelee),
+        new("combat.magic_dealt", "Combat", "Magic damage you deal",
+            "Your war / void hits: \"You … for N points with SpellName.\"",
+            "You freeze Drudge Slinker for 120 points with Frost Bolt VI.", Scope.NotPlayerChat, DealtMagic),
+        new("combat.melee_taken", "Combat", "Melee / missile damage you take",
+            "Monster weapon hits on a body part (\"… grazes your foot for N points of …\").",
+            "Drudge Slinker grazes your foot for 12 points of slashing damage!", Scope.NotPlayerChat, TakenMelee),
+        new("combat.magic_taken", "Combat", "Magic damage you take",
+            "Spell damage on you: \"… you for N points with SpellName.\"",
+            "Drudge Sorcerer scorches you for 40 points with Flame Bolt III.", Scope.NotPlayerChat, TakenMagic),
+
+        // Umbrella damage (both of/with forms). Keep for players who want one switch.
+        new("combat.damage_dealt", "Combat", "All damage you deal",
+            "Every hit you land (melee, missile, magic), including critical / sneak / recklessness prefixes.",
+            "You slash Drudge Slinker for 54 points of slashing damage!", Scope.NotPlayerChat,
+            HitPrefix + @"You \S+ .+ for \d+ points? (?:of|with) "),
+        new("combat.damage_taken", "Combat", "All damage you take",
+            "Every hit that lands on you (melee / missile body-part and spell \"with\" forms).",
+            "Drudge Slinker grazes your foot for 12 points of slashing damage!", Scope.NotPlayerChat,
+            HitPrefix + @"(?!You ).+ (?:you|your [a-z ]+) for \d+ points? (?:of|with) "),
+
         new("combat.attack_resists", "Combat", "Your spells resisted",
             "A target resists one of your spells.",
             "Drudge Slinker resists your spell", Scope.NotPlayerChat, @" resists your spell"),
@@ -122,6 +173,38 @@ internal static class RynthChatPresets
         new("combat.monster_deaths", "Combat", "Monster death messages",
             "Kill flavour text (\"You flatten…\", \"…is reduced to cinders!\").",
             "Drudge Slinker is reduced to cinders!", Scope.NotPlayerChat, KillPattern),
+        new("combat.missile_miss", "Combat", "Missile hit the environment",
+            "\"Your missile attack hit the environment.\" (classic UB ChatFilter).",
+            "Your missile attack hit the environment.", Scope.NotPlayerChat,
+            @"^Your missile attack hit the environment\.\s*$"),
+        new("combat.periodic_damage", "Combat", "Periodic damage ticks",
+            "\"You receive N points of periodic … damage.\" DoTs on you.",
+            "You receive 8 points of periodic acid damage.", Scope.NotPlayerChat,
+            @"^You receive \d+ points of periodic .+damage"),
+        new("combat.periodic_healing", "Combat", "Periodic healing ticks",
+            "\"You receive N points of periodic healing.\" (same line as Items → Periodic healing).",
+            "You receive 12 points of periodic healing.", Scope.NotPlayerChat,
+            @"^You receive \d+ points of periodic healing"),
+        new("combat.stamina", "Combat", "Stamina restore / spend",
+            "Lines that restore or spend stamina (kits, consumables, S2H/S2M, Heal Self).",
+            "You cast Revitalize Self V and restore 40 points of your stamina.", Scope.NotPlayerChat,
+            @"(?:restore|restores|regain|regains|lose|loses) \d+ points? of (?:your )?stamina\b|and lose \d+ points of stamina"),
+        new("combat.mana", "Combat", "Mana restore / spend",
+            "Lines that restore or spend mana (consumables, S2M, mana stones' give line is under Items).",
+            "You cast Stamina to Mana Self V on yourself and lose 17 points of stamina and also gain 23 points of mana", Scope.NotPlayerChat,
+            @"(?:restore|restores|regain|regains|gain|gains|lose|loses) \d+ points? of (?:your )?mana\b|and also gain \d+ points of mana"),
+        new("combat.health", "Combat", "Health restore",
+            "Lines that restore health points (kits, heals, consumables) — not damage taken.",
+            "You heal yourself for 80 Health points.", Scope.NotPlayerChat,
+            @"(?:heal yourself for \d+|restore|restores|regain|regains) \d+ points? of (?:your )?health\b|heal yourself for \d+ Health"),
+        new("combat.fail_affect_you", "Combat", "Fails to affect you",
+            "\"… fails to affect you…\" (broader than the NPK-only filter).",
+            "Bob fails to affect you because he is not a player killer!", Scope.NotPlayerChat,
+            @" fails to affect you"),
+        new("combat.you_fail_affect", "Combat", "You fail to affect",
+            "\"You failed to affect…\" / \"You fail to affect…\" (non-PK and other).",
+            "You fail to affect Bob because you are not a player killer!", Scope.NotPlayerChat,
+            @"^You fail(?:ed)? to affect "),
 
         // ── Casting ───────────────────────────────────────────────────────
         new("cast.mine", "Casting", "Your spell words",
@@ -145,6 +228,14 @@ internal static class RynthChatPresets
         new("cast.expires", "Casting", "Spell expiry",
             "\"… has expired.\" — rares (Brilliance / Prodigal / Spectral) are kept.",
             "Strength Self VII has expired.", Scope.NotPlayerChat, @"^(?!.*(?:Brilliance|Prodigal|Spectral)).*\b(?:has|have) expired\."),
+        new("cast.give_take", "Casting", "Stamina / health / mana transfers",
+            "Self casts that spend one vital and restore another (S2M, S2H, …).",
+            "You cast Stamina to Mana Self V on yourself and lose 17 points of stamina and also gain 23 points of mana", Scope.NotPlayerChat,
+            @"^You cast .+ on yourself and lose \d+ points of .+ and also gain \d+ points of "),
+        new("cast.heal_self", "Casting", "Your heal / restore casts",
+            "\"You cast … and restore N points of your …\" (spell heals, not kits).",
+            "You cast Revitalize Self V and restore 40 points of your stamina.", Scope.NotPlayerChat,
+            @"^You cast .+ and restore \d+ points of your "),
 
         // ── Items & utility ───────────────────────────────────────────────
         new("item.heal_ok", "Items", "Healing kit success",
@@ -153,6 +244,14 @@ internal static class RynthChatPresets
         new("item.heal_fail", "Items", "Healing kit failure",
             "\"You fail to heal yourself.\"",
             "You fail to heal yourself. ", Scope.NotPlayerChat, @"^You fail to heal yourself\."),
+        new("item.healed_by_other", "Items", "Healed by another",
+            "\"X casts Y and restores N points of your …\"",
+            "Bob casts Heal Other VI and restores 80 points of your health.", Scope.NotPlayerChat,
+            @"^.+ casts .+ and restores \d+ points of your "),
+        new("item.consumable", "Items", "Food / potion restores",
+            "\"The X restores N points of your …\"",
+            "The Health Tonic restores 50 points of your health.", Scope.NotPlayerChat,
+            @"^The .+ restores \d+ points of your "),
         new("item.salvage", "Items", "Salvage results",
             "\"You obtain … using your knowledge of …\"",
             "You obtain 12 Steel (ws 7.00) using your knowledge of Weapon Tinkering.", Scope.NotPlayerChat, @"^You obtain .+ using your knowledge of "),
@@ -167,8 +266,17 @@ internal static class RynthChatPresets
             "The Mana Stone gives 4,500 points of mana to the following items:", Scope.NotPlayerChat,
             @"^The Mana Stone (?:gives|drains) |^You need .+ more mana to fully charge your items\.\s*$|^The .+ is destroyed\.\s*$"),
         new("item.regen", "Items", "Periodic healing ticks",
-            "\"You receive N points of periodic healing.\"",
-            "You receive 12 points of periodic healing.", Scope.NotPlayerChat, @"^You receive .+ points of periodic healing"),
+            "Same as Combat → Periodic healing (kept here for the Items group).",
+            "You receive 12 points of periodic healing.", Scope.NotPlayerChat, @"^You receive \d+ points of periodic healing"),
+        new("item.aetheria_surge", "Items", "Aetheria surges",
+            "\"Aetheria surges on…\" (classic UB Misc filter).",
+            "Aetheria surges on Bob, increasing his damage.", Scope.NotPlayerChat, @"^Aetheria surges on"),
+        new("item.cloak", "Items", "Cloak procs",
+            "\"The cloak of…\" cloak cast lines (classic UB Misc filter).",
+            "The cloak of Bob weaves a protective spell.", Scope.NotPlayerChat, @"^The cloak of"),
+        new("item.banked_lum", "Items", "Banked luminance",
+            "\"You've banked N Luminance.\" (classic UB Misc filter).",
+            "You've banked 1,250 Luminance.", Scope.NotPlayerChat, @"^You've banked [\d,]+ Luminance\.\s*$"),
 
         // ── Social & trade ────────────────────────────────────────────────
         new("social.bot_spam", "Social", "Trade / buff bot spam",
@@ -180,6 +288,16 @@ internal static class RynthChatPresets
         new("social.kill_task", "Social", "Kill task complete",
             "\"You have killed N Xs! Your task is complete!\"",
             "You have killed 50 Drudges! Your task is complete!", Scope.NotPlayerChat, @"^You have killed \d+ .+Your task is complete!\s*$"),
+        new("social.kill_task_progress", "Social", "Kill task progress",
+            "\"You have killed N Xs! You must kill M to complete your task.\" (ACECustom / UB-IT).",
+            "You have killed 12 Drudges! You must kill 50 to complete your task.", Scope.NotPlayerChat,
+            @"^You have killed \d+ .+! You must kill \d+ to complete your task\.\s*$"),
+        new("social.too_busy", "Social", "You're too busy",
+            "\"You're too busy!\" (also Mag StatusTextYoureTooBusy when it lands in chat).",
+            "You're too busy!", Scope.NotPlayerChat, @"^You're too busy!\s*$"),
+        new("social.casting_status", "Social", "Casting status text",
+            "\"Casting …\" overlay lines when they appear in chat (Mag StatusTextCasting).",
+            "Casting Focus Self VII", Scope.NotPlayerChat, @"^Casting "),
         new("social.general", "Social", "General channel",
             "Everything said on General.",
             "[General] Bob says, \"hi\"", Scope.ChannelsOnly, @"^\[General\]|says on the General channel"),
@@ -197,10 +315,14 @@ internal static class RynthChatPresets
             "[Society] Bob says, \"…\"", Scope.ChannelsOnly, @"^\[(?:Society|Celestial Hand|Eldrytch Web|Radiant Blood)\]|says on the (?:Society|Celestial Hand|Eldrytch Web|Radiant Blood) channel"),
 
         // ── NPCs ──────────────────────────────────────────────────────────
-        new("npc.arbitrator", "NPCs", "Master Arbitrator (Colosseum)",
-            "All Master Arbitrator speech and the fellowship-lock notice.",
+        new("npc.arbitrator_spam", "NPCs", "Master Arbitrator spam",
+            "Selected Colosseum spam (title / key / arena instructions); keeps \"Well done!\" / \"Good Luck!\".",
             "Master Arbitrator tells you, \"You shall be known…\"", Scope.Any,
-            @"^Master Arbitrator (?:says|tells you)|^Your fellowship is now locked\..*you have 15 minutes to be recruited"),
+            @"(?:^Master Arbitrator tells you,.+(?:""You shall be known|""Take this knowledge|""Use the the key)|(?:\[Fellowship\] )?Master Arbitrator says,.+(?:""Your fellowship|""Use one of the|""Don't forget))"),
+        new("npc.arbitrator", "NPCs", "All Master Arbitrator chat",
+            "Every Master Arbitrator line plus the fellowship-lock notice (Mag AllMasterArbitratorChat).",
+            "Master Arbitrator tells you, \"You shall be known…\"", Scope.Any,
+            @"^Master Arbitrator (?:says|tells you)|^\[Fellowship\] Master Arbitrator |^Your fellowship is now locked\..*you have 15 minutes to be recruited"),
 
         // ── Pets (ACE custom combat pets) ─────────────────────────────────
         new("pet.hit", "Pets", "Pet hits",

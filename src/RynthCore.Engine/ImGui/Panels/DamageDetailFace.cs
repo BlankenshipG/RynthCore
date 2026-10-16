@@ -420,6 +420,17 @@ internal sealed class DamageDetailFace : IImGuiPanel
             "Variable = a new random power each attack, between Variable Min and Max (Settings).\n" +
             "Reckless + Variable = random, kept inside the Recklessness band (20-80%).");
 
+        // Pull-away kite: tag then run until the mob is clear of its spawn pack
+        ImGuiNET.ImGui.SameLine(0, 14);
+        string kite = string.IsNullOrEmpty(view.Kite) ? "Default" : view.Kite;
+        Combo("Kite", "##kite", DamageCommands.KiteModes, kite,
+            pick => DamageCommands.EditRule(name, r => r.Kite = pick),
+            (isDefault
+                ? "Pull-away for every monster without its own. Default = Off (fight in place).\n"
+                : "Pull-away for the monsters it covers. Default = the DEFAULT line's.\n") +
+            "Off = kill where it stands. PullAway = tag, run until it has been dragged\n" +
+            "Kite Pull Distance metres from its lock spot (Settings > Melee Combat), then kill.");
+
         // Match expression (Default never matches by name, so it has none)
         if (!isDefault)
         {

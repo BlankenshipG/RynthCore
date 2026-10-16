@@ -58,8 +58,10 @@ internal static class ImGuiBar
     // Opened from the RynthAi launcher, not the bar (AvaloniaOverlay.BuildRoot). Lua has
     // its own bar button since it became the RynthLua plugin. "Monsters" (retired 2026-10-01,
     // still registered by EntryPoint) must never get a button: PanelRouter sends it to Damage.
+    // Radar: under RynthNav since 2026-10-16 (header toggle + /rc radar); keep OverlayHost
+    // registration so PanelRouter / restore / Avalonia chrome still work.
     private static readonly HashSet<string> LauncherOnly = new(StringComparer.OrdinalIgnoreCase)
-        { "Monsters", "Damage", "Settings", "Nav", "Meta", "Items" };
+        { "Monsters", "Damage", "Settings", "Nav", "Meta", "Items", "Radar" };
 
     // Window: a plugin's script window with a bar button of its own (WindowFlags.BarButton);
     // the button toggles it through ScriptWindowRegistry, like the Scripts menu does.
@@ -67,9 +69,10 @@ internal static class ImGuiBar
         ScriptWindow? Window = null);
 
     // Engine panels with an ImGui face only (no OverlayHost entry) that get a bar button.
+    // Skills moved under RynthOracle (Skills / Attributes / Progress tabs); open via /ro skills.
+    // Item Count / Mini Remote: under Inventory since 2026-10-16 (no bar icons of their own).
     private static readonly string[] ImGuiOnlyBarPanels =
-        { Panels.InventoryFace.Title, Panels.SkillsFace.Title, Panels.SenseFace.Title, Panels.ItemCountFace.Title, Panels.MiniRemoteFace.Title,
-          Panels.CharactersFace.Title };
+        { Panels.InventoryFace.Title, Panels.SenseFace.Title, Panels.CharactersFace.Title };
 
     // The ILT section: ImGui-only Infinite Leaftide panels (Bounties and Guardian, both RynthILT's).
     // They never get buttons of their own; one ILT button stands for them, shown only on Infinite

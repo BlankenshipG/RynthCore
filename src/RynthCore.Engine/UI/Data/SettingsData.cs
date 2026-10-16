@@ -132,6 +132,9 @@ internal sealed class RynthAiSettings
     public int EnvironmentApproachMeters { get; set; } = 6;
     public int EnvironmentMinDistance { get; set; } = 3;
     public int EnvironmentSkipSec { get; set; } = 30;
+    // RynthAi pull-away kite (2026-10-16). Per-mob on/off is MonsterRule.Kite on the Damage panel.
+    public int KitePullMeters { get; set; } = 20;
+    public bool KiteTagFirst { get; set; } = true;
     // Spell Combat
     public int SpellCastIntervalMs { get; set; } = 400;
     public int AttackSpellIntervalMs { get; set; } = 1500;
@@ -977,6 +980,14 @@ internal static class SettingsSchema
             Int("Closest (m)", s => s.EnvironmentMinDistance, (s, v) => s.EnvironmentMinDistance = v, 1, 30, 1,
                 "Never moves nearer than this. Already this close, a new target is picked instead."),
             Int("Skip target (s)", s => s.EnvironmentSkipSec, (s, v) => s.EnvironmentSkipSec = v, 5, 300, 5),
+            Spacer(),
+            Section("Pull Away (Kite)"),
+            Int("Pull Distance (m)", s => s.KitePullMeters, (s, v) => s.KitePullMeters = v, 3, 100, 1,
+                "When a monster rule's Kite is PullAway (or Default follows the DEFAULT row set to PullAway),\n" +
+                "tag the mob then run until it has been dragged this many metres from where it stood, then kill it.\n" +
+                "Set per mob on the Damage panel (Kite)."),
+            Bool("Tag Before Fleeing", s => s.KiteTagFirst, (s, v) => s.KiteTagFirst = v,
+                "Land a hit before running so aggro sticks. Off = flee as soon as locked."),
             Spacer(),
             Bool("Use Native Attack", s => s.UseNativeAttack, (s, v) => s.UseNativeAttack = v,
                 "Uses the client's combat pipeline for attacks.\nThe client handles turn-to-face naturally (no backwards arrows)."),

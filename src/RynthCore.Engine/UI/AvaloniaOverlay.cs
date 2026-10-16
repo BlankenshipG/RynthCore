@@ -753,7 +753,15 @@ internal static class AvaloniaOverlay
                 StringComparison.Ordinal);
             UseCustomSkiaBridge = customBridgeRequested || (UseAnglePreferredBridge && !customBridgeDisabled);
 
-            if (UseAnglePreferredBridge)
+            // DXVK / drop-in d3d9: shared D3D9Ex HANDLEs are unreliable — stay on LockRect.
+            D3D9.DxvkDetection.EnsureProbed();
+            if (D3D9.DxvkDetection.IsDxvk || D3D9.DxvkDetection.IsNonSystemD3d9)
+            {
+                UseAnglePreferredBridge = false;
+                UseCustomSkiaBridge = false;
+                D3D9.DxvkDetection.ApplyOverlayPolicy();
+            }
+            else if (UseAnglePreferredBridge)
                 OverlaySurfaceBridge.UseAngleStub();
             else
                 OverlaySurfaceBridge.UseSoftwareFallback();

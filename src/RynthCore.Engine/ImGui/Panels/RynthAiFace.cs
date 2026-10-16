@@ -987,6 +987,13 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         RynthAiCommands.ApplyRemoteCommand("hub", section.Length > 0 ? "tab " + section : "tab");
     }
 
+    /// <summary>Opens Mini Remote undocked (floating) on the remote so Options has room.</summary>
+    private static void ShowMiniRemoteUndocked()
+    {
+        MiniRemoteFace.OpenUndocked();
+        RynthAiCommands.ApplyRemoteCommand("hub", "tab");
+    }
+
     /// <summary>
     /// RynthOracle's Character tab ("/ro character"), or the Mini Remote's Session Stats section
     /// when RynthOracle isn't loaded. Every generic "Character" link goes here (Leaftide's Charms
@@ -1046,8 +1053,15 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             SafeImGui.SetItemTooltip(hasOracle
                 ? "RynthOracle's Character tab: level, XP and session rates. Infinite Leaftide's charms and banking are the Mini Remote's ILT tabs (Server, below)."
                 : "RynthOracle's Character tab (RynthOracle isn't loaded).");
-            if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote", ImGuiPanelHost.IsOpen(MiniRemoteFace.Title)))
+            if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote", ImGuiPanelHost.IsOpen(MiniRemoteFace.Title) && !ImGuiPanelHost.IsPopped(MiniRemoteFace.Title)))
                 ShowMiniRemoteTab("");
+            if (PanelRouter.CanPopOut)
+            {
+                if (ImGuiNET.ImGui.MenuItem("Mini Remote (undocked)", "/rc miniremote undock",
+                        ImGuiPanelHost.IsOpen(MiniRemoteFace.Title) && ImGuiPanelHost.IsPopped(MiniRemoteFace.Title)))
+                    ShowMiniRemoteUndocked();
+                SafeImGui.SetItemTooltip("Open Mini Remote in its own floating window (room for Options / sections). Dock back from the title ↙, Float/Dock, or Options.");
+            }
             if (ImGuiNET.ImGui.MenuItem("Spells", "/rc spells"))
                 RynthAiCommands.ApplyRemoteCommand("spells", "toggle");
             ImGuiNET.ImGui.SetItemTooltip("RynthAi Spells: the spell catalog and buff profiles.");
@@ -1066,10 +1080,25 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             SafeImGui.SetItemTooltip(hasOracle
                 ? "RynthOracle's Fellowship tab: members, leader, open / locked, XP sharing and (Infinite Leaftide) the /fship commands."
                 : "RynthOracle's Fellowship tab (RynthOracle isn't loaded).");
-            PanelMenuItem(SkillsFace.Title, "/rc skills");
+            // Skills / Attributes / Progress live under RynthOracle (engine SkillsFace embed).
+            if (ImGuiNET.ImGui.MenuItem("Skills", "/ro skills", false, hasOracle)) UI.ServerMenus.Run("/ro skills");
+            SafeImGui.SetItemTooltip(hasOracle
+                ? "RynthOracle Skills: raise and train (was the standalone Skills panel)."
+                : "RynthOracle Skills (RynthOracle isn't loaded).");
+            if (ImGuiNET.ImGui.MenuItem("Attributes", "/ro attrs", false, hasOracle)) UI.ServerMenus.Run("/ro attrs");
+            SafeImGui.SetItemTooltip(hasOracle
+                ? "RynthOracle Attributes: attributes and vitals."
+                : "RynthOracle Attributes (RynthOracle isn't loaded).");
+            if (ImGuiNET.ImGui.MenuItem("Progress", "/ro progress", false, hasOracle)) UI.ServerMenus.Run("/ro progress");
+            SafeImGui.SetItemTooltip(hasOracle
+                ? "RynthOracle Progress: Infinite Leaftide progression planners (needs RynthILT)."
+                : "RynthOracle Progress (RynthOracle isn't loaded).");
             PanelMenuItem(InventoryFace.Title, "/rc inventory");
             PanelMenuItem(ItemCountFace.Title, "/rc itemcount");
             PanelMenuItem(CharactersFace.Title, "/rc characters");
+            // Radar lives under RynthNav (header toggle); keep Char menu linkage.
+            PanelMenuItem(RadarFace.Title, "/rc radar");
+            PanelMenuItem(RynthNavFace.Title, "/rc ui open RynthNav");
 
             UI.ServerMenus.DrawImGuiMenu(separatorFirst: true);
         }

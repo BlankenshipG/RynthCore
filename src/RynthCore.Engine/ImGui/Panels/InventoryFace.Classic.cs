@@ -16,7 +16,8 @@
 //  25 px title band isn't stretched) follow AcClientReborn's InventoryGeometry.
 //  Credit: OpenAC (Tom's project) for the layout and sprite research.
 //
-//    title     retail title bar "Inventory of <name>", tool toggles, close
+//    title     retail title bar "Inventory of <name>", Remote / Sort / Count /
+//              GInv (+ Vault on Aelrynth), tool toggles, close
 //    tools     search, sort, category chips (toggle, the funnel in the title)
 //    paperdoll the 24 equip slots at their retail places (the 3D figure isn't
 //              drawn, so the retail "Slots" view is always on)
@@ -41,6 +42,7 @@ using ImGuiNET;
 using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.Net;
 using RynthCore.Engine.UI;
+using RynthCore.Engine.UI.ScriptWindows;
 using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
@@ -253,12 +255,43 @@ internal sealed partial class InventoryFace
             InventorySettingsStore.SetClassic(false);
         ImGuiNET.ImGui.SetItemTooltip("Modern look");
 
-        // Vault (Aelrynth only): the contents area shows the account vault instead of the open pack.
+        // Related panels + Vault sit left of the size / tools toggles.
         float leftmost = bMinus.X;
+        bool remoteOpen = ImGuiPanelHost.IsOpen(MiniRemoteFace.Title);
+        bool sortOpen = ScriptWindowRegistry.IsOpen(RynthSortKey);
+        bool ginvOpen = ScriptWindowRegistry.IsOpen(GlobalInventoryKey);
+        bool countOpen = ImGuiPanelHost.IsOpen(ItemCountFace.Title);
+        var gsz = new Vector2(MathF.Round(42 * s), btn);
+        var csz = new Vector2(MathF.Round(40 * s), btn);
+        var ssz = new Vector2(MathF.Round(36 * s), btn);
+        var rsz = new Vector2(MathF.Round(48 * s), btn);
+        var bGinv = new Vector2(leftmost - gsz.X - 6 * s, b2.Y);
+        var bCount = new Vector2(bGinv.X - csz.X - 4 * s, b2.Y);
+        var bSort = new Vector2(bCount.X - ssz.X - 4 * s, b2.Y);
+        var bRemote = new Vector2(bSort.X - rsz.X - 4 * s, b2.Y);
+        if (TitleTextToggle("##inv_ginv", "GInv", bGinv, gsz, ginvOpen))
+            ToggleGlobalInventory();
+        ImGuiNET.ImGui.SetItemTooltip(ScriptWindowRegistry.Has(GlobalInventoryKey)
+            ? "Global Inventory (/ginv): every character's saved packs and storage"
+            : "Global Inventory (/ginv) — needs the RynthInventory plugin");
+        if (TitleTextToggle("##inv_itemcount", "Count", bCount, csz, countOpen))
+            ToggleItemCount();
+        ImGuiNET.ImGui.SetItemTooltip("Item Count (/rc itemcount): how many of each named item you carry");
+        if (TitleTextToggle("##inv_rsort", "Sort", bSort, ssz, sortOpen))
+            ToggleRynthSort();
+        ImGuiNET.ImGui.SetItemTooltip(ScriptWindowRegistry.Has(RynthSortKey)
+            ? "RynthSort (/rsort): pack sort rules and auto-sort"
+            : "RynthSort (/rsort) — needs the RynthSort plugin");
+        if (TitleTextToggle("##inv_miniremote", "Remote", bRemote, rsz, remoteOpen))
+            ToggleMiniRemote();
+        ImGuiNET.ImGui.SetItemTooltip("Mini Remote (/rc miniremote): remote, sections and HUDs");
+        leftmost = bRemote.X;
+
+        // Vault (Aelrynth only): the contents area shows the account vault instead of the open pack.
         if (VaultFeed.Available)
         {
             var vsz = new Vector2(MathF.Round(38 * s), btn);
-            var bV = new Vector2(bMinus.X - vsz.X - 8 * s, b2.Y);
+            var bV = new Vector2(leftmost - vsz.X - 8 * s, b2.Y);
             if (TitleTextToggle("##inv_vault", "Vault", bV, vsz, _vaultOpen))
             {
                 _vaultOpen = !_vaultOpen;

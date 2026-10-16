@@ -506,6 +506,20 @@ internal sealed partial class MiniRemoteFace
                 SelectSection(v.Id);
         ServerMenus.DrawImGuiMenu(separatorFirst: true);
         ImGuiNET.ImGui.Separator();
+        // Dock / undock: same as the host title ↗/↙, and as /rc miniremote undock|dock.
+        if (PanelRouter.CanPopOut)
+        {
+            bool popped = ImGuiPanelHost.IsPopped(Title) || ImGuiPopOuts.InPopOutFrame;
+            if (ImGuiNET.ImGui.MenuItem(popped ? "Dock Mini Remote" : "Undock Mini Remote",
+                    popped ? "/rc miniremote dock" : "/rc miniremote undock", false))
+            {
+                if (popped) DockOrOpen();
+                else OpenUndocked();
+            }
+            SafeImGui.SetItemTooltip(popped
+                ? "Dock back into the game window."
+                : "Pop out into a floating window so Options / sections have more room.");
+        }
         bool rail = RailShown;
         if (ImGuiNET.ImGui.MenuItem("Show the sections rail", "", rail))
         {

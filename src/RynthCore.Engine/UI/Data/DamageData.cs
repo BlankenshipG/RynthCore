@@ -676,7 +676,7 @@ internal static unsafe class DamageCommands
         MonstersPanel.Rule? from = string.IsNullOrEmpty(copyFrom) ? null
             : rules.Rules.Find(r => !IsDefault(r) && r.Name.Equals(copyFrom, StringComparison.OrdinalIgnoreCase));
         MonstersPanel.Rule clone = CopyOfDefault(from ?? s, name);
-        if (from != null) { clone.OffhandId = from.OffhandId; clone.PetDamage = from.PetDamage; clone.AttackPower = from.AttackPower; }   // a name rule's own choices, kept
+        if (from != null) { clone.OffhandId = from.OffhandId; clone.PetDamage = from.PetDamage; clone.AttackPower = from.AttackPower; clone.Kite = from.Kite; }   // a name rule's own choices, kept
         rules.Rules.Insert(defIdx >= 0 ? defIdx + 1 : 0, clone);
         return clone;
     }
@@ -691,7 +691,7 @@ internal static unsafe class DamageCommands
         Name = name, Category = s.Category,
         MatchExpression = "",   // an exact-name rule matches by name, not by a (possibly false) expression
         Priority = s.Priority, DamageType = s.DamageType, WeaponId = s.WeaponId, OffhandId = 0,
-        ExVuln = s.ExVuln, PetDamage = "PAuto", AttackPower = "Default",
+        ExVuln = s.ExVuln, PetDamage = "PAuto", AttackPower = "Default", Kite = "Default",
         Fester = s.Fester, Broadside = s.Broadside, GravityWell = s.GravityWell,
         Imperil = s.Imperil, Yield = s.Yield, Vuln = s.Vuln,
         UseArc = s.UseArc, UseBolt = s.UseBolt, UseRing = s.UseRing, UseStreak = s.UseStreak, UseBlast = s.UseBlast, UseWall = s.UseWall,
@@ -793,6 +793,10 @@ internal static unsafe class DamageCommands
     /// <summary>Rule.AttackPower choices, spelled as RynthAi reads them (AttackPowerModes).</summary>
     public static readonly string[] AttackPowerModes =
         { "Default", "High", "Reckless", "Variable", "Reckless + Variable" };
+
+    /// <summary>Rule.Kite choices, spelled as RynthAi reads them (KiteModes).</summary>
+    public static readonly string[] KiteModes =
+        { "Default", "Off", "PullAway" };
 
     /// <summary>Rule.PetDamage choices; "PAuto" is shown as Auto.</summary>
     public static readonly string[] PetDamageTypes =

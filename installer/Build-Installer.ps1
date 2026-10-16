@@ -398,6 +398,41 @@ if ((Test-Path $sehSrc) -and (Get-SehSourceTime) -gt (Get-Item $sehDll).LastWrit
 }
 Copy-Item $sehDll "$CoreStaging\Runtime\" -Force
 
+# DXVK x32 cache (optional launcher "Enable DXVK"): seed Runtime\dxvk so a fresh
+# install can toggle without GitHub. Prefer a local drop-in stage, else fetch latest.
+$dxvkDest = "$CoreStaging\Runtime\dxvk"
+$dxvkBuild = "C:\Games\RynthCore\build\dxvk-dropin\extract"
+Write-Host "Seeding Runtime\dxvk (x32 d3d9 for launcher Enable DXVK)..." -ForegroundColor Cyan
+New-Item -ItemType Directory -Force -Path $dxvkDest | Out-Null
+$seeded = $false
+if (Test-Path "$dxvkBuild") {
+    $localDll = Get-ChildItem $dxvkBuild -Recurse -Filter "d3d9.dll" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Directory.Name -eq "x32" } | Select-Object -First 1
+    if ($localDll) {
+        $verFile = Join-Path $localDll.Directory.Parent.FullName ".." # unused; read from folder name
+        $folderVer = if ($localDll.Directory.Parent.Name -match 'dxvk-(\d+\.\d+\.\d+)') { $Matches[1] } else { "local" }
+        Copy-Item $localDll.FullName "$dxvkDest\d3d9.dll" -Force
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        [IO.File]::WriteAllText("$dxvkDest\version.txt", $folderVer, $utf8)
+        $seeded = $true
+        Write-Host "  Seeded from build drop-in ($folderVer)."
+    }
+}
+if (-not $seeded -and (Test-Path "C:\Games\RynthCore\Runtime\dxvk\d3d9.dll")) {
+    Copy-Item "C:\Games\RynthCore\Runtime\dxvk\*" $dxvkDest -Force
+    $seeded = $true
+    Write-Host "  Seeded from live Runtime\dxvk."
+}
+if (-not $seeded) {
+    try {
+        & "$RepoRoot\scripts\Fetch-Dxvk.ps1" -Target $dxvkDest
+        $seeded = $true
+    }
+    catch {
+        Write-Warning "DXVK seed skipped (fetch failed): $($_.Exception.Message). Launcher can still Fetch at runtime."
+    }
+}
+
 # Engine Native subfolder (NativeAOT layout)
 if ($NativeAot -and (Test-Path "$EnginePublish\Native")) {
     foreach ($file in (Get-ChildItem "$EnginePublish\Native" -File)) {

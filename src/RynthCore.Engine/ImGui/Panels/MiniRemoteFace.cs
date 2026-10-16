@@ -46,6 +46,7 @@ using System.Numerics;
 using ImGuiNET;
 using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.Plugins;
+using RynthCore.Engine.UI;
 using RynthCore.Engine.UI.Data;
 using RynthCore.Engine.UI.ScriptWindows;
 using RynthCore.Engine.UI.Sections;
@@ -63,6 +64,35 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
             new PanelSpec(new Vector2(184, 150), new Vector2(110, 96), EdgeToEdge: true, GripInBody: true),
             () => new MiniRemoteFace());
         ItemHudStore.EnsureLoadQueued();
+    }
+
+    /// <summary>
+    /// Opens on Remote and pops out into its own window (room for Options / sections).
+    /// Safe if already open or already undocked. AC / chat thread.
+    /// </summary>
+    public static void OpenUndocked()
+    {
+        RequestSection(SectionCatalog.RemoteId);
+        if (!ImGuiPanelHost.IsOpen(Title))
+            ImGuiPanelHost.Open(Title);
+        // Open queues into _open immediately, so PopOut is allowed in the same turn.
+        if (PanelRouter.CanPopOut && !ImGuiPanelHost.IsPopped(Title))
+            ImGuiPanelHost.PopOut(Title);
+    }
+
+    /// <summary>
+    /// Docks a popped-out Mini Remote back into the client, or opens it docked when closed.
+    /// AC / chat thread.
+    /// </summary>
+    public static void DockOrOpen()
+    {
+        if (ImGuiPanelHost.IsPopped(Title))
+            ImGuiPanelHost.Redock(Title);
+        else if (!ImGuiPanelHost.IsOpen(Title))
+        {
+            RequestSection(SectionCatalog.RemoteId);
+            ImGuiPanelHost.Open(Title);
+        }
     }
 
     /// <summary>

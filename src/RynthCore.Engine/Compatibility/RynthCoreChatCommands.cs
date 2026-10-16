@@ -350,13 +350,15 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
-        // /rc miniremote [show|hide|toggle|tab <tab>|section <id>] : the ImGui Mini Remote panel, like
-        // its bar button (RynthAi's dashboard and "/ra hub" use show / hide). "tab" opens it on one of
-        // its tabs (RynthAi's pets, crafting; RynthILT's gear, games; none = the remote). Quests are
-        // RynthOracle's window (/ro) since 2026-10-13. Since 2026.10.5.54 the old "character" and
-        // "charms" tabs open RynthOracle's Character tab (/ro character) and "banking" opens
-        // RynthInventory's Global Inventory on its Banking tab (/ginv bank).
-        // "section" opens it on one of its sections (char = Session Stats, map, skills, ...; "remote" = the remote).
+        // /rc miniremote [show|hide|toggle|tab <tab>|section <id>|undock|dock] : the ImGui Mini Remote
+        // panel, like its bar button (RynthAi's dashboard and "/ra hub" use show / hide). "tab" opens
+        // it on one of its tabs (RynthAi's pets, crafting; RynthILT's gear, games; none = the remote).
+        // Quests are RynthOracle's window (/ro) since 2026-10-13. Since 2026.10.5.54 the old
+        // "character" and "charms" tabs open RynthOracle's Character tab (/ro character) and
+        // "banking" opens RynthInventory's Global Inventory on its Banking tab (/ginv bank).
+        // "section" opens it on one of its sections (char = Session Stats, map, skills, ...;
+        // "remote" = the remote). "undock" / "popout" / "float" opens (or keeps) it in its own
+        // window so Options has room; "dock" / "redock" puts it back in the client.
         if (IsVerb(sub, "miniremote", out string remoteArgs) || IsVerb(sub, "remote", out remoteArgs))
         {
             if (IsVerb(remoteArgs, "tab", out string moved) && MovedTabCommand(moved) is string movedTo)
@@ -391,28 +393,75 @@ internal static class RynthCoreChatCommands
                     ImGuiBackend.ImGuiPanelHost.Open(ImGuiBackend.Panels.MiniRemoteFace.Title);
                 }
             }
+            else if (IsMiniRemoteDockVerb(remoteArgs, out bool undock))
+            {
+                if (!UI.PanelRouter.CanPopOut)
+                    Reply("Mini Remote can't undock while the ImGui layer is off.");
+                else if (undock)
+                    ImGuiBackend.Panels.MiniRemoteFace.OpenUndocked();
+                else
+                    ImGuiBackend.Panels.MiniRemoteFace.DockOrOpen();
+            }
             else if (!TryPanelMode(remoteArgs, out bool? show))
-                Reply("Usage: /rc miniremote [show|hide|toggle|tab <tab>|section <id>]");
+                Reply("Usage: /rc miniremote [show|hide|toggle|tab <tab>|section <id>|undock|dock]");
             else
                 SetPanelOpen(ImGuiBackend.Panels.MiniRemoteFace.Title, show);
             return true;
         }
 
-        // /rc skills [show|hide|toggle] : the ImGui Skills panel; /rc progression opens it on its
-        // Progression tab (ILT worlds; the tab shows once RynthILT reports ILT features).
+        // /rc oracle-skills <0|1|2|off> : Oracle sets which SkillsFace body to embed (engine bridge).
+        if (IsVerb(sub, "oracle-skills", out string oracleSkillsArgs))
+        {
+            string a = oracleSkillsArgs.Trim().ToLowerInvariant();
+            if (a is "off" or "clear" or "none" or "-1")
+                ImGuiBackend.Panels.OracleSkillsEmbed.Clear();
+            else if (a is "0" or "skills" or "skill")
+                ImGuiBackend.Panels.OracleSkillsEmbed.SetActiveTab(0);
+            else if (a is "1" or "attrs" or "attributes" or "vitals")
+                ImGuiBackend.Panels.OracleSkillsEmbed.SetActiveTab(1);
+            else if (a is "2" or "progress" or "progression")
+                ImGuiBackend.Panels.OracleSkillsEmbed.SetActiveTab(2);
+            else
+                Reply("Usage: /rc oracle-skills <skills|attrs|progress|off>");
+            return true;
+        }
+
+        // /rc skills [show|hide|toggle] : opens RynthOracle on Skills (raise/train live there now).
+        // Falls back to the standalone Skills panel when Oracle isn't loaded.
         if (IsVerb(sub, "skills", out string skillsArgs))
         {
+            if (!TryPanelMode(skillsArgs, out bool? show))
+            {
+                Reply("Usage: /rc skills [show|hide|toggle]");
+                return true;
+            }
+            const string oracleKey = "RynthOracle/Oracle";
+            if (UI.ScriptWindows.ScriptWindowRegistry.Has(oracleKey))
+            {
+                if (show == false)
+                {
+                    ImGuiBackend.Panels.OracleSkillsEmbed.Clear();
+                    if (UI.ScriptWindows.ScriptWindowRegistry.IsOpen(oracleKey))
+                        UI.ScriptWindows.ScriptWindowRegistry.PlayerSetVisible(oracleKey, false);
+                }
+                else if (show == true || !UI.ScriptWindows.ScriptWindowRegistry.IsOpen(oracleKey)
+                         || ImGuiBackend.Panels.OracleSkillsEmbed.ActiveTab != 0)
+                    UI.ServerMenus.Run("/ro skills");
+                return true;
+            }
             if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SkillsFace.Title))
                 Reply("The Skills panel isn't available (the ImGui layer is off?).");
-            else if (!TryPanelMode(skillsArgs, out bool? show))
-                Reply("Usage: /rc skills [show|hide|toggle]");
             else
                 SetPanelOpen(ImGuiBackend.Panels.SkillsFace.Title, show);
             return true;
         }
-        if (sub.Equals("progression", StringComparison.OrdinalIgnoreCase))
+        // /rc progression : Oracle Progress tab (ILT planners); fallback = standalone Skills Progression.
+        if (sub.Equals("progression", StringComparison.OrdinalIgnoreCase)
+            || sub.Equals("progress", StringComparison.OrdinalIgnoreCase))
         {
-            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SkillsFace.Title))
+            if (UI.ScriptWindows.ScriptWindowRegistry.Has("RynthOracle/Oracle"))
+                UI.ServerMenus.Run("/ro progress");
+            else if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SkillsFace.Title))
                 Reply("The Skills panel isn't available (the ImGui layer is off?).");
             else
                 ImGuiBackend.Panels.SkillsFace.ShowProgression();
@@ -515,6 +564,14 @@ internal static class RynthCoreChatCommands
                     Reply("The Item Count panel isn't available (the ImGui layer is off?).");
                 else
                     UI.PanelRouter.Toggle(ImGuiBackend.Panels.ItemCountFace.Title);
+                return true;
+
+            case "radar":
+                // Radar left the top bar (under RynthNav); same PanelRouter path as before.
+                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.RadarFace.Title))
+                    Reply("The Radar panel isn't available (the ImGui layer is off?).");
+                else
+                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.RadarFace.Title);
                 return true;
 
             case "resetbar":
@@ -993,6 +1050,20 @@ internal static class RynthCoreChatCommands
             case "": case "toggle": return true;
             case "show": case "on": case "open": show = true; return true;
             case "hide": case "off": case "close": show = false; return true;
+            default: return false;
+        }
+    }
+
+    /// <summary>
+    /// Mini Remote dock verbs: undock / popout / float → true; dock / redock → false.
+    /// </summary>
+    private static bool IsMiniRemoteDockVerb(string args, out bool undock)
+    {
+        undock = false;
+        switch (args.Trim().ToLowerInvariant())
+        {
+            case "undock": case "popout": case "float": undock = true; return true;
+            case "dock": case "redock": return true;
             default: return false;
         }
     }

@@ -6,7 +6,9 @@
 //              pictures (InventoryFace.Classic.cs; Phase 2)
 //    Modern    the Phase 1 layout, below
 //
-//    header    burden (percent of capacity) and pyreals; item count
+//    header    burden (percent of capacity) and pyreals; item count; buttons for
+//              Mini Remote, RynthSort (/rsort), Item Count (/rc itemcount) and
+//              Global Inventory (/ginv)
 //    tools     search box, attribute filter (InventoryFace.AttrFilter.cs), sort
 //              picker; category chips
 //    packs     All, Main pack, each side pack (its icon and fill), Worn
@@ -36,6 +38,7 @@ using System.Globalization;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Engine.Compatibility;
+using RynthCore.Engine.UI;
 using RynthCore.Engine.UI.ScriptWindows;
 using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
 
@@ -207,6 +210,45 @@ internal sealed partial class InventoryFace : IImGuiPanel
         StatusRow(w);
     }
 
+    /// <summary>RynthInventory's Global Inventory script window key (UiWindow "RynthInventory/Main").</summary>
+    private const string GlobalInventoryKey = "RynthInventory/Main";
+    /// <summary>RynthSort's script window key (UiWindow "RynthSort/Main").</summary>
+    private const string RynthSortKey = "RynthSort/Main";
+
+    /// <summary>Opens or closes the Item Count panel (same as /rc itemcount).</summary>
+    private static void ToggleItemCount()
+    {
+        if (!ImGuiPanelHost.HasFace(ItemCountFace.Title)) return;
+        PanelRouter.Toggle(ItemCountFace.Title);
+    }
+
+    /// <summary>Opens or closes the Mini Remote (same as /rc miniremote).</summary>
+    private static void ToggleMiniRemote()
+    {
+        if (!ImGuiPanelHost.HasFace(MiniRemoteFace.Title)) return;
+        PanelRouter.Toggle(MiniRemoteFace.Title);
+    }
+
+    /// <summary>
+    /// Opens or closes a plugin script window by key, or runs <paramref name="fallbackCmd"/>
+    /// when the plugin hasn't submitted it yet.
+    /// </summary>
+    private static void ToggleScriptWindow(string key, string fallbackCmd)
+    {
+        if (ScriptWindowRegistry.Has(key))
+        {
+            ScriptWindowRegistry.PlayerSetVisible(key, !ScriptWindowRegistry.IsOpen(key));
+            return;
+        }
+        ServerMenus.Run(fallbackCmd);
+    }
+
+    /// <summary>Opens or closes RynthInventory's Global Inventory (same as /ginv).</summary>
+    private static void ToggleGlobalInventory() => ToggleScriptWindow(GlobalInventoryKey, "/ginv");
+
+    /// <summary>Opens or closes RynthSort (same as /rsort).</summary>
+    private static void ToggleRynthSort() => ToggleScriptWindow(RynthSortKey, "/rsort");
+
     // ── Header: burden, pyreals, count ──────────────────────────────────
 
     private void Header(InventoryView view, float w)
@@ -239,11 +281,41 @@ internal sealed partial class InventoryFace : IImGuiPanel
             InventorySettingsStore.SetClassic(true);
         ImGuiNET.ImGui.SetItemTooltip("Classic look (the retail inventory window)");
 
+        // Related (off the top bar): Mini Remote, RynthSort, Item Count, Global Inventory.
+        bool remoteOpen = ImGuiPanelHost.IsOpen(MiniRemoteFace.Title);
+        bool sortOpen = ScriptWindowRegistry.IsOpen(RynthSortKey);
+        bool ginvOpen = ScriptWindowRegistry.IsOpen(GlobalInventoryKey);
+        bool countOpen = ImGuiPanelHost.IsOpen(ItemCountFace.Title);
+        var bGinv = new Vector2(tb.X - 24, p.Y + 1);
+        var bCount = new Vector2(bGinv.X - 24, p.Y + 1);
+        var bSort = new Vector2(bCount.X - 24, p.Y + 1);
+        var bRemote = new Vector2(bSort.X - 24, p.Y + 1);
+        if (IconButton("##inv_ginv", PhosphorIcons.GlobeHemisphereWest, bGinv, new Vector2(22, 22),
+                ginvOpen ? Teal : Amber, BtnFill, font: UiFont.Ui11))
+            ToggleGlobalInventory();
+        ImGuiNET.ImGui.SetItemTooltip(ScriptWindowRegistry.Has(GlobalInventoryKey)
+            ? "Global Inventory (/ginv): every character's saved packs and storage"
+            : "Global Inventory (/ginv) — needs the RynthInventory plugin");
+        if (IconButton("##inv_itemcount", PhosphorIcons.Bag, bCount, new Vector2(22, 22),
+                countOpen ? Teal : Amber, BtnFill, font: UiFont.Ui11))
+            ToggleItemCount();
+        ImGuiNET.ImGui.SetItemTooltip("Item Count (/rc itemcount): how many of each named item you carry");
+        if (IconButton("##inv_rsort", PhosphorIcons.SortAscending, bSort, new Vector2(22, 22),
+                sortOpen ? Teal : Amber, BtnFill, font: UiFont.Ui11))
+            ToggleRynthSort();
+        ImGuiNET.ImGui.SetItemTooltip(ScriptWindowRegistry.Has(RynthSortKey)
+            ? "RynthSort (/rsort): pack sort rules and auto-sort"
+            : "RynthSort (/rsort) — needs the RynthSort plugin");
+        if (IconButton("##inv_miniremote", PhosphorIcons.SquaresFour, bRemote, new Vector2(22, 22),
+                remoteOpen ? Teal : Amber, BtnFill, font: UiFont.Ui11))
+            ToggleMiniRemote();
+        ImGuiNET.ImGui.SetItemTooltip("Mini Remote (/rc miniremote): remote, sections and HUDs");
+
         float cw = ImGuiNET.ImGui.CalcTextSize(_countText).X;
-        dl.AddText(new Vector2(tb.X - cw - 6, ty), Mute, _countText);
+        dl.AddText(new Vector2(bRemote.X - cw - 6, ty), Mute, _countText);
 
         // Drag surface: the empty part of the header, between the pyreals and the count.
-        float dragFrom = x + 20 + ImGuiNET.ImGui.CalcTextSize(view.PyrealText).X + 6, dragTo = tb.X - cw - 10;
+        float dragFrom = x + 20 + ImGuiNET.ImGui.CalcTextSize(view.PyrealText).X + 6, dragTo = bRemote.X - cw - 10;
         if (dragTo > dragFrom)
         {
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(dragFrom, p.Y));

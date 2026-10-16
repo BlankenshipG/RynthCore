@@ -53,8 +53,22 @@ internal sealed partial class SkillsFace : IImGuiPanel
         new PanelSpec(new Vector2(480, 640), new Vector2(380, 320), EdgeToEdge: true, GripInBody: true),
         () => new SkillsFace());
 
+    /// <summary>Shared instance for drawing inside Oracle (no separate Skills window).</summary>
+    private static SkillsFace? _embed;
+    private long _embedShownMs;
+
     /// <summary>Numbers change on raises, buffs and XP: 4 Hz idle when popped out.</summary>
     public int PopOutIdleHz => 4;
+
+    /// <summary>
+    /// Draws the Skills / Attributes / Progress body into the current ImGui window
+    /// (Oracle embed). No outer panel chrome — Oracle owns the tab strip.
+    /// </summary>
+    public static void DrawEmbedded(int tab)
+    {
+        _embed ??= new SkillsFace();
+        _embed.DrawHosted(tab);
+    }
 
     // ── Palette (FaceKit's, plus the vitals') ────────────────────────────
     private static readonly uint Mana = RynthTheme.Argb(0xFF4DA6FF), Dim = RynthTheme.Argb(0xFF7F8FA0),
@@ -206,12 +220,50 @@ internal sealed partial class SkillsFace : IImGuiPanel
         if (_tab == 2 && !ProgressionTabVisible) _tab = 0;
 
         float w = Begin(out Vector2 origin, out Vector2 size);
+        DrawPanelBody(w, origin, size, showOwnTabs: true);
+        End(origin, size);
+
+        _picker.Draw();
+        DrawMulti();
+        DrawConfirm();
+        DrawProgressionConfirm();
+    }
+
+    /// <summary>Oracle-hosted body (same content as the standalone panel tabs).</summary>
+    private void DrawHosted(int tab)
+    {
+        _tab = tab < 0 ? 0 : tab > 2 ? 2 : tab;
+        long now = Environment.TickCount64;
+        if (now - _embedShownMs > 2000)
+        {
+            _embedShownMs = now;
+            OnShown();
+        }
+        PlayerProgressHooks.Want();
+        Refresh();
+        ApplyProgressionRequest();
+
+        Vector2 avail = ImGuiNET.ImGui.GetContentRegionAvail();
+        float w = Math.Max(40f, avail.X);
+        Vector2 origin = ImGuiNET.ImGui.GetCursorScreenPos();
+        DrawPanelBody(w, origin, new Vector2(w, Math.Max(120f, avail.Y)), showOwnTabs: false);
+
+        _picker.Draw();
+        DrawMulti();
+        DrawConfirm();
+        DrawProgressionConfirm();
+    }
+
+    private void DrawPanelBody(float w, Vector2 origin, Vector2 size, bool showOwnTabs)
+    {
         DrawSummary(w);
-        DrawTabs(w);
+        if (showOwnTabs) DrawTabs(w);
         if (_tab == 0) DrawToolbar(w);
         if (_tab != 2) DrawColumnHeader(w, _tab == 0 ? "Skill" : "Attribute");
 
-        float bodyH = Math.Max(60, Remaining(origin, size) - GripOverlap());
+        float bodyH = showOwnTabs
+            ? Math.Max(60, Remaining(origin, size) - GripOverlap())
+            : Math.Max(60, size.Y - (ImGuiNET.ImGui.GetCursorScreenPos().Y - origin.Y));
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ChildBg, PanelBg);
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(0, 0));
         ImGuiNET.ImGui.BeginChild("##skills_body", new Vector2(w, bodyH));
@@ -230,12 +282,6 @@ internal sealed partial class SkillsFace : IImGuiPanel
         ImGuiNET.ImGui.EndChild();
         ImGuiNET.ImGui.PopStyleVar();
         ImGuiNET.ImGui.PopStyleColor();
-        End(origin, size);
-
-        _picker.Draw();
-        DrawMulti();
-        DrawConfirm();
-        DrawProgressionConfirm();
     }
 
     // ── Data ────────────────────────────────────────────────────────────
