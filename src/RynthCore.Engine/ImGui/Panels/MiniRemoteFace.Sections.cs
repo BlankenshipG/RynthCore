@@ -123,6 +123,10 @@ internal sealed partial class MiniRemoteFace
             _remoteWindowSize = ImGuiNET.ImGui.GetWindowSize() / ImGuiPanelHost.PlacementScale();
         _section = next;
         _fitPending = true;
+        // Non-Remote sections need the left rail (or they draw as an orphan body with no
+        // hub tab bar). Rail-off is only for Remote + miniremote-window (Gear/Games/…).
+        if (!IsRemote && !RailShown)
+            PanelColumnStore.Set(RailKey, 1f);
         if (IsRemote)
         {
             // Back on the remote: RynthAi's asks again; the engine grid gets the size it had.
@@ -504,8 +508,17 @@ internal sealed partial class MiniRemoteFace
         ImGuiNET.ImGui.Separator();
         bool rail = RailShown;
         if (ImGuiNET.ImGui.MenuItem("Show the sections rail", "", rail))
-            PanelColumnStore.Set(RailKey, rail ? 0f : 1f);
-        SafeImGui.SetItemTooltip("The column of sections down the left. Hidden, RynthAi's remote shows its own tab bar again "
-            + "(Gear, Games and the other ILT tabs), and a section is picked here or with /rc miniremote section <name>.");
+        {
+            bool hide = rail;
+            PanelColumnStore.Set(RailKey, hide ? 0f : 1f);
+            // Hiding the rail only restores the Remote tab bar when we are on Remote
+            // (Surface → miniremote-window). Off-Remote + rail off left Crafting/etc.
+            // as a lone body in docked and undocked windows (2026-10-16).
+            if (hide && !IsRemote)
+                SelectSection(SectionCatalog.RemoteId);
+        }
+        SafeImGui.SetItemTooltip("The column of sections down the left. Hidden, the window returns to Remote so "
+            + "RynthAi's tab bar shows again (Pets, Crafting, Gear, Games, Vaulted), and a section is picked "
+            + "here or with /rc miniremote section <name> (that turns the rail back on).");
     }
 }
