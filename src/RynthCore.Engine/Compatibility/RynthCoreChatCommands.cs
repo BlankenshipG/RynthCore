@@ -541,7 +541,7 @@ internal static class RynthCoreChatCommands
                 return true;
 
             case "sense":
-                // The ImGui Sense panel (open/close), like its bar button.
+                // Sense left the top bar (under RynthNav); same PanelRouter path as before.
                 if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SenseFace.Title))
                     Reply("The Sense panel isn't available (the ImGui layer is off?).");
                 else

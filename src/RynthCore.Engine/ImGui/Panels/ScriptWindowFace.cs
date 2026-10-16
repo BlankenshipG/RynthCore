@@ -66,6 +66,9 @@ internal sealed unsafe class ScriptWindowFace : IImGuiPanel
         {
             ScriptWindowMetrics.Refresh();
             ReportGeometry();
+            // Oracle: Vision / Tracker / ILT toggles above the script tabs (left the top bar).
+            if (OracleSkillsEmbed.IsOraclePanel(_window.PanelKey))
+                OracleCompanionStrip.Draw();
             ScriptWindowReplay.Draw(_window);
             // Oracle Skills / Attributes / Progress: after the script tab strip, draw the
             // engine SkillsFace body (raise/train/progression) into the remaining space.

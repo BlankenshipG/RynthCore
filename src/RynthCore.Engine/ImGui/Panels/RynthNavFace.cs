@@ -23,8 +23,8 @@
 //            arrow overlay (RynthNavArrowFace), Go / Stop / Clear / favorite,
 //            set it to a place or coordinates, the arrival radius.
 //
-//  Header also toggles the World Map, Mini Map and Radar (Radar left the top
-//  bar 2026-10-16; same PanelRouter path as /rc radar and /rc ui open Radar).
+//  Header also toggles the World Map, Mini Map, Radar and Sense (Radar/Sense
+//  left the top bar 2026-10-16; same PanelRouter path as /rc radar|/rc sense).
 //
 //  Our take on GoArrow's arrow, atlas and routes (Digero 2006, Virindi 2011,
 //  MIT). RynthNav (the plugin) owns the arrow, favorites, recent, routing and
@@ -130,8 +130,8 @@ internal sealed class RynthNavFace : IImGuiPanel
         ImFontPtr big = ImGuiFonts.Get(UiFont.UiBold14);
         dl.AddText(big, big.FontSize, p + new Vector2(16, 1), Teal, "RynthNav");
         float tw = ImGuiNET.ImGui.CalcTextSize("RynthNav").X * big.FontSize / ImGuiNET.ImGui.GetFontSize();
-        dl.AddText(p + new Vector2(24 + tw, 6), Mute, "go · atlas · arrow · radar");
-        // Right-side toggles: Radar (left of Mini), Mini, Map — same open path as the old bar.
+        dl.AddText(p + new Vector2(24 + tw, 6), Mute, "go · atlas · arrow · radar · sense");
+        // Right-side toggles: Sense, Radar (left of Mini), Mini, Map — same open path as the old bar.
         float hx = p.X + w;
         if (ImGuiPanelHost.HasFace(WorldMapFace.Title))
         {
@@ -159,6 +159,16 @@ internal sealed class RynthNavFace : IImGuiPanel
                     radarOpen ? Teal : Text, radarOpen ? Selected : BtnFill, border: radarOpen ? Teal : 0))
                 UI.PanelRouter.Toggle(RadarFace.Title);
             ImGuiNET.ImGui.SetItemTooltip("Radar (/rc radar): nearby objects, walls and floor overlay");
+            hx -= 4;
+        }
+        if (ImGuiPanelHost.HasFace(SenseFace.Title))
+        {
+            bool senseOpen = ImGuiPanelHost.IsOpen(SenseFace.Title);
+            hx -= 58;
+            if (Button("##rnav_sense", PhosphorIcons.Binoculars + " Sense", new Vector2(hx, p.Y - 1), new Vector2(58, 22),
+                    senseOpen ? Teal : Text, senseOpen ? Selected : BtnFill, border: senseOpen ? Teal : 0))
+                UI.PanelRouter.Toggle(SenseFace.Title);
+            ImGuiNET.ImGui.SetItemTooltip("Sense (/rc sense): watch list of names anywhere the client knows");
         }
         NextLine(p, 22);
         DrawTabs(w);

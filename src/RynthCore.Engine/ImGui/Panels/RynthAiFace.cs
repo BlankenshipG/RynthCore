@@ -1096,9 +1096,19 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             PanelMenuItem(InventoryFace.Title, "/rc inventory");
             PanelMenuItem(ItemCountFace.Title, "/rc itemcount");
             PanelMenuItem(CharactersFace.Title, "/rc characters");
-            // Radar lives under RynthNav (header toggle); keep Char menu linkage.
+            // Radar / Sense live under RynthNav (header toggles); keep Char menu linkage.
             PanelMenuItem(RadarFace.Title, "/rc radar");
+            PanelMenuItem(SenseFace.Title, "/rc sense");
             PanelMenuItem(RynthNavFace.Title, "/rc ui open RynthNav");
+            // Vision / Tracker / ILT live under Oracle (companion strip); keep Char menu linkage.
+            if (ImGuiPanelHost.HasFace(VisionFace.Title))
+                PanelMenuItem(VisionFace.Title, "/rc ui open Vision");
+            if (ImGuiPanelHost.HasFace("Tracker"))
+                PanelMenuItem("Tracker", "/rc ui open Tracker");
+            if (ImGuiPanelHost.HasFace(BountiesFace.Title))
+                PanelMenuItem(BountiesFace.Title, "/rc ui open " + BountiesFace.Title);
+            if (ImGuiPanelHost.HasFace(GuardianFace.Title))
+                PanelMenuItem(GuardianFace.Title, "/rc ui open " + GuardianFace.Title);
 
             UI.ServerMenus.DrawImGuiMenu(separatorFirst: true);
         }
