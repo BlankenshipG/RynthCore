@@ -6,7 +6,9 @@
     lives in decal-accounts.json, appsettings.json never holds a value an older launcher can't
     read, migration of a file that does, and what happens when an older launcher edits the
     accounts; and saved account passwords (DPAPI-encrypted, AccountPasswordProtection.cs): round
-    trip, migration of a plain-text file, undecryptable blobs, nothing leaking into files or notes.
+    trip, migration of a plain-text file, undecryptable blobs, nothing leaking into files or notes;
+    and the crash-dump kill hold (CrashDumpWriterRule.cs): which client a createdump.exe /
+    WerFault.exe command line names, and how long the launcher's kills wait for it.
     Works in a temp folder, never in %APPDATA%\RynthCore. Windows only (DPAPI).
     Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
   -->
@@ -30,6 +32,7 @@
     <Compile Include="..\..\src\RynthCore.App\AcLaunchArgumentBuilder.cs" Link="App\AcLaunchArgumentBuilder.cs" />
     <Compile Include="..\..\src\RynthCore.App\FirstLoginRules.cs" Link="App\FirstLoginRules.cs" />
     <Compile Include="..\..\src\RynthCore.App\UserPrefsSwapRecovery.cs" Link="App\UserPrefsSwapRecovery.cs" />
+    <Compile Include="..\..\src\RynthCore.App\CrashDumpWriterRule.cs" Link="App\CrashDumpWriterRule.cs" />
   </ItemGroup>
 
 </Project>

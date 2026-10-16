@@ -170,6 +170,8 @@ internal sealed class RynthAiSettings
     public float DunPatrolSightYd { get; set; } = 20f;       // sweep: how far a monster notices you (lane spacing)
     public bool OpenDoors { get; set; }
     public float OpenDoorRange { get; set; } = 5f;
+    // RynthAi OpenDoorsOnPathOnly: Open Doors opens only a closed door on the path of travel. An older plugin ignores it.
+    public bool OpenDoorsOnPathOnly { get; set; }
     public bool AutoUnlockDoors { get; set; }
     public int MovementMode { get; set; }
     public float NavStopTurnAngle { get; set; } = 20f;
@@ -941,6 +943,8 @@ internal static class SettingsSchema
             Bool("Open Doors While Navigating", s => s.OpenDoors, (s, v) => s.OpenDoors = v,
                 "Automatically open doors encountered during navigation.", gates: true),
             Float("Door Detection Range (yd)", s => s.OpenDoorRange, (s, v) => s.OpenDoorRange = v, 0.1f, 70f, 1f, when: s => s.OpenDoors),
+            Bool("Only Doors On My Path", s => s.OpenDoorsOnPathOnly, (s, v) => s.OpenDoorsOnPathOnly = v,
+                "Open only a closed door that is on the way: within the range along the route's next legs (or straight ahead when not on a route).\nOff: every closed door within the range is opened.", when: s => s.OpenDoors),
             Bool("Auto-Unlock Doors", s => s.AutoUnlockDoors, (s, v) => s.AutoUnlockDoors = v,
                 "If a door is locked, try to use a lockpick from your Consumable Items list.", when: s => s.OpenDoors),
             Spacer(),

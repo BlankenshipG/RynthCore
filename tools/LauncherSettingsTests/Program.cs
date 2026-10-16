@@ -381,6 +381,44 @@ internal static class Program
                 UserPrefsSwapRecovery.Recover(swap, true, true, null, DateTime.Now);
                 Check(!File.Exists(swap.LivePath), "live file removed so the game writes its defaults");
             });
+
+            // A kill while createdump.exe / WerFault.exe writes a client's crash dump cuts the dump
+            // short; the launcher's kills wait for the writer, then Grace more, at most MaxHold.
+            Scenario("crash dump writers: which client a command line names", root, () =>
+            {
+                Check(CrashDumpWriterRule.TargetPid("createdump",
+                    "\"C:\\Games\\RynthCore\\Runtime\\dotnet\\createdump.exe\" -f \"C:\\Games\\RynthCore\\Logs\\dumps\\clr_29196_%t.dmp\" --withheap 29196") == 29196,
+                    "createdump: the positional pid after the options");
+                Check(CrashDumpWriterRule.TargetPid("createdump.exe", "createdump.exe 4321 -h") == 4321, "createdump: pid first, \".exe\" in the name");
+                Check(CrashDumpWriterRule.TargetPid("createdump", "createdump --crashthread 777 --signal 6 -f 1234.dmp 4321") == 4321,
+                    "createdump: numeric option values (--crashthread, --signal) aren't the pid");
+                Check(CrashDumpWriterRule.TargetPid("createdump", "createdump -f x.dmp --withheap") == null, "createdump without a pid: none");
+                Check(CrashDumpWriterRule.TargetPid("WerFault", @"C:\WINDOWS\SysWOW64\WerFault.exe -u -p 29196 -s 568") == 29196, "WerFault: the value after -p");
+                Check(CrashDumpWriterRule.TargetPid("WerFault", @"C:\WINDOWS\system32\WerFault.exe -pss -s 1234 -r 5678 -p 29196 -ip 4000") == 29196,
+                    "WerFault: -s/-r/-ip values aren't the pid");
+                Check(CrashDumpWriterRule.TargetPid("werfault", "WerFault.exe /p 99 /s 1") == 99, "WerFault: /p, any case");
+                Check(CrashDumpWriterRule.TargetPid("WerFault", "WerFault.exe -s 1234") == null, "WerFault without -p: none");
+                Check(CrashDumpWriterRule.TargetPid("notepad", "notepad.exe 1234") == null, "not a dump writer: none");
+                Check(CrashDumpWriterRule.TargetPid("createdump", null) == null && CrashDumpWriterRule.TargetPid("createdump", "") == null,
+                    "no command line: none");
+            });
+
+            Scenario("crash dump writers: how long the kills wait", root, () =>
+            {
+                var now = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+                var H = CrashDumpWriterRule.Hold.Holding;
+                Check(CrashDumpWriterRule.Decide(false, null, null, now) == CrashDumpWriterRule.Hold.None, "no writer ever: kill checks run");
+                Check(CrashDumpWriterRule.Decide(true, null, null, now) == H, "a writer names the client: hold");
+                Check(CrashDumpWriterRule.Decide(true, now, now.AddMinutes(-5), now) == H, "still writing after 5 min: hold");
+                Check(CrashDumpWriterRule.Decide(false, now.AddSeconds(-59), now.AddMinutes(-1), now) == H, "writer gone 59 s ago: still held (60 s more)");
+                Check(CrashDumpWriterRule.Decide(false, now.AddSeconds(-60), now.AddMinutes(-1), now) == CrashDumpWriterRule.Hold.None,
+                    "writer gone 60 s ago: kill checks resume");
+                Check(CrashDumpWriterRule.Decide(true, now, now.AddMinutes(-15), now) == CrashDumpWriterRule.Hold.Expired,
+                    "held 15 min: expired, a writer that never ends can't shield a dead client");
+                Check(CrashDumpWriterRule.Decide(false, now.AddSeconds(-10), now.AddMinutes(-16), now) == CrashDumpWriterRule.Hold.Expired,
+                    "expired stays expired through the grace");
+                Check(CrashDumpWriterRule.Grace == TimeSpan.FromSeconds(60), "the grace is 60 s");
+            });
         }
         finally
         {

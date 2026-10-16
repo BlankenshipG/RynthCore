@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -8,6 +7,12 @@ using RynthCore.Engine.Hooking;
 
 namespace RynthCore.Engine.Compatibility;
 
+// 2026-10-15: back on the kernel32 exports. SilentKelpie's 2026-10-14 change hooked only the
+// acclient.exe and MSVCR70 CreateFile import slots, but AC opens its data files with
+// CreateFileW by another route: no .dat open reached the hook, the first client on that
+// engine held a data file without sharing it, and every client started after it stopped
+// with "Can't open the data files" (2026.10.15.2 / .3). Only .dat paths are changed; every
+// other CreateFile (Direct3D, drivers) passes through untouched with its last-error kept.
 /// <summary>
 /// IAT-hooks acclient.exe's <c>kernel32!CreateFileW</c> and <c>CreateFileA</c>
 /// imports to force maximally-permissive share semantics on AC's data files.
@@ -28,19 +33,12 @@ namespace RynthCore.Engine.Compatibility;
 ///   Other paths pass through untouched.
 ///
 /// Why IAT-hook instead of MinHook on the kernel32 export:
-///   Only the modules that open AC's data files are hooked: acclient.exe
-///   (imports CreateFileA) and its CRT MSVCR70.dll (CreateFileA/W, behind
-///   fopen/_wfopen). A kernel32 export hook also caught every other module,
-///   including d3d9.dll and the GPU driver while AC created its device: their
-///   CreateFile calls went through managed code, could wait on the runtime
-///   while plugins loaded, and on some PCs AC then failed with "Could not
-///   initialize Direct3D" (2026-10-14). The detour preserves the Win32 last
-///   error, because callers read it after a successful CreateFile too
-///   (ERROR_ALREADY_EXISTS).
-///   Decal coexistence: our detour calls the pointer the IAT slot held, so any
-///   Decal detour on the kernel32 export still runs. Both hooks fire in order.
-///   The slots are restored at engine shutdown (<see cref="Uninstall"/>): the
-///   detours live in this engine generation, which hot reload unloads.
+///   Decal coexistence. Decal almost certainly already detours kernel32!CreateFile
+///   (that's how Decal-injected Thwargle clients can multibox without a
+///   second AC install). IAT-hooking acclient.exe's import slot intercepts only
+///   acclient.exe's own calls; our detour's call into the saved IAT pointer
+///   still routes through any Decal MinHook trampoline on the kernel32 export.
+///   No collision; both hooks fire in order.
 /// </summary>
 internal static class DatFileShareHooks
 {
@@ -85,16 +83,23 @@ internal static class DatFileShareHooks
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool VirtualProtect(IntPtr lpAddress, uint dwSize, uint flNewProtect, out uint lpflOldProtect);
 
-    /// <summary>
-    /// One patched import slot. <see cref="Slot"/> is the address inside the IAT array (not a
-    /// function address); <see cref="Original"/> is what it held (the real kernel32!CreateFile,
-    /// or another hooker's detour), written back by <see cref="Uninstall"/>. <see cref="Detour"/>
-    /// keeps the delegate reachable: the function pointer handed to native code is only valid
-    /// while it is.
-    /// </summary>
-    private sealed record IatHook(string Module, string Function, IntPtr Slot, IntPtr Original, Delegate Detour);
+    // Pinned via static field — Marshal.GetFunctionPointerForDelegate keeps a
+    // weak handle, so the delegate must be reachable for the process lifetime.
+    private static CreateFileWDelegate? _wDetour;
+    private static CreateFileADelegate? _aDetour;
 
-    private static readonly List<IatHook> _iatHooks = [];
+    // The IAT slot pointer (the address inside the IAT array, NOT the original
+    // function address) — needed for the unhook path.
+    private static IntPtr _wIatSlot;
+    private static IntPtr _aIatSlot;
+
+    // What was in the IAT slot when we patched it. Could be the real
+    // kernel32!CreateFile, or another hooker's detour if they got there first.
+    private static IntPtr _wOriginalPtr;
+    private static IntPtr _aOriginalPtr;
+
+    private static CreateFileWDelegate? _wOriginal;
+    private static CreateFileADelegate? _aOriginal;
 
     private static string _statusMessage = "Not probed yet.";
 
@@ -138,23 +143,80 @@ internal static class DatFileShareHooks
                 return;
             }
 
-            // acclient.exe opens DATs with its own CreateFileA import; its CRT
-            // (MSVCR70.dll, statically imported, so loaded by now) does fopen/_wfopen
-            // opens through its CreateFileA/W imports. Nothing else is hooked.
-            HookModuleImports("acclient.exe", moduleBase);
-            HookModuleImports("MSVCR70.dll", GetModuleHandleW("MSVCR70.dll"));
-
-            if (_iatHooks.Count == 0)
+            // Hook the kernel32 exports directly with MinHook so we catch ALL
+            // callers in the process — acclient.exe itself, the CRT layer
+            // (msvcrt.dll, which is how AC's fopen-style DAT loads route), and
+            // any plugin or runtime DLL. IAT-hooking acclient.exe alone misses
+            // CRT-mediated calls because they go through msvcrt's own IAT slot.
+            IntPtr hKernel32 = GetModuleHandleW("kernel32.dll");
+            if (hKernel32 == IntPtr.Zero)
             {
-                _statusMessage = "no CreateFile import slots found in acclient.exe or MSVCR70.dll.";
+                _statusMessage = "kernel32.dll module handle not found.";
+                RynthLog.Compat($"Compat: DAT share hook failed - {_statusMessage}");
+                return;
+            }
+
+            // Two-phase install. Phase 1: create both hooks (inactive),
+            // assign typed trampolines into _aOriginal/_wOriginal. Phase 2:
+            // memory barrier then Enable. Critical ordering: the detour can
+            // fire from ANY caller in the process the moment Enable returns,
+            // and the detour calls _aOriginal/_wOriginal — those fields MUST
+            // be set first or the first invocation null-derefs and kills the
+            // engine init thread.
+            IntPtr aTarget = GetProcAddress(hKernel32, "CreateFileA");
+            IntPtr wTarget = GetProcAddress(hKernel32, "CreateFileW");
+
+            int patched = 0;
+            if (aTarget != IntPtr.Zero)
+            {
+                _aDetour = CreateFileADetour;
+                IntPtr aDetourPtr = Marshal.GetFunctionPointerForDelegate(_aDetour);
+                _aOriginalPtr = MinHook.HookCreate(aTarget, aDetourPtr);
+                _aOriginal = Marshal.GetDelegateForFunctionPointer<CreateFileADelegate>(_aOriginalPtr);
+                patched++;
+            }
+
+            if (wTarget != IntPtr.Zero)
+            {
+                _wDetour = CreateFileWDetour;
+                IntPtr wDetourPtr = Marshal.GetFunctionPointerForDelegate(_wDetour);
+                _wOriginalPtr = MinHook.HookCreate(wTarget, wDetourPtr);
+                _wOriginal = Marshal.GetDelegateForFunctionPointer<CreateFileWDelegate>(_wOriginalPtr);
+                patched++;
+            }
+
+            // Publish trampolines to other cores before enabling.
+            Thread.MemoryBarrier();
+
+            if (aTarget != IntPtr.Zero)
+            {
+                MinHook.Enable(aTarget);
+                RynthLog.Info($"Compat: DAT share - hooked kernel32!CreateFileA @ 0x{aTarget.ToInt32():X8} (trampoline 0x{_aOriginalPtr.ToInt32():X8}).");
+            }
+            else
+            {
+                RynthLog.Compat("Compat: DAT share - kernel32!CreateFileA export not found.");
+            }
+
+            if (wTarget != IntPtr.Zero)
+            {
+                MinHook.Enable(wTarget);
+                RynthLog.Info($"Compat: DAT share - hooked kernel32!CreateFileW @ 0x{wTarget.ToInt32():X8} (trampoline 0x{_wOriginalPtr.ToInt32():X8}).");
+            }
+            else
+            {
+                RynthLog.Compat("Compat: DAT share - kernel32!CreateFileW export not found.");
+            }
+
+            if (patched == 0)
+            {
+                _statusMessage = "MinHook on kernel32 CreateFile exports failed.";
                 RynthLog.Compat($"Compat: DAT share hook failed - {_statusMessage}");
                 return;
             }
 
             IsInstalled = true;
-            _statusMessage = $"DAT share hook installed ({_iatHooks.Count} import slot(s): " +
-                string.Join(", ", _iatHooks.Select(h => $"{h.Module}!{h.Function}")) +
-                "); Direct3D and drivers call CreateFile unhooked.";
+            _statusMessage = $"DAT share hook installed ({patched} kernel32 export(s) detoured).";
             RynthLog.Info($"Compat: {_statusMessage}");
         }
         catch (Exception ex)
@@ -164,83 +226,8 @@ internal static class DatFileShareHooks
         }
     }
 
-    /// <summary>
-    /// Points <paramref name="moduleName"/>'s kernel32 CreateFileA/W import slots at detours that
-    /// call whatever each slot held. A module that isn't loaded, or doesn't import one of them,
-    /// is skipped (logged).
-    /// </summary>
-    private static void HookModuleImports(string moduleName, IntPtr moduleBase)
-    {
-        if (moduleBase == IntPtr.Zero)
-        {
-            RynthLog.Compat($"Compat: DAT share - {moduleName} is not loaded; its CreateFile imports are not hooked.");
-            return;
-        }
-
-        if (TryPatchIatSlot(moduleBase, "CreateFileW", out IntPtr wSlot, out IntPtr wCurrent))
-        {
-            CreateFileWDelegate original = Marshal.GetDelegateForFunctionPointer<CreateFileWDelegate>(wCurrent);
-            CreateFileWDelegate detour = (name, access, share, security, disposition, flags, template) =>
-                CreateFileWDetour(original, name, access, share, security, disposition, flags, template);
-            InstallSlot(moduleName, "CreateFileW", wSlot, wCurrent, detour, Marshal.GetFunctionPointerForDelegate(detour));
-        }
-
-        if (TryPatchIatSlot(moduleBase, "CreateFileA", out IntPtr aSlot, out IntPtr aCurrent))
-        {
-            CreateFileADelegate original = Marshal.GetDelegateForFunctionPointer<CreateFileADelegate>(aCurrent);
-            CreateFileADelegate detour = (name, access, share, security, disposition, flags, template) =>
-                CreateFileADetour(original, name, access, share, security, disposition, flags, template);
-            InstallSlot(moduleName, "CreateFileA", aSlot, aCurrent, detour, Marshal.GetFunctionPointerForDelegate(detour));
-        }
-    }
-
-    /// <summary>
-    /// Records the hook (so the delegate stays reachable) before the slot is written: the
-    /// detour can run on any thread the moment the pointer lands.
-    /// </summary>
-    private static void InstallSlot(string moduleName, string function, IntPtr slot, IntPtr original, Delegate detour, IntPtr detourPtr)
-    {
-        var hook = new IatHook(moduleName, function, slot, original, detour);
-        _iatHooks.Add(hook);
-        Thread.MemoryBarrier();
-
-        if (WriteIatPointer(slot, detourPtr))
-        {
-            RynthLog.Info($"Compat: DAT share - hooked {moduleName}!{function} import (slot 0x{slot.ToInt32():X8}, was 0x{original.ToInt32():X8}).");
-            return;
-        }
-
-        _iatHooks.Remove(hook);
-    }
-
-    /// <summary>
-    /// Writes every patched slot back to what it held, at engine shutdown. The detours are in
-    /// this engine generation, which hot reload unloads; a slot left pointing at them would
-    /// crash the next CreateFile.
-    /// </summary>
-    public static void Uninstall()
-    {
-        if (_iatHooks.Count == 0)
-            return;
-
-        int restored = 0;
-        foreach (IatHook hook in _iatHooks)
-        {
-            if (WriteIatPointer(hook.Slot, hook.Original))
-                restored++;
-        }
-
-        RynthLog.Info($"Compat: DAT share - restored {restored}/{_iatHooks.Count} CreateFile import slot(s).");
-        _iatHooks.Clear();
-        IsInstalled = false;
-    }
-
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr GetModuleHandleW(string? lpModuleName);
-
-    // Plain import (no SetLastError marshalling): it must leave the value it sets.
-    [DllImport("kernel32.dll", EntryPoint = "SetLastError")]
-    private static extern void SetWin32LastError(uint dwErrCode);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
     private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
@@ -421,8 +408,12 @@ internal static class DatFileShareHooks
             && path.EndsWith(DatExtension, StringComparison.OrdinalIgnoreCase);
     }
 
+    // Puts back the Win32 last-error the real CreateFile set, so the caller reads its own answer
+    // (the detour's managed work in between may change it; SilentKelpie's 2026-10-14 fix).
+    [DllImport("kernel32.dll", EntryPoint = "SetLastError")]
+    private static extern void SetWin32LastError(uint dwErrCode);
+
     private static IntPtr CreateFileWDetour(
-        CreateFileWDelegate original,
         IntPtr lpFileName,
         uint dwDesiredAccess,
         uint dwShareMode,
@@ -452,14 +443,14 @@ internal static class DatFileShareHooks
         {
         }
 
-        IntPtr result = original(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes,
+        IntPtr result = _wOriginal!(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes,
             dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
         // Captured by the SetLastError=true delegate; the caller may read it even on success.
         int lastError = Marshal.GetLastPInvokeError();
 
         if (isAnyDatExt)
         {
-            int err = result == new IntPtr(-1) ? lastError : 0;
+            uint err = result == new IntPtr(-1) ? (uint)lastError : 0;
             string fname = Path.GetFileName(path!);
             string note = isDat ? "filtered" : "passthrough";
             RynthLog.Info($"Compat: DAT share - W [{note}]: {fname} access=0x{origAccess:X8}->0x{dwDesiredAccess:X8} share=0x{origShare:X}->0x{dwShareMode:X} result=0x{result.ToInt32():X8}{(err != 0 ? $" GetLastError={err}" : "")}");
@@ -470,7 +461,6 @@ internal static class DatFileShareHooks
     }
 
     private static IntPtr CreateFileADetour(
-        CreateFileADelegate original,
         IntPtr lpFileName,
         uint dwDesiredAccess,
         uint dwShareMode,
@@ -500,13 +490,14 @@ internal static class DatFileShareHooks
         {
         }
 
-        IntPtr result = original(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes,
+        IntPtr result = _aOriginal!(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes,
             dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
+        // Captured by the SetLastError=true delegate; the caller may read it even on success.
         int lastError = Marshal.GetLastPInvokeError();
 
         if (isAnyDatExt)
         {
-            int err = result == new IntPtr(-1) ? lastError : 0;
+            uint err = result == new IntPtr(-1) ? (uint)lastError : 0;
             string fname = Path.GetFileName(path!);
             string note = isDat ? "filtered" : "passthrough";
             RynthLog.Info($"Compat: DAT share - A [{note}]: {fname} access=0x{origAccess:X8}->0x{dwDesiredAccess:X8} share=0x{origShare:X}->0x{dwShareMode:X} result=0x{result.ToInt32():X8}{(err != 0 ? $" GetLastError={err}" : "")}");

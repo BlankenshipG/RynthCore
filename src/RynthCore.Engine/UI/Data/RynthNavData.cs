@@ -111,6 +111,9 @@ internal sealed class RynthNavStatus
     // Path markers and "save as nav route" (RynthNav 0.6.6+; HasMarkers / HasSave false on older plugins).
     public bool HasMarkers, MarkersOn, MarkerLabels, MarkerGuide, MarkersShown;
     public string MarkerStatus = "";
+    // The navmesh drawn in the world (/rnav mesh; RynthNav 0.6.7+ status "mesh"; HasMesh false on older plugins).
+    public bool HasMesh, MeshOn, MeshFloor, MeshWalls;
+    public int MeshRadius = 40, MeshTriangles = 3000, MeshDrawn;
     public bool HasSave, CanSave, SaveBusy;
     public string SaveFor = "", SaveName = "", SaveConflict = "", SaveLast = "";
     public bool HasTies;
@@ -306,6 +309,16 @@ internal sealed class RynthNavStatus
                 if (arr.Length >= 4) segs.Add(arr);
             }
             s.PathSegments = segs.ToArray();
+        }
+        if (r.TryGetProperty("mesh", out var ms) && ms.ValueKind == JsonValueKind.Object)
+        {
+            s.HasMesh = true;
+            s.MeshOn = Int(ms, "on") != 0;
+            s.MeshFloor = Int(ms, "floor", 1) != 0;
+            s.MeshWalls = Int(ms, "walls", 1) != 0;
+            s.MeshRadius = Int(ms, "radius", 40);
+            s.MeshTriangles = Int(ms, "triangles", 3000);
+            s.MeshDrawn = Int(ms, "drawn");
         }
         if (r.TryGetProperty("save", out var sv) && sv.ValueKind == JsonValueKind.Object)
         {

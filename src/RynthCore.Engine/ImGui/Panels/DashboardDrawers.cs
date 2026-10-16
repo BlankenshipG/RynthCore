@@ -10,7 +10,9 @@
 //  dashboard drawer can be moved to the other one from its tab's right-click
 //  (saved with the dashboard's state). The tabs never switch sides on their
 //  own any more; a panel with no room on its side stays on the screen over
-//  the dashboard instead.
+//  the dashboard instead. A drawer can opt in to flipping (FlipsWhenNoRoom,
+//  2026-10-15: RynthChat's Channels): with no room on its own side for its
+//  panel and room on the other, it draws there until its side has room again.
 //
 //  The look: a closed tab is a button with its drawer's icon that peeks out a
 //  little on hover; the open tab joins its panel (same background, a teal
@@ -79,8 +81,16 @@ internal abstract class DashboardDrawer
     public virtual bool Moved => false;
     public virtual void SaveMoved(bool moved) { }
 
+    /// <summary>
+    /// With no room on its side for the panel (the window against the screen's edge) and room
+    /// on the other, the drawer draws on the other side until its own has room again. Not saved.
+    /// </summary>
+    public virtual bool FlipsWhenNoRoom => false;
+    /// <summary>Set by the host while a <see cref="FlipsWhenNoRoom"/> drawer is on its other side.</summary>
+    internal bool Flipped;
+
     /// <summary>The side it is on now.</summary>
-    public bool OnRight => StartsRight != Moved;
+    public bool OnRight => (StartsRight != Moved) != Flipped;
 
     private string? _tabId, _hideTip, _sideMenuId;
     /// <summary>The tab's ImGui id and open tooltip (built once).</summary>
@@ -267,8 +277,49 @@ internal sealed class DashboardDrawers
 
         Vector2 dashPos = ImGuiNET.ImGui.GetWindowPos(), dashSize = ImGuiNET.ImGui.GetWindowSize();
         float k = MathF.Max(1f, ImGuiFonts.Get(UiFont.Dash11).FontSize / 11f);
+        UpdateFlips(dashPos, dashSize, k);
         DrawSide(0, dashPos, dashSize, k);
         DrawSide(1, dashPos, dashSize, k);
+    }
+
+    /// <summary>
+    /// Puts each <see cref="DashboardDrawer.FlipsWhenNoRoom"/> drawer on the side its whole panel
+    /// fits: its own side when it fits there, else the other side when that fits, else its own.
+    /// </summary>
+    private void UpdateFlips(Vector2 dashPos, Vector2 dashSize, float k)
+    {
+        float displayW = ImGuiNET.ImGui.GetIO().DisplaySize.X;
+        if (displayW <= 1) return;
+        float tabW = 17 * k;
+        foreach (DashboardDrawer d in _drawers)
+        {
+            if (!d.FlipsWhenNoRoom) continue;
+            bool homeRight = d.StartsRight != d.Moved;
+            float need = tabW + d.Width(k);
+            bool fitsLeft = dashPos.X - need >= 0;
+            bool fitsRight = dashPos.X + dashSize.X + need <= displayW;
+            bool fitsHome = homeRight ? fitsRight : fitsLeft;
+            bool fitsOther = homeRight ? fitsLeft : fitsRight;
+            SetFlipped(d, !fitsHome && fitsOther);
+        }
+    }
+
+    /// <summary>Moves a drawer to its flipped side or back; an open drawer stays open (no slide).</summary>
+    private void SetFlipped(DashboardDrawer d, bool flipped)
+    {
+        if (d.Flipped == flipped) return;
+        int i = Array.IndexOf(_drawers, d);
+        Side from = SideOf(d);
+        bool wasOpen = from.Open == i;
+        if (wasOpen) from.Open = -1;
+        if (from.Shown == i) { from.Shown = -1; from.T = 0f; }
+        d.Flipped = flipped;
+        if (!wasOpen) return;
+        Side to = SideOf(d);
+        if (to.Open >= 0 && to.Open != i) _drawers[to.Open].SaveOpen(false);   // one open per side
+        to.Open = i;
+        to.Shown = i;
+        to.T = 1f;
     }
 
     private void DrawSide(int sideIdx, Vector2 dashPos, Vector2 dashSize, float k)

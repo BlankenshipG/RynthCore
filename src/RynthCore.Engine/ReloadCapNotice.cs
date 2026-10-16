@@ -6,14 +6,16 @@ namespace RynthCore.Engine;
 /// the reload once this client has done that many; the client keeps running on the current engine
 /// and the loader tells the engine (RynthCoreReloadCapped), which logs it and says so in chat: once
 /// on its own, and again whenever the player asks for a reload by hand (RL, /rc rl), so a button
-/// press never goes unanswered. Clients died with CoreCLR fatal error 0x80131506 after 4+ engine
-/// reloads in one process. No engine state here: tools/ReloadCapTests compiles this file in.
+/// press never goes unanswered. The cap was 3 after clients died with CoreCLR fatal error
+/// 0x80131506 after 4+ reloads (2026-10-08..10); those were the v1 SehTrampoline crash logger
+/// (fixed 10-12), so since 2026-10-15 it is 20, a backstop. No engine state here:
+/// tools/ReloadCapTests compiles this file in.
 /// </summary>
 internal sealed class ReloadCapNotice
 {
     /// <summary>engine.json MaxHotReloads when the file doesn't set it (and the loader's own
     /// default for an engine without the export, DEFAULT_MAX_HOT_RELOADS in Loader.c).</summary>
-    public const int DefaultMaxHotReloads = 3;
+    public const int DefaultMaxHotReloads = 20;
 
     /// <summary>How recent the engine's own reload signal must be to count as "asked by hand".</summary>
     public const long ManualWindowMs = 10_000;

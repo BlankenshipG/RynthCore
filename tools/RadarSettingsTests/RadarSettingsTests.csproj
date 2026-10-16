@@ -2,7 +2,8 @@
 
   <!--
     Offline checks for the radar's per-kind show boxes (RadarSettingsStore.ShowFlag / ShowKind)
-    and the marker kinds (RadarKind) the RynthAi snapshot sends. src\RynthCore.Engine\UI\Panels\
+    the marker kinds (RadarKind) the RynthAi snapshot sends, and the per-kind marker size /
+    name label settings (MarkerStyleSettings). src\RynthCore.Engine\UI\Panels\
     RadarSettingsStore.cs and UI\Data\RadarSnapshotJson.cs are compiled in, with a synchronous
     UiBackgroundWriter stub. Every kind must have its own box, Corpses off must hide your corpses
     too, unknown kinds stay hidden, a plugin-shaped snapshot filters per box, and every box must
@@ -22,6 +23,8 @@
   <ItemGroup>
     <Compile Include="..\..\src\RynthCore.Engine\UI\Panels\RadarSettingsStore.cs" Link="Engine\RadarSettingsStore.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\RadarSnapshotJson.cs" Link="Engine\RadarSnapshotJson.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Panels\MarkerStyleSettings.cs" Link="Engine\MarkerStyleSettings.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\ImGui\Panels\CircleClip.cs" Link="Engine\CircleClip.cs" />
   </ItemGroup>
 
 </Project>

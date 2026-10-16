@@ -3347,6 +3347,10 @@ internal partial class MainWindow : Window
             if (responding)
                 continue;
 
+            // A client being crash-dumped doesn't answer either; killing it cuts the dump short.
+            if (HoldKillForCrashDump(pid, "stuck-client kill"))
+                continue;
+
             try
             {
                 AppendActivity($"Killing stuck PID {pid} ({accountName}) — {reason} and window is not responding.");
@@ -3410,6 +3414,63 @@ internal partial class MainWindow : Window
         }
         catch { return null; }
     }
+    // Clients a crash dump is being written of (CrashDumpWriterRule): pid -> when the launcher
+    // first held its kill, when a writer naming it was last seen, and whether an expiry was logged.
+    private readonly Dictionary<int, (DateTime Since, DateTime LastSeen, bool ExpiryLogged)> _crashDumpHolds = new();
+    private Dictionary<int, string> _crashDumpWriters = new();
+    private DateTime _crashDumpWritersAtUtc;
+
+    /// <summary>
+    /// True when the launcher must not kill <paramref name="pid"/> now (<paramref name="kill"/> names
+    /// the kill, for the log): createdump.exe or WerFault.exe is writing a crash dump of it, or was
+    /// within the last <see cref="CrashDumpWriterRule.Grace"/> (CrashDumpWriterRule; at most
+    /// MaxHold in all). Looks for the writers only when a kill is due, at most once a second.
+    /// </summary>
+    private bool HoldKillForCrashDump(int pid, string kill)
+    {
+        DateTime now = DateTime.UtcNow;
+        if (now - _crashDumpWritersAtUtc > TimeSpan.FromSeconds(1))
+        {
+            _crashDumpWriters = CrashDumpWriters.Find();
+            _crashDumpWritersAtUtc = now;
+            // Holds of clients long gone (exited mid-hold) are dropped; a recycled pid starts fresh.
+            foreach (int stale in _crashDumpHolds.Where(kv => now - kv.Value.LastSeen > CrashDumpWriterRule.MaxHold + CrashDumpWriterRule.Grace)
+                         .Select(kv => kv.Key).ToList())
+                _crashDumpHolds.Remove(stale);
+        }
+
+        bool running = _crashDumpWriters.TryGetValue(pid, out string? writer);
+        bool known = _crashDumpHolds.TryGetValue(pid, out var held);
+        var hold = CrashDumpWriterRule.Decide(running, known ? held.LastSeen : null, known ? held.Since : null, now);
+        if (hold == CrashDumpWriterRule.Hold.None)
+        {
+            if (known)
+            {
+                _crashDumpHolds.Remove(pid);
+                LauncherDiag.Info($"CRASHDUMP: PID {pid} kill hold ended (no dump writer for {CrashDumpWriterRule.Grace.TotalSeconds:0} s) - kill checks resume.");
+            }
+            return false;
+        }
+
+        DateTime lastSeen = running ? now : held.LastSeen;
+        if (!known)
+        {
+            _crashDumpHolds[pid] = (now, lastSeen, false);
+            AppendActivity($"PID {pid}: {writer} is writing a crash dump of it - {kill} held off until it ends, then {CrashDumpWriterRule.Grace.TotalSeconds:0} s more.");
+            LauncherDiag.Info($"CRASHDUMP: PID {pid} {kill} held off - {writer} is writing a crash dump of it (hold lasts while it runs + {CrashDumpWriterRule.Grace.TotalSeconds:0} s, at most {CrashDumpWriterRule.MaxHold.TotalMinutes:0} min).");
+            return true;
+        }
+        if (hold == CrashDumpWriterRule.Hold.Expired)
+        {
+            if (!held.ExpiryLogged)
+                LauncherDiag.Info($"CRASHDUMP: PID {pid} kill hold expired after {CrashDumpWriterRule.MaxHold.TotalMinutes:0} min - {kill} goes ahead.");
+            _crashDumpHolds[pid] = (held.Since, lastSeen, true);
+            return false;
+        }
+        _crashDumpHolds[pid] = (held.Since, lastSeen, held.ExpiryLogged);
+        return true;
+    }
+
     // fps (1), plug pump rate (2), login (3), qd = main-thread queue depth (4, optional on older engines).
     private static readonly System.Text.RegularExpressions.Regex WedgeHbRegex =
         new(@"hb #\d+ .*?fps=(\d+) .*?plug=(\d+)/s .*?login=(\d)(?:.*?qd=(\d+))?", System.Text.RegularExpressions.RegexOptions.Compiled);
@@ -3614,6 +3675,12 @@ internal partial class MainWindow : Window
         IReadOnlyDictionary<int, SessionStateRecord> activeSessions,
         string reason)
     {
+        // Every wedge kill goes through here. While a crash dump of the client is written the
+        // wedge signs stay (silent log, fps=0): held, the next poll asks again; the fps timer is
+        // kept, so a client still wedged once the hold ends is restarted at once.
+        if (HoldKillForCrashDump(pid, "wedge restart"))
+            return;
+
         _wedgeZeroFpsSinceUtc.Remove(pid);
 
         activeSessions.TryGetValue(pid, out SessionStateRecord? sess);

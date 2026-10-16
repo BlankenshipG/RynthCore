@@ -112,6 +112,7 @@ internal static class Program
             ("off", VideoPatchMode.Off), ("OFF", VideoPatchMode.Off), ("on", VideoPatchMode.World),
             ("world", VideoPatchMode.World), ("unfocused", VideoPatchMode.Unfocused), ("focus", VideoPatchMode.Unfocused),
             ("all", VideoPatchMode.All), (" all ", VideoPatchMode.All),
+            ("enable", VideoPatchMode.World), ("Disable", VideoPatchMode.Off),   // /rc|/ra|/ub videopatch enable|disable
         };
         foreach ((string word, VideoPatchMode mode) in words)
             Check(VideoPatchPolicy.TryParse(word, out VideoPatchMode m) && m == mode, $"'{word}' -> {mode}");

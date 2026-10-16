@@ -56,8 +56,8 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item><c>/rc hooks [on|off &lt;name&gt;]</c> (alias <c>/rc uihooks</c>) — the UI hooks
 ///         (screen mode, client cleanup, tooltip, drag/drop; <see cref="UiHookRegistry"/>):
 ///         status, or switch one off/on (now and in engine.json).</item>
-///   <item><c>/rc video [status|off|world|unfocused|all|fps &lt;n&gt;]</c> (alias
-///         <c>/rc videopatch</c>; "on" = world) — the video patch
+///   <item><c>/rc video [status|enable|disable|off|world|unfocused|all|fps &lt;n&gt;]</c> (alias
+///         <c>/rc videopatch</c>; "on" / "enable" = world, "disable" = off; RynthAi forwards /ra and /ub videopatch) — the video patch
 ///         (<see cref="D3D9.VideoPatch"/>): stop drawing AC's 3D world (world), only while
 ///         the client is in the background (unfocused), or AC's UI too (all, session only).
 ///         Saved per character (also Settings &gt; Misc); fps = the frame cap while patched.</item>

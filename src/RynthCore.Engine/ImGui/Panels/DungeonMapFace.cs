@@ -20,6 +20,9 @@
 //    - portals always shown with their destination; doors and creatures optional;
 //    - hidden while you're outdoors or in portal space, back in the next dungeon
 //      (the panel stays open; ImGuiPanelHost skips drawing it docked).
+//  Every marker has a size, an optional name label and a name size of its own
+//  (DungeonMapSettingsStore.Markers, edited in the toolbar's Markers window; the
+//  radar keeps its own set).
 //  Settings are the engine's (dungeon_map_settings.txt beside radar_settings.txt),
 //  not RynthAi's per-character Map* fields. Zoom, pan and floor picks last for the
 //  session, as they did.
@@ -32,7 +35,10 @@
 //  on floors the map isn't showing are hidden, on shown other floors dimmed, like the
 //  walls. Points outside this dungeon's floor area aren't drawn.
 //
-//  "Edit route" (off by default; needs RynthAi with MapEdit >= 1):
+//  "Edit route" (off by default; needs RynthAi with MapEdit >= 1): the map holds still while it
+//  is on - fixed on the spot it was showing (not following you), north up, and on the floors it
+//  was showing - so a point can be placed or dragged while you walk; turning it off puts Follow
+//  back as it was.
 //    - click (no drag) on a floor: add a point there (after the selected point, else
 //      at the end; Z from that floor: the player's floor first, then the other shown
 //      floors nearest it). Off every shown floor: refused with a status line;
@@ -55,6 +61,7 @@ using System.Numerics;
 using ImGuiNET;
 using RynthCore.Engine.UI;
 using RynthCore.Engine.UI.Data;
+using MarkerStyleSettings = RynthCore.Engine.UI.Panels.MarkerStyleSettings;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
 
@@ -109,6 +116,10 @@ internal sealed class DungeonMapFace : IImGuiPanel
     private const long StatusMs = 4000;
     private bool _navSubscribed;
     private bool _editRoute;
+    private bool _followBeforeEdit;           // Follow as it was when editing began
+    private bool _anchorSet;                  // the world spot the frozen map is centred on (Edit route)
+    private Vector2 _anchorWorld;
+    private bool _markersOpen;                // the Markers (sizes and names) window
     private int _selected = -1;               // route index the next added point goes after
     private int _hoverPt = -1;
     private readonly List<(int Idx, Vector2 At)> _drawn = new();   // this frame's drawn points, for picking
@@ -221,14 +232,18 @@ internal sealed class DungeonMapFace : IImGuiPanel
                 ImDrawListFlags saved = dl.Flags;
                 dl.Flags = saved & ~(ImDrawListFlags.AntiAliasedLines | ImDrawListFlags.AntiAliasedLinesUseTex | ImDrawListFlags.AntiAliasedFill);
                 dl.PushClipRect(canvasMin, canvasMax, true);
-                var p = new DungeonMapProjection(centre, live.Player.WorldX, live.Player.WorldY, live.Player.Heading,
-                    DungeonMapSettingsStore.RotateWithPlayer, _zoom);
+                // Editing: centred on a fixed spot, north up, so the map doesn't move under the mouse.
+                if (_editRoute && !_anchorSet) { _anchorWorld = new Vector2(live.Player.WorldX, live.Player.WorldY); _anchorSet = true; }
+                bool frozen = _editRoute && _anchorSet;
+                var p = new DungeonMapProjection(centre,
+                    frozen ? _anchorWorld.X : live.Player.WorldX, frozen ? _anchorWorld.Y : live.Player.WorldY, live.Player.Heading,
+                    DungeonMapSettingsStore.RotateWithPlayer && !frozen, _zoom);
                 proj = p;
                 DrawFloors(dl, view, p, canvasMin, canvasMax);
                 dl.Flags = saved;
                 if (nav != null) routeDrawn = DrawRoute(dl, view, nav, p, canvasMin, canvasMax);
                 DrawMarkers(dl, live, p, canvasMin, canvasMax);
-                DrawPlayer(dl, centre, p);
+                DrawPlayer(dl, frozen ? p.P(live.Player.WorldX, live.Player.WorldY) : centre, p, DungeonMapSettingsStore.Markers.SelfSize);
                 DrawRouteStatus(dl, canvasMin, canvasMax, nav, routeDrawn);
                 dl.PopClipRect();
             }
@@ -246,6 +261,7 @@ internal sealed class DungeonMapFace : IImGuiPanel
 
             CanvasInput(canvasMin, canvasMax, view, nav, proj);
             DrawPointMenu(nav);
+            MarkersWindow();
         }
         finally
         {
@@ -264,7 +280,9 @@ internal sealed class DungeonMapFace : IImGuiPanel
             _pan = Vector2.Zero;
             _autoLayer = -1;
             _visible.Clear();
+            if (_editRoute) { StopEditing(); SetStatus("Edit route turned off: you went to another dungeon."); }
         }
+        if (_editRoute) return;      // the floors shown stay as they were
         int best = view.CurrentLayer;
         if (best < 0 || best == _autoLayer) return;
         _autoLayer = best;
@@ -364,44 +382,63 @@ internal sealed class DungeonMapFace : IImGuiPanel
         const float Margin = 20f;
         bool doors = DungeonMapSettingsStore.ShowDoors, creatures = DungeonMapSettingsStore.ShowCreatures,
             corpses = DungeonMapSettingsStore.ShowCorpses;
+        MarkerStyleSettings markers = DungeonMapSettingsStore.Markers;
         RadarMarkerStyle.FillColors(KindCols);
+        bool anyName = false;
         foreach (RadarMarker m in live.Markers)
         {
             if (!ShowOnMap(m.Kind, doors, creatures, corpses)) continue;
+            anyName |= markers.NameShown(m.Kind);
             Vector2 p = proj.P(m.X, m.Y);
             if (p.X < clipMin.X - Margin || p.X > clipMax.X + Margin || p.Y < clipMin.Y - Margin || p.Y > clipMax.Y + Margin) continue;
+            float s = markers.SizeOf(m.Kind);
             switch (m.Kind)
             {
                 case 0:
-                    dl.AddCircleFilled(p, 4f, Monster, 10);
-                    dl.AddCircle(p, 6f, MonsterRing, 10, 1f);
-                    Label(dl, p + new Vector2(7, -7), CreatureLabel, m.Label, 20);
+                    dl.AddCircleFilled(p, 4f * s, Monster, 10);
+                    dl.AddCircle(p, 6f * s, MonsterRing, 10, 1f);
                     break;
                 case 1:
-                    dl.AddCircleFilled(p, 4f, Npc, 10);
-                    dl.AddCircle(p, 6f, NpcRing, 10, 1.2f);
-                    Label(dl, p + new Vector2(7, -7), CreatureLabel, m.Label, 20);
+                    dl.AddCircleFilled(p, 4f * s, Npc, 10);
+                    dl.AddCircle(p, 6f * s, NpcRing, 10, 1.2f);
                     break;
                 case 2:
-                    dl.AddCircleFilled(p, 5f, Portal, 12);
-                    dl.AddCircle(p, 7f, PortalRing, 12, 1.5f);
-                    Label(dl, p + new Vector2(9, -7), PortalLabel, m.Label, 22);
+                    dl.AddCircleFilled(p, 5f * s, Portal, 12);
+                    dl.AddCircle(p, 7f * s, PortalRing, 12, 1.5f);
                     break;
                 case 3:
-                    const float r = 5f, o = r + 1.5f;
+                    float r = 5f * s, o = r + 1.5f;
                     dl.AddQuadFilled(p + new Vector2(0, -r), p + new Vector2(r, 0), p + new Vector2(0, r), p + new Vector2(-r, 0), Door);
                     dl.AddQuad(p + new Vector2(0, -o), p + new Vector2(o, 0), p + new Vector2(0, o), p + new Vector2(-o, 0), DoorRing, 1.2f);
-                    Label(dl, p + new Vector2(8, -7), DoorLabel, m.Label, 20);
                     break;
                 default:
                     // The kinds added 2026-10-04: the radar's shape and (user-pickable) colour, a size up.
-                    RadarMarkerStyle.Draw(dl, m.Kind, p, KindCols[m.Kind], 1.35f);
-                    if (m.Kind is not RadarKind.GroundItem)
-                        Label(dl, p + new Vector2(8, -7), CreatureLabel, m.Label, 20);
+                    RadarMarkerStyle.Draw(dl, m.Kind, p, KindCols[m.Kind], 1.35f * s);
                     break;
             }
         }
+
+        // Names last, over every marker.
+        if (!anyName) return;
+        ImFontPtr nameFont = ImGuiFonts.Get(UiFont.Ui11);
+        foreach (RadarMarker m in live.Markers)
+        {
+            if (!markers.NameShown(m.Kind) || !ShowOnMap(m.Kind, doors, creatures, corpses)) continue;
+            Vector2 p = proj.P(m.X, m.Y);
+            if (p.X < clipMin.X - Margin || p.X > clipMax.X + Margin || p.Y < clipMin.Y - Margin || p.Y > clipMax.Y + Margin) continue;
+            // Half the marker's width as drawn above (kinds 0-3: their outer ring).
+            float reach = m.Kind switch { 0 or 1 => 6f, 2 => 7f, 3 => 6.5f, _ => RadarMarkerStyle.Radius(m.Kind) * 1.35f };
+            RadarMarkerStyle.DrawName(dl, nameFont, p, reach * markers.SizeOf(m.Kind), NameColor(m.Kind), m.Label, markers.NameSizeOf(m.Kind));
+        }
     }
+
+    /// <summary>The map's label colours: warm white for creatures, tinted for portals and doors.</summary>
+    private static uint NameColor(byte kind) => kind switch
+    {
+        RadarKind.Portal => PortalLabel,
+        RadarKind.Door => DoorLabel,
+        _ => CreatureLabel,
+    };
 
     private static readonly uint[] KindCols = new uint[RadarKind.Count];
 
@@ -423,18 +460,11 @@ internal sealed class DungeonMapFace : IImGuiPanel
         _ => UI.Panels.RadarSettingsStore.ShowKind(kind),
     };
 
-    private static void Label(ImDrawListPtr dl, Vector2 pos, uint col, string? text, int max)
+    private static void DrawPlayer(ImDrawListPtr dl, Vector2 at, in DungeonMapProjection proj, float s)
     {
-        if (string.IsNullOrEmpty(text)) return;
-        if (text.Length > max) text = text[..max] + "…";
-        dl.AddText(pos, col, text);
-    }
-
-    private static void DrawPlayer(ImDrawListPtr dl, Vector2 at, in DungeonMapProjection proj)
-    {
-        dl.AddCircleFilled(at, 4f, PlayerCol, 10);
+        dl.AddCircleFilled(at, 4f * s, PlayerCol, 10);
         // Rotating: facing is always up. North-up: AC heading 0 = east, 90 = north.
-        Vector2 tip = proj.Rotated ? at + new Vector2(0, -10) : at + new Vector2(proj.Cos * 10, -proj.Sin * 10);
+        Vector2 tip = proj.Rotated ? at + new Vector2(0, -10 * s) : at + new Vector2(proj.Cos * 10 * s, -proj.Sin * 10 * s);
         dl.AddLine(at, tip, PlayerCol, 1.5f);
     }
 
@@ -672,12 +702,16 @@ internal sealed class DungeonMapFace : IImGuiPanel
             SetStatus("Editing the route on the map needs a newer RynthAi.");
             return false;
         }
+        _followBeforeEdit = _follow;
+        _follow = false;
+        _anchorSet = false;
         _editRoute = true;
         return true;
     }
 
     private void StopEditing()
     {
+        if (_editRoute) { _follow = _followBeforeEdit; _anchorSet = false; }
         _editRoute = false;
         _selected = -1;
         CancelPress();
@@ -907,6 +941,64 @@ internal sealed class DungeonMapFace : IImGuiPanel
         }
     }
 
+    // ── Markers window ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Per-kind name box, marker size and name size (DungeonMapSettingsStore.Markers), your own marker's
+    /// size, and a reset. Show boxes and colours are the toolbar's and the Radar's.
+    /// </summary>
+    private void MarkersWindow()
+    {
+        if (!_markersOpen) return;
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.WindowBg, RynthTheme.BoxBg);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, ButtonBorder);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 4f);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(10, 10));
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6, 4));
+        const ImGuiWindowFlags flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.AlwaysAutoResize
+            | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoCollapse;
+        bool visible = ImGuiNET.ImGui.Begin("##dmap_markers_window", ref _markersOpen, flags);
+        ImGuiNET.ImGui.PopStyleVar(3);
+        ImGuiNET.ImGui.PopStyleColor(2);
+        if (visible)
+        {
+            ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
+            ImGuiNET.ImGui.TextUnformatted("Map markers");
+            ImGuiNET.ImGui.PopFont();
+            ImGuiNET.ImGui.SameLine(258 * MathF.Max(1f, EngineFrameController.FontScale) + MarkerStyleEditor.SizeSliderWidth - 14);
+            if (FaceKit.IconButton("##dmap_markers_close", PhosphorIcons.X, ImGuiNET.ImGui.GetCursorScreenPos(), new Vector2(14, 14),
+                    FaceKit.Faded(FaceKit.Mute), RynthTheme.WithAlpha(RynthTheme.Background, 0xDC), font: UiFont.Ui9))
+                _markersOpen = false;
+            ImGuiNET.ImGui.SetItemTooltip("Close");
+            ImGuiNET.ImGui.TextDisabled("Which kinds show, and their colours: the toolbar and the Radar's settings.");
+            ImGuiNET.ImGui.Separator();
+
+            float scale = MathF.Max(1f, EngineFrameController.FontScale);
+            float xName = 140 * scale, xSize = 176 * scale, xText = 258 * scale;
+            MarkerStyleSettings markers = DungeonMapSettingsStore.Markers;
+            bool changed = false;
+            MarkerStyleEditor.HeaderRow(xName, xSize, xText);
+            foreach (var (kind, label) in RadarFace.KindRowsOrder)
+            {
+                ImGuiNET.ImGui.PushID(kind);
+                ImGuiNET.ImGui.AlignTextToFramePadding();
+                ImGuiNET.ImGui.TextUnformatted(label);
+                changed |= MarkerStyleEditor.KindCells(markers, kind, xName, xSize, xText);
+                ImGuiNET.ImGui.PopID();
+            }
+            ImGuiNET.ImGui.Separator();
+            changed |= MarkerStyleEditor.SliderRow("You (dot and arrow)", ref markers.SelfSize,
+                MarkerStyleSettings.MinSize, MarkerStyleSettings.MaxSize, "%.1fx", xSize);
+            if (ImGuiNET.ImGui.SmallButton("Reset sizes and names"))
+            {
+                markers.Reset();
+                changed = true;
+            }
+            if (changed) DungeonMapSettingsStore.Save();
+        }
+        ImGuiNET.ImGui.End();
+    }
+
     // ── Toolbar ───────────────────────────────────────────────────────────
 
     /// <summary>Draws the settings rows (they wrap to the width). Returns their height.</summary>
@@ -980,17 +1072,24 @@ internal sealed class DungeonMapFace : IImGuiPanel
 
         // Follow / Rotate / Reset.
         SameLineIfFits(190, limit, 12);
+        ImGuiNET.ImGui.BeginDisabled(_editRoute);
         ImGuiNET.ImGui.Checkbox("Follow##dmap_follow", ref _follow);
-        ImGuiNET.ImGui.SetItemTooltip("Keep the map centred on you (dragging the map turns this off)");
+        ImGuiNET.ImGui.EndDisabled();
+        SafeImGui.SetItemTooltip(_editRoute ? "The map holds still while Edit route is on"
+            : "Keep the map centred on you (dragging the map turns this off)");
         ImGuiNET.ImGui.SameLine();
+        ImGuiNET.ImGui.BeginDisabled(_editRoute);
         changed |= ImGuiNET.ImGui.Checkbox("Rotate##dmap_rotate", ref DungeonMapSettingsStore.RotateWithPlayer);
-        ImGuiNET.ImGui.SetItemTooltip("Turn the map so the way you face is up");
+        ImGuiNET.ImGui.EndDisabled();
+        SafeImGui.SetItemTooltip(_editRoute ? "The map stays north-up while Edit route is on"
+            : "Turn the map so the way you face is up");
         ImGuiNET.ImGui.SameLine();
         if (ImGuiNET.ImGui.SmallButton("Reset##dmap_reset"))
         {
             _pan = Vector2.Zero;
             _zoom = DefaultZoom;
-            _follow = true;
+            _follow = !_editRoute;           // editing: the map stays put, re-centred on you where you are now
+            _anchorSet = false;
             _oneUpOneDown = true;
             SetOneUpOneDown(layers);
         }
@@ -1004,6 +1103,14 @@ internal sealed class DungeonMapFace : IImGuiPanel
         ImGuiNET.ImGui.SameLine();
         changed |= ImGuiNET.ImGui.Checkbox("Corpses##dmap_corpses", ref DungeonMapSettingsStore.ShowCorpses);
         ImGuiNET.ImGui.SetItemTooltip("Corpses on the map. Off hides them here whatever the Radar shows; on, they also follow the Radar's corpse boxes.");
+        ImGuiNET.ImGui.SameLine();
+        if (ImGuiNET.ImGui.SmallButton("Markers...##dmap_markers"))
+        {
+            _markersOpen = !_markersOpen;
+            if (_markersOpen)
+                ImGuiNET.ImGui.SetNextWindowPos(ImGuiNET.ImGui.GetItemRectMin() + new Vector2(0, ImGuiNET.ImGui.GetItemRectSize().Y + 4), ImGuiCond.Always);
+        }
+        ImGuiNET.ImGui.SetItemTooltip("Marker sizes, and which names to draw beside the markers and how big.");
 
         // Route / Edit route.
         SameLineIfFits(160, limit, 12);
@@ -1117,6 +1224,16 @@ internal static class DungeonMapSettingsStore
     public static float BgOpacity = 1.0f;
     public static bool RotateWithPlayer;
 
+    /// <summary>
+    /// Per-kind marker size and name label (added 2026-10-15). The map has always named everything
+    /// but items on the ground, so names start on for every other kind.
+    /// </summary>
+    public static readonly MarkerStyleSettings Markers = new(new[]
+    {
+        true, true, true, true, true, true, true, true, true, true, true,
+        false, // item on the ground
+    });
+
     private static string FilePath
     {
         get
@@ -1156,6 +1273,7 @@ internal static class DungeonMapSettingsStore
                             if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float o))
                                 BgOpacity = Math.Clamp(o, 0f, 1f);
                             break;
+                        default: Markers.TryLoad(key, val); break;
                     }
                 }
             }
@@ -1175,6 +1293,9 @@ internal static class DungeonMapSettingsStore
             + $"showToolbar={(ShowToolbar ? "1" : "0")}\n"
             + $"rotate={(RotateWithPlayer ? "1" : "0")}\n"
             + FormattableString.Invariant($"opacity={BgOpacity:0.##}\n");
+        var styleLines = new List<string>();
+        Markers.AppendLines(styleLines);
+        foreach (string line in styleLines) text += line + "\n";
         UiBackgroundWriter.Enqueue("dungeon map settings", () =>
         {
             lock (_sync)

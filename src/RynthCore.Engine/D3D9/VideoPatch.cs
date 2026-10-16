@@ -387,7 +387,7 @@ internal static unsafe class VideoPatch
             replies.Add(SetMode(mode, save: true, "/rc video"));
             return replies;
         }
-        replies.Add("Usage: /rc video [status|off|world|unfocused|all|fps <n>]");
+        replies.Add("Usage: /rc video [status|enable|disable|off|world|unfocused|all|fps <n>] (enable = world, disable = off; also /ra videopatch and /ub videopatch)");
         return replies;
     }
 
