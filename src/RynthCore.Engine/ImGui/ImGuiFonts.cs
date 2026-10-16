@@ -8,8 +8,13 @@
 //    Consolas 9/10/12 (Tracker, Log, Meta rows), Cascadia Mono 12 (Meta
 //    source; Consolas if missing), and the chat monospace at 8-18 in steps
 //    of 2 (the chat font slider snaps to the nearest).
-//  The few symbol glyphs still drawn as text (SymbolCodepoints) are merged in
-//  from Segoe UI Symbol wherever the main font lacks them.
+//  The few symbol glyphs still drawn as text (SymbolCodepoints) come from the
+//  main font itself (Segoe UI, Consolas and Cascadia Mono all have them); Segoe UI
+//  Symbol is merged only into a font whose file lacks one (HasGlyphs). ImGui copies
+//  the whole TTF into the atlas for every font it adds, and Segoe UI Symbol is
+//  2.4 MB: merged into every size (~107 with the panel text sizes) it made ~250 MB
+//  of the atlas's input data for three glyphs (2026-10-15). DX9Backend frees the
+//  input data once the texture is uploaded (ClearInputData).
 //
 //  Icons: the Phosphor icon font (MIT, Assets/Fonts/Phosphor.ttf, embedded in
 //  this assembly) is merged into every baked font, the scaled sets included,
@@ -57,7 +62,8 @@ internal static unsafe class ImGuiFonts
     private static readonly string FontsDir = Environment.GetFolderPath(Environment.SpecialFolder.Fonts);
 
     // Main text: Basic Latin + Latin-1, general punctuation (— – … • ‘ ’ “ ”), arrows.
-    private static readonly ushort[] MainRanges = { 0x0020, 0x00FF, 0x2010, 0x2027, 0x2190, 0x21FF, 0 };
+    // Plus the SymbolCodepoints (≤ ≥ ●), which the main fonts have.
+    private static readonly ushort[] MainRanges = { 0x0020, 0x00FF, 0x2010, 0x2027, 0x2190, 0x21FF, 0x2264, 0x2265, 0x25CF, 0x25CF, 0 };
 
     // Symbols still drawn as text, merged from Segoe UI Symbol where the main font
     // lacks them. The panels' other symbols (⚔ ✦ ➤ ◫ ♥ ◆ ⚙ ▾ ▴ ↗ ↙ ◢ ✕ ☑ ☐ ▶ ▼ ▲ ◀ ■
@@ -81,6 +87,8 @@ internal static unsafe class ImGuiFonts
     // Phosphor's regular strokes are 1/16 em: at 9-13 px they rasterize thin and grey.
     private const float IconRasterizerMultiply = 1.2f;
     private static volatile bool _preloaded;
+    // Fonts the last AddAll merged Segoe UI Symbol into (their file lacked a symbol glyph).
+    private static int _symbolMerges;
     private static readonly List<IntPtr> NativeBuffers = new();
     private static readonly ImFontPtr[] Fonts = new ImFontPtr[(int)UiFont.Count];
 
@@ -197,6 +205,7 @@ internal static unsafe class ImGuiFonts
     {
         long t0 = Stopwatch.GetTimestamp();
         PrepareNativeData();
+        Compatibility.MemoryUse.Mark("font files read");
 
         ScaledFonts.Clear();
         AddAll(io.Fonts, scale, RynthCore.Engine.UI.PanelTextScale.StepsInUse(), Fonts, ScaledFonts);
@@ -208,8 +217,9 @@ internal static unsafe class ImGuiFonts
 
         double ms = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
         RynthLog.UI($"ImGuiFonts: {CountBaked()} fonts queued at scale {scale:0.##} in {ms:0.0} ms " +
-                        $"(Cascadia Mono {(_cascadia != null ? "found" : "missing, using Consolas")}, symbols {(_symbol != null ? "merged" : "missing")}, " +
+                        $"(Cascadia Mono {(_cascadia != null ? "found" : "missing, using Consolas")}, symbols from the main fonts{(_symbolMerges > 0 ? $" (Segoe UI Symbol merged into {_symbolMerges})" : "")}, " +
                         $"icons {(_phosphor != null ? $"{IconCount()} merged" : "missing")}).");
+        Compatibility.MemoryUse.Mark("ImGui fonts queued");
     }
 
     /// <summary>The font files and glyph ranges as native memory, made once (rebuilds reuse them). AC thread.</summary>
@@ -250,6 +260,16 @@ internal static unsafe class ImGuiFonts
         ImFontPtr[] target = baseSet;
         float factor = 1f;
 
+        // Whether each main font file lacks a symbol glyph (only then is Segoe UI Symbol merged in).
+        _symbolMerges = 0;
+        var needsSymbol = new Dictionary<byte[], bool>(ReferenceEqualityComparer.Instance);
+        bool NeedsSymbol(byte[] b)
+        {
+            if (!needsSymbol.TryGetValue(b, out bool need))
+                needsSymbol[b] = need = !HasGlyphs(b, SymbolCodepoints);
+            return need;
+        }
+
         void Add(UiFont id, IntPtr data, byte[]? bytes, FaceMetrics metrics, float px)
         {
             if (data == IntPtr.Zero || bytes == null) return;
@@ -259,8 +279,9 @@ internal static unsafe class ImGuiFonts
             {
                 cfg.FontDataOwnedByAtlas = false;
                 target[(int)id] = atlas.AddFontFromMemoryTTF(data, bytes.Length, size, cfg, (IntPtr)mainRanges);
-                if (symbol != IntPtr.Zero && _symbol != null)
+                if (symbol != IntPtr.Zero && _symbol != null && NeedsSymbol(bytes))
                 {
+                    _symbolMerges++;
                     cfg.MergeMode = true;
                     cfg.GlyphMinAdvanceX = 0;
                     atlas.AddFontFromMemoryTTF(symbol, _symbol.Length, size, cfg, (IntPtr)symbolRanges);
@@ -533,6 +554,63 @@ internal static unsafe class ImGuiFonts
     }
 
     private static int IconCount() => new HashSet<char>(PhosphorIcons.Baked).Count;
+
+    /// <summary>
+    /// True when the TrueType font has a glyph for every code point (its cmap, format 4:
+    /// the Basic Multilingual Plane). False when unreadable, so the caller falls back to
+    /// merging. Pure: tools\PanelTextScaleTests can drive it.
+    /// </summary>
+    internal static bool HasGlyphs(byte[]? ttf, ushort[] codepoints)
+    {
+        if (ttf == null || ttf.Length < 12) return false;
+        try
+        {
+            static int U16(byte[] b, int at) => b[at] << 8 | b[at + 1];
+            static int U32(byte[] b, int at) => b[at] << 24 | b[at + 1] << 16 | b[at + 2] << 8 | b[at + 3];
+            int cmap = -1;
+            int tables = U16(ttf, 4);
+            for (int i = 0; i < tables; i++)
+            {
+                int rec = 12 + i * 16;
+                if (U32(ttf, rec) == 0x636D6170) { cmap = U32(ttf, rec + 8); break; }   // "cmap"
+            }
+            if (cmap < 0) return false;
+            int subtables = U16(ttf, cmap + 2);
+            for (int s = 0; s < subtables; s++)
+            {
+                int sub = cmap + U32(ttf, cmap + 4 + s * 8 + 4);
+                if (U16(ttf, sub) != 4) continue;
+                int segX2 = U16(ttf, sub + 6), ends = sub + 14, starts = ends + segX2 + 2;
+                int deltas = starts + segX2, offsets = deltas + segX2;
+                bool all = true;
+                foreach (ushort cp in codepoints)
+                {
+                    int glyph = 0;
+                    for (int k = 0; k < segX2 / 2; k++)
+                    {
+                        int end = U16(ttf, ends + k * 2), start = U16(ttf, starts + k * 2);
+                        if (cp > end) continue;
+                        if (cp < start) break;
+                        int delta = (short)U16(ttf, deltas + k * 2), ro = U16(ttf, offsets + k * 2);
+                        if (ro == 0) glyph = (cp + delta) & 0xFFFF;
+                        else
+                        {
+                            glyph = U16(ttf, offsets + k * 2 + ro + 2 * (cp - start));
+                            if (glyph != 0) glyph = (glyph + delta) & 0xFFFF;
+                        }
+                        break;
+                    }
+                    if (glyph == 0) { all = false; break; }
+                }
+                return all;
+            }
+            return false;
+        }
+        catch (IndexOutOfRangeException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// A TrueType font's em as a fraction of the ImGui pixel size (ImGui sizes a

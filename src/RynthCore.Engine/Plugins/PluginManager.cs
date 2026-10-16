@@ -328,6 +328,9 @@ internal static partial class PluginManager
 
     public static void LoadPlugins(string engineDir)
     {
+        // Where the memory goes while the plugins start (Compatibility/MemoryUse.cs).
+        Compatibility.MemoryUse.Mark("before the plugins load");
+        Compatibility.MemoryUse.StartBurst(60, "plugins starting");
         if (_loaded)
             return;
 
@@ -2688,6 +2691,7 @@ internal static partial class PluginManager
             RynthLog.Plugin($"PluginManager: Loading extra plugin: {dllPath} (va before: {Compatibility.AddressSpace.Describe()})");
             var plugin = PluginLoader.LoadSingle(dllPath, _shadowRootDir, _loadGeneration);
             RynthLog.Plugin($"PluginManager: loaded {Path.GetFileName(dllPath)}{(plugin == null ? " (FAILED)" : "")} (va after: {Compatibility.AddressSpace.Describe()})");
+            Compatibility.MemoryUse.Mark($"{Path.GetFileNameWithoutExtension(dllPath)} loaded");
             if (plugin != null)
             {
                 plugin.Manifest = manifest;
@@ -2827,6 +2831,7 @@ internal static partial class PluginManager
                 plugin.UIInitializedDispatched = false;
                 plugin.LoginCompleteDispatched = false;
                 RynthLog.Plugin($"PluginManager: {plugin.DisplayName} initialized OK (api v{PluginContractVersion.Current}).");
+                Compatibility.MemoryUse.Mark($"{plugin.DisplayName} Init");
             }
             else
             {
@@ -2939,6 +2944,7 @@ internal static partial class PluginManager
                 plugin.OnLoginComplete();
                 plugin.LoginCompleteDispatched = true;
                 RynthLog.Plugin($"PluginManager: {plugin.DisplayName} received OnLoginComplete.");
+                Compatibility.MemoryUse.Mark($"{plugin.DisplayName} OnLoginComplete");
             }
             catch (Exception ex)
             {

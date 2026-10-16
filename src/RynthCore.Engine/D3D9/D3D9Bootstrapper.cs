@@ -80,7 +80,9 @@ internal static class D3D9Bootstrapper
             if (earlyModule != IntPtr.Zero)
             {
                 RynthLog.D3D9("D3D9Bootstrapper: d3d9.dll loaded — discovering EndScene via NULLREF device.");
+                Compatibility.MemoryUse.Mark("D3D9 bootstrap: NULLREF device for the vtable");
                 EndSceneHook.Install("post-login-vtable");
+                Compatibility.MemoryUse.Mark("EndScene hook installed");
                 return;
             }
 

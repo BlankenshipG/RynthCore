@@ -951,6 +951,16 @@ internal static unsafe class DX9Backend
 
         // Store texture ID for ImGui
         io.Fonts.SetTexID(_fontTexture);
+
+        // The glyphs are baked and uploaded: the atlas's input data is no longer read. ImGui
+        // copies the whole TTF into the atlas for every font it adds (main font, Segoe UI
+        // Symbol and Phosphor per size, ~3.8 MB each), so with the panel text sizes in use
+        // that was ~400 MB kept for the life of the atlas (2026-10-15, [Mem] lines). Every
+        // re-bake builds a fresh atlas from ImGuiFonts' own copies, and the pixels and TexReady
+        // stay, so nothing needs it back.
+        Compatibility.MemoryUse.Mark("font atlas uploaded");
+        io.Fonts.ClearInputData();
+        Compatibility.MemoryUse.Mark("font input data freed");
         return true;
     }
 

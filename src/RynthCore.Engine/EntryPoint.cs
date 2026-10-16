@@ -1153,6 +1153,7 @@ public static class EntryPoint
             if (avalonia && !dcompTest)
                 AvaloniaOverlay.Start();
             RynthLog.Info("RynthCore bootstrap initialized.");
+            Compatibility.MemoryUse.Mark("bootstrap initialized");
         }
         catch (Exception ex)
         {

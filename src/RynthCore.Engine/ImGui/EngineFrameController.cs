@@ -134,14 +134,17 @@ internal static class EngineFrameController
 
         // Before any context exists: the loaded cimgui.dll must be the exact
         // build ImGui.NET wraps, or every struct read below is at wrong offsets.
+        Compatibility.MemoryUse.Mark("ImGui init: before the self-test");
         if (!ImGuiSelfTest.Run(EntryPoint.ImGuiNativeHandle))
             return false;
+        Compatibility.MemoryUse.Mark("ImGui self-test done");
 
         IntPtr previousContext = ImGuiNET.ImGui.GetCurrentContext();
         if (previousContext != IntPtr.Zero)
             RynthLog.Render($"EngineFrameController: Existing ImGui context detected (0x{previousContext:X8}) - isolating RynthCore context.");
 
         _context = ImGuiNET.ImGui.CreateContext();
+        Compatibility.MemoryUse.Mark("ImGui context created");
         bool initSucceeded = false;
         try
         {
@@ -179,6 +182,7 @@ internal static class EngineFrameController
             _uiScale = UiScale.ForWindow(_gameHwnd);
             RynthLog.UI($"EngineFrameController: ImGui scale {_uiScale:0.##} (Avalonia input scale {UI.AvaloniaOverlay.InputScale:0.##}).");
             RynthTheme.Apply(ImGuiNET.ImGui.GetStyle(), _uiScale);
+            Compatibility.MemoryUse.Mark("ImGui theme applied");
             ImGuiFonts.Build(io, _uiScale);
 
             if (!Win32Backend.Init(_gameHwnd))
@@ -187,11 +191,13 @@ internal static class EngineFrameController
                 return false;
             }
 
+            Compatibility.MemoryUse.Mark("Win32 backend ready");
             if (!DX9Backend.InitImGui(pDevice))
             {
                 _initFailStep = "DX9Backend.InitImGui";
                 return false;
             }
+            Compatibility.MemoryUse.Mark("DX9 backend ready (font texture)");
 
             _lastFrameTicks = Stopwatch.GetTimestamp();
             _imguiInitialized = true;
