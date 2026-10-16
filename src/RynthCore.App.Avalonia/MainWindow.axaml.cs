@@ -33,6 +33,7 @@ internal partial class MainWindow : Window
     // handle most of the work; this cooldown is a final belt-and-braces.
     private static readonly TimeSpan AutoLaunchCooldown = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan AutoLaunchServerDownLogCooldown = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan AutoLaunchNeedsPasswordLogCooldown = TimeSpan.FromMinutes(5);
 
     // Auto-inject only after the external AC client has been continuously
     // graphics-ready for this long. The window gives Decal/UBLoader time to
@@ -90,6 +91,11 @@ internal partial class MainWindow : Window
     // After CreateProcess+inject+resume, hold the prefs lock this long so AC
     // has a chance to read UserPreferences.ini before another account swaps.
     private static readonly TimeSpan UserPrefsSettleDelay = TimeSpan.FromSeconds(2);
+    // The UserPreferences.ini swap each launched PID started with, so a quick exit can set the
+    // saved copy aside and put the previous live file back (UserPrefsSwapRecovery).
+    private readonly Dictionary<int, PrefsSwapLaunch> _prefsSwapByPid = [];
+    // Counts swaps; a quick exit only restores the live file when no later swap replaced it.
+    private long _prefsSwapGeneration;
     private readonly Dictionary<int, DateTime> _autoInjectFirstReadyAtUtc = [];
     private readonly HashSet<int> _autoInjectAttemptedPids = [];
     private readonly HashSet<int> _autoInjectInFlightPids = [];
@@ -99,6 +105,7 @@ internal partial class MainWindow : Window
     private readonly Dictionary<string, ComboBox> _launchTargetInjectionDropdowns = [];
     private readonly Dictionary<string, DateTime> _autoLaunchAttemptTimesUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> _autoLaunchServerDownNoticeTimesUtc = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTime> _autoLaunchNeedsPasswordNoticeTimesUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ServerAvailabilityState> _serverStatuses = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<PluginDefinition> _plugins =
     [
@@ -727,8 +734,10 @@ internal partial class MainWindow : Window
 
     private async System.Threading.Tasks.Task AddAccountAsync()
     {
-        var draft = new RynthCore.App.LaunchAccountProfile();
-        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles);
+        // Defaults to the server selected in the list (a new server's first account), not the
+        // first profile, which RefreshLaunchTargets would otherwise assign.
+        var draft = new RynthCore.App.LaunchAccountProfile { ServerId = GetSelectedServer()?.Id ?? string.Empty };
+        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters);
         bool? accepted = await dialog.ShowDialog<bool?>(this);
         if (accepted != true)
             return;
@@ -749,7 +758,7 @@ internal partial class MainWindow : Window
             return;
 
         LaunchAccountProfile draft = selected.Clone();
-        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles);
+        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters);
         bool? accepted = await dialog.ShowDialog<bool?>(this);
         if (accepted != true)
             return;
@@ -1637,6 +1646,29 @@ internal partial class MainWindow : Window
             }
         }
 
+        // No usable password: the client would refuse to start ("You can only run the game from
+        // the launcher program") and exit within seconds. A manual launch asks for it (and the
+        // account) in the First Login dialog; an automatic one skips the account.
+        if (string.IsNullOrWhiteSpace(overrideArguments))
+        {
+            var ready = new List<LaunchAccountProfile>(accountsToLaunch.Count);
+            foreach (LaunchAccountProfile account in accountsToLaunch)
+            {
+                if (!AcLaunchArgumentBuilder.NeedsPassword(account))
+                    ready.Add(account);
+                else if (isAutomaticLaunch)
+                    AppendActivity($"Auto launch skipped for {account.DisplayName}: {AcLaunchArgumentBuilder.MissingPasswordMessage(account.AccountName)}");
+                else if (await PromptFirstLoginAsync(account))
+                    ready.Add(account);
+                else
+                    AppendActivity($"Launch cancelled for {account.DisplayName}: no password entered.");
+            }
+
+            if (ready.Count == 0)
+                return;
+            accountsToLaunch = ready;
+        }
+
         SaveRuntimePaths(appendActivity: !isAutomaticLaunch);
         SaveLaunchBehavior(appendActivity: !isAutomaticLaunch);
 
@@ -1784,10 +1816,7 @@ internal partial class MainWindow : Window
 
         try
         {
-            if (needsPrefsSwap)
-            {
-                _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity);
-            }
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
 
             InjectionResult result = await Task.Run(() =>
                 _injector.LaunchSuspendedAndInject(
@@ -1811,6 +1840,7 @@ internal partial class MainWindow : Window
                 {
                     _launchedSessionPids.Add(trackedPid);
                     _launchedPidInfo[trackedPid] = (accountKey, DateTime.UtcNow);
+                    TrackPrefsSwap(trackedPid, prefsSwap);
                     RegisterPidExitWatch(trackedPid);
                 }
 
@@ -1864,10 +1894,7 @@ internal partial class MainWindow : Window
 
         try
         {
-            if (needsPrefsSwap)
-            {
-                _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity);
-            }
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
 
             // enginePath != null: "Decal + RynthCore" - Decal is injected first, then the
             // RynthCore loader, before the client resumes.
@@ -1894,6 +1921,7 @@ internal partial class MainWindow : Window
                 {
                     _launchedSessionPids.Add(trackedPid);
                     _launchedPidInfo[trackedPid] = (accountKey, DateTime.UtcNow);
+                    TrackPrefsSwap(trackedPid, prefsSwap);
                     RegisterPidExitWatch(trackedPid);
                 }
 
@@ -1943,10 +1971,7 @@ internal partial class MainWindow : Window
 
         try
         {
-            if (needsPrefsSwap)
-            {
-                _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity);
-            }
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
 
             Process? proc = null;
             Exception? launchEx = null;
@@ -1978,6 +2003,7 @@ internal partial class MainWindow : Window
             {
                 _launchedSessionPids.Add(proc.Id);
                 _launchedPidInfo[proc.Id] = (BuildAccountKey(launchContext.AccountName, launchContext.ServerName), DateTime.UtcNow);
+                TrackPrefsSwap(proc.Id, prefsSwap);
                 RegisterPidExitWatch(proc.Id);
                 LaunchContextStore.WriteForProcess(proc.Id, launchContext);
                 WritePendingSessionState(proc.Id, launchContext);
@@ -2002,6 +2028,38 @@ internal partial class MainWindow : Window
             }
             LauncherDiag.Info($"LaunchOneNoInject EXIT account='{launchContext.AccountName}'");
         }
+    }
+
+    /// <summary>
+    /// Shows the First Login dialog for <paramref name="account"/> (no usable password). True when
+    /// the player entered one: the profile is updated and saved (password encrypted at once).
+    /// </summary>
+    private async Task<bool> PromptFirstLoginAsync(LaunchAccountProfile account)
+    {
+        LaunchServerProfile? server = ResolveServerForAccount(account);
+        if (server == null)
+        {
+            AppendActivity($"Launch blocked for {account.DisplayName}: add a server profile first.");
+            return false;
+        }
+
+        LaunchAccountProfile draft = account.Clone();
+        var dialog = new FirstLoginDialog(draft, server, _settings.AccountProfiles,
+            accountName => GetDetectedCharacters(accountName, server.Name));
+        bool? accepted = await dialog.ShowDialog<bool?>(this);
+        if (accepted != true)
+            return false;
+
+        account.CopyFrom(draft);
+        SaveSettings();
+        RefreshLists();
+        RefreshSummary();
+
+        string loginAs = string.IsNullOrWhiteSpace(account.CharacterName) || account.CharacterName == LaunchAccountProfile.NoneOption
+            ? "stopping at character select"
+            : $"logging in as {account.CharacterName}";
+        AppendActivity($"First login on {server.DisplayName}: account '{account.AccountName}', password saved (encrypted), {loginAs}.");
+        return true;
     }
 
     private LaunchContextRecord BuildLaunchContext(LaunchAccountProfile account, LaunchServerProfile? server)
@@ -3951,6 +4009,7 @@ internal partial class MainWindow : Window
                 AppendActivity($"Account '{entry.Value.AccountKey}' client (PID {entry.Key}) exited after {uptime.TotalSeconds:F0}s — counted as crash.");
                 int hist = _crashHistoryByAccount.TryGetValue(entry.Value.AccountKey, out List<DateTime>? h) ? h.Count : 0;
                 LauncherDiag.Info($"DetectQuickExits: PID {entry.Key} ({entry.Value.AccountKey}) uptime={uptime.TotalSeconds:F1}s -> RecordCrash. crashHist now {hist}.");
+                RecoverFailedPrefsSwap(entry.Key, entry.Value.AccountKey, uptime);
             }
             else if (!string.IsNullOrEmpty(entry.Value.AccountKey))
             {
@@ -3967,6 +4026,7 @@ internal partial class MainWindow : Window
             foreach (int pid in toRemove)
             {
                 _launchedPidInfo.Remove(pid);
+                _prefsSwapByPid.Remove(pid);
                 // Drop the exit-watcher Process handle so the OS can reclaim
                 // the kernel object. Exited already fired (or never will),
                 // so we no longer need to hold the handle alive.
@@ -4307,17 +4367,14 @@ internal partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(account.UserPrefsPath))
             return account.UserPrefsPath.Trim();
 
-        if (string.IsNullOrWhiteSpace(account.AccountName))
+        string legacyPath = ResolveLegacyUserPrefsPath(account);
+        if (string.IsNullOrEmpty(legacyPath))
             return string.Empty;
-
-        string appdata = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string prefsDir = Path.Combine(appdata, "RynthCore", "prefs");
-        string safeName = SafePrefsFileName(account.AccountName);
-        string legacyPath = Path.Combine(prefsDir, $"{safeName}.ini");
         if (string.IsNullOrWhiteSpace(serverName))
             return legacyPath;
 
-        string scopedPath = Path.Combine(prefsDir, $"{safeName}@{SafePrefsFileName(serverName)}.ini");
+        string prefsDir = Path.GetDirectoryName(legacyPath)!;
+        string scopedPath = Path.Combine(prefsDir, $"{SafePrefsFileName(account.AccountName)}@{SafePrefsFileName(serverName)}.ini");
         if (!File.Exists(scopedPath) && File.Exists(legacyPath))
         {
             try { File.Copy(legacyPath, scopedPath, overwrite: false); }
@@ -4327,8 +4384,97 @@ internal partial class MainWindow : Window
         return scopedPath;
     }
 
+    /// <summary>
+    /// The account's old name-only stash (%APPDATA%\RynthCore\prefs\name.ini), which seeds a
+    /// missing per-server one. Empty when the account has no name yet.
+    /// </summary>
+    private static string ResolveLegacyUserPrefsPath(LaunchAccountProfile account)
+    {
+        if (string.IsNullOrWhiteSpace(account.AccountName))
+            return string.Empty;
+
+        string appdata = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        return Path.Combine(appdata, "RynthCore", "prefs", $"{SafePrefsFileName(account.AccountName)}.ini");
+    }
+
     private static string SafePrefsFileName(string name) =>
         string.Join("_", name.Trim().Split(Path.GetInvalidFileNameChars()));
+
+    /// <summary>
+    /// A launch's UserPreferences.ini swap. <see cref="IsProfileOverride"/>: the stash is a file the
+    /// user picked on the profile (never renamed by the launcher). <see cref="LegacyPath"/>: the
+    /// account's name-only stash, set aside with a failed per-server one when identical.
+    /// </summary>
+    private sealed record PrefsSwapLaunch(UserPrefsSwap Swap, long Generation, bool IsProfileOverride, string LegacyPath);
+
+    /// <summary>
+    /// Copies the account's saved UserPreferences.ini over the live one (caller holds
+    /// _userPrefsSwapLock) and returns what was swapped, or null when nothing was.
+    /// </summary>
+    private PrefsSwapLaunch? ApplyPrefsSwap(LaunchAccountProfile account, string? serverName, string resolvedPrefsPath)
+    {
+        UserPrefsSwap? swap = _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity);
+        if (swap == null)
+            return null;
+
+        long generation = ++_prefsSwapGeneration;
+        bool isOverride = !string.IsNullOrWhiteSpace(account.UserPrefsPath);
+        LauncherDiag.Info($"PrefsSwap: account='{account.AccountName}' server='{serverName}' gen={generation} override={isOverride} changedLive={UserPrefsSwapRecovery.SwapChangedPrefs(swap)} stash='{swap.StashPath}'");
+        return new PrefsSwapLaunch(swap, generation, isOverride, ResolveLegacyUserPrefsPath(account));
+    }
+
+    /// <summary>Remembers which swap a launched client started with (no-op without a swap).</summary>
+    private void TrackPrefsSwap(int pid, PrefsSwapLaunch? prefsSwap)
+    {
+        if (prefsSwap != null)
+            _prefsSwapByPid[pid] = prefsSwap;
+    }
+
+    /// <summary>
+    /// A client quit within CrashQuickExitWindow. If it started with a saved UserPreferences.ini
+    /// that differs from the live one, that saved copy is the likely cause (the game reads its
+    /// display mode from it: "Could not initialize Direct3D"), and it would be swapped in again on
+    /// every launch because it is only refreshed after a normal session. So: set the saved copy
+    /// aside (renamed, kept), and put the previous live file back when no later launch replaced it.
+    /// The next normal session saves a fresh copy.
+    /// </summary>
+    private void RecoverFailedPrefsSwap(int pid, string accountKey, TimeSpan uptime)
+    {
+        if (!_prefsSwapByPid.Remove(pid, out PrefsSwapLaunch? launch))
+            return;
+
+        if (!UserPrefsSwapRecovery.SwapChangedPrefs(launch.Swap))
+        {
+            LauncherDiag.Info($"PrefsSwap: PID {pid} ({accountKey}) quick exit, but its stash matched the live file; left alone.");
+            return;
+        }
+
+        bool restoreLive = launch.Generation == _prefsSwapGeneration;
+        try
+        {
+            UserPrefsRecoveryResult result = UserPrefsSwapRecovery.Recover(
+                launch.Swap,
+                quarantineStash: !launch.IsProfileOverride,
+                restoreLive,
+                launch.LegacyPath,
+                DateTime.Now);
+
+            LauncherDiag.Info($"PrefsSwap: PID {pid} ({accountKey}) recovery: quarantined='{result.QuarantinedStashPath}' legacy='{result.QuarantinedLegacyPath}' liveRestored={result.LiveRestored}.");
+
+            string stashName = Path.GetFileName(launch.Swap.StashPath);
+            string what = launch.IsProfileOverride
+                ? $"the UserPreferences file set on its profile ({launch.Swap.StashPath}). Fix or clear that file in the account's settings if launches keep failing"
+                : $"this account's saved game settings ({stashName}). They were set aside as {Path.GetFileName(result.QuarantinedStashPath ?? stashName)}, so the next launch uses the current UserPreferences.ini";
+            string live = result.LiveRestored
+                ? " The previous UserPreferences.ini was put back."
+                : " UserPreferences.ini was left as is (another launch has swapped it since).";
+            AppendActivity($"Account '{accountKey}' client (PID {pid}) quit after {uptime.TotalSeconds:F0}s using {what}.{live}");
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"Account '{accountKey}': could not undo the UserPreferences.ini swap after a quick exit: {ex.Message}");
+        }
+    }
 
     /// <summary>
     /// Copies the current live UserPreferences.ini to the resolved stash for
@@ -4442,6 +4588,13 @@ internal partial class MainWindow : Window
                 continue;
             }
 
+            // Needs the First Login dialog, which only a manual launch shows.
+            if (AcLaunchArgumentBuilder.NeedsPassword(account))
+            {
+                MaybeLogAutoLaunchNeedsPassword(account, nowUtc);
+                continue;
+            }
+
             if (_autoLaunchAttemptTimesUtc.TryGetValue(account.Id, out DateTime lastAttemptUtc) &&
                 nowUtc - lastAttemptUtc < AutoLaunchCooldown)
             {
@@ -4492,6 +4645,18 @@ internal partial class MainWindow : Window
 
         _autoLaunchServerDownNoticeTimesUtc[account.Id] = nowUtc;
         AppendActivity($"Auto launch waiting for {account.DisplayName}: {(server?.DisplayName ?? "the selected server")} is reporting down.");
+    }
+
+    private void MaybeLogAutoLaunchNeedsPassword(LaunchAccountProfile account, DateTime nowUtc)
+    {
+        if (_autoLaunchNeedsPasswordNoticeTimesUtc.TryGetValue(account.Id, out DateTime lastNoticeUtc) &&
+            nowUtc - lastNoticeUtc < AutoLaunchNeedsPasswordLogCooldown)
+        {
+            return;
+        }
+
+        _autoLaunchNeedsPasswordNoticeTimesUtc[account.Id] = nowUtc;
+        AppendActivity($"Auto launch waiting for {account.DisplayName}: {AcLaunchArgumentBuilder.MissingPasswordMessage(account.AccountName)}");
     }
 
     private bool IsServerKnownDown(LaunchServerProfile? server)
@@ -4571,7 +4736,7 @@ internal partial class MainWindow : Window
 
             string character = !string.IsNullOrWhiteSpace(session.CharacterName) ? session.CharacterName
                 : !string.IsNullOrWhiteSpace(session.TargetCharacter) ? session.TargetCharacter
-                : !string.IsNullOrWhiteSpace(account.CharacterName) ? account.CharacterName
+                : !string.IsNullOrWhiteSpace(account.CharacterName) && account.CharacterName != LaunchAccountProfile.NoneOption ? account.CharacterName
                 : "Logged in";
             string elapsed = FormatElapsed(DateTime.UtcNow - (session.LoginCompletedAtUtc ?? session.LaunchStartedAtUtc));
             return ($"{character} | online {elapsed}", "#66D687");
@@ -4585,12 +4750,16 @@ internal partial class MainWindow : Window
             Process? process = targets.FirstOrDefault(p => p.Id == pid);
             DateTime since = process != null ? GetProcessStartTimeUtc(process) : context.CreatedAtUtc.ToUniversalTime();
             string character = !string.IsNullOrWhiteSpace(context.TargetCharacter) ? context.TargetCharacter
-                : !string.IsNullOrWhiteSpace(account.CharacterName) ? account.CharacterName
-                : "Pending";
+                : !string.IsNullOrWhiteSpace(account.CharacterName) && account.CharacterName != LaunchAccountProfile.NoneOption ? account.CharacterName
+                : "Character select";
             string elapsed = FormatElapsed(DateTime.UtcNow - since);
             return ($"{character} | starting {elapsed}", "#E2B348");
         }
 
+        if (AcLaunchArgumentBuilder.NeedsPassword(account))
+            return ("Needs password | launch to set up", "#E2B348");
+        if (account.CharacterName == LaunchAccountProfile.NoneOption)
+            return ("Character select | offline", "#73828D");
         return (!string.IsNullOrWhiteSpace(account.CharacterName) ? $"{account.CharacterName} | offline" : "Offline", "#73828D");
     }
 

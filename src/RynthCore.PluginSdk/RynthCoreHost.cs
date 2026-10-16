@@ -142,6 +142,8 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetCharacterTitles => _api.Version >= 75 && _api.GetCharacterTitlesFn != IntPtr.Zero;
     /// <summary>v75: <see cref="TryGetServerInfo"/> (which server this is).</summary>
     public bool HasGetServerInfo => _api.Version >= 75 && _api.GetServerInfoFn != IntPtr.Zero;
+    /// <summary>v86: <see cref="TryGetServerStateJson"/> (the server list for every plugin).</summary>
+    public bool HasGetServerStateJson => _api.Version >= 86 && _api.GetServerStateJsonFn != IntPtr.Zero;
     /// <summary>v76: <see cref="CloseContainer"/> (close a corpse or chest like the client's window close).</summary>
     public bool HasCloseContainer => _api.Version >= 76 && _api.CloseContainerFn != IntPtr.Zero;
     /// <summary>v77: <see cref="GetScreenMode"/>, <see cref="GetUiHookFlags"/> and the UI callbacks
@@ -182,6 +184,8 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetPluginExportJson     => _api.Version >= 66 && _api.GetPluginExportJsonFn     != IntPtr.Zero;
     // Version-checked first: on an older engine the field lies past the end of its API table.
     public bool HasGetMergeStackResult     => _api.Version >= 81 && _api.GetMergeStackResultFn     != IntPtr.Zero;
+    /// <summary>v85: <see cref="ArmConfirmation"/> and <see cref="TryGetLastConfirmation"/>.</summary>
+    public bool HasConfirmationAnswers     => _api.Version >= 85 && _api.ArmConfirmationFn != IntPtr.Zero && _api.GetLastConfirmationFn != IntPtr.Zero;
     public bool HasGetPluginInterface      => _api.Version >= 68 && _api.GetPluginInterfaceFn      != IntPtr.Zero;
     public bool HasGetLiveObjectIds        => _api.Version >= 69 && _api.GetLiveObjectIdsFn        != IntPtr.Zero;
     public bool HasGetLastUseDone          => _api.Version >= 70 && _api.GetLastUseDoneFn          != IntPtr.Zero;
@@ -619,6 +623,65 @@ public readonly unsafe struct RynthCoreHost
         return status;
     }
 
+    /// <summary>Server yes/no prompt types (ConfirmationRequest 0x0274).</summary>
+    public static class ConfirmationKind
+    {
+        public const uint SwearAllegiance = 1;
+        public const uint AlterSkill = 2;
+        public const uint AlterAttribute = 3;
+        public const uint Fellowship = 4;
+        public const uint CraftInteraction = 5;
+        public const uint Augmentation = 6;
+        public const uint YesNo = 7;
+    }
+
+    /// <summary>What happened to the last prompt (<see cref="TryGetLastConfirmation"/>).</summary>
+    public static class ConfirmationOutcome
+    {
+        public const int None = 0;       // no prompt this session
+        public const int Shown = 1;      // not armed: the client showed its dialog
+        public const int Accepted = 2;   // answered Yes for the plugin
+        public const int Declined = 3;   // answered No: the server's percent was below the minimum
+        public const int SendFailed = 4; // armed, but the send failed: the client showed it
+    }
+
+    /// <summary>
+    /// v85: answer the next server prompt of <paramref name="type"/> (a
+    /// <see cref="ConfirmationKind"/>) that arrives within <paramref name="timeoutMs"/>,
+    /// without the client opening its dialog: Yes when the server's "N percent chance" is at
+    /// least <paramref name="minPercent"/> (or it is 0), else No. One-shot; timeoutMs &lt;= 0
+    /// disarms. 1 armed, 0 unavailable (engine before v85, sender or hook missing), -3 bad
+    /// arguments.
+    /// </summary>
+    public int ArmConfirmation(uint type, int minPercent, int timeoutMs)
+    {
+        if (!HasConfirmationAnswers)
+            return 0;
+        return ((delegate* unmanaged[Cdecl]<uint, int, int, int>)_api.ArmConfirmationFn)(type, minPercent, timeoutMs);
+    }
+
+    /// <summary>
+    /// v85: the last prompt the server sent. <paramref name="seq"/> counts them (0 = none yet);
+    /// <paramref name="contextId"/> is the server's context for it; <paramref name="percent"/> is
+    /// -1 when the text has none; <paramref name="outcome"/> is a <see cref="ConfirmationOutcome"/>.
+    /// False on an engine before v85.
+    /// </summary>
+    public bool TryGetLastConfirmation(out int seq, out uint type, out uint contextId, out int percent, out int outcome, out int ageMs)
+    {
+        seq = 0; type = 0; contextId = 0; percent = -1; outcome = 0; ageMs = 0;
+        if (!HasConfirmationAnswers)
+            return false;
+        uint t = 0, ctx = 0;
+        int pct = -1, oc = 0, age = 0;
+        seq = ((delegate* unmanaged[Cdecl]<uint*, uint*, int*, int*, int*, int>)_api.GetLastConfirmationFn)(&t, &ctx, &pct, &oc, &age);
+        type = t; contextId = ctx; percent = pct; outcome = oc; ageMs = age;
+        return true;
+    }
+
+    /// <summary>v85: <see cref="TryGetLastConfirmation(out int, out uint, out uint, out int, out int, out int)"/> without the context id.</summary>
+    public bool TryGetLastConfirmation(out int seq, out uint type, out int percent, out int outcome, out int ageMs)
+        => TryGetLastConfirmation(out seq, out type, out _, out percent, out outcome, out ageMs);
+
     /// <summary>
     /// Gives an item to an NPC or another player by sending the F7B1 give
     /// GameAction (CM_Inventory::Event_GiveObjectRequest). This is the correct
@@ -1052,6 +1115,37 @@ public readonly unsafe struct RynthCoreHost
             worldName = System.Text.Encoding.UTF8.GetString(buf, n);
         }
         return true;
+    }
+
+    /// <summary>
+    /// v86: which server this is, as JSON: every server the engine knows (built in, or declared
+    /// by a loaded server plugin) with its verdict, this character's override, the reason and the
+    /// plugin that owns its settings, plus "active" / "activePlugin" and the Diagnostics "pick".
+    /// Schema: RynthCore.Engine UI/Sections/ServerStateJson.cs. False when the engine predates
+    /// v86 or the call failed. Any thread; a few hundred bytes, so poll it (every second or two)
+    /// rather than caching it for a session: an override changes it live.
+    /// </summary>
+    public bool TryGetServerStateJson(out string json)
+    {
+        json = string.Empty;
+        if (!HasGetServerStateJson)
+            return false;
+        var fn = (delegate* unmanaged[Cdecl]<byte*, int, int>)_api.GetServerStateJsonFn;
+        int capacity = 2048;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            byte[] buffer = new byte[capacity];
+            int length;
+            fixed (byte* p = buffer) length = fn(p, capacity);
+            if (length < 0) return false;
+            if (length < capacity)
+            {
+                json = System.Text.Encoding.UTF8.GetString(buffer, 0, length);
+                return true;
+            }
+            capacity = length + 256;
+        }
+        return false;
     }
 
     public bool TryGetObjectBoolProperty(uint objectId, uint stype, out bool value)

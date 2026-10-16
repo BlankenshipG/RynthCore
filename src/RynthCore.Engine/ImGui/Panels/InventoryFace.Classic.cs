@@ -238,10 +238,10 @@ internal sealed partial class InventoryFace
         var bMinus = new Vector2(bPlus.X - btn - 2 * s, b2.Y);
         if (TitleToggle("##inv_smaller", PhosphorIcons.Minus, bMinus, btn, false))
             InventorySettingsStore.StepSize(-1);
-        ImGuiNET.ImGui.SetItemTooltip($"Smaller ({InventorySettingsStore.SizePct}%)");
+        SafeImGui.SetItemTooltip($"Smaller ({InventorySettingsStore.SizePct}%)");
         if (TitleToggle("##inv_bigger", PhosphorIcons.Plus, bPlus, btn, false))
             InventorySettingsStore.StepSize(+1);
-        ImGuiNET.ImGui.SetItemTooltip($"Bigger ({InventorySettingsStore.SizePct}%)");
+        SafeImGui.SetItemTooltip($"Bigger ({InventorySettingsStore.SizePct}%)");
         if (TitleToggle("##inv_tools", PhosphorIcons.Funnel, b1, btn, InventorySettingsStore.ShowTools))
         {
             // Closing the search / filter row shows every item again.
@@ -729,7 +729,7 @@ internal sealed partial class InventoryFace
         if (hovered && hoverCell >= 0 && hoverCell < items.Length)
         {
             VaultItem hot = items[hoverCell];
-            ImGuiNET.ImGui.SetTooltip(hot.Stack > 1 ? $"{hot.Name} ({hot.Stack:N0})" : hot.Name);
+            SafeImGui.SetTooltip(hot.Stack > 1 ? $"{hot.Name} ({hot.Stack:N0})" : hot.Name);
             if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Right))
             {
                 _vaultCtx = hot;
@@ -753,7 +753,7 @@ internal sealed partial class InventoryFace
             if (it == null) ImGuiNET.ImGui.CloseCurrentPopup();
             else
             {
-                ImGuiNET.ImGui.TextDisabled(it.Name);
+                SafeImGui.TextDisabled(it.Name);
                 ImGuiNET.ImGui.Separator();
                 if (ImGuiNET.ImGui.MenuItem("Withdraw", "", false, VaultFeed.Available))
                     VaultFeed.Withdraw(it);

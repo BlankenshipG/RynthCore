@@ -318,8 +318,7 @@ internal static class ImGuiBar
 
     public static void Draw(float s)
     {
-        // The bar draws every frame the ImGui shell is up: keep RynthAi's server menu current.
-        RynthCore.Engine.UI.ServerMenus.Tick();
+        // ServerMenus.Tick runs from EngineFrameController every frame, bar shown or not.
         EnsureButtons();
         int step = ChromeStep(out float factor);
         s *= factor;
@@ -414,7 +413,7 @@ internal static class ImGuiBar
             ImGuiNET.ImGui.SetWindowPos(next);
             _userMoved = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(_tooltip);
+        SafeImGui.SetItemTooltip(_tooltip);
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right))
             ImGuiNET.ImGui.OpenPopup("##bar_menu");
         PhosphorIcons.DrawCentered(dl, iconFont, PhosphorIcons.DotsSixVertical, rcPos, new Vector2(square.X * 0.8f, square.Y), RynthTheme.RcLabel);
@@ -428,7 +427,7 @@ internal static class ImGuiBar
         if (ImGuiNET.ImGui.InvisibleButton("##barcollapse", caretSize))
             RynthAiDashboardState.SetBarCollapsed(!collapsed);
         bool caretHot = ImGuiNET.ImGui.IsItemHovered();
-        ImGuiNET.ImGui.SetItemTooltip(collapsed ? "Show the bar" : "Fold the bar to this button");
+        SafeImGui.SetItemTooltip(collapsed ? "Show the bar" : "Fold the bar to this button");
         PhosphorIcons.DrawCentered(dl, iconFont, collapsed ? PhosphorIcons.CaretRight : PhosphorIcons.CaretLeft, cPos, caretSize,
             caretHot ? RynthTheme.RcLabel : 0xFF9A9A9Au);
         if (collapsed) return;
@@ -456,7 +455,7 @@ internal static class ImGuiBar
                 if (b.Window != null) ScriptWindowRegistry.PlayerSetVisible(b.Window, !ImGuiPanelHost.IsOpen(b.Window.PanelKey));
                 else PanelRouter.Toggle(b.Title);
             }
-            ImGuiNET.ImGui.SetItemTooltip(b.Tooltip);   // a plugin window's title arrives with '%' doubled (EnsureButtons)
+            SafeImGui.SetItemTooltip(b.Tooltip);
         }
 
         // The ILT section: one button, only on Infinite Leaftide with ILT panels registered
@@ -470,7 +469,7 @@ internal static class ImGuiBar
                 if (only != null) PanelRouter.Toggle(only);
                 else ImGuiNET.ImGui.OpenPopup("##ilt_menu");
             }
-            ImGuiNET.ImGui.SetItemTooltip(only != null ? "Infinite Leaftide: " + only : "Infinite Leaftide");
+            SafeImGui.SetItemTooltip(only != null ? "Infinite Leaftide: " + only : "Infinite Leaftide");
         }
 
         // Script windows (decision 2): one button with a menu, only while a ShowInBar
@@ -530,7 +529,7 @@ internal static class ImGuiBar
         ImGuiNET.ImGui.SameLine();
         if (IconButton("##popout", iconFont, popped ? PhosphorIcons.ArrowSquareIn : PhosphorIcons.ArrowSquareOut, square, RynthTheme.PopOutLabel))
             SetPoppedOut(!popped);
-        ImGuiNET.ImGui.SetItemTooltip(popped ? "Dock the bar back into the game window." : "Pop the bar out into its own floating window.");
+        SafeImGui.SetItemTooltip(popped ? "Dock the bar back into the game window." : "Pop the bar out into its own floating window.");
     }
 
     /// <summary>The ILT panels the bar offers now: 0 off Infinite Leaftide or without RynthILT. AC thread.</summary>
@@ -686,12 +685,12 @@ internal static class ImGuiBar
         ImGuiNET.ImGui.BeginDisabled(!canDown);
         if (IconButton(id + "_down", iconFont, PhosphorIcons.Minus, new Vector2(btn, btn), text)) delta = -1;
         ImGuiNET.ImGui.EndDisabled();
-        ImGuiNET.ImGui.SetItemTooltip(downTip);
+        SafeImGui.SetItemTooltip(downTip);
         ImGuiNET.ImGui.SameLine(0, 4 * s);
         ImGuiNET.ImGui.BeginDisabled(!canUp);
         if (IconButton(id + "_up", iconFont, PhosphorIcons.Plus, new Vector2(btn, btn), text)) delta = 1;
         ImGuiNET.ImGui.EndDisabled();
-        ImGuiNET.ImGui.SetItemTooltip(upTip);
+        SafeImGui.SetItemTooltip(upTip);
         ImGuiNET.ImGui.PopStyleVar();
         ImGuiNET.ImGui.SameLine(0, 8 * s);
         ImGuiNET.ImGui.AlignTextToFramePadding();
@@ -769,8 +768,7 @@ internal static class ImGuiBar
             string title = w.Title.Length > 0 ? w.Title : w.Key;
             string icon = IconFor(title, out bool letter);
             string id = "##bar_sw" + w.Hash.ToString("X8");
-            // The tooltip goes through SetItemTooltip, a format function: the plugin's text with '%' doubled.
-            list.Add(new ButtonInfo(title, id, icon, letter, title.Replace("%", "%%"), Window: w));
+            list.Add(new ButtonInfo(title, id, icon, letter, title, Window: w));
         }
         _buttons = list.ToArray();
         _tooltip = $"RynthCore {EntryPoint.BuildStamp}\nDrag here to move the bar. Right-click: bar size and rows. Ctrl+wheel over the bar: size.";

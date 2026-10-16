@@ -277,7 +277,7 @@ internal sealed partial class MetaFace
         float toggleX = x;
         if (Toggle(compactLabel, ref x, p.Y, !anyRuleOpen)) SetAllFolded(anyRuleOpen);
         x = toggleX + compactW + 4;   // the button keeps one width whichever label it shows
-        ImGuiNET.ImGui.SetItemTooltip(anyRuleOpen
+        SafeImGui.SetItemTooltip(anyRuleOpen
             ? "Fold every rule to one line (hover one to see all of it; its caret opens it again)."
             : "Show every rule in full: each condition and action on its own line.");
 
@@ -289,7 +289,7 @@ internal sealed partial class MetaFace
             if (anyOpen) foreach ((string s, List<int> _) in _groups) _collapsed.Add(s);
             else _collapsed.Clear();
         }
-        ImGuiNET.ImGui.SetItemTooltip(anyOpen ? "Collapse every state" : "Expand every state");
+        SafeImGui.SetItemTooltip(anyOpen ? "Collapse every state" : "Expand every state");
 
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + 22));
         ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
@@ -452,7 +452,7 @@ internal sealed partial class MetaFace
             rx -= pw;
             if (GlyphButton("##add", PhosphorIcons.Plus, new Vector2(rx, hp.Y + (hh - 18) * 0.5f), new Vector2(pw, 18), Green, Lighten(Green)))
                 OpenEditor(-1, new MetaRuleDto { State = state, Action = 1 });
-            ImGuiNET.ImGui.SetItemTooltip($"New rule in {state}");
+            SafeImGui.SetItemTooltip($"New rule in {state}");
             rx -= 4;
         }
         if (current)
@@ -482,8 +482,8 @@ internal sealed partial class MetaFace
                     dl.AddRect(wa, wb, Amber, 8);
                     dl.AddText(small, small.FontSize, new Vector2(wa.X + 5, wa.Y + 2), Amber, wtag);
                     if (ImGuiNET.ImGui.IsMouseHoveringRect(wa, wb))
-                        ImGuiNET.ImGui.SetTooltip("Watchdog: unless you move far enough, the meta goes to " +
-                            (wdState.Length > 0 ? wdState.Replace("%", "%%") : "its state") + " when this runs out.");
+                        SafeImGui.SetTooltip("Watchdog: unless you move far enough, the meta goes to " +
+                            (wdState.Length > 0 ? wdState : "its state") + " when this runs out.");
                 }
             }
         }
@@ -555,7 +555,7 @@ internal sealed partial class MetaFace
                     new Vector2(p.X + 2, firstLineY + (_lineH - 16) * 0.5f), new Vector2(14, 16), Faded(TextDim), Teal))
                 SetFolded(index, !folded);
             caretHot = ImGuiNET.ImGui.IsItemHovered();
-            ImGuiNET.ImGui.SetItemTooltip(folded ? "Show all of this rule" : "Fold this rule to one line");
+            SafeImGui.SetItemTooltip(folded ? "Show all of this rule" : "Fold this rule to one line");
         }
         if (GlyphButton("##en", rule.Enabled ? PhosphorIcons.CheckSquare : PhosphorIcons.Square,
                 new Vector2(p.X + 16, firstLineY + (_lineH - 16) * 0.5f), new Vector2(16, 16), rule.Enabled ? Green : Mute, TextDim))
@@ -563,7 +563,7 @@ internal sealed partial class MetaFace
             rule.Enabled = !rule.Enabled;
             SendEdit(new MetaCmd { Op = "set_rule_enabled", Index = index, Value = rule.Enabled ? "true" : "false" });
         }
-        ImGuiNET.ImGui.SetItemTooltip(rule.Enabled ? "Enabled: click to disable" : "Disabled: click to enable");
+        SafeImGui.SetItemTooltip(rule.Enabled ? "Enabled: click to disable" : "Disabled: click to enable");
         if ((hot && !filtering) || dragged)   // on hover the number becomes a grip: the row drags
             PhosphorIcons.DrawCentered(dl, ImGuiFonts.Get(UiFont.Ui11), PhosphorIcons.DotsSixVertical,
                 new Vector2(p.X + 34, firstLineY), new Vector2(_numW + 4, _lineH), dragged ? Teal : Mute);
@@ -618,13 +618,13 @@ internal sealed partial class MetaFace
             if (IconButton("##up", PhosphorIcons.ArrowUp, new Vector2(bx, by), new Vector2(bs, bs), Mute, BtnFill, BtnBord, enabled: canMove && gi > 0))
                 changed |= Move(index, -1);
             toolHot |= ImGuiNET.ImGui.IsItemHovered();
-            ImGuiNET.ImGui.SetItemTooltip(canMove ? "Move up" : "Clear the filter to move rules");
+            SafeImGui.SetItemTooltip(canMove ? "Move up" : "Clear the filter to move rules");
             bx += bs + gap;
             if (IconButton("##dn", PhosphorIcons.ArrowDown, new Vector2(bx, by), new Vector2(bs, bs), Mute, BtnFill, BtnBord,
                     enabled: canMove && gi < groupCount - 1))
                 changed |= Move(index, +1);
             toolHot |= ImGuiNET.ImGui.IsItemHovered();
-            ImGuiNET.ImGui.SetItemTooltip(canMove ? "Move down" : "Clear the filter to move rules");
+            SafeImGui.SetItemTooltip(canMove ? "Move down" : "Clear the filter to move rules");
             bx += bs + gap;
             if (IconButton("##dup", PhosphorIcons.Copy, new Vector2(bx, by), new Vector2(bs, bs), Mute, BtnFill, BtnBord))
                 changed |= Duplicate(index, rule);
@@ -645,7 +645,7 @@ internal sealed partial class MetaFace
                 }
             }
             toolHot |= ImGuiNET.ImGui.IsItemHovered();
-            ImGuiNET.ImGui.SetItemTooltip(arming ? "Click again to delete this rule" : "Delete rule");
+            SafeImGui.SetItemTooltip(arming ? "Click again to delete this rule" : "Delete rule");
         }
 
         dl.AddLine(new Vector2(p.X, p.Y + h - 0.5f), new Vector2(p.X + w, p.Y + h - 0.5f), RowLine);
@@ -1024,7 +1024,7 @@ internal sealed partial class MetaFace
             _stateClock.StateSet(NowMs);   // picking a state enters it afresh (RynthAi resets its clock)
         }
         if (inState != null && ImGuiNET.ImGui.IsMouseHoveringRect(new Vector2(pickX, p.Y + 1), new Vector2(pickX + pickW, p.Y + 23)))
-            ImGuiNET.ImGui.SetTooltip($"The meta's current state; in it for {inState}.");
+            SafeImGui.SetTooltip($"The meta's current state; in it for {inState}.");
         bool canGo = HasRulesIn(_data.CurrentState);
         if (IconButton("##goto_current", PhosphorIcons.Crosshair, new Vector2(pickX + pickW + 4, p.Y + 1), new Vector2(goW, 22),
                 Teal, BtnFill, BtnBord, enabled: canGo, font: UiFont.Ui14))
@@ -1036,7 +1036,7 @@ internal sealed partial class MetaFace
                 SetFilter(string.Empty);
             }
         }
-        ImGuiNET.ImGui.SetItemTooltip(canGo ? "Show the current state in the list" : "The current state has no rules");
+        SafeImGui.SetItemTooltip(canGo ? "Show the current state in the list" : "The current state has no rules");
         if (Button(ruleLabel + "##new", new Vector2(ruleX, p.Y), new Vector2(newW, 24), TextDim, NewFill, Green))
             OpenEditor(-1, new MetaRuleDto { State = _data.CurrentState, Action = 1 });
         ImGuiNET.ImGui.SetItemTooltip("A new rule in the current state (added once its condition and action are filled in)");

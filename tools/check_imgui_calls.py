@@ -8,6 +8,15 @@ thread - the first time that line runs. Run after adding ImGui code:
     python tools/check_imgui_calls.py
 
 Exit code 1 lists the calls with no matching export.
+
+It also flags ImGui.Text / TextColored / TextWrapped / TextDisabled /
+BulletText / SetTooltip / SetItemTooltip / LabelText(value) calls anywhere in
+the engine whose text isn't a plain literal: ImGui.NET passes that text to
+native ImGui as a printf format, so a '%' in it reads missing arguments. Such
+text goes through SafeImGui instead. To check another tree (a RynthSuite
+checkout's Plugins folder) for those calls only:
+
+    python tools/check_imgui_calls.py C:/path/to/RynthSuite/Plugins
 """
 import re
 import struct
@@ -16,7 +25,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DLL = ROOT / "src" / "RynthCore.Engine" / "Native" / "cimgui.dll"
-SOURCES = ROOT / "src" / "RynthCore.Engine" / "ImGui"
+ENGINE = ROOT / "src" / "RynthCore.Engine"
+SOURCES = ENGINE / "ImGui"
 # Old diagnostic shell, FORCE-gated and never run: not held to this check.
 SKIP = {"RynthCoreShell.cs"}
 
@@ -58,7 +68,202 @@ def pe_exports(path: Path) -> set[str]:
     return names
 
 
+# --- Text drawn as a printf format -------------------------------------------
+# ImGui.NET hands the string of these calls to native ImGui as a printf format
+# with no arguments: a '%' in a chat line, name, server reply or setting reads
+# arguments that were never passed (garbage, or a crash on %s / %n). Text that
+# isn't a literal goes through SafeImGui (engine: ImGui/SafeImGui.cs, RynthSuite:
+# Plugins/Shared/SafeImGui.cs), which doubles every '%'. The number is the
+# index of the format argument.
+FORMAT_TEXT_CALLS = {
+    "Text": 0, "TextColored": 1, "TextWrapped": 0, "TextDisabled": 0,
+    "BulletText": 0, "SetTooltip": 0, "SetItemTooltip": 0, "LabelText": 1,
+}
+FORMAT_CALL_RE = re.compile(
+    r"(?<![\w.])(?:ImGuiNET\.)?ImGui\.(" + "|".join(FORMAT_TEXT_CALLS) + r")\s*\(")
+STRING_START_RE = re.compile(r'(\$*)(@?)(\$*)"')
+# The wrappers themselves pass their (escaped) text on.
+FORMAT_SKIP = {"SafeImGui.cs"}
+
+
+def skip_token(s: str, i: int):
+    """End of the comment, string or char literal starting at i, else None."""
+    if s.startswith("//", i):
+        j = s.find("\n", i)
+        return len(s) if j < 0 else j
+    if s.startswith("/*", i):
+        j = s.find("*/", i + 2)
+        return len(s) if j < 0 else j + 2
+    c = s[i]
+    if c == "'":
+        j = i + 1
+        while j < len(s) and s[j] != "'":
+            j += 2 if s[j] == "\\" else 1
+        return j + 1
+    if c not in '"$@':
+        return None
+    m = STRING_START_RE.match(s, i)
+    if not m:
+        return None
+    dollars = len(m.group(1)) + len(m.group(3))
+    verbatim = bool(m.group(2))
+    q = m.end() - 1
+    n = 0
+    while q + n < len(s) and s[q + n] == '"':
+        n += 1
+    if n == 2:                                   # ""
+        return q + 2
+    if n >= 3:                                   # raw string literal
+        j = q + n
+        close = '"' * n
+        while j < len(s) and not s.startswith(close, j):
+            if dollars and s.startswith("{" * dollars, j):
+                j = skip_code(s, j + dollars, "}") + 1
+            else:
+                j += 1
+        return j + n
+    j = q + 1
+    while j < len(s):
+        ch = s[j]
+        if ch == "\\" and not verbatim:
+            j += 2
+        elif ch == '"':
+            if verbatim and s.startswith('""', j):
+                j += 2
+            else:
+                return j + 1
+        elif dollars and ch == "{":
+            if s.startswith("{{", j):
+                j += 2
+            else:
+                j = skip_code(s, j + 1, "}") + 1
+        else:
+            j += 1
+    return j
+
+
+def skip_code(s: str, i: int, closer: str) -> int:
+    """Index of the closer that ends the code starting at i (nesting, strings and comments skipped)."""
+    depth = 0
+    j = i
+    while j < len(s):
+        end = skip_token(s, j)
+        if end is not None:
+            j = end
+            continue
+        ch = s[j]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0 and ch == closer:
+                return j
+            depth -= 1
+        j += 1
+    return j
+
+
+def call_args(s: str, open_paren: int):
+    """[(start, end)] of each top-level argument of the call whose '(' is at open_paren."""
+    args = []
+    depth = 0
+    start = open_paren + 1
+    j = start
+    while j < len(s):
+        end = skip_token(s, j)
+        if end is not None:
+            j = end
+            continue
+        ch = s[j]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                args.append((start, j))
+                return args, j
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append((start, j))
+            start = j + 1
+        j += 1
+    return args, j
+
+
+def literal_kind(arg: str) -> str:
+    """'literal' for plain string literals (joined with '+' at most), 'percent' for such
+    literals holding a lone '%', else 'expression'."""
+    j = 0
+    pieces = []
+    while j < len(arg):
+        ch = arg[j]
+        if ch.isspace() or ch == "+":
+            j += 1
+            continue
+        end = skip_token(arg, j)
+        if end is None:
+            return "expression"
+        piece = arg[j:end]
+        if not (piece.startswith("//") or piece.startswith("/*")):
+            if piece[0] not in '"@$' or "$" in piece[:piece.index('"')]:
+                return "expression"
+            pieces.append(piece)
+        j = end
+    if not pieces:
+        return "expression"
+    return "percent" if any("%" in p.replace("%%", "") for p in pieces) else "literal"
+
+
+def format_text_calls(text: str):
+    """Every format-text ImGui call in C# source: (match, arg_start, arg_end, kind).
+    Calls inside comments and strings (e.g. Lua script text) are skipped."""
+    code = []
+    j = 0
+    while j < len(text):
+        end = skip_token(text, j)
+        if end is None:
+            code.append(text[j])
+            j += 1
+        else:
+            code.append("".join(c if c == "\n" else " " for c in text[j:end]))
+            j = end
+    masked = "".join(code)
+    for m in FORMAT_CALL_RE.finditer(masked):
+        args, _ = call_args(text, m.end() - 1)
+        index = FORMAT_TEXT_CALLS[m.group(1)]
+        if index >= len(args):
+            yield m, m.end(), m.end(), "expression"
+            continue
+        a, b = args[index]
+        yield m, a, b, literal_kind(text[a:b])
+
+
+def unsafe_format_text(roots) -> list[str]:
+    found = []
+    for root in roots:
+        for f in sorted(Path(root).rglob("*.cs")):
+            if f.name in FORMAT_SKIP or {"bin", "obj"} & set(f.parts):
+                continue
+            text = f.read_text(encoding="utf-8-sig")
+            for m, a, b, kind in format_text_calls(text):
+                if kind == "literal":
+                    continue
+                line = text.count("\n", 0, m.start()) + 1
+                what = "a literal with a lone '%'" if kind == "percent" else "text that isn't a literal"
+                found.append(f"{f}:{line}: ImGui.{m.group(1)} with {what}: {' '.join(text[a:b].split())[:80]}")
+    return found
+
+
 def main() -> int:
+    # python tools/check_imgui_calls.py DIR...  checks only the format text under DIR
+    # (e.g. a RynthSuite checkout's Plugins folder).
+    if len(sys.argv) > 1:
+        unsafe = unsafe_format_text(sys.argv[1:])
+        if unsafe:
+            print("ImGui text calls that draw non-literal text as a printf format (use SafeImGui):")
+            print("\n".join("  " + u for u in unsafe))
+            return 1
+        print("OK: no ImGui text call draws non-literal text as a format.")
+        return 0
+
     exports = pe_exports(DLL)
 
     def found(prefix: str, name: str) -> bool:
@@ -70,7 +275,7 @@ def main() -> int:
         if f.name in SKIP:
             continue
         text = f.read_text(encoding="utf-8")
-        for m in re.finditer(r"ImGui(?:NET\.ImGui)?\.(\w+)\(", text):
+        for m in re.finditer(r"(?<!\w)ImGui(?:NET\.ImGui)?\.(\w+)\(", text):
             if not found("ig", m.group(1)):
                 missing.append(f"{f.relative_to(ROOT)}:{text.count(chr(10), 0, m.start()) + 1}: ImGui.{m.group(1)}")
         # Direct native calls name the exact export (overload suffix included).
@@ -81,11 +286,17 @@ def main() -> int:
             if not found(MEMBER_PREFIX[m.group(1)], m.group(2)):
                 missing.append(f"{f.relative_to(ROOT)}:{text.count(chr(10), 0, m.start()) + 1}: {m.group(1)}.{m.group(2)}")
 
+    unsafe = unsafe_format_text([ENGINE])
+
     if missing:
         print("ImGui calls with no export in cimgui.dll:")
         print("\n".join("  " + m for m in missing))
+    if unsafe:
+        print("ImGui text calls that draw non-literal text as a printf format (use SafeImGui):")
+        print("\n".join("  " + u for u in unsafe))
+    if missing or unsafe:
         return 1
-    print(f"OK: every ImGui call resolves ({len(exports)} exports).")
+    print(f"OK: every ImGui call resolves ({len(exports)} exports); no text call draws non-literal text as a format.")
     return 0
 
 

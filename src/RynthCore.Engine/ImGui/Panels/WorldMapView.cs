@@ -811,8 +811,8 @@ internal sealed class WorldMapView
         if (_openCtx) { ImGuiNET.ImGui.OpenPopup(_ctxId); _openCtx = false; }
         if (!ImGuiNET.ImGui.BeginPopup(_ctxId)) return;
         string where = _ctxName.Length > 0 ? _ctxName : "Map point";
-        ImGuiNET.ImGui.TextColored(new Vector4(1f, 0.82f, 0.3f, 1f), where);
-        ImGuiNET.ImGui.TextDisabled(RynthNavStatus.Coord(_ctxNs, _ctxEw));
+        SafeImGui.TextColored(new Vector4(1f, 0.82f, 0.3f, 1f), where);
+        SafeImGui.TextDisabled(RynthNavStatus.Coord(_ctxNs, _ctxEw));
         ImGuiNET.ImGui.Separator();
         if (ImGuiNET.ImGui.Selectable("Go here")) RynthNavCommands.Go(where, _ctxNs, _ctxEw);
         if (ImGuiNET.ImGui.Selectable("Route here")) RynthNavCommands.Route(where, _ctxNs, _ctxEw);

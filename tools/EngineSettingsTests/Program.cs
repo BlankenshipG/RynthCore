@@ -52,6 +52,7 @@ namespace EngineSettingsTests
                 Run(nameof(SaveLeavesMalformedFileAlone), SaveLeavesMalformedFileAlone);
                 Run(nameof(MaxHotReloadsReadAndKept), MaxHotReloadsReadAndKept);
                 Run(nameof(CloseOnServerDisconnectDefaultOnAndSaved), CloseOnServerDisconnectDefaultOnAndSaved);
+                Run(nameof(IltServerNamesEdit), IltServerNamesEdit);
             }
             finally
             {
@@ -88,6 +89,8 @@ namespace EngineSettingsTests
                         if (!RynthCore.Engine.Compatibility.AutoIdPolicy.TryParseMode(args[1], out var aim)) throw new ArgumentException(args[1]);
                         EngineSettings.AutoIdMode = aim;
                         break;
+                    case "ilt-add": Console.WriteLine("Changed=" + EngineSettings.EditIltServerName(args[1], add: true)); break;
+                    case "ilt-remove": Console.WriteLine("Changed=" + EngineSettings.EditIltServerName(args[1], add: false)); break;
                     case "dump":
                         Console.WriteLine("AutoIdMode=" + EngineSettings.AutoIdMode);
                         Console.WriteLine("PluginPaths=" + string.Join("|", EngineSettings.PluginPaths));
@@ -97,6 +100,7 @@ namespace EngineSettingsTests
                         Console.WriteLine("ServerMessageStream=" + EngineSettings.ServerMessageStream);
                         Console.WriteLine("MaxHotReloads=" + EngineSettings.MaxHotReloads);
                         Console.WriteLine("CloseOnServerDisconnect=" + EngineSettings.CloseOnServerDisconnect);
+                        Console.WriteLine("IltServerNames=" + (EngineSettings.IltServerNames is { } n ? string.Join("|", n) : "(none)"));
                         break;
                     default: throw new ArgumentException(args[0]);
                 }
@@ -357,6 +361,32 @@ namespace EngineSettingsTests
                 File.WriteAllText(path, LauncherFile.Replace("\"LoggingLevel\"", $"\"CloseOnServerDisconnect\": {bad}, \"LoggingLevel\""));
                 Eq(DumpValue(RunChild(path, "dump").Out, "CloseOnServerDisconnect"), "True", $"{bad}: ignored, on");
             }
+        }
+
+        // /rc server names ilt add|remove (2026.10.5.46): the first edit starts from the defaults,
+        // the edit is saved with the launcher's keys kept, and repeats, unknown, empty and overlong
+        // patterns change nothing.
+        private static void IltServerNamesEdit()
+        {
+            string dir = NewDir("iltnames");
+            string path = Path.Combine(dir, "engine.json");
+            File.WriteAllText(path, LauncherFile);
+            JsonElement before = ReadJson(path);
+
+            Eq(DumpValue(RunChild(path, "dump").Out, "IltServerNames"), "(none)", "no list in the file");
+            Eq(DumpValue(RunChild(path, "ilt-add", "Frosthaven").Out, "Changed"), "True", "add");
+            string defaults = string.Join("|", RynthCore.Engine.Compatibility.IltDetect.DefaultServerNames);
+            Eq(DumpValue(RunChild(path, "dump").Out, "IltServerNames"), defaults + "|Frosthaven", "the defaults kept, the new one added");
+            Eq(Raw(ReadJson(path).GetProperty("LauncherWindow")), Raw(before.GetProperty("LauncherWindow")), "the launcher's keys kept");
+            NoTempFilesLeft(dir);
+
+            Eq(DumpValue(RunChild(path, "ilt-add", "FROSTHAVEN").Out, "Changed"), "False", "adding again (any case) changes nothing");
+            Eq(DumpValue(RunChild(path, "ilt-remove", "nope").Out, "Changed"), "False", "removing an unknown pattern changes nothing");
+            Eq(DumpValue(RunChild(path, "ilt-add", " ").Out, "Changed"), "False", "an empty pattern is refused");
+            Eq(DumpValue(RunChild(path, "ilt-add", new string('x', EngineSettings.MaxIltServerNameLength + 1)).Out, "Changed"), "False",
+                "an overlong pattern is refused");
+            Eq(DumpValue(RunChild(path, "ilt-remove", "frosthaven").Out, "Changed"), "True", "remove (any case)");
+            Eq(DumpValue(RunChild(path, "dump").Out, "IltServerNames"), defaults, "back to the defaults");
         }
 
         /// <summary>The value of a "Name=value" line of the child's dump output ("" if none).</summary>

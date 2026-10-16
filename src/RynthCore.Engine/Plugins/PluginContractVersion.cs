@@ -19,5 +19,9 @@ internal static class PluginContractVersion
     // v82: SalvageDirect (salvage without the salvage panel; was v81 on feature/salvage-direct).
     // v83: GetObjectServerAge and RemoveClientObject (ghost creatures, 2026-10-12).
     // v84: GetObjectProperties (every property of an object, for /ub propertydump; 2026-10-13).
-    public const uint Current = 84;
+    // v85: ArmConfirmation and GetLastConfirmation (answer the server's yes/no prompt, e.g. the
+    //      craft chance, for a plugin; from SilentKelpie's build, 2026-10-15).
+    // v86: GetServerStateJson (the server list, active server and owning plugins for every plugin;
+    //      server plugins declare their server in their manifest; from SilentKelpie's build).
+    public const uint Current = 86;
 }

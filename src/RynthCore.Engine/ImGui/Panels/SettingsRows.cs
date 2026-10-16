@@ -108,7 +108,7 @@ internal sealed class SettingsRows
             bool pinned = QuickSettings.IsPinned(key);
             if (ImGuiNET.ImGui.MenuItem(pinned ? PhosphorIcons.X + "  Remove from My settings" : PhosphorIcons.PushPin + "  Pin to My settings"))
                 QuickSettings.SetPinned(key, !pinned);
-            ImGuiNET.ImGui.SetItemTooltip(pinned
+            SafeImGui.SetItemTooltip(pinned
                 ? "Take it out of the My settings drawer on the dashboard (the setting itself doesn't change)."
                 : "Add it to the My settings drawer on the dashboard, for quick changes.");
             extraMenu?.Invoke(key);
@@ -134,6 +134,7 @@ internal sealed class SettingsRows
             case SettingKind.Text: TextRow(row, w); break;
             case SettingKind.Status: StatusRow(row, w); break;
             case SettingKind.Hotkeys: _editing |= _hotkeys.Draw(w); break;
+            case SettingKind.ServerPick: ServerPickSettingsUi.Draw(w, row.Tooltip); break;
             case SettingKind.Color: ColorRow(row, w); break;
         }
     }
@@ -496,16 +497,16 @@ internal sealed class SettingsRows
     private void CraftingStatus(SettingRow row)
     {
         ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
-        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.TextMuted), row.Label);
+        SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.TextMuted), row.Label);
         ImGuiNET.ImGui.SameLine(0, 6);
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(_data.MissileCraftingActive ? RynthTheme.Highlight : RynthTheme.TextMuted), _data.MissileCraftingState);
+        SafeImGui.TextColored(RynthTheme.VecOf(_data.MissileCraftingActive ? RynthTheme.Highlight : RynthTheme.TextMuted), _data.MissileCraftingState);
         ImGuiNET.ImGui.PopFont();
         if (!string.IsNullOrEmpty(_data.MissileCraftingStatus))
         {
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui10));
             ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, TextDim);
-            ImGuiNET.ImGui.TextWrapped(_data.MissileCraftingStatus);
+            SafeImGui.TextWrapped(_data.MissileCraftingStatus);
             ImGuiNET.ImGui.PopStyleColor();
             ImGuiNET.ImGui.PopFont();
         }
@@ -525,7 +526,7 @@ internal sealed class SettingsRows
 
     private static void Tooltip(SettingRow row)
     {
-        if (row.Tooltip != null) ImGuiNET.ImGui.SetItemTooltip(row.Tooltip);
+        if (row.Tooltip != null) SafeImGui.SetItemTooltip(row.Tooltip);
     }
 
     private static uint Lighten(uint abgr) => Scale(abgr, 1.25f, 12);

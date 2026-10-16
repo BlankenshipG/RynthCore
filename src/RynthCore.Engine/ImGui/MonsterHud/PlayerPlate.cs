@@ -245,7 +245,7 @@ internal static class PlayerPlate
         {
             ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.ResizeAll);
             if (_hover && !_dragging)
-                ImGuiNET.ImGui.SetTooltip(DragTip);
+                SafeImGui.SetTooltip(DragTip);
         }
         _wantsMouse = _hover || _dragging;
     }

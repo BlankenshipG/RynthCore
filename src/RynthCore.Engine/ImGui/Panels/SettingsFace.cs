@@ -159,7 +159,7 @@ internal sealed class SettingsFace : IImGuiPanel
 
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
         if (_tab >= SettingsSchema.Tabs.Length) _tab = 0;
-        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Accent), Headers[_tab]);
+        SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.Accent), Headers[_tab]);
         ImGuiNET.ImGui.PopFont();
         ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
         Vector2 lp = ImGuiNET.ImGui.GetCursorScreenPos();

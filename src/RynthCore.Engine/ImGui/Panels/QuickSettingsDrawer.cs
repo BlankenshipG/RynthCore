@@ -173,14 +173,14 @@ internal sealed class QuickSettingsDrawer : RynthAiDrawer
                     {
                         header = true;
                         ImGuiNET.ImGui.Dummy(new Vector2(0, 3));
-                        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Highlight), tab.Name);
+                        SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.Highlight), tab.Name);
                     }
                     bool pinned = QuickSettings.IsPinned(key);
                     ImGuiNET.ImGui.PushID(key);
                     // Stays open, so several can be pinned in one go; the section shows dimmed at the right.
                     if (ImGuiNET.ImGui.Selectable((pinned ? PhosphorIcons.Check : "    ") + "  " + label, pinned, ImGuiSelectableFlags.NoAutoClosePopups))
                         QuickSettings.SetPinned(key, !pinned);
-                    if (row.Tooltip != null) ImGuiNET.ImGui.SetItemTooltip(row.Tooltip);
+                    if (row.Tooltip != null) SafeImGui.SetItemTooltip(row.Tooltip);
                     if (section.Length > 0)
                     {
                         Vector2 max = ImGuiNET.ImGui.GetItemRectMax(), min = ImGuiNET.ImGui.GetItemRectMin();

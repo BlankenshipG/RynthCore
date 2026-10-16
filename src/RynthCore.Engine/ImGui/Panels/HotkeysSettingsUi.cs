@@ -141,7 +141,7 @@ internal sealed class HotkeysSettingsUi
         ImGuiNET.ImGui.SetCursorScreenPos(p);
         if (ImGuiNET.ImGui.InvisibleButton("##on", new Vector2(14, 16)))
             HotkeyService.Replace(i, b with { Enabled = !b.Enabled });
-        ImGuiNET.ImGui.SetItemTooltip(b.Enabled ? "On. Click to switch this hotkey off." : "Off. Click to switch this hotkey on.");
+        SafeImGui.SetItemTooltip(b.Enabled ? "On. Click to switch this hotkey off." : "Off. Click to switch this hotkey on.");
         dl.AddRectFilled(p + new Vector2(0, 2), p + new Vector2(12, 14), b.Enabled ? ToggleOn : ToggleOff, 2);
 
         dl.AddText(bold, bold.FontSize, p + new Vector2(18, 1), b.Enabled ? Amber : Mute, b.Combo.ToString());
@@ -153,7 +153,7 @@ internal sealed class HotkeysSettingsUi
         // The full text on hover (a long chat command is clipped).
         ImGuiNET.ImGui.SetCursorScreenPos(p + new Vector2(18, 0));
         ImGuiNET.ImGui.InvisibleButton("##what", new Vector2(Math.Max(1, textRight - p.X - 18), rowH));
-        ImGuiNET.ImGui.SetItemTooltip(b.Combo + ": " + what + (b.Enabled ? "" : " (off)"));
+        SafeImGui.SetItemTooltip(b.Combo + ": " + what + (b.Enabled ? "" : " (off)"));
 
         float x = p.X + w - 4 * 20;
         if (IconButton("##up", new Vector2(x, p.Y), PhosphorIcons.CaretUp, i > 0))
@@ -237,7 +237,7 @@ internal sealed class HotkeysSettingsUi
             else { HotkeyService.BeginCapture(); _waitingForKey = true; }
         }
         ImGuiNET.ImGui.PopStyleColor();
-        ImGuiNET.ImGui.SetItemTooltip(_waitingForKey ? "Waiting for a key. Click again or press Esc to stop." : "Click, then press the key combination.");
+        SafeImGui.SetItemTooltip(_waitingForKey ? "Waiting for a key. Click again or press Esc to stop." : "Click, then press the key combination.");
         if (_waitingForKey && HotkeyService.CaptureNote.Length > 0)
             Warning(HotkeyService.CaptureNote, w);
 
@@ -256,7 +256,7 @@ internal sealed class HotkeysSettingsUi
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.FrameBg, BtnFill);
         bool open = ImGuiNET.ImGui.BeginCombo("##action", current, ImGuiComboFlags.HeightLarge);
         ImGuiNET.ImGui.PopStyleColor(3);
-        if (!open && picked is { Tip.Length: > 0 }) ImGuiNET.ImGui.SetItemTooltip(picked.Tip);
+        if (!open && picked is { Tip.Length: > 0 }) SafeImGui.SetItemTooltip(picked.Tip);
         if (open)
         {
             if (ImGuiNET.ImGui.Selectable(ChatCommandItem, isCommand)) _editAction = HotkeyActions.Command;
@@ -281,7 +281,7 @@ internal sealed class HotkeysSettingsUi
                 if (ImGuiNET.ImGui.Selectable((a.Group.Length > 0 ? "  " : "") + a.Name + "##" + a.Id,
                         string.Equals(a.Id, _editAction, StringComparison.OrdinalIgnoreCase)))
                     _editAction = a.Id;
-                if (a.Tip.Length > 0) ImGuiNET.ImGui.SetItemTooltip(a.Tip);
+                if (a.Tip.Length > 0) SafeImGui.SetItemTooltip(a.Tip);
             }
             ImGuiNET.ImGui.EndCombo();
         }
@@ -332,7 +332,7 @@ internal sealed class HotkeysSettingsUi
         }
         ImGuiNET.ImGui.EndDisabled();
         if (ImGuiNET.ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGuiNET.ImGui.SetTooltip(!canSave
+            SafeImGui.SetTooltip(!canSave
                 ? (_editCombo.IsEmpty || _waitingForKey ? "Pick a key first."
                     : !paramOk ? $"Pick the {picked?.Param?.ToLowerInvariant() ?? "value"} first."
                     : "Type the chat command (starting with /).")
@@ -367,7 +367,7 @@ internal sealed class HotkeysSettingsUi
         bool typing = ImGuiNET.ImGui.IsItemActive();
         ImGuiNET.ImGui.PopStyleVar();
         ImGuiNET.ImGui.PopStyleColor(3);
-        ImGuiNET.ImGui.SetItemTooltip(meta ? "The state's name, as in the meta (the case doesn't matter)." : a.Tip);
+        SafeImGui.SetItemTooltip(meta ? "The state's name, as in the meta (the case doesn't matter)." : a.Tip);
 
         if (states.Count > 0)
         {
@@ -404,7 +404,7 @@ internal sealed class HotkeysSettingsUi
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, TextDim);
         ImGuiNET.ImGui.TextUnformatted(text);
         ImGuiNET.ImGui.PopStyleColor();
-        ImGuiNET.ImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);
     }
 
     private static void Section(string text, float w)

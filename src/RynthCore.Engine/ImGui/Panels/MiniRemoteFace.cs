@@ -1,11 +1,16 @@
 // ============================================================================
 //  RynthCore.Engine - ImGui/Panels/MiniRemoteFace.cs
-//  The Mini Remote: one window for the quick-use item slots, whoever draws them.
+//  The Mini Remote: one window for the quick-use item slots, whoever draws them,
+//  and the sections (MiniRemoteFace.Sections.cs): a rail down the left with
+//  Remote (this file) and the core sections Char, Map, Skills, Combat, Nav,
+//  Inventory, Crafting, Spells, Chat, Friends, Fellowship and Pets, plus any a
+//  plugin adds, each showing its engine panels or plugin views and the active
+//  servers' options (UI/Sections).
 //
 //  With RynthAi loaded it hosts RynthAi's Mini Remote (session rates, target,
 //  summon, item slots, toggles, bank, rebuff, Translate, Guardian and its
 //  Options menu, its Quests and Pets tabs, plus on ILT worlds the RynthILT
-//  plugin's tabs Character, Banking, Gear, Charms and Games, which RynthAi asks
+//  plugin's tabs Charms, Banking, Gear and Games (Character moved to RynthOracle, 2026.10.5.54), which RynthAi asks
 //  RynthILT to draw), drawn by the plugin through
 //  RynthPluginRenderEmbed ("miniremote-window"). The window fits itself to what
 //  the plugin asks for whenever that changes (another tab, a section shown or
@@ -47,7 +52,7 @@ using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
 
-internal sealed class MiniRemoteFace : IImGuiPanel
+internal sealed partial class MiniRemoteFace : IImGuiPanel
 {
     public const string Title = "Mini Remote";
 
@@ -59,8 +64,21 @@ internal sealed class MiniRemoteFace : IImGuiPanel
         ItemHudStore.EnsureLoadQueued();
     }
 
-    /// <summary>The RynthAi surface for this window (NUL-terminated for the export).</summary>
-    private static ReadOnlySpan<byte> Surface => "miniremote-window\0"u8;
+    /// <summary>
+    /// The RynthAi surface for this window (NUL-terminated for the export): "miniremote-remote"
+    /// (the remote alone: its tabs are sections here) from a RynthAi that publishes sections
+    /// while the sections rail shows, else "miniremote-window" (the remote with its own tab bar).
+    /// With the rail hidden the tab bar is the only way to RynthILT's tabs (Gear, Games).
+    /// </summary>
+    private static ReadOnlySpan<byte> Surface =>
+        RailShown && RynthAiPublishesSections() ? "miniremote-remote\0"u8 : "miniremote-window\0"u8;
+
+    private static bool RynthAiPublishesSections()
+    {
+        foreach (UI.Sections.SectionManifest m in UI.Sections.SectionRegistry.Current.Manifests)
+            if (m.Plugin.Contains("RynthAi", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
 
     private const float Gap = 4f, StatusH = 18f;
     /// <summary>Pixels a Ctrl+wheel notch or a Bigger / Smaller menu click changes the box edge by.</summary>
@@ -116,12 +134,39 @@ internal sealed class MiniRemoteFace : IImGuiPanel
     public void Draw()
     {
         float w = Begin(out Vector2 origin, out Vector2 size);
-        if (DrawRynthAi(w, origin, size))
-        {
-            End(origin, size);
-            return;
-        }
+        UI.Sections.SectionRegistry.Snapshot snap = UI.Sections.SectionRegistry.Current;
+        TakeRequestedSection(snap);
 
+        // The rail, then everything else to its right (the indent keeps each line there).
+        float railW = RailShown ? DrawRail(snap, origin, size) : 0f;
+        if (railW > 0)
+        {
+            ImGuiNET.ImGui.SetCursorScreenPos(origin + new Vector2(6 + railW, 6));
+            ImGuiNET.ImGui.Indent(railW);
+        }
+        float cw = Math.Max(40f, w - railW);
+        try
+        {
+            if (!IsRemote)
+            {
+                // This window is still the Mini Remote while it shows another section: RynthAi
+                // keeps its floating copy hidden while it hears from it each frame.
+                if (!_embedOff) PingRynthAiHost();
+                DrawSection(snap, cw, origin, size);
+            }
+            else if (!DrawRynthAi(cw, origin, size)) DrawEngineGrid(cw, origin, size);
+        }
+        finally
+        {
+            if (railW > 0) ImGuiNET.ImGui.Unindent(railW);
+        }
+        End(origin, size);
+        DrawMenu();
+    }
+
+    /// <summary>The engine's own slot grid (no RynthAi to draw the remote).</summary>
+    private void DrawEngineGrid(float w, Vector2 origin, Vector2 size)
+    {
         InventoryView view = InventoryModel.Current;
         HudItem[] items = _items.Get(view);
         ItemHudCharacter data = ItemHudStore.Current;
@@ -133,8 +178,6 @@ internal sealed class MiniRemoteFace : IImGuiPanel
         DrawGrid(data, items, w, gridH, ready);
         DrawStatus(ready);
         FitGrid(data, w, haveH);
-        End(origin, size);
-        DrawMenu(data, items);
     }
 
     // ── RynthAi's Mini Remote ───────────────────────────────────────────
@@ -182,6 +225,15 @@ internal sealed class MiniRemoteFace : IImGuiPanel
             FitWindow(new Vector2(want.X, want.Y + GripOverlap()), w, haveH);
         }
         return true;
+    }
+
+    /// <summary>"miniremote-host": tells RynthAi this window is open on a section; it draws nothing.</summary>
+    private void PingRynthAiHost()
+    {
+        int result;
+        try { result = PluginManager.RenderEmbed("RynthAi", "miniremote-host\0"u8, Vector2.Zero, out _); }
+        catch { result = PluginManager.EmbedFailed; }
+        if (result == PluginManager.EmbedFailed) _embedOff = true;
     }
 
     // ── Window fit ──────────────────────────────────────────────────────
@@ -301,7 +353,7 @@ internal sealed class MiniRemoteFace : IImGuiPanel
                 dl.AddText(cp, id == 0 ? Amber : Text, count);
             }
             if (hot)
-                ImGuiNET.ImGui.SetItemTooltip(id == 0
+                SafeImGui.SetItemTooltip(id == 0
                     ? $"{s.Name}: none carried.\nRight-click for options."
                     : $"{s.Name} ({count switch { "" => "1", _ => count }} carried)\nClick to use. Right-click for options.");
         }
@@ -391,7 +443,11 @@ internal sealed class MiniRemoteFace : IImGuiPanel
 
     // ── Right-click menu ────────────────────────────────────────────────
 
-    private void DrawMenu(ItemHudCharacter data, HudItem[] items)
+    /// <summary>
+    /// The right-click menu: a slot's options (the engine grid), then the sections, the active
+    /// servers' items and the rail switch. Opened from a slot or from the rail.
+    /// </summary>
+    private void DrawMenu()
     {
         if (_openMenu)
         {
@@ -407,6 +463,23 @@ internal sealed class MiniRemoteFace : IImGuiPanel
         ImGuiNET.ImGui.PopStyleColor(3);
         if (!open) return;
 
+        try
+        {
+            if (_menuSlot >= 0 && IsRemote)
+            {
+                DrawSlotMenu(ItemHudStore.Current, _items.Get(InventoryModel.Current));
+                ImGuiNET.ImGui.Separator();
+            }
+            DrawSectionsMenuItems();
+        }
+        finally
+        {
+            ImGuiNET.ImGui.EndPopup();
+        }
+    }
+
+    private void DrawSlotMenu(ItemHudCharacter data, HudItem[] items)
+    {
         int i = _menuSlot;
         RemoteSlot? s = i >= 0 && i < data.Slots.Length ? data.Slots[i] : null;
         Label(i >= 0 ? $"Slot {i + 1}{(s != null ? ": " + s.Name : " (empty)")}" : "Mini Remote", Mute);
@@ -430,6 +503,5 @@ internal sealed class MiniRemoteFace : IImGuiPanel
             ResizeSlots(-SlotSizeStep);
         if (ImGuiNET.ImGui.MenuItem("Default box size", "", false, px != ItemHudCharacter.DefaultSlotSize))
             ResizeSlots(ItemHudCharacter.DefaultSlotSize - px);
-        ImGuiNET.ImGui.EndPopup();
     }
 }

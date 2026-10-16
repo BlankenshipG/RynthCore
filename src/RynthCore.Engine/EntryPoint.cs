@@ -471,6 +471,19 @@ public static class EntryPoint
         return _imGuiNativeHandle;
     }
 
+    /// <summary>
+    /// Full path of <paramref name="dllName"/> in the engine's own folders (the ones
+    /// <see cref="PreloadNativeDll"/> searches), or null. Never Windows' search order.
+    /// </summary>
+    internal static string? FindNativeDll(string dllName)
+    {
+        string? engineDir = GetEngineDirectory();
+        if (string.IsNullOrEmpty(engineDir)) return null;
+        foreach (string path in GetNativeDllCandidates(engineDir, dllName))
+            if (File.Exists(path)) return path;
+        return null;
+    }
+
     private static string[] GetNativeDllCandidates(string engineDir, string dllName)
     {
         var candidates = new List<string>();
@@ -569,41 +582,48 @@ public static class EntryPoint
     private static bool _serverMenusRegistered;
 
     /// <summary>
-    /// The server sections of the Char and Mini Remote menus (UI.ServerMenus): each server once,
-    /// then the items of the installed plugins that have windows for it. A server whose plugins
-    /// are all missing gets no items, so its section never shows.
+    /// The engine's own server items for the Mini Remote's sections and the menus
+    /// (UI/Sections/SectionRegistry): its windows that belong to one server, added only when
+    /// the plugin behind each is installed. Plugins add their own through their manifests.
     /// </summary>
     private static void RegisterServerMenus(bool rynthAi, bool rynthIlt)
     {
         if (_serverMenusRegistered) return;
         _serverMenusRegistered = true;
 
-        // Infinite Leaftide: IltInfo (host / world name lists, RynthILT's own verdict, or "/rc ilt on"
-        // for the session), with RynthILT loaded: every ILT window is RynthILT's (since 2026-10-13).
-        UI.ServerMenus.DefineServer("ilt", "Infinite Leaftide", static () => IltInfo.IsIlt && IltInfo.PluginLoaded, "/rc ilt on");
+        // Infinite Leaftide (IltInfo: host / world-name lists, RynthILT's own verdict, or the
+        // per-character "/rc ilt on"). Every ILT window is RynthILT's (since 2026-10-13), so the
+        // engine adds them only when RynthILT is installed.
+        const string ilt = IltInfo.ServerId;
         if (rynthIlt && rynthAi)
         {
             // RynthILT's ILT tabs in RynthAi's Mini Remote (shown once the server reports each on).
-            // The Mini Remote's Quests and Pets tabs are universal: the Character half of the menus.
-            foreach ((string label, string tab) in new[]
+            // A RynthAi that doesn't publish sections gets these stand-ins; one that does lists them itself.
+            // Character (the generic overview) is RynthOracle's Character tab since 2026.10.5.54;
+            // the Leaftide tabs (Charms, Banking, Gear, Games) stay RynthILT's.
+            foreach ((string label, string tab, string section) in new[]
             {
-                ("Character", "character"), ("Banking", "banking"), ("Gear", "gear"), ("Charms", "charms"), ("Games", "games"),
+                ("Charms", "charms", "inventory"), ("Banking", "banking", "inventory"),
+                ("Gear", "gear", "inventory"), ("Games", "games", "fellowship"),
             })
             {
-                UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem(label, "/rc miniremote tab " + tab,
-                    $"The Mini Remote's {label} tab (RynthILT).", "tab:" + tab));
+                UI.Sections.SectionRegistry.AddEngineItem(section, ilt, label, "/rc miniremote tab " + tab,
+                    $"The Mini Remote's {label} tab (RynthILT).", unlessPlugin: "RynthAi");
             }
         }
         if (rynthIlt)
         {
-            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Guardian", "/rc guardian toggle",
-                "Temple of Enlightenment guardians: riddle answers and Give (RynthILT)."));
-            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Bounties", "/rc bounties toggle",
-                "ACECustom bounties and your progress on each (RynthILT)."));
-            UI.ServerMenus.AddItem("ilt", new UI.ServerMenuItem("Progression", "/rc progression",
-                "XP planner, augmentations and enlightenment (the Skills panel's Progression tab; RynthILT)."));
+            // The engine's ILT panels, fed by RynthILT.
+            // Guardian sits with Progression (Temple of Enlightenment): Session Stats is session stats only.
+            UI.Sections.SectionRegistry.AddEngineItem("skills", ilt, "Guardian", "/rc guardian toggle",
+                "Temple of Enlightenment guardians: riddle answers and Give (RynthILT).");
+            UI.Sections.SectionRegistry.AddEngineItem("skills", ilt, "Progression", "/rc progression",
+                "XP planner, augmentations and enlightenment (the Skills panel's Progression tab; RynthILT).");
+            UI.Sections.SectionRegistry.AddEngineItem("combat", ilt, "Bounties", "/rc bounties toggle",
+                "ACECustom bounties and your progress on each (RynthILT).");
         }
         UI.ServerMenus.PushToRynthAi = rynthAi;
+        UI.ServerMenus.PushToRynthIlt = rynthIlt;
     }
 
     private static bool HasPluginDll(string dllFileName)

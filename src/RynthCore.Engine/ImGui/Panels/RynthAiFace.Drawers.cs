@@ -16,8 +16,8 @@
 //                  item slots, toggles, bank, rebuff, Translate, Guardian)
 //                  with its Options menu. The plugin draws it here through
 //                  RynthPluginRenderEmbed("miniremote") and says how big it
-//                  wants the panel; the Hub launcher's right-click opens it
-//                  (popped out: the floating Mini Remote instead).
+//                  wants the panel; its drawer tab opens it (popped out
+//                  there are no drawers: the Mini Remote window instead).
 //  AC thread only (inside the dashboard's Draw).
 // ============================================================================
 
@@ -187,7 +187,7 @@ internal sealed partial class RynthAiFace
         }
     }
 
-    /// <summary>RynthAi's Mini Remote, drawn by the plugin into this drawer (the Hub launcher's right-click).</summary>
+    /// <summary>RynthAi's Mini Remote, drawn by the plugin into this drawer (its drawer tab).</summary>
     private sealed class RemoteDrawer : RynthAiDrawer
     {
         /// <summary>The plugin surface name, NUL-terminated for the export.</summary>
@@ -207,7 +207,7 @@ internal sealed partial class RynthAiFace
 
         public override string TabTooltip(bool right) =>
             "Mini Remote: session rates, attack target, summon, item slots, toggles, bank, rebuff, Translate.\n" +
-            "Its Options button picks the sections (also: right-click Hub). RynthILT's ILT tabs are in the Mini Remote window.\n" +
+            "Its Options button picks the sections. RynthILT's ILT tabs are in the Mini Remote window (Char, or the bar button).\n" +
             "Click to slide it out.";
 
         public override float Width(float k) =>
@@ -247,12 +247,12 @@ internal sealed partial class RynthAiFace
                     {
                         _want = Vector2.Zero;
                         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, DMute);
-                        ImGuiNET.ImGui.TextWrapped(result switch
+                        SafeImGui.TextWrapped(result switch
                         {
                             PluginManager.EmbedNoPlugin =>
-                                "This RynthAi can't draw its Mini Remote here (it needs RynthAi 0.5.27 or later). Left-click Hub for the floating Mini Remote.",
+                                "This RynthAi can't draw its Mini Remote here (it needs RynthAi 0.5.27 or later). Use the bar's Mini Remote button (/rc miniremote).",
                             PluginManager.EmbedFailed =>
-                                "The Mini Remote failed to draw here (see the log). Left-click Hub for the floating Mini Remote.",
+                                "The Mini Remote failed to draw here (see the log). Use the bar's Mini Remote button (/rc miniremote).",
                             _ => "The Mini Remote shows here once RynthAi is ready: in the world, with plugin windows on (engine.json EnablePluginOverlayWindows).",
                         });
                         ImGuiNET.ImGui.PopStyleColor();

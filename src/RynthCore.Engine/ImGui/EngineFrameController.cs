@@ -771,6 +771,10 @@ internal static class EngineFrameController
                 Hud.MonsterHud.Draw(_uiScale, worldVisible: !D3D9.VideoPatch.SkipWorldThisFrame);
                 // Video patch "all": the "rendering paused" banner (background list, under the panels).
                 VideoPatchBanner.Draw();
+                // Server verdicts, the plugins' section manifests and the servermenu push. Every
+                // frame, bar or not: with the bar hidden (the rail instead) nothing else ticks them,
+                // so Options > Diagnostics listed no servers and no server plugin was told it is active.
+                RynthCore.Engine.UI.ServerMenus.Tick();
                 if (ImGuiBar.Visible)
                     ImGuiBar.Draw(_uiScale);
                 ImGuiPanelHost.DrawAll(_uiScale);

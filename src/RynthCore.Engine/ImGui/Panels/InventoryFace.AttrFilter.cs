@@ -126,7 +126,7 @@ internal sealed partial class InventoryFace
             : "Filter by item attributes (armor level, ratings, spells, slot...)";
         if (on && _unidentified.Count > 0)
             tip += "\n" + _unidentified.Count.ToString(CultureInfo.InvariantCulture) + " hidden until identified.";
-        ImGuiNET.ImGui.SetTooltip(tip);
+        SafeImGui.SetTooltip(tip);
     }
 
     // ── The editor popup ────────────────────────────────────────────────
@@ -257,11 +257,11 @@ internal sealed partial class InventoryFace
                     InventoryAttributeFilter.SetAttr(rule, a.Id);
                     AttrChanged();
                 }
-                ImGuiNET.ImGui.SetItemTooltip(a.Tip);
+                SafeImGui.SetItemTooltip(a.Tip);
             }
             ImGuiNET.ImGui.EndCombo();
         }
-        ImGuiNET.ImGui.SetItemTooltip(info.Tip);
+        SafeImGui.SetItemTooltip(info.Tip);
         info = InventoryAttributeFilter.Info(rule.Attr);
 
         ImGuiNET.ImGui.SameLine();

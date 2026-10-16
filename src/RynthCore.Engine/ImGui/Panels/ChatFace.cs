@@ -238,7 +238,7 @@ internal sealed class ChatFace : IImGuiPanel
             else _drawers.Toggle(_channels);
         }
         if (ImGuiNET.ImGui.IsItemHovered(ImGuiHoveredFlags.ForTooltip))
-            ImGuiNET.ImGui.SetTooltip(mention ? "Channels (someone mentioned you)" : "Channels: pick a tab, see what's unread");
+            SafeImGui.SetTooltip(mention ? "Channels (someone mentioned you)" : "Channels: pick a tab, see what's unread");
         float ty = start.Y + (h - ImGuiNET.ImGui.GetFontSize()) * 0.5f;
         dl.PushClipRect(start, start + new Vector2(bw - caretW - 6 - (badge != null ? badgeW + 4 : 0), h), true);
         dl.AddText(new Vector2(start.X + 6, ty), Text, label);
@@ -1139,7 +1139,7 @@ internal sealed class ChatFace : IImGuiPanel
         }
         ImGuiNET.ImGui.SameLine();
         Label(kind.Label, RynthTheme.Argb(argb));
-        ImGuiNET.ImGui.SetItemTooltip(kind.Hint + (set ? "" : kind.Key.StartsWith(ChatLineColors.TabPrefix, StringComparison.Ordinal)
+        SafeImGui.SetItemTooltip(kind.Hint + (set ? "" : kind.Key.StartsWith(ChatLineColors.TabPrefix, StringComparison.Ordinal)
             ? "\nThe built-in colour." : $"\nNot set: the {kind.Tab} tab's colour."));
         if (set)
         {

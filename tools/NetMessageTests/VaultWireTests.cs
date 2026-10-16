@@ -33,6 +33,18 @@ internal static unsafe partial class Program
         Check(!AelrynthVaultWire.TryParse("~ael1 {\"t\":\"mule\",\"ready\":tru", out _), "damaged JSON is refused");
         Check(AelrynthVaultWire.IsUnknownCommand("Unknown command: mule-data"), "ACE's reply for a missing command");
         Check(!AelrynthVaultWire.IsUnknownCommand("Unknown command: mastery-data"), "another command's reply is not ours");
+
+        Case("vault wire: a player's copy of a server line is not ours");
+        Check(!AelrynthVaultWire.IsMuleLine("Bob says, \"" + page + "\""), "spoken data line");
+        Check(!AelrynthVaultWire.IsMuleLine("Bob " + page), "emoted data line (no quote)");
+        Check(!AelrynthVaultWire.TryParse("[Allegiance] Bob says, \"" + page + "\"", out _), "a channel's copy does not parse");
+        Check(AelrynthVaultWire.IsMuleLine("  " + page), "leading whitespace is fine");
+        Check(AelrynthVaultWire.TryParse("  " + page, out _), "and parses");
+        Check(!AelrynthVaultWire.IsUnknownCommand("Bob tells you, \"Unknown command: mule-data\""), "a told refusal");
+        Check(!AelrynthVaultWire.IsUnknownCommand("Unknown command: mule-data-extra"), "a longer command name");
+        Check(AelrynthVaultWire.IsUnknownCommand("Unknown command: /mule-data"), "a slash before the name is allowed");
+        Check(ChatOrigin.IsPlayerAuthored(ChatOrigin.Emote) && ChatOrigin.IsPlayerAuthored(ChatOrigin.Tell), "emotes and tells are players'");
+        Check(!ChatOrigin.IsPlayerAuthored(0) && !ChatOrigin.IsPlayerAuthored(0x0F), "Broadcast and Help (ACE's replies) are not");
         Eq(AelrynthVaultWire.PageCommand(1), "@mule-data", "first page is the bare command");
         Eq(AelrynthVaultWire.PageCommand(3), "@mule-data 3", "later pages say which");
 

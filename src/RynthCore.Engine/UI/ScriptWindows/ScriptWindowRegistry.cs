@@ -791,6 +791,38 @@ internal static class ScriptWindowRegistry
     }
 
     /// <summary>
+    /// Opens or closes a plugin's script window by its key ("RynthOracle/Oracle"), as the bar
+    /// does (the owner gets a Visibility event, reason 2). False when no live window has the
+    /// key (the plugin isn't loaded or hasn't submitted it yet). Any thread.
+    /// </summary>
+    public static bool PlayerSetVisible(string key, bool visible)
+    {
+        ScriptWindow? w = Find(key);
+        if (w == null) return false;
+        PlayerSetVisible(w, visible);
+        return true;
+    }
+
+    /// <summary>Whether a plugin has submitted a script window with this key (and it is still live). Any thread.</summary>
+    public static bool Has(string key) => Find(key) != null;
+
+    /// <summary>Whether a plugin's script window (by key) is open; false when there is none. Any thread.</summary>
+    public static bool IsOpen(string key)
+    {
+        ScriptWindow? w = Find(key);
+        return w != null && ImGuiPanelHost.IsOpen(w.PanelKey);
+    }
+
+    /// <summary>The live window with a plugin key, or null.</summary>
+    private static ScriptWindow? Find(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return null;
+        ScriptWindow? w;
+        lock (Sync) ByPanelKey.TryGetValue(PanelKeyPrefix + SanitizeKey(key), out w);
+        return w == null || w.Removed ? null : w;
+    }
+
+    /// <summary>
     /// SetNextWindowSize / SetNextWindowPos (§3.2): a request is passed to the panel host
     /// when its value changed since the last one applied, when the window was re-recorded
     /// (a new ListSeq), or when this submit opens the window. A NaN value (none) forgets the

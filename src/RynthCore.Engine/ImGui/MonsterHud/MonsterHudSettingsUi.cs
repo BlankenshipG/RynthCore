@@ -253,7 +253,7 @@ internal static class MonsterHudSettingsUi
         if (ImGuiNET.ImGui.IsItemHovered())
         {
             ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-            if (tip != null) ImGuiNET.ImGui.SetTooltip(tip);
+            if (tip != null) SafeImGui.SetTooltip(tip);
         }
         if (clicked) value = radio || !value;
         dl.AddRectFilled(p + new Vector2(0, 2), p + new Vector2(12, 14), value ? ToggleOn : ToggleOff, 2);
@@ -274,7 +274,7 @@ internal static class MonsterHudSettingsUi
     {
         BeginSliderRow(label, w);
         bool changed = ImGuiNET.ImGui.SliderFloat("##v", ref value, min, max, "%.2fx", ImGuiSliderFlags.AlwaysClamp);
-        if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(tip);
+        if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(tip);
         return EndSliderRow(changed);
     }
 

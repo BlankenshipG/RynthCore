@@ -176,7 +176,7 @@ internal sealed class LuaFace : IImGuiPanel
         dl.AddText(new Vector2(x + runW + sepW, ty), ai ? Green : Amber, aiText);
         dl.PopClipRect();
         if (ImGuiNET.ImGui.IsMouseHoveringRect(new Vector2(x + runW + sepW, p.Y), new Vector2(right, p.Y + h)))
-            ImGuiNET.ImGui.SetTooltip(ai
+            SafeImGui.SetTooltip(ai
                 ? "RynthAi's script interface is there: scripts can use its macro, nav and meta features."
                 : "RynthAi isn't loaded (or is too old): scripts' RynthAi calls won't work.");
         NextLine(p, h + 2);
@@ -245,7 +245,7 @@ internal sealed class LuaFace : IImGuiPanel
         if (ImGuiNET.ImGui.IsItemHovered())
         {
             if (!isSel) dl.AddRectFilled(p, p + new Vector2(nameW, RowH), BtnFill);
-            ImGuiNET.ImGui.SetTooltip(RowTooltip(info, notSaved));
+            SafeImGui.SetTooltip(RowTooltip(info, notSaved));
         }
         if (isSel) dl.AddRectFilled(p, p + new Vector2(2, RowH), Teal);
 
@@ -267,7 +267,7 @@ internal sealed class LuaFace : IImGuiPanel
             _picker.Open(new Vector2(x, by + bh + 2), items, Array.IndexOf(AutoCodes, info.Autostart),
                 k => LuaCommands.Send("autostart", name, AutoCodes[k]), 190);
         }
-        ImGuiNET.ImGui.SetItemTooltip(notSaved
+        SafeImGui.SetItemTooltip(notSaved
             ? "Save it to a file to autostart it."
             : "Start at login: off, on every character (global), or on this character only.");
         x += autoW + gap;
@@ -281,7 +281,7 @@ internal sealed class LuaFace : IImGuiPanel
         x += runW + gap;
         if (Button("##restart", RestartLabel, new Vector2(x, by), new Vector2(restartW, bh), Text, BtnFill, enabled: info.Running && !notSaved))
             LuaCommands.Send("restart", info.Name);
-        ImGuiNET.ImGui.SetItemTooltip(notSaved ? "Not saved: run it again from the Editor." : "Stop it and start it again from its file.");
+        SafeImGui.SetItemTooltip(notSaved ? "Not saved: run it again from the Editor." : "Stop it and start it again from its file.");
         NextLine(p, RowH);
     }
 
@@ -334,7 +334,7 @@ internal sealed class LuaFace : IImGuiPanel
             LuaCommands.Send("load", sel);
             _editorTab = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(canOpen
+        SafeImGui.SetItemTooltip(canOpen
             ? (si!.IsFolder ? "Edit its index.lua in the Editor tab." : "Edit it in the Editor tab.")
             : "It has no file to open.");
         NextLine(p, h);
@@ -407,7 +407,7 @@ internal sealed class LuaFace : IImGuiPanel
         dl.PopClipRect();
         if (Button("##run", RunLabel, new Vector2(p.X + statusW + 4, p.Y), new Vector2(bw, 24), Text, StartBg))
             LuaCommands.Send("run", edName, _editor?.GetText() ?? string.Empty);
-        ImGuiNET.ImGui.SetItemTooltip("Run the editor's text as " + runName + " (replaces a running copy).");
+        SafeImGui.SetItemTooltip("Run the editor's text as " + runName + " (replaces a running copy).");
         if (Button("##stop", StopLabel, new Vector2(p.X + statusW + bw + 8, p.Y), new Vector2(bw, 24), Text, StopBg, enabled: running))
             LuaCommands.Send("stopScript", runName);
         NextLine(p, 24);
@@ -495,7 +495,7 @@ internal sealed class LuaFace : IImGuiPanel
                 _editor?.MarkClean();
             }
         }
-        if (saveTip != null) ImGuiNET.ImGui.SetItemTooltip(saveTip);
+        if (saveTip != null) SafeImGui.SetItemTooltip(saveTip);
         x += bw + 4;
         if (Button("##new", PhosphorIcons.FilePlus + " New", new Vector2(x, p.Y), new Vector2(bw, 22), Text, BtnFill))
         {
@@ -508,7 +508,7 @@ internal sealed class LuaFace : IImGuiPanel
             string name = Utf8(_name).Trim();
             if (name.Length > 0) LuaCommands.Send("delete", name);
         }
-        if (deleteTip != null) ImGuiNET.ImGui.SetItemTooltip(deleteTip);
+        if (deleteTip != null) SafeImGui.SetItemTooltip(deleteTip);
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + 22));
         ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
     }
@@ -555,7 +555,7 @@ internal sealed class LuaFace : IImGuiPanel
         ImGuiNET.ImGui.PushTextWrapPos(0);
         string text = _data?.Console ?? string.Empty;
         if (text.Length > 0) ImGuiNET.ImGui.TextUnformatted(text);
-        if (_note.Length > 0) ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Highlight), "[panel] " + _note);
+        if (_note.Length > 0) SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.Highlight), "[panel] " + _note);
         ImGuiNET.ImGui.PopTextWrapPos();
         ImGuiNET.ImGui.PopStyleColor();
         ImGuiNET.ImGui.PopFont();

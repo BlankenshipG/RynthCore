@@ -130,7 +130,7 @@ internal sealed class RynthNavArrowFace : IImGuiPanel
         {
             if (IconButton("##rna_pop", ImGuiPanelHost.PopOutGlyph, popPos, new Vector2(sb, sb), Done, Glass, font: UiFont.Ui9))
                 ImGuiPanelHost.TogglePopOut(Title);
-            ImGuiNET.ImGui.SetItemTooltip(ImGuiPanelHost.PopOutTooltip);
+            SafeImGui.SetItemTooltip(ImGuiPanelHost.PopOutTooltip);
         }
         if (IconButton("##rna_close", PhosphorIcons.X, closePos, new Vector2(sb, sb), Done, Glass, font: UiFont.Ui9))
             ImGuiPanelHost.Close(Title);
@@ -151,11 +151,11 @@ internal sealed class RynthNavArrowFace : IImGuiPanel
             if (typed.Length > 0) RynthNavCommands.Command("route " + typed);
             else if (st?.Arrow is RynthNavArrow pa) RynthNavCommands.Route(pa.Final, pa.FinalNs, pa.FinalEw);
         }
-        ImGuiNET.ImGui.SetItemTooltip(typed.Length > 0
+        SafeImGui.SetItemTooltip(typed.Length > 0
             ? "Plan a route to " + typed + " without walking it (the steps open below)"
             : "Plan a route to the arrow's target without walking it (the steps open below)");
         bool go = IconButton("##rna_go", PhosphorIcons.Play, goPos, new Vector2(b, b), Green, BtnFill, enabled: canGo, font: UiFont.Ui11);
-        ImGuiNET.ImGui.SetItemTooltip(typed.Length > 0
+        SafeImGui.SetItemTooltip(typed.Length > 0
             ? "Go to " + typed + " (with portals and recalls when RynthNav's routing is on)"
             : "Go: RynthNav walks to the arrow's target (with portals and recalls when its routing is on)");
         if ((go || enter) && canGo)
@@ -172,7 +172,7 @@ internal sealed class RynthNavArrowFace : IImGuiPanel
             _showRoute = !_showRoute;
             _scrolledTo = -1;
         }
-        ImGuiNET.ImGui.SetItemTooltip(hasRoute ? (_showRoute ? "Hide the route's steps" : "Show the route's steps") : "No route yet: Plan or Go makes one");
+        SafeImGui.SetItemTooltip(hasRoute ? (_showRoute ? "Hide the route's steps" : "Show the route's steps") : "No route yet: Plan or Go makes one");
 
         if (_showRoute && hasRoute)
             RouteList(st!, new Vector2(origin.X + pad, rowY + b + 4), new Vector2(size.X - 2 * pad, listH), bold, lineH);
@@ -183,7 +183,7 @@ internal sealed class RynthNavArrowFace : IImGuiPanel
         ImGuiNET.ImGui.InvisibleButton("##rna_surface", new Vector2(size.X, rowY - origin.Y - 2));
         ImGuiPanelHost.DragWindowWithLastItem();
         if (ImGuiNET.ImGui.IsItemHovered() && _read.Tooltip.Length > 0)
-            ImGuiNET.ImGui.SetItemTooltip(_read.Tooltip + (_read.Line3.Length > 0 && _read.Kind == "portal" ? "\n" + _read.Line3 : ""));
+            SafeImGui.SetItemTooltip(_read.Tooltip + (_read.Line3.Length > 0 && _read.Kind == "portal" ? "\n" + _read.Line3 : ""));
     }
 
     /// <summary>The coordinates or place typed in the box, trimmed.</summary>
@@ -242,7 +242,7 @@ internal sealed class RynthNavArrowFace : IImGuiPanel
                 ImGuiNET.ImGui.TextUnformatted(st.RouteLines[i]);
                 ImGuiNET.ImGui.PopStyleColor();
                 if (ImGuiNET.ImGui.IsItemHovered())
-                    ImGuiNET.ImGui.SetTooltip(current && st.StepLeft.Length > 0 ? st.RouteLines[i] + "\n" + st.StepLeft : st.RouteLines[i]);
+                    SafeImGui.SetTooltip(current && st.StepLeft.Length > 0 ? st.RouteLines[i] + "\n" + st.StepLeft : st.RouteLines[i]);
                 if (current && _scrolledTo != i) { ImGuiNET.ImGui.SetScrollHereY(0.3f); _scrolledTo = i; }
             }
         }

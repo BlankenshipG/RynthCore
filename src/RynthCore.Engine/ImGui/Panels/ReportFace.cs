@@ -149,7 +149,7 @@ internal sealed class ReportFace : IImGuiPanel
         if (Button("##report_send", label, row, new Vector2(bw, 24), Text, StartBg, enabled: enabled))
             StartSend();
         if (ImGuiNET.ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled | ImGuiHoveredFlags.ForTooltip))
-            ImGuiNET.ImGui.SetTooltip(!hasText ? "Write what went wrong first."
+            SafeImGui.SetTooltip(!hasText ? "Write what went wrong first."
                 : cooldown > 0 ? "One report a minute: " + CooldownText(cooldown)
                 : "Send this report to the staff.");
         NextLine(row, 28);

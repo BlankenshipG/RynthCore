@@ -149,6 +149,19 @@ foreach ($name in $suitePlugins) {
     Copy-Item "$rel\build\$name\RynthCore.Plugin.$name.dll" "$rel\plugins\"
 }
 
+# Server plugins (Plugins\Shared\ServerPack; SilentKelpie's): one per game server, each loaded by the
+# engine only for its own server. They go in the feed only, so the launcher offers each one under
+# Available plugins for the player to install; not in RynthSuite-Plugins.zip or the installer.
+$serverPlugins = "RynthAChard", "RynthAelrynth", "RynthColdeve", "RynthConquest", "RynthDerptide", "RynthDreamWeave", "RynthEversong",
+                 "RynthFrostACE", "RynthFrostcull", "RynthLeafDawn", "RynthLeafdawning", "RynthPortalStorm", "RynthReefcull", "RynthSundering", "RynthThistlecrown"
+foreach ($name in $serverPlugins) {
+    Step "Building $name (server plugin, feed only)"
+    $proj = Join-Path $RynthSuiteRoot "Plugins\RynthCore.Plugin.$name\RynthCore.Plugin.$name.csproj"
+    dotnet publish $proj -c Release "-p:Version=$Version" "-p:PublishDir=$rel\build\$name\" -v q -nologo
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $name" }
+    Copy-Item "$rel\build\$name\RynthCore.Plugin.$name.dll" "$rel\plugins\"
+}
+
 Step "Packing RynthSuite-Plugins.zip"
 $zipRoot = "$rel\build\zip"
 foreach ($name in $suitePlugins) {
@@ -338,9 +351,11 @@ $plugins = foreach ($dll in Get-ChildItem "$rel\plugins\*.dll" | Sort-Object Nam
         size   = $dll.Length
         sha256 = Sha256 $dll.FullName
     }
-    if ($pluginDescriptions[$pluginName]) { $entry.description = $pluginDescriptions[$pluginName] }
-    else { Write-Warning "No description for $pluginName - the launcher shows its own (or none). Add one to `$pluginDescriptions." }
     $pm = Get-RynthPluginManifest $dll.FullName
+    # The table first; a server plugin's own manifest description otherwise (its csproj's RynthPluginDescription).
+    if ($pluginDescriptions[$pluginName]) { $entry.description = $pluginDescriptions[$pluginName] }
+    elseif ($pm -and $pm.description) { $entry.description = [string]$pm.description }
+    else { Write-Warning "No description for $pluginName - the launcher shows its own (or none). Add one to `$pluginDescriptions." }
     if ($pm) {
         if ($pm.name -ne $pluginName) { throw "$($dll.Name): its manifest says '$($pm.name)', the feed would say '$pluginName'." }
         if ($pm.version -and $pm.version -ne $Version) { throw "$($dll.Name): its manifest is version $($pm.version), not $Version (stale build?)." }

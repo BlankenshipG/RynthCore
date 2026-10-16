@@ -50,6 +50,12 @@ internal static class Program
             Run(nameof(ReadsResourceFromPe32AndPe32Plus), ReadsResourceFromPe32AndPe32Plus);
             Run(nameof(NoResourceAndNotAPe), NoResourceAndNotAPe);
             Run(nameof(GatePlanFromFiles), GatePlanFromFiles);
+            Run(nameof(ServerBlockParsesAndRoundTrips), ServerBlockParsesAndRoundTrips);
+            Run(nameof(ServerBlockRejectsBadIds), ServerBlockRejectsBadIds);
+            Run(nameof(ServerHostMatching), ServerHostMatching);
+            Run(nameof(ServerGateKeepsOnlyTheHostsPlugin), ServerGateKeepsOnlyTheHostsPlugin);
+            Run(nameof(ServerGateUnclaimedHost), ServerGateUnclaimedHost);
+            Run(nameof(ServerGatePlanFromFiles), ServerGatePlanFromFiles);
             Run(nameof(SdkApiVersionCannotDrift), SdkApiVersionCannotDrift);
             Run(nameof(TrainingStructsMirror), TrainingStructsMirror);
             Run(nameof(ContainerOrderSlots), ContainerOrderSlots);
@@ -441,6 +447,117 @@ internal static class Program
         Check(none.Log.Any(l => l.Contains("no plugin has a manifest")), "said once");
     }
 
+    // ── Server plugins (the manifest's "server" block and the load gate) ────
+
+    private static RynthPluginManifest S(string name, string id, string[] hosts, params string[] worlds)
+    {
+        var m = M(name);
+        m.Server = new RynthPluginServer { Id = id, Name = name, Hosts = hosts.ToList(), WorldNames = worlds.ToList() };
+        return m;
+    }
+
+    private static void ServerBlockParsesAndRoundTrips()
+    {
+        var m = RynthPluginManifest.Parse("""
+            { "name": "RynthColdeve", "minEngineApi": 66,
+              "server": { "id": "Coldeve", "name": "Coldeve", "hosts": ["play.coldeve.ac", "", 5], "worldNames": ["Coldeve"] } }
+            """);
+        Check(m.Server != null, "server block read");
+        Eq(m.Server!.Id, "coldeve", "id lower-cased");
+        Eq(string.Join(",", m.Server.Hosts), "play.coldeve.ac", "blank and non-string hosts dropped");
+        Eq(string.Join(",", m.Server.WorldNames), "Coldeve", "world names");
+        var back = RynthPluginManifest.Parse(m.ToJson());
+        Eq(back.Server?.Id, "coldeve", "round trip id");
+        Eq(back.Server?.Hosts.Count, 1, "round trip hosts");
+        Check(RynthPluginManifest.Parse("""{ "name": "RynthAi" }""").Server == null, "no block, not a server plugin");
+        Check(!M("RynthAi").ToJson().Contains("\"server\""), "no server block written for other plugins");
+    }
+
+    private static void ServerBlockRejectsBadIds()
+    {
+        string[] bad =
+        {
+            """{ "name": "X", "server": "coldeve" }""",
+            """{ "name": "X", "server": { "name": "No id" } }""",
+            """{ "name": "X", "server": { "id": "has space" } }""",
+            """{ "name": "X", "server": { "id": "ok", "hosts": "not-an-array" } }""",
+        };
+        foreach (string json in bad)
+            Check(RynthPluginManifest.TryParse(json, out string err) == null && err.Length > 0, $"refused: {json}");
+    }
+
+    private static void ServerHostMatching()
+    {
+        var ilt = new RynthPluginServer { Id = "ilt", Hosts = { "infiniteleaftide.online" } };
+        Check(ilt.MatchesHost("game.infiniteleaftide.online", out string hit) && hit == "infiniteleaftide.online", "a host under the name");
+        Check(ilt.MatchesHost("INFINITELEAFTIDE.ONLINE.", out _), "case and trailing dot ignored");
+        Check(!ilt.MatchesHost("notinfiniteleaftide.online", out _), "not a suffix without the dot");
+        var ip = new RynthPluginServer { Id = "aelrynth", Hosts = { "144.217.84.148" } };
+        Check(ip.MatchesHost("144.217.84.148", out _), "an IP matches itself");
+        Check(!ip.MatchesHost("1.144.217.84.148", out _), "an IP never matches as a suffix");
+        var wild = new RynthPluginServer { Id = "x", Hosts = { "*.ddns.net" } };
+        Check(wild.MatchesHost("frostcull.ddns.net", out _), "wildcard");
+        Check(!wild.MatchesHost("", out _), "no host, no match");
+    }
+
+    private static void ServerGateKeepsOnlyTheHostsPlugin()
+    {
+        var list = new List<PluginCandidate>
+        {
+            C("RynthAi", M("RynthAi")),
+            C("RynthChat"),
+            C("RynthColdeve", S("RynthColdeve", "coldeve", new[] { "play.coldeve.ac" }, "Coldeve")),
+            C("RynthLeafDawn", S("RynthLeafDawn", "leafdawn", new[] { "leafdawn.hopto.org" }, "LeafDawn")),
+            C("RynthLeafdawning", S("RynthLeafdawning", "leafdawning", new[] { "leafdawning.duckdns.org" }, "Leafdawning")),
+        };
+        var log = new List<string>();
+        HashSet<string> skip = PluginManifestGate.SelectServerPlugins(list, "leafdawn.hopto.org", false, log);
+        Eq(skip.Count, 2, "the two other server plugins are left out");
+        Check(skip.Contains(list[2].Key) && skip.Contains(list[4].Key), "Coldeve and Leafdawning left out");
+        Check(!skip.Contains(list[0].Key) && !skip.Contains(list[1].Key), "other plugins always load");
+        Check(log.Any(l => l.Contains("RynthColdeve") && l.Contains("not loaded")), "logged why");
+        Eq(PluginManifestGate.SelectServerPlugins(list, "leafdawn.hopto.org", true, log).Count, 0, "LoadAllServerPlugins keeps every one");
+    }
+
+    private static void ServerGateUnclaimedHost()
+    {
+        var list = new List<PluginCandidate>
+        {
+            C("RynthColdeve", S("RynthColdeve", "coldeve", new[] { "play.coldeve.ac" })),
+            C("RynthFrostcull", S("RynthFrostcull", "frostcull", new[] { "frostcull.ddns.net" })),
+        };
+        var log = new List<string>();
+        Eq(PluginManifestGate.SelectServerPlugins(list, "", false, log).Count, 0, "no connect host: all load");
+        Eq(PluginManifestGate.SelectServerPlugins(list, "10.0.0.5", false, log).Count, 2, "a host nobody lists: none load now (late load by world name or a pick)");
+        Check(log.Any(l => l.Contains("none lists host 10.0.0.5")), "said why");
+    }
+
+    private static void ServerGatePlanFromFiles()
+    {
+        string dir = Path.Combine(_root, "servers");
+        Directory.CreateDirectory(dir);
+        string P(string name) => Path.Combine(dir, $"RynthCore.Plugin.{name}.dll");
+        File.Copy(ThisDll, P("RynthAi"));
+        Embed(P("RynthAi"), M("RynthAi").ToJson());
+        File.Copy(ThisDll, P("RynthILT"));
+        Embed(P("RynthILT"), S("RynthILT", "ilt", new[] { "infiniteleaftide.online" }, "*Leaftide*").ToJson());
+        File.Copy(ThisDll, P("RynthAelrynth"));
+        Embed(P("RynthAelrynth"), S("RynthAelrynth", "aelrynth", new[] { "144.217.84.148" }, "Aelrynth*").ToJson());
+
+        var paths = new[] { P("RynthAi"), P("RynthILT"), P("RynthAelrynth") };
+        PluginManifestGate.LoadPlan onIlt = PluginManifestGate.Plan(paths, Api, null, "game.infiniteleaftide.online");
+        Eq(string.Join(",", onIlt.Load.Select(l => RynthPluginManifest.NameFromFile(l.Path))), "RynthAi,RynthILT", "on ILT");
+        Eq(onIlt.SkippedForServer.Count, 1, "Aelrynth's plugin skipped");
+        // The skipped one keeps its manifest: Options > Diagnostics lists its server, and forcing it loads it.
+        Eq(onIlt.SkippedServerPlugins.Count, 1, "skipped server plugin kept with its manifest");
+        Eq(onIlt.SkippedServerPlugins[0].Manifest.Server?.Id ?? "", "aelrynth", "its server id");
+        Eq(onIlt.SkippedServerPlugins[0].Path, P("RynthAelrynth"), "its path");
+        Eq(onIlt.Refused.Count, 0, "skipping is not a refusal (no chat notice)");
+        Check(onIlt.Log.Any(l => l.Contains("server ilt")), "the manifest line names the server");
+        PluginManifestGate.LoadPlan onAelrynth = PluginManifestGate.Plan(paths, Api, null, "144.217.84.148");
+        Eq(string.Join(",", onAelrynth.Load.Select(l => RynthPluginManifest.NameFromFile(l.Path))), "RynthAi,RynthAelrynth", "on Aelrynth");
+    }
+
     // ── The SDK's version ────────────────────────────────────────────────────
 
     private static void SdkApiVersionCannotDrift()
@@ -474,11 +591,11 @@ internal static class Program
             Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.TrainingEntryNative>(f.Name), (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.TrainingEntryNative>(f.Name), "TrainingEntryNative." + f.Name + " offset");
         Eq(RynthCore.PluginSdk.TrainingInfoFlags.Busy, RynthCore.Engine.Plugins.TrainingInfoFlags.Busy, "info flag bits");
         Eq(RynthCore.PluginSdk.TrainingEntryFlags.Trainable, RynthCore.Engine.Plugins.TrainingEntryFlags.Trainable, "entry flag bits");
-        // The three v79 slots follow v78's, then v80's two and v81's GetMergeStackResultFn (v82-v84 follow).
-        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(4).TakeLast(6).ToArray();
+        // The three v79 slots follow v78's, then v80's two and v81's GetMergeStackResultFn (v82-v85 follow).
+        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(7).TakeLast(6).ToArray();
         Check(names.SequenceEqual(new[] { "GetTrainingInfoFn", "RaiseFn", "TrainSkillFn", "GetContainerOrderFn", "PutItemInContainerFn", "GetMergeStackResultFn" }),
             "v79, v80 then v81 slots last: " + string.Join(",", names));
-        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(4).TakeLast(6).ToArray();
+        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(7).TakeLast(6).ToArray();
         Check(sdkNames.SequenceEqual(names), "SDK v79, v80 and v81 slots in the same order");
     }
 
@@ -490,13 +607,17 @@ internal static class Program
         var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).ToArray();
         var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).ToArray();
         // v81's GetMergeStackResultFn follows v80's two slots.
-        Check(names.SkipLast(5).TakeLast(2).SequenceEqual(new[] { "GetContainerOrderFn", "PutItemInContainerFn" }), "v80 slots before v81's to v84's: " + string.Join(",", names.SkipLast(5).TakeLast(2)));
-        Check(sdkNames.SkipLast(5).TakeLast(2).SequenceEqual(names.SkipLast(5).TakeLast(2)), "SDK v80 slots in the same order");
-        Check(names.SkipLast(3).Last() == "SalvageDirectFn", "v82 slot before v83's");
+        Check(names.SkipLast(8).TakeLast(2).SequenceEqual(new[] { "GetContainerOrderFn", "PutItemInContainerFn" }), "v80 slots before v81's to v85's: " + string.Join(",", names.SkipLast(8).TakeLast(2)));
+        Check(sdkNames.SkipLast(8).TakeLast(2).SequenceEqual(names.SkipLast(8).TakeLast(2)), "SDK v80 slots in the same order");
+        Check(names.SkipLast(6).Last() == "SalvageDirectFn", "v82 slot before v83's");
         // v83: GetObjectServerAge and RemoveClientObject (ghost creatures), then v84's slot.
-        Check(names.SkipLast(1).TakeLast(2).SequenceEqual(new[] { "GetObjectServerAgeFn", "RemoveClientObjectFn" }), "v83 slots before v84's: " + string.Join(",", names.SkipLast(1).TakeLast(2)));
-        // v84: GetObjectProperties ends the table (every property of an object, /ub propertydump).
-        Check(names.Last() == "GetObjectPropertiesFn", "v84 slot last: " + names.Last());
+        Check(names.SkipLast(4).TakeLast(2).SequenceEqual(new[] { "GetObjectServerAgeFn", "RemoveClientObjectFn" }), "v83 slots before v84's: " + string.Join(",", names.SkipLast(4).TakeLast(2)));
+        // v84: GetObjectProperties (every property of an object, /ub propertydump), then v85's two.
+        Check(names.SkipLast(3).Last() == "GetObjectPropertiesFn", "v84 slot before v85's: " + names.SkipLast(3).Last());
+        // v85: ArmConfirmation and GetLastConfirmation (the server's yes/no prompts), then v86's slot.
+        Check(names.SkipLast(1).TakeLast(2).SequenceEqual(new[] { "ArmConfirmationFn", "GetLastConfirmationFn" }), "v85 slots before v86's: " + string.Join(",", names.SkipLast(1).TakeLast(2)));
+        // v86: GetServerStateJson ends the table (which server this is, for every plugin).
+        Check(names.Last() == "GetServerStateJsonFn", "v86 slot last: " + names.Last());
         Check(typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SequenceEqual(typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name)), "SDK table has the engine's slots in the same order");
         Eq(Marshal.SizeOf<RynthCore.PluginSdk.RynthCoreApiNative>(), Marshal.SizeOf<RynthCore.Engine.Plugins.RynthCoreAPI>(), "SDK table size = engine table size");
         Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("PutItemInContainerFn"),
@@ -511,6 +632,14 @@ internal static class Program
            (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetObjectPropertiesFn"), "GetObjectPropertiesFn offset");
         Eq((int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetObjectPropertiesFn"),
            (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("RemoveClientObjectFn") + IntPtr.Size, "GetObjectPropertiesFn right after RemoveClientObjectFn");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("ArmConfirmationFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("ArmConfirmationFn"), "ArmConfirmationFn offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("ArmConfirmationFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetObjectPropertiesFn") + IntPtr.Size, "ArmConfirmationFn right after GetObjectPropertiesFn");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("GetLastConfirmationFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetLastConfirmationFn"), "GetLastConfirmationFn offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("GetServerStateJsonFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetServerStateJsonFn"), "GetServerStateJsonFn offset");
     }
 
     private sealed class ProbePlugin : RynthCore.PluginCore.RynthPluginBase { }

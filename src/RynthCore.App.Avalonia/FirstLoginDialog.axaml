@@ -1,0 +1,44 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="RynthCore.App.Avalonia.FirstLoginDialog"
+        Width="560"
+        SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Title="First Login"
+        Background="#132028">
+  <Grid RowDefinitions="*,Auto" Margin="18">
+    <StackPanel Spacing="10">
+      <TextBlock x:Name="HeaderText" Foreground="#EAF0F4" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap" />
+      <TextBlock x:Name="IntroText" Foreground="#9AA8B3" TextWrapping="Wrap" />
+
+      <TextBlock Text="Use an account you already have (optional)" Foreground="#EAF0F4" />
+      <ComboBox x:Name="KnownAccountBox" HorizontalAlignment="Stretch" PlaceholderText="Pick an account name, or type a new one below" />
+
+      <TextBlock Text="Account" Foreground="#EAF0F4" />
+      <TextBox x:Name="AccountBox" Watermark="A new name creates the account on this server's first login (ACE)" />
+
+      <CheckBox x:Name="ReuseSavedPasswordCheckBox" Foreground="#EAF0F4" IsVisible="False" />
+
+      <StackPanel x:Name="PasswordPanel" Spacing="10">
+        <TextBlock Text="Password" Foreground="#EAF0F4" />
+        <TextBox x:Name="PasswordBox" PasswordChar="*" RevealPassword="False" />
+        <TextBlock Text="Confirm password" Foreground="#EAF0F4" />
+        <TextBox x:Name="ConfirmBox" PasswordChar="*" RevealPassword="False" />
+      </StackPanel>
+      <TextBlock Text="The password is saved encrypted for this Windows user, like the other accounts."
+                 Foreground="#9AA8B3" TextWrapping="Wrap" />
+
+      <TextBlock Text="Log in as" Foreground="#EAF0F4" />
+      <ComboBox x:Name="LoginAsBox" HorizontalAlignment="Stretch" />
+      <TextBlock x:Name="LoginAsHintText" Foreground="#9AA8B3" TextWrapping="Wrap" />
+
+      <TextBlock x:Name="ValidationText" Foreground="#E2B348" TextWrapping="Wrap" />
+    </StackPanel>
+
+    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,16,0,0">
+      <Button x:Name="CancelButton" Content="Cancel" />
+      <Button x:Name="LoginButton" Content="Log In" />
+    </StackPanel>
+  </Grid>
+</Window>

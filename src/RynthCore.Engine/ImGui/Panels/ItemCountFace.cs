@@ -112,7 +112,7 @@ internal sealed class ItemCountFace : IImGuiPanel
         {
             if (ItemHudMath.TryFind(items, sel, out HudItem it)) Add(it.Name);
         }
-        ImGuiNET.ImGui.SetItemTooltip(haveSel ? "Count the selected item" : "Select an item in your inventory to count it (or drag one onto this panel)");
+        SafeImGui.SetItemTooltip(haveSel ? "Count the selected item" : "Select an item in your inventory to count it (or drag one onto this panel)");
         NextLine(start, h + 4);
     }
 
@@ -183,7 +183,7 @@ internal sealed class ItemCountFace : IImGuiPanel
             ImGuiNET.ImGui.PushID(i);
             ImGuiNET.ImGui.InvisibleButton("##row", new Vector2(bw - XW, RowH));
             bool hot = ImGuiNET.ImGui.IsItemHovered();
-            if (hot) ImGuiNET.ImGui.SetItemTooltip($"{data.Counts[i]}: {_countText[i]} carried");
+            if (hot) SafeImGui.SetItemTooltip($"{data.Counts[i]}: {_countText[i]} carried");
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + bw - XW, p.Y));
             if (ImGuiNET.ImGui.InvisibleButton("##x", new Vector2(XW, RowH))) remove = i;
             bool hotX = ImGuiNET.ImGui.IsItemHovered();

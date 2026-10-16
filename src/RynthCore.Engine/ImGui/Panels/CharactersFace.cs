@@ -369,23 +369,23 @@ internal sealed class CharactersFace : IImGuiPanel
             bool canFollow = me.Length > 0;
             if (!_menuSelf && !_menuLoggedOut)
             {
-                ImGuiNET.ImGui.TextDisabled(_menuName);
+                SafeImGui.TextDisabled(_menuName);
                 if (ImGuiNET.ImGui.MenuItem("Select", "", false, _menuInView && _menuId != 0))
                     AcMainThreadQueue.EnqueueOverlaySelect(_menuId);
                 ImGuiNET.ImGui.Separator();
                 if (ImGuiNET.ImGui.MenuItem("Follow me", "", false, canFollow && !_menuOtherWorld))
                     CharactersCommands.Tell(_menuName, "/ra follow " + me);
-                ImGuiNET.ImGui.SetItemTooltip($"/rn tell {_menuName}, /ra follow {me}");
+                SafeImGui.SetItemTooltip($"/rn tell {_menuName}, /ra follow {me}");
                 if (ImGuiNET.ImGui.MenuItem("Stop following"))
                     CharactersCommands.Tell(_menuName, "/ra follow off");
-                ImGuiNET.ImGui.SetItemTooltip($"/rn tell {_menuName}, /ra follow off");
+                SafeImGui.SetItemTooltip($"/rn tell {_menuName}, /ra follow off");
                 ImGuiNET.ImGui.Separator();
                 if (ImGuiNET.ImGui.MenuItem("Start macro"))
                     CharactersCommands.Tell(_menuName, "/ra start");
-                ImGuiNET.ImGui.SetItemTooltip($"/rn tell {_menuName}, /ra start");
+                SafeImGui.SetItemTooltip($"/rn tell {_menuName}, /ra start");
                 if (ImGuiNET.ImGui.MenuItem("Stop macro"))
                     CharactersCommands.Tell(_menuName, "/ra stop");
-                ImGuiNET.ImGui.SetItemTooltip($"/rn tell {_menuName}, /ra stop");
+                SafeImGui.SetItemTooltip($"/rn tell {_menuName}, /ra stop");
                 ImGuiNET.ImGui.Separator();
             }
             if (ImGuiNET.ImGui.MenuItem("Everyone: follow me", "", false, canFollow))

@@ -42,6 +42,17 @@ internal static class RynthLog
     /// <summary>Same as <see cref="Warn"/>.</summary>
     internal static void Warning(string msg) => Warn(msg);
 
+    /// <summary>
+    /// INFO line for a rare state change a support log must show (the server verdicts): written
+    /// whenever the global LoggingLevel allows Info, whatever the categories' emit levels say.
+    /// A category set to Trace under a global Info level would otherwise drop it.
+    /// </summary>
+    internal static void Milestone(string msg)
+    {
+        if (EntryPoint.ShouldLog(EntryPoint.EngineLogLevel.Info))
+            EntryPoint.LogTagged("engine", msg, "INF");
+    }
+
     // Most recent WRN/ERR text + when, surfaced via the GetEngineStatusJson host bridge so a stuck box
     // can be diagnosed remotely without reading the PC log. Recorded even when the line is filtered.
     internal static volatile string? LastIssue;

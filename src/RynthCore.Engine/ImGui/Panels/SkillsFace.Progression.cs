@@ -209,7 +209,7 @@ internal sealed partial class SkillsFace
                 Label("Last updated: " + a.Updated, Dim);
             }
             NextLine(p, 28);
-            if (a.Status.Length > 0) ImGuiNET.ImGui.TextWrapped(a.Status);
+            if (a.Status.Length > 0) SafeImGui.TextWrapped(a.Status);
             if (a.LastRun.Length > 0) Label("Last run: " + a.LastRun, Dim);
 
             ImGuiNET.ImGui.Separator();
@@ -338,7 +338,7 @@ internal sealed partial class SkillsFace
                    : $"{what}: {exact} XP.";
         if (known && !afford) tip += " Not enough unassigned XP.";
         if (a.Running) tip += " Wait for the raise run to finish.";
-        ImGuiNET.ImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);
     }
 
     /// <summary>The client's own base value for a raiser row (0 when the snapshot has none).</summary>
@@ -574,7 +574,7 @@ internal sealed partial class SkillsFace
         }
         else if (active) _augTargetEdit[row.Key] = tgt;
         else _augTargetEdit.Remove(row.Key);
-        ImGuiNET.ImGui.SetItemTooltip($"Target {row.Label} level (up to {row.Cap.ToString("N0", CultureInfo.InvariantCulture)}).");
+        SafeImGui.SetItemTooltip($"Target {row.Label} level (up to {row.Cap.ToString("N0", CultureInfo.InvariantCulture)}).");
     }
 
     private void DrawEnlPlanner(EnlPlanner e, float w)
@@ -593,7 +593,7 @@ internal sealed partial class SkillsFace
             ImGuiNET.ImGui.SetNextItemWidth(100);
             if (ImGuiNET.ImGui.InputInt("Plan to level##prog_enlt", ref target))
                 SendProg("enltarget " + Math.Max(e.Level + 1, target).ToString(CultureInfo.InvariantCulture));
-            foreach (string line in e.Plan) ImGuiNET.ImGui.BulletText(line);
+            foreach (string line in e.Plan) SafeImGui.BulletText(line);
 
             int coinsPerToken = e.CoinsPerToken;
             ImGuiNET.ImGui.SetNextItemWidth(100);
@@ -640,7 +640,7 @@ internal sealed partial class SkillsFace
             if (ImGuiNET.ImGui.InputInt("Check every (s)##prog_every", ref every))
                 SendProg("checkevery " + Math.Max(10, every).ToString(CultureInfo.InvariantCulture));
             Label(e.Armed ? "Armed." : "Disarmed.", e.Armed ? Amber : Dim);
-            if (e.Status.Length > 0) ImGuiNET.ImGui.TextWrapped(e.Status);
+            if (e.Status.Length > 0) SafeImGui.TextWrapped(e.Status);
         }
         finally
         {

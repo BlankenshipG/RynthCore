@@ -14,6 +14,9 @@
            description   RynthPluginDescription   (default: Description)
            homepage      RynthPluginHomepage      (default: PackageProjectUrl)
            license       RynthPluginLicense       (default: PackageLicenseExpression)
+           server        RynthPluginServerId (lower-case a-z 0-9 -), RynthPluginServerName,
+                         RynthPluginServerHosts and RynthPluginServerWorldNames ('|'-separated):
+                         a server plugin, loaded only for its own server (engine PluginManifestGate)
       2. adds [assembly: RynthPluginManifest(minEngineApi)], which RynthPluginBase.MinimumApiVersion
          defaults to (the plugin's own runtime check, which also covers engines from before
          manifests), and generates RynthPluginInfo (Name, Version, MinEngineApi constants) in the
@@ -33,7 +36,7 @@
 
   <PropertyGroup>
     <!-- The engine API this SDK knows; tools\PluginManifestTests checks it equals PluginContractVersion.Current. -->
-    <RynthCoreSdkApiVersion>84</RynthCoreSdkApiVersion>
+    <RynthCoreSdkApiVersion>86</RynthCoreSdkApiVersion>
     <_RynthPluginManifestOn Condition="'$(RynthPluginMinEngineApi)' != '' and '$(RynthPluginManifest)' != 'false'">true</_RynthPluginManifestOn>
   </PropertyGroup>
 
@@ -79,6 +82,10 @@ public class RynthWritePluginManifest : Task
     public string Description { get; set; }
     public string Homepage { get; set; }
     public string License { get; set; }
+    public string ServerId { get; set; }
+    public string ServerName { get; set; }
+    public string ServerHosts { get; set; }
+    public string ServerWorldNames { get; set; }
     public ITaskItem[] Dependencies { get; set; }
     public string RootNamespace { get; set; }
     [Required] public string JsonPath { get; set; }
@@ -126,6 +133,21 @@ public class RynthWritePluginManifest : Task
         AppendOpt(sb, "description", Description);
         AppendOpt(sb, "homepage", Homepage);
         AppendOpt(sb, "license", License);
+
+        string serverId = (ServerId ?? "").Trim().ToLowerInvariant();
+        string serverName = (ServerName ?? "").Trim();
+        string[] hosts = Split(ServerHosts), worlds = Split(ServerWorldNames);
+        if (serverId.Length > 0)
+        {
+            foreach (char c in serverId)
+                if (!(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-'))
+                { Log.LogError("RynthPluginServerId '{0}' may only have a-z, 0-9 and '-'.", serverId); return false; }
+            if (hosts.Length + worlds.Length == 0)
+            { Log.LogError("RynthPluginServerId '{0}' needs RynthPluginServerHosts or RynthPluginServerWorldNames.", serverId); return false; }
+            if (serverName.Length == 0) serverName = serverId;
+            sb.Append(",\n  \"server\": { \"id\": ").Append(Q(serverId)).Append(", \"name\": ").Append(Q(serverName));
+            sb.Append(", \"hosts\": [").Append(JoinQ(hosts)).Append("], \"worldNames\": [").Append(JoinQ(worlds)).Append("] }");
+        }
         sb.Append("\n}\n");
         WriteIfChanged(JsonPath, sb.ToString());
 
@@ -139,6 +161,11 @@ public class RynthWritePluginManifest : Task
         cs.Append("    public const string Version = ").Append(Q((Version ?? "").Trim())).Append(";\n");
         cs.Append("    /// <summary>The oldest engine API this plugin runs on (its manifest's minEngineApi).</summary>\n");
         cs.Append("    public const uint MinEngineApi = ").Append(min).Append(";\n");
+        cs.Append("    /// <summary>The manifest's server block (\"\" and empty lists for a plugin that isn't a server plugin).</summary>\n");
+        cs.Append("    public const string ServerId = ").Append(Q(serverId)).Append(";\n");
+        cs.Append("    public const string ServerName = ").Append(Q(serverId.Length > 0 ? serverName : "")).Append(";\n");
+        cs.Append("    public static readonly string[] ServerHosts = { ").Append(serverId.Length > 0 ? JoinQ(hosts) : "").Append(" };\n");
+        cs.Append("    public static readonly string[] ServerWorldNames = { ").Append(serverId.Length > 0 ? JoinQ(worlds) : "").Append(" };\n");
         cs.Append("}\n");
         WriteIfChanged(InfoSourcePath, cs.ToString());
         return !Log.HasLoggedErrors;
@@ -148,6 +175,25 @@ public class RynthWritePluginManifest : Task
     {
         if (string.IsNullOrWhiteSpace(value)) return;
         sb.Append(",\n  ").Append(Q(key)).Append(": ").Append(Q(value.Trim()));
+    }
+
+    // '|'-separated (MSBuild would split ';' lists into items), blanks dropped, at most 16.
+    private static string[] Split(string text)
+    {
+        var list = new List<string>();
+        foreach (string part in (text ?? "").Split('|'))
+        {
+            string p = part.Trim();
+            if (p.Length > 0 && list.Count < 16) list.Add(p);
+        }
+        return list.ToArray();
+    }
+
+    private static string JoinQ(string[] values)
+    {
+        var sb = new StringBuilder();
+        for (int i = 0; i < values.Length; i++) sb.Append(i == 0 ? "" : ", ").Append(Q(values[i]));
+        return sb.ToString();
     }
 
     private static void WriteIfChanged(string path, string text)
@@ -241,6 +287,8 @@ public class RynthEmbedPluginManifest : Task
                               MaxEngineApi="$(RynthPluginMaxEngineApi)" SdkApiVersion="$(RynthCoreSdkApiVersion)"
                               Author="$(RynthPluginAuthor)" Description="$(RynthPluginDescription)"
                               Homepage="$(RynthPluginHomepage)" License="$(RynthPluginLicense)"
+                              ServerId="$(RynthPluginServerId)" ServerName="$(RynthPluginServerName)"
+                              ServerHosts="$(RynthPluginServerHosts)" ServerWorldNames="$(RynthPluginServerWorldNames)"
                               Dependencies="@(RynthPluginDependency)" RootNamespace="$(RootNamespace)"
                               JsonPath="$(_RynthPluginManifestJson)" InfoSourcePath="$(_RynthPluginInfoSource)" />
     <ItemGroup>

@@ -208,7 +208,7 @@ internal sealed class RangesSlideOut : RynthAiDrawer
         dl.AddText(new Vector2(x, y + (h - fs) * 0.5f), White, r.Label);
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, y));
         ImGuiNET.ImGui.InvisibleButton("##label", new Vector2(Math.Max(1, labelW - 2 * k), h));
-        ImGuiNET.ImGui.SetItemTooltip(r.Tip);
+        SafeImGui.SetItemTooltip(r.Tip);
 
         // Box at the right.
         float boxW = 46 * k;
@@ -226,7 +226,7 @@ internal sealed class RangesSlideOut : RynthAiDrawer
             }
             else WriteValue(r, value);   // bad input reverts
         }
-        ImGuiNET.ImGui.SetItemTooltip(r.Tip);
+        SafeImGui.SetItemTooltip(r.Tip);
 
         // Slider between them: drag (or click) to pick, saved when let go.
         float sx = x + labelW, sw = boxX - 6 * k - sx;
@@ -250,7 +250,7 @@ internal sealed class RangesSlideOut : RynthAiDrawer
                 r.Dragging = false;
                 if (r.DragValue != value) Changed(r, r.DragValue);
             }
-            ImGuiNET.ImGui.SetItemTooltip(r.Tip);
+            SafeImGui.SetItemTooltip(r.Tip);
 
             float cy = y + h * 0.5f;
             float frac = s.Max > s.Min ? (float)((shownValue - s.Min) / (s.Max - s.Min)) : 0f;
@@ -321,13 +321,13 @@ internal sealed class RangesSlideOut : RynthAiDrawer
         if (FaceKit.IconButton("##mon_edit", PhosphorIcons.PencilSimple, new Vector2(bx, y), bsize, monster ? Teal : Mute, BtnFill,
                 enabled: monster, border: BtnBord, font: UiFont.Dash10))
             DamageDetailFace.Show(_selWcid, _selName);
-        ImGuiNET.ImGui.SetItemTooltip(monster ? _editTip : NoEditTip);
+        SafeImGui.SetItemTooltip(monster ? _editTip : NoEditTip);
         if (FaceKit.IconButton("##mon_damage", PhosphorIcons.Skull, new Vector2(bx + bsize.X + 2 * k, y), bsize, monster ? Teal : Mute, BtnFill,
                 enabled: monster, border: BtnBord, font: UiFont.Dash10))
         {
             if (!ImGuiPanelHost.IsOpen(DamageFace.Title)) PanelRouter.ToggleMonsters();
         }
-        ImGuiNET.ImGui.SetItemTooltip(monster ? _damageTip : NoDamageTip);
+        SafeImGui.SetItemTooltip(monster ? _damageTip : NoDamageTip);
 
         // Name line.
         string name; uint nameColor;
@@ -362,7 +362,7 @@ internal sealed class RangesSlideOut : RynthAiDrawer
         {
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, fy));
             ImGuiNET.ImGui.InvisibleButton("##mon_facts", new Vector2(w, 2 * lh));
-            ImGuiNET.ImGui.SetItemTooltip(_factsTip);
+            SafeImGui.SetItemTooltip(_factsTip);
         }
     }
 

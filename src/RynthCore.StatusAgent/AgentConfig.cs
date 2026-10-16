@@ -61,7 +61,10 @@ internal sealed class AgentConfig
 
     /// <summary>Shared secret, required when <see cref="ServeHttp"/> is on: every route but
     /// /healthz needs <c>Authorization: Bearer &lt;token&gt;</c> or <c>?token=</c>. Empty =
-    /// the server stays off, on any bind (it can stream the screens and click in them).</summary>
+    /// the server stays off, on any bind (it can stream the screens and click in them). A
+    /// <see cref="ServePrefix"/> other than 127.0.0.1/localhost needs at least
+    /// <see cref="ServeGuard.MinRemoteTokenLength"/> characters; an address that sends
+    /// <see cref="AuthThrottle.MaxFailures"/> bad tokens in a minute is locked out for 5 minutes.</summary>
     [JsonPropertyName("ServeToken")] public string ServeToken { get; set; } = "";
 
     /// <summary>When true, also write the latest rollup to

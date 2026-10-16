@@ -253,6 +253,13 @@ internal static class LaunchCommand
                 "Password needs re-entering: edit the account in the launcher and type it again.");
             return 2;
         }
+        if (pwd.Length == 0)
+        {
+            // The client refuses an empty password before it connects ("You can only run the
+            // game from the launcher program") and exits within seconds.
+            Log($"No password is saved for account '{acct}'. Launch it once from the launcher to enter it, or edit the account.");
+            return 2;
+        }
 
         string arguments = server.Emulator == EmulatorKind.Gdle
             ? string.Join(" ",

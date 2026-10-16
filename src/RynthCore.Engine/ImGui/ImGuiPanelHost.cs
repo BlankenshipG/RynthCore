@@ -379,6 +379,7 @@ internal static class ImGuiPanelHost
     /// </summary>
     public static void DragWindowWithLastItem()
     {
+        if (_inEmbed) return;   // embedded in another panel: that panel's window isn't this face's to move
         if (ImGuiPopOuts.InPopOutFrame)
         {
             // Popped out: the OS window moves (it follows the cursor from here on).
@@ -394,6 +395,7 @@ internal static class ImGuiPanelHost
     /// <summary>Asks for a new window size (logical units), applied on the next frame it draws. Any thread.</summary>
     public static void RequestSize(string title, Vector2 logicalSize)
     {
+        if (_inEmbed) return;   // an embedded copy must not resize the face's own window
         lock (Sync)
         {
             if (!Entries.TryGetValue(title, out Entry? entry)) return;
@@ -409,6 +411,7 @@ internal static class ImGuiPanelHost
     /// </summary>
     public static void RequestPos(string title, Vector2 logicalPos)
     {
+        if (_inEmbed) return;
         lock (Sync)
         {
             if (!Entries.TryGetValue(title, out Entry? entry)) return;
@@ -450,10 +453,12 @@ internal static class ImGuiPanelHost
     /// </summary>
     public static void DrawAll(float uiScale)
     {
+        _frameScale = uiScale;
         float placeScale = PlacementScale();
         while (Requests.TryDequeue(out var req))
             Apply(req.Title, req.Kind, placeScale);
         RemoveUnregistered();
+        SweepEmbedded();
 
         List<Entry> order;
         lock (Sync) order = DrawOrder;
@@ -485,6 +490,7 @@ internal static class ImGuiPanelHost
         Entry? entry;
         lock (Sync) Entries.TryGetValue(title, out entry);
         if (entry == null || !entry.Shown || !entry.Popped) return;
+        _frameScale = uiScale;
         DrawPanel(entry, uiScale, PlacementScale(), display);
     }
 
@@ -1025,6 +1031,148 @@ internal static class ImGuiPanelHost
     /// <summary>The panel whose face is drawing right now (names a text box's owner in the input log). AC thread.</summary>
     internal static string? DrawingTitle { get; private set; }
 
+    // ── Embedding: a face drawn inside another panel (the Mini Remote's sections) ──
+
+    /// <summary>An embedded copy of a face: its own instance, so the face's own window is unaffected.</summary>
+    private sealed class EmbeddedFace
+    {
+        public required string Title;
+        public required IImGuiPanel Instance;
+        public long LastDrawnMs;
+        public int Failures;
+        public string? Error;
+    }
+
+    /// <summary>Embedded copies by host + title. AC thread only (docked and pop-out frames both run there).</summary>
+    private static readonly Dictionary<string, EmbeddedFace> EmbeddedFaces = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>An embedded copy not drawn for this long is hidden and dropped (its section was left).</summary>
+    private const long EmbedIdleMs = 750;
+
+    /// <summary>Faces that can't be embedded: the hosts themselves.</summary>
+    private static readonly HashSet<string> NotEmbeddable = new(StringComparer.OrdinalIgnoreCase) { "Mini Remote" };
+
+    /// <summary>The UI scale of the frame being drawn (docked or popped). AC thread.</summary>
+    private static float _frameScale = 1f;
+
+    /// <summary>True while an embedded copy draws: its window moves and size requests are ignored.</summary>
+    [ThreadStatic] private static bool _inEmbed;
+
+    /// <summary>True when <paramref name="title"/> is registered and may be drawn inside another panel. Any thread.</summary>
+    public static bool CanEmbed(string title) => !NotEmbeddable.Contains(title) && HasFace(title);
+
+    /// <summary>A registered face's default window size (logical units). Any thread.</summary>
+    public static bool TryGetDefaultSize(string title, out Vector2 size)
+    {
+        Entry? entry;
+        lock (Sync) Entries.TryGetValue(title, out entry);
+        size = entry?.Spec.DefaultSize ?? Vector2.Zero;
+        return entry != null;
+    }
+
+    /// <summary>
+    /// Draws a copy of the face <paramref name="title"/> into the current window, in a child of
+    /// <paramref name="size"/> (pixels; 0 = fill). <paramref name="hostKey"/> separates the copies
+    /// of different hosts. The copy is created on first draw and dropped (OnHidden) once it
+    /// hasn't drawn for <see cref="EmbedIdleMs"/>. AC thread, inside a window.
+    /// </summary>
+    public static void DrawEmbedded(string hostKey, string title, Vector2 size)
+    {
+        Entry? entry;
+        lock (Sync) Entries.TryGetValue(title, out entry);
+        if (entry == null || NotEmbeddable.Contains(title))
+        {
+            ImGuiNET.ImGui.TextDisabled("Not available.");
+            return;
+        }
+
+        string key = hostKey + "\u001f" + title;
+        if (!EmbeddedFaces.TryGetValue(key, out EmbeddedFace? face))
+        {
+            try
+            {
+                IImGuiPanel instance = entry.Factory();
+                instance.OnShown();
+                face = new EmbeddedFace { Title = title, Instance = instance };
+            }
+            catch (Exception ex)
+            {
+                RynthLog.UI($"ImGuiPanelHost: embedding {title} failed - {ex.GetType().Name}: {ex.Message}");
+                face = new EmbeddedFace { Title = title, Instance = new NullFace(), Error = $"{title} failed to open: {ex.Message}" };
+            }
+            EmbeddedFaces[key] = face;
+        }
+        face.LastDrawnMs = Environment.TickCount64;
+
+        PanelSpec spec = entry.Spec;
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, spec.EdgeToEdge ? Vector2.Zero : new Vector2(6, 4) * _frameScale);
+        ImGuiWindowFlags flags = ImGuiWindowFlags.NoBackground | spec.BodyFlags;
+        if (spec.EdgeToEdge) flags |= ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
+        bool open = ImGuiNET.ImGui.BeginChild("##embed_" + title, size, ImGuiChildFlags.AlwaysUseWindowPadding, flags);
+        ImGuiNET.ImGui.PopStyleVar();
+        try
+        {
+            if (!open) return;
+            if (face.Error != null)
+            {
+                // Never a format string: the error carries an exception message.
+                ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.4f, 0.3f, 1f));
+                ImGuiNET.ImGui.PushTextWrapPos(0f);
+                ImGuiNET.ImGui.TextUnformatted(face.Error);
+                ImGuiNET.ImGui.PopTextWrapPos();
+                ImGuiNET.ImGui.PopStyleColor();
+                return;
+            }
+            string? outer = DrawingTitle;
+            _inEmbed = true;
+            DrawingTitle = title;
+            try
+            {
+                face.Instance.Draw();
+            }
+            catch (Exception ex)
+            {
+                face.Failures++;
+                RynthLog.UI($"ImGuiPanelHost: embedded {title}.Draw threw {ex.GetType().Name}: {ex.Message} ({face.Failures}/{MaxFailures})");
+                if (face.Failures >= MaxFailures)
+                    face.Error = $"{title} stopped drawing after repeated errors: {ex.Message}";
+            }
+            finally
+            {
+                _inEmbed = false;
+                DrawingTitle = outer;
+            }
+        }
+        finally
+        {
+            ImGuiNET.ImGui.EndChild();
+        }
+    }
+
+    /// <summary>Hides and drops embedded copies whose host stopped drawing them. AC thread.</summary>
+    private static void SweepEmbedded()
+    {
+        if (EmbeddedFaces.Count == 0) return;
+        long now = Environment.TickCount64;
+        List<string>? stale = null;
+        foreach (var kv in EmbeddedFaces)
+            if (now - kv.Value.LastDrawnMs > EmbedIdleMs) (stale ??= new List<string>()).Add(kv.Key);
+        if (stale == null) return;
+        foreach (string key in stale)
+        {
+            EmbeddedFace face = EmbeddedFaces[key];
+            EmbeddedFaces.Remove(key);
+            try { face.Instance.OnHidden(); }
+            catch (Exception ex) { RynthLog.UI($"ImGuiPanelHost: embedded {face.Title}.OnHidden threw {ex.GetType().Name}: {ex.Message}"); }
+        }
+    }
+
+    /// <summary>Stands in for a face that failed to open, so its error line can draw.</summary>
+    private sealed class NullFace : IImGuiPanel
+    {
+        public void Draw() { }
+    }
+
     private static void DrawBody(Entry entry)
     {
         DrawingTitle = entry.Title;
@@ -1247,7 +1395,7 @@ internal static class ImGuiPanelHost
         if (ImGuiNET.ImGui.Button(PhosphorIcons.ArrowCounterClockwise + " Reset"))
             PanelTextScale.ResetWindow(title);
         ImGuiNET.ImGui.EndDisabled();
-        ImGuiNET.ImGui.SetItemTooltip(all == 0 ? "Back to normal size" : "Back to the All Panels size (Settings > Display)");
+        SafeImGui.SetItemTooltip(all == 0 ? "Back to normal size" : "Back to the All Panels size (Settings > Display)");
         ImGuiNET.ImGui.SameLine();
         if (ImGuiNET.ImGui.Button("Use for all windows"))
             PanelTextScale.UseForAll(step);

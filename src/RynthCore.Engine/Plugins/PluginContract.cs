@@ -922,6 +922,28 @@ internal struct RynthCoreAPI
     /// Off AC's main thread a walk of the object's qualities tables is requested for the next tick
     /// (flag QualitiesPending): ask again a moment later for the full set. Any thread. Requires API v84+.</summary>
     public IntPtr GetObjectPropertiesFn;
+
+    /// <summary>v85: <c>int ArmConfirmation(uint type, int minPercent, int timeoutMs)</c>: answer
+    /// the next server yes/no prompt (ConfirmationRequest 0x0274) of this type within timeoutMs,
+    /// without the client opening its dialog: Yes when the server's "N percent" is at least
+    /// minPercent (or minPercent is 0), else No. One-shot. timeoutMs &lt;= 0 disarms.
+    /// 1 armed/disarmed, 0 sender or game-event hook unavailable, -3 bad arguments
+    /// (type 0, minPercent outside 0-100, timeout over 120 s). Any thread. Requires API v85+.</summary>
+    public IntPtr ArmConfirmationFn;
+
+    /// <summary>v85: <c>int GetLastConfirmation(uint* type, uint* contextId, int* percent, int* outcome, int* ageMs)</c>:
+    /// the last prompt the server sent: returns its sequence number (0 = none yet); percent -1
+    /// when the text has none; outcome 1 shown to the player, 2 answered Yes, 3 answered No,
+    /// 4 the send failed (shown). Any out pointer may be null. Any thread. Requires API v85+.</summary>
+    public IntPtr GetLastConfirmationFn;
+
+    /// <summary>v86: <c>int GetServerStateJson(byte* buffer, int capacity)</c>: which server this is,
+    /// for every plugin: each server the engine knows (built in, or declared by a loaded plugin)
+    /// with its verdict, this character's override, why, and the plugin that owns its settings;
+    /// plus the active server and the Diagnostics pick (UI/Sections/ServerStateJson.cs has the
+    /// schema). Returns the UTF-8 byte length; when it is &gt;= capacity nothing was written (call
+    /// again with a bigger buffer). -1 on failure. Any thread. Requires API v86+.</summary>
+    public IntPtr GetServerStateJsonFn;
 }
 
 /// <summary>v79 <see cref="TrainingInfoNative.Flags"/> bits.</summary>
@@ -1718,6 +1740,12 @@ internal unsafe delegate int GetVendorTradeStatusCallbackDelegate(VendorTradeSta
 internal unsafe delegate int GetMergeStackResultCallbackDelegate(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int ArmConfirmationCallbackDelegate(uint type, int minPercent, int timeoutMs);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetLastConfirmationCallbackDelegate(uint* type, uint* contextId, int* percent, int* outcome, int* ageMs);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetVTankStateCallbackDelegate(int* sequence);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -1725,6 +1753,9 @@ internal unsafe delegate int GetCharacterTitlesCallbackDelegate(uint* ids, int m
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetServerInfoCallbackDelegate(byte* worldName, int capacity);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetServerStateJsonCallbackDelegate(byte* buffer, int capacity);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate int CloseContainerCallbackDelegate(uint containerId);

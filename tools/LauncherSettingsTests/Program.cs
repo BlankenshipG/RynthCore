@@ -179,8 +179,21 @@ internal static class Program
                 string preview = builder.BuildMaskedArguments(ace, a);
                 Check(!preview.Contains("t3st") && preview.Contains("-v " + AcLaunchArgumentBuilder.PasswordMask), "preview masked: " + preview);
                 LaunchAccountProfile noPw = loaded.AccountProfiles.First(x => x.Id == "b");
-                Check(builder.BuildMaskedArguments(ace, noPw).Contains("-v \"\""), "preview of an account without a password");
-                Check(builder.BuildArguments(ace, noPw).Contains("-v \"\""), "no saved password still launches as before (empty)");
+                Check(AcLaunchArgumentBuilder.NeedsPassword(noPw) && !AcLaunchArgumentBuilder.NeedsPassword(a), "NeedsPassword: only the account without one");
+                Check(builder.BuildMaskedArguments(ace, noPw).StartsWith("No password is saved for account 'B'"),
+                    "preview of an account without a password says so: " + builder.BuildMaskedArguments(ace, noPw));
+                // The client exits with "You can only run the game from the launcher program" on an
+                // empty password (Conquest, 2026-10-13), so the launch is refused instead.
+                string refusal = Throws(() => builder.BuildArguments(ace, noPw));
+                Check(refusal.StartsWith("No password is saved for account 'B'"), "no saved password: launch refused: " + refusal);
+                Check(Throws(() => builder.BuildArguments(gdle, noPw)).StartsWith("No password"), "GDLE refused too");
+
+                // Account names: ACE's 50-character limit; GDLE's "account:password" argument.
+                Check(AcLaunchArgumentBuilder.AccountNameProblem("SK", AcEmulatorKind.Ace) == null, "a short name is fine");
+                Check(AcLaunchArgumentBuilder.AccountNameProblem(new string('x', 51), AcEmulatorKind.Ace)?.Contains("50") == true, "51 characters: too long");
+                Check(AcLaunchArgumentBuilder.AccountNameProblem("a:b", AcEmulatorKind.Ace) == null, "a colon is fine on ACE");
+                Check(AcLaunchArgumentBuilder.AccountNameProblem("a:b", AcEmulatorKind.Gdle) != null, "a colon is refused on GDLE");
+                Check(AcLaunchArgumentBuilder.AccountNameProblem("  ", AcEmulatorKind.Ace) != null, "blank is refused");
 
                 LaunchAccountProfile copy = a.Clone();
                 Check(copy.PasswordProtected == a.PasswordProtected, "Clone keeps the encrypted password");
@@ -278,6 +291,96 @@ internal static class Program
                 AppSettingsStore.Save(loaded);
                 CheckNoPlainText("LEAK-CHECK-PW");
             });
+
+            // ── First Login dialog rules (a new server: no password, no characters yet) ──
+            Scenario("first login on a new server", root, () =>
+            {
+                var withPw = new LaunchAccountProfile { Id = "ilt", AccountName = "silentkelpie" };
+                withPw.SetPassword(Pw);
+                var noPwSame = new LaunchAccountProfile { Id = "other", AccountName = "SilentKelpie" };
+                var conquest = new LaunchAccountProfile { Id = "new", AccountName = "SK", CharacterName = LaunchAccountProfile.NoneOption };
+                var all = new List<LaunchAccountProfile> { withPw, noPwSame, conquest };
+
+                Check(FirstLoginRules.KnownAccountNames(all, "new").SequenceEqual(new[] { "silentkelpie" }),
+                    "known names: the others, distinct ignoring case, not this profile's own");
+
+                Check(FirstLoginRules.SavedPasswordSource(all, "SILENTKELPIE", "new")?.Id == "ilt",
+                    "the same name with a saved password can be reused (case ignored)");
+                Check(FirstLoginRules.SavedPasswordSource(all, "SK", "new") == null, "a new name has none to reuse");
+                Check(FirstLoginRules.SavedPasswordSource(all, "silentkelpie", "ilt") == null, "never the profile itself");
+
+                var copy = new LaunchAccountProfile { AccountName = "silentkelpie" };
+                copy.CopyPasswordFrom(withPw);
+                Check(copy.PasswordProtected == withPw.PasswordProtected && copy.TryGetPasswordForLaunch(out string reused, out _) && reused == Pw,
+                    "reuse copies the encrypted blob, and it decrypts");
+
+                var none = new List<string>();
+                List<string> firstChoices = FirstLoginRules.LoginChoices(none, conquest.CharacterName);
+                Check(firstChoices.SequenceEqual(new[] { FirstLoginRules.StopAtCharacterSelect }),
+                    "no characters yet: only stop at character select (the old (None) isn't listed)");
+                Check(FirstLoginRules.CharacterNameFor(FirstLoginRules.StopAtCharacterSelect, none) == "",
+                    "stop with none known saves \"\" so the first character created is picked next time");
+
+                var chars = new List<string> { "Alpha", "Beta" };
+                Check(FirstLoginRules.LoginChoices(chars, "Gamma").SequenceEqual(new[] { FirstLoginRules.StopAtCharacterSelect, "Gamma", "Alpha", "Beta" }),
+                    "several characters: all listed, the saved one kept even if not seen yet");
+                Check(FirstLoginRules.CharacterNameFor("Beta", chars) == "Beta", "picking a character saves it");
+                Check(FirstLoginRules.CharacterNameFor(FirstLoginRules.StopAtCharacterSelect, chars) == LaunchAccountProfile.NoneOption,
+                    "stop with characters known saves the explicit (None)");
+
+                Check(FirstLoginRules.Problem("SK", "", "", false, AcEmulatorKind.Ace)?.StartsWith("Enter the password") == true, "a password is required");
+                Check(FirstLoginRules.Problem("SK", "a", "b", false, AcEmulatorKind.Ace)?.Contains("don't match") == true, "the confirmation must match");
+                Check(FirstLoginRules.Problem("SK", "pw", "pw", false, AcEmulatorKind.Ace) == null, "name + matching password: ready");
+                Check(FirstLoginRules.Problem("silentkelpie", "", "", true, AcEmulatorKind.Ace) == null, "reusing a saved password needs no typing");
+                Check(FirstLoginRules.Problem("a:b", "pw", "pw", false, AcEmulatorKind.Gdle) != null, "GDLE name with a colon refused");
+                Check(FirstLoginRules.Problem("", "pw", "pw", false, AcEmulatorKind.Ace) != null, "a name is required");
+            });
+
+            // A saved UserPreferences.ini whose display mode the PC can't use made every launch
+            // fail with "Could not initialize Direct3D"; a quick exit must undo that swap.
+            Scenario("prefs swap: did the swap change the live file", root, () =>
+            {
+                byte[] a = "[Display]\nResolution=2560x1440\n"u8.ToArray();
+                byte[] b = "[Display]\nResolution=1920x1080\n"u8.ToArray();
+                Check(!UserPrefsSwapRecovery.SwapChangedPrefs(new UserPrefsSwap("s", "l", a, (byte[])a.Clone())), "same bytes: not the cause");
+                Check(UserPrefsSwapRecovery.SwapChangedPrefs(new UserPrefsSwap("s", "l", a, b)), "different bytes: changed");
+                Check(UserPrefsSwapRecovery.SwapChangedPrefs(new UserPrefsSwap("s", "l", a, null)), "no live file before: changed");
+            });
+
+            Scenario("prefs swap: failed stash set aside, live file put back", root, () =>
+            {
+                var (swap, legacy) = PrefsSwapFiles(legacyMatches: true);
+                var now = new DateTime(2026, 10, 14, 16, 30, 5);
+                UserPrefsRecoveryResult r = UserPrefsSwapRecovery.Recover(swap, quarantineStash: true, restoreLive: true, legacy, now);
+                Check(!File.Exists(swap.StashPath), "stash no longer swappable");
+                Check(r.QuarantinedStashPath == swap.StashPath + ".failed-20261014-163005" && File.Exists(r.QuarantinedStashPath), "stash kept as .failed-<time>");
+                Check(!File.Exists(legacy) && r.QuarantinedLegacyPath != null, "identical name-only stash set aside too (it would re-seed)");
+                Check(r.LiveRestored && File.ReadAllBytes(swap.LivePath).SequenceEqual(swap.PreviousLiveBytes!), "live file back to its pre-swap bytes");
+            });
+
+            Scenario("prefs swap: different name-only stash kept", root, () =>
+            {
+                var (swap, legacy) = PrefsSwapFiles(legacyMatches: false);
+                UserPrefsRecoveryResult r = UserPrefsSwapRecovery.Recover(swap, true, true, legacy, DateTime.Now);
+                Check(File.Exists(legacy) && r.QuarantinedLegacyPath == null, "name-only stash with other settings left alone");
+            });
+
+            Scenario("prefs swap: later swap or profile override", root, () =>
+            {
+                var (swap, legacy) = PrefsSwapFiles(legacyMatches: true);
+                File.WriteAllText(swap.LivePath, "another account's settings");
+                UserPrefsRecoveryResult r = UserPrefsSwapRecovery.Recover(swap, quarantineStash: false, restoreLive: false, legacy, DateTime.Now);
+                Check(File.Exists(swap.StashPath) && File.Exists(legacy), "override: the user's file is never renamed");
+                Check(!r.LiveRestored && File.ReadAllText(swap.LivePath) == "another account's settings", "later swap: live file untouched");
+            });
+
+            Scenario("prefs swap: no live file before", root, () =>
+            {
+                var (swap, _) = PrefsSwapFiles(legacyMatches: false);
+                swap = swap with { PreviousLiveBytes = null };
+                UserPrefsSwapRecovery.Recover(swap, true, true, null, DateTime.Now);
+                Check(!File.Exists(swap.LivePath), "live file removed so the game writes its defaults");
+            });
         }
         finally
         {
@@ -315,6 +418,23 @@ internal static class Program
     };
 
     private static InjectionMode Mode(AppSettings s, string id) => s.AccountProfiles.First(a => a.Id == id).InjectionMode;
+
+    /// <summary>
+    /// A swap as the launcher leaves it: the failed per-server stash copied over the live file,
+    /// plus the account's name-only stash (same bytes when <paramref name="legacyMatches"/>).
+    /// </summary>
+    private static (UserPrefsSwap Swap, string LegacyPath) PrefsSwapFiles(bool legacyMatches)
+    {
+        string stash = Path.Combine(_dir, "SK@Conquest.ini");
+        string legacy = Path.Combine(_dir, "SK.ini");
+        string live = Path.Combine(_dir, "UserPreferences.ini");
+        byte[] bad = "[Display]\nResolution=2560x1440\nWindowed=False\n"u8.ToArray();
+        byte[] good = "[Display]\nResolution=1920x1080\nWindowed=True\n"u8.ToArray();
+        File.WriteAllBytes(stash, bad);
+        File.WriteAllBytes(legacy, legacyMatches ? bad : good);
+        File.WriteAllBytes(live, bad);
+        return (new UserPrefsSwap(stash, live, bad, good), legacy);
+    }
 
     private static void CheckSharedFilesSafe()
     {
@@ -381,6 +501,13 @@ internal static class Program
     {
         Id = "s", Name = "Test", Host = "127.0.0.1", Port = 9000, Emulator = kind
     };
+
+    /// <summary>The message <paramref name="action"/> throws ("" when it doesn't throw).</summary>
+    private static string Throws(Action action)
+    {
+        try { action(); return string.Empty; }
+        catch (Exception ex) { return ex.Message; }
+    }
 
     private static string PwOf(AppSettings s, string id) =>
         s.AccountProfiles.First(a => a.Id == id).TryGetPasswordForLaunch(out string pw, out _) ? pw : "<unreadable>";

@@ -329,7 +329,13 @@ internal enum SettingKind { Bool, Int, Float, Double, Combo, Section, Spacer, No
     /// <summary>The user hotkeys editor (ImGui/Panels/HotkeysSettingsUi.cs; stored by the engine, not RynthAi).</summary>
     Hotkeys,
     /// <summary>A colour (#AARRGGBB in Get/Set): a swatch that opens a picker. The theme's colours (engine-stored).</summary>
-    Color }
+    Color,
+    /// <summary>
+    /// The server picker and the server list (Diagnostics): which server this character counts
+    /// as, from the servers the engine and the loaded plugins know (UI/Sections/ServerSelection.cs).
+    /// Stored by the engine per character (server_force.txt), not RynthAi.
+    /// </summary>
+    ServerPick }
 
 /// <summary>
 /// Reads and edits <see cref="RynthAiSettings.DiagCategories"/> ("Name=Level,..."). The category
@@ -1134,6 +1140,13 @@ internal static class SettingsSchema
                 "Ticked categories write their trace lines to Trace\\<Category>_<date>.txt (/ra trace <category> on|off)."),
             Note("+log = the category is at Info: its trace lines also go to the normal log. The launcher's Logging page sets Off, Trace or Info."),
             Note("Exceptions always go to exceptions_<date>.txt with full stack traces (throttled). Settings here are for this PC, not the profile."),
+            Spacer(),
+            Section("Server"),
+            new SettingRow(SettingKind.ServerPick, "Server",
+                "Which server this character counts as. Auto detects it (the connect host, the world name the server announces, RynthILT).\n"
+                + "Picking a server forces it on and every other server off, for this character; every plugin follows at once.\n"
+                + "Also: /rc server pick <id>|auto, and /rc server for the list."),
+            Note("The list is every server the engine knows: the built-in ones and those declared by the loaded server plugins. \"Settings from\" is the plugin the others ask for that server's settings."),
         }),
     };
 }

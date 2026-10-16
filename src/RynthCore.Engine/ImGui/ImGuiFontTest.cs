@@ -29,7 +29,7 @@ internal static class ImGuiFontTest
         ImGuiNET.ImGui.SetNextWindowSize(new Vector2(560, 520) * scale, ImGuiCond.FirstUseEver);
         if (ImGuiNET.ImGui.Begin("RynthCore font test##fonttest"))
         {
-            ImGuiNET.ImGui.TextDisabled($"scale {scale:0.##}  atlas {ImGuiNET.ImGui.GetIO().Fonts.TexWidth}x{ImGuiNET.ImGui.GetIO().Fonts.TexHeight}");
+            SafeImGui.TextDisabled($"scale {scale:0.##}  atlas {ImGuiNET.ImGui.GetIO().Fonts.TexWidth}x{ImGuiNET.ImGui.GetIO().Fonts.TexHeight}");
             for (UiFont f = 0; f < UiFont.Count; f++)
             {
                 ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(f));
@@ -54,7 +54,7 @@ internal static class ImGuiFontTest
             ImGuiNET.ImGui.SameLine();
             ImGuiNET.ImGui.TextColored(ImGuiNET.ImGui.ColorConvertU32ToFloat4(RynthTheme.ReloadLabel), "RL");
             ImGuiNET.ImGui.SameLine();
-            ImGuiNET.ImGui.TextColored(ImGuiNET.ImGui.ColorConvertU32ToFloat4(RynthTheme.PopOutLabel), PhosphorIcons.ArrowSquareOut);
+            SafeImGui.TextColored(ImGuiNET.ImGui.ColorConvertU32ToFloat4(RynthTheme.PopOutLabel), PhosphorIcons.ArrowSquareOut);
         }
         ImGuiNET.ImGui.End();
     }

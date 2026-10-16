@@ -173,7 +173,7 @@ internal sealed class WorldMapFace : IImGuiPanel
             var installed = WorldMapMaps.Installed;
             if (installed.Length > 0)
             {
-                ImGuiNET.ImGui.TextDisabled("Map detail" + (WorldMapMaps.CurrentLabel.Length > 0 ? ": " + WorldMapMaps.CurrentLabel : ""));
+                SafeImGui.TextDisabled("Map detail" + (WorldMapMaps.CurrentLabel.Length > 0 ? ": " + WorldMapMaps.CurrentLabel : ""));
                 if (ImGuiNET.ImGui.RadioButton("Best installed", WorldMapSettings.Detail.Length == 0)) { WorldMapSettings.Detail = ""; WorldMapSettings.MarkDirty(); WorldMapMaps.Apply(); }
                 foreach (var t in installed)
                     if (ImGuiNET.ImGui.RadioButton(t.Label, WorldMapSettings.Detail == t.Key)) { WorldMapSettings.Detail = t.Key; WorldMapSettings.MarkDirty(); WorldMapMaps.Apply(); }

@@ -208,7 +208,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
                 ImGuiNET.ImGui.PushID(p.Id);
                 bool enabled = p.Enabled;
                 if (ImGuiNET.ImGui.Checkbox(p.Label, ref enabled)) { p.Enabled = enabled; ChatModel.FiltersChanged(); }
-                ImGuiNET.ImGui.SetItemTooltip(p.Description + "\nExample: " + p.Example);
+                SafeImGui.SetItemTooltip(p.Description + "\nExample: " + p.Example);
                 ImGuiNET.ImGui.SameLine(Math.Max(ImGuiNET.ImGui.GetCursorPosX() + 8, rowW * 0.6f));
                 string tabText = (p.Tab.Length == 0 ? "hide" : "to " + p.Tab) + Caret;
                 if (ImGuiNET.ImGui.SmallButton(tabText))
@@ -260,7 +260,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + 16, p.Y + 1));
         bool on = r.Enabled;
         if (ImGuiNET.ImGui.Checkbox("##on", ref on)) { r.Enabled = on; ChatModel.FiltersChanged(); }
-        ImGuiNET.ImGui.SetItemTooltip(on ? "Rule on (click to turn off)" : "Rule off (click to turn on)");
+        SafeImGui.SetItemTooltip(on ? "Rule on (click to turn off)" : "Rule off (click to turn on)");
 
         const float btn = 22;
         float x = p.X + 42;
@@ -275,7 +275,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
                 moded.Recompile();
                 ChatModel.FiltersChanged();
             }, 120);
-        ImGuiNET.ImGui.SetItemTooltip(ModeHelp[modeIdx]);
+        SafeImGui.SetItemTooltip(ModeHelp[modeIdx]);
         x += modeW + 4;
         float patW = Math.Max(80, card.X + rowW - 4 - 3 * (btn + 2) - 4 - x);
         if (TextBox("##pat", b.Pattern, new Vector2(x, p.Y), patW, ModeHints[modeIdx], out bool patActive))
@@ -323,7 +323,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
                 if (rule.Action == ChatRuleAction.Color && rule.ColorMode == ChatColorMode.None) rule.ColorMode = ChatColorMode.Line;
                 ChatModel.FiltersChanged();
             }, 140);
-        ImGuiNET.ImGui.SetItemTooltip(ActionHelp[action]);
+        SafeImGui.SetItemTooltip(ActionHelp[action]);
 
         if (r.Action is ChatRuleAction.Move or ChatRuleAction.Copy)
         {

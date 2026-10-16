@@ -879,7 +879,7 @@ internal sealed class DungeonMapFace : IImGuiPanel
                 return;
             }
             int i = _menuPt;
-            ImGuiNET.ImGui.TextDisabled($"Point {i}  {TypeName(nav.Points[i].Type)}");
+            SafeImGui.TextDisabled($"Point {i}  {TypeName(nav.Points[i].Type)}");
             ImGuiNET.ImGui.Separator();
             if (ImGuiNET.ImGui.MenuItem("Delete"))
             {

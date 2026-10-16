@@ -306,7 +306,7 @@ internal sealed partial class MetaFace : IImGuiPanel
         bool noFile = string.IsNullOrEmpty(_data.CurrentMetaPath);
         if (Button("Save As##save_as", new Vector2(x, p.Y), new Vector2(saveAsW, 22), TextDim, noFile ? NewFill : BtnFill, noFile ? Green : BtnBord))
             BeginSaveAs();
-        ImGuiNET.ImGui.SetItemTooltip(noFile ? "Name a file for this meta; after that every change saves on its own."
+        SafeImGui.SetItemTooltip(noFile ? "Name a file for this meta; after that every change saves on its own."
             : "Save a copy under a new name (and keep editing that one).");
         x += saveAsW + 4;
         SaveIndicator(new Vector2(x, p.Y), p.X + w - x, 22);
@@ -353,7 +353,7 @@ internal sealed partial class MetaFace : IImGuiPanel
         float tw = ImGuiNET.ImGui.CalcTextSize(text).X;
         ImGuiNET.ImGui.SetCursorScreenPos(pos);
         ImGuiNET.ImGui.InvisibleButton("##save_ind", new Vector2(width, height));
-        ImGuiNET.ImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);
         ImGuiNET.ImGui.GetWindowDrawList().AddText(new Vector2(pos.X + Math.Max(0, width - tw), pos.Y + (height - ImGuiNET.ImGui.GetFontSize()) * 0.5f),
             color, text);
     }
@@ -467,7 +467,7 @@ internal sealed partial class MetaFace : IImGuiPanel
         if (showMsg)
         {
             ImGuiNET.ImGui.PushTextWrapPos(ImGuiNET.ImGui.GetCursorPosX() + w);
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(_msgOk ? 0xFF33CC66 : 0xFFE04848), _msg);
+            SafeImGui.TextColored(RynthTheme.Vec(_msgOk ? 0xFF33CC66 : 0xFFE04848), _msg);
             ImGuiNET.ImGui.PopTextWrapPos();
         }
         if (_sourceStale)
@@ -994,7 +994,7 @@ internal sealed partial class MetaFace : IImGuiPanel
     private static void FieldLabel(string text)
     {
         ImGuiNET.ImGui.Dummy(new Vector2(0, 1));
-        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), text);
+        SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), text);
     }
 
     private static void Separator(float w)
