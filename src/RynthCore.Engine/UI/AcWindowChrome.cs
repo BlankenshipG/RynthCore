@@ -2,7 +2,12 @@
 //  RynthCore.Engine - UI/AcWindowChrome.cs
 //  Settings > Display helpers for the Asheron's Call game HWND:
 //    - Borderless windowed: strip caption / thick frame while leaving the client
-//      windowed (not exclusive fullscreen).
+//      windowed (not exclusive fullscreen), and fill the monitor the window is on
+//      (borderless fullscreen). Stripping the frame alone left the window at AC's
+//      resolution with no border to drag and no maximize box: stuck small (worst
+//      under DXVK, where AC re-sized the window to its resolution after a device
+//      reset). The windowed rect is remembered and comes back when it's turned off;
+//      "/rc window reset" always gets a normal, resizable window back.
 //    - Remember placement: persist and restore the outer window rect across
 //      launches when "Remember open windows and HUD positions" is on.
 //  Styles use SetWindowLong (x86); SWP_FRAMECHANGED so the non-client area
@@ -43,6 +48,15 @@ internal static class AcWindowChrome
     private static long _nextApplyTick;
     private static long _nextPlacementSaveTick;
     private static bool _placementRestored;
+    // The windowed (framed) rect from before borderless, put back when it's turned off.
+    private static RECT? _savedRect;
+    // Re-fills after AC shrank the borderless window to its resolution: counted so the two
+    // never fight forever (MaxRefills in RefillWindowMs, then left alone with a log line).
+    private const int MaxRefills = 4;
+    private const long RefillWindowMs = 60_000;
+    private static int _refills;
+    private static long _refillWindowStart;
+    private static bool _refillGaveUp;
 
     private static string PlacementPath
     {
@@ -110,21 +124,30 @@ internal static class AcWindowChrome
                 }
 
                 if (_borderlessApplied && missingChrome)
+                {
+                    // Already borderless: keep it filling the monitor. AC sizes its window to
+                    // its own resolution after a device reset (seen with DXVK), which left a
+                    // frame-less window too small to fix by hand.
+                    RefillIfShrunk(hwnd);
                     return;
+                }
 
                 // Remember a style that still has chrome. After a hot reload the window
                 // can already be borderless while our statics were cleared — OR the mask
                 // back on so turning the setting off can still restore a real frame.
                 if (_savedStyle is null)
                     _savedStyle = missingChrome ? (style | BorderChromeMask) : style;
+                // And the framed rect, so turning borderless off goes back to it.
+                if (!missingChrome && _savedRect is null && GetWindowRect(hwnd, out RECT framed))
+                    _savedRect = framed;
 
                 int next = style & ~BorderChromeMask;
-                if (next == style && _borderlessApplied) return;
                 SetWindowLong(hwnd, GwlStyle, next);
-                SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0,
-                    SwpNomove | SwpNosize | SwpNozorder | SwpNoactivate | SwpFramechanged);
+                FillMonitor(hwnd);
                 _borderlessApplied = true;
-                RynthLog.UI("AcWindowChrome: borderless windowed on.");
+                _refills = 0;
+                _refillGaveUp = false;
+                RynthLog.UI("AcWindowChrome: borderless windowed on (filling the monitor).");
             }
             else
             {
@@ -141,16 +164,99 @@ internal static class AcWindowChrome
                     restore = style | BorderChromeMask;
 
                 if (style != restore)
-                {
                     SetWindowLong(hwnd, GwlStyle, restore);
-                    SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0,
-                        SwpNomove | SwpNosize | SwpNozorder | SwpNoactivate | SwpFramechanged);
-                }
+                // Back to a framed, resizable window: the rect from before borderless, else (after
+                // a reload, or never framed this session) three quarters of the monitor, centred.
+                RECT target = _savedRect ?? DefaultWindowedRect(hwnd);
+                SetWindowPos(hwnd, IntPtr.Zero, target.Left, target.Top, target.Right - target.Left, target.Bottom - target.Top,
+                    SwpNozorder | SwpNoactivate | SwpFramechanged);
                 _borderlessApplied = false;
                 _savedStyle = null;
-                RynthLog.UI("AcWindowChrome: window borders restored.");
+                _savedRect = null;
+                RynthLog.UI(FormattableString.Invariant(
+                    $"AcWindowChrome: window borders restored ({target.Right - target.Left}x{target.Bottom - target.Top})."));
             }
         }
+    }
+
+    /// <summary>
+    /// "/rc window reset": borderless off (saved), the frame back, and a normal window of a
+    /// sensible size, centred. For a window stuck too small or off-screen. AC's main thread.
+    /// </summary>
+    public static string ResetWindow()
+    {
+        IntPtr hwnd = ResolveGameHwnd();
+        if (hwnd == IntPtr.Zero) return "The game window isn't known yet.";
+        if (EngineSettings.BorderlessWindowed) EngineSettings.BorderlessWindowed = false;
+        lock (Sync)
+        {
+            int style = GetWindowLong(hwnd, GwlStyle);
+            SetWindowLong(hwnd, GwlStyle, style | BorderChromeMask);
+            RECT target = DefaultWindowedRect(hwnd);
+            SetWindowPos(hwnd, IntPtr.Zero, target.Left, target.Top, target.Right - target.Left, target.Bottom - target.Top,
+                SwpNozorder | SwpNoactivate | SwpFramechanged);
+            _styleHwnd = hwnd;
+            _borderlessApplied = false;
+            _savedStyle = null;
+            _savedRect = null;
+            RynthLog.UI(FormattableString.Invariant(
+                $"AcWindowChrome: window reset to a framed {target.Right - target.Left}x{target.Bottom - target.Top}."));
+            return FormattableString.Invariant(
+                $"Window reset: borderless off, normal resizable window ({target.Right - target.Left}x{target.Bottom - target.Top}).");
+        }
+    }
+
+    /// <summary>Sizes the window to the whole monitor it's on (borderless fullscreen).</summary>
+    private static void FillMonitor(IntPtr hwnd)
+    {
+        if (!TryMonitorRect(hwnd, out RECT mon, out _)) return;
+        SetWindowPos(hwnd, IntPtr.Zero, mon.Left, mon.Top, mon.Right - mon.Left, mon.Bottom - mon.Top,
+            SwpNozorder | SwpNoactivate | SwpFramechanged);
+    }
+
+    /// <summary>Borderless but no longer filling its monitor (AC re-sized it): fill it again, a few times at most.</summary>
+    private static void RefillIfShrunk(IntPtr hwnd)
+    {
+        if (_refillGaveUp) return;
+        if (!TryMonitorRect(hwnd, out RECT mon, out _) || !GetWindowRect(hwnd, out RECT wr)) return;
+        bool fills = Math.Abs(wr.Left - mon.Left) <= 2 && Math.Abs(wr.Top - mon.Top) <= 2
+                  && Math.Abs(wr.Right - mon.Right) <= 2 && Math.Abs(wr.Bottom - mon.Bottom) <= 2;
+        if (fills) return;
+        long now = Environment.TickCount64;
+        if (now - _refillWindowStart > RefillWindowMs) { _refillWindowStart = now; _refills = 0; }
+        if (++_refills > MaxRefills)
+        {
+            _refillGaveUp = true;
+            RynthLog.UI("AcWindowChrome: AC keeps re-sizing the borderless window; leaving it (\"/rc window reset\" for a normal window).");
+            return;
+        }
+        RynthLog.UI(FormattableString.Invariant(
+            $"AcWindowChrome: borderless window was {wr.Right - wr.Left}x{wr.Bottom - wr.Top}; filling the monitor again."));
+        FillMonitor(hwnd);
+    }
+
+    /// <summary>A framed window three quarters of the monitor's work area, centred on it.</summary>
+    private static RECT DefaultWindowedRect(IntPtr hwnd)
+    {
+        if (!TryMonitorRect(hwnd, out _, out RECT work))
+            return new RECT { Left = 50, Top = 50, Right = 50 + 1296, Bottom = 50 + 759 };
+        int ww = work.Right - work.Left, wh = work.Bottom - work.Top;
+        int w = ww * 3 / 4, h = wh * 3 / 4;
+        int left = work.Left + (ww - w) / 2, top = work.Top + (wh - h) / 2;
+        return new RECT { Left = left, Top = top, Right = left + w, Bottom = top + h };
+    }
+
+    /// <summary>The whole rect and the work area of the monitor nearest the window.</summary>
+    private static bool TryMonitorRect(IntPtr hwnd, out RECT monitor, out RECT work)
+    {
+        monitor = default; work = default;
+        IntPtr mon = MonitorFromWindow(hwnd, 2 /* MONITOR_DEFAULTTONEAREST */);
+        if (mon == IntPtr.Zero) return false;
+        var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        if (!GetMonitorInfo(mon, ref mi)) return false;
+        monitor = mi.rcMonitor;
+        work = mi.rcWork;
+        return true;
     }
 
     /// <summary>Write the AC outer window rect when layout remembering is on
@@ -159,6 +265,9 @@ internal static class AcWindowChrome
     {
         if (hwnd == IntPtr.Zero) return;
         if (!force && !EngineSettings.RememberWindowLayout) return;
+        // A borderless (frame-less, monitor-filling) window isn't the windowed placement: saving
+        // it made the next framed launch come back the wrong size.
+        if ((GetWindowLong(hwnd, GwlStyle) & WsCaption) == 0) return;
         if (!GetWindowRect(hwnd, out RECT rc)) return;
         int w = rc.Right - rc.Left;
         int h = rc.Bottom - rc.Top;
@@ -218,6 +327,8 @@ internal static class AcWindowChrome
     {
         _placementRestored = true;
         if (!EngineSettings.RememberWindowLayout) return;
+        // Borderless fills the monitor: the saved windowed rect would only shrink it first.
+        if (EngineSettings.BorderlessWindowed) return;
         if (IsLikelyExclusiveFullscreen(hwnd, GetWindowLong(hwnd, GwlStyle))) return;
 
         string path = PlacementPath;
