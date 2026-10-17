@@ -20,13 +20,18 @@ internal partial class AccountProfileDialog : Window
     private bool _loginAsChanged;
     private bool _loadingLoginAs;
 
+    // acclient.exe's path: Snapshot copies the UserPreferences.ini this install uses (the game folder's).
+    private readonly string? _acClientPath;
+
     /// <param name="knownCharactersFor">(account name, server name) -> the characters known for it.</param>
+    /// <param name="acClientPath">acclient.exe, to find the live UserPreferences.ini.</param>
     public AccountProfileDialog(LaunchAccountProfile profile, List<LaunchServerProfile> servers,
-        Func<string, string, List<string>> knownCharactersFor)
+        Func<string, string, List<string>> knownCharactersFor, string? acClientPath = null)
     {
         _profile = profile;
         _servers = servers;
         _knownCharactersFor = knownCharactersFor;
+        _acClientPath = acClientPath;
         InitializeComponent();
 
         ServerComboBox.ItemsSource = _servers.Select(s => s.DisplayName).ToList();
@@ -126,10 +131,7 @@ internal partial class AccountProfileDialog : Window
             stashPath = Path.Combine(appdata, "RynthCore", "prefs", $"{safeName}.ini");
         }
 
-        string livePath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "Asheron's Call",
-            "UserPreferences.ini");
+        string livePath = AcClientLaunchSettingsService.LivePrefsPath(_acClientPath);
 
         if (!File.Exists(livePath))
         {
