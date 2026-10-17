@@ -556,7 +556,8 @@ internal static class CharacterCaptureHooks
         return (characters, slotCount);
     }
 
-    private static (string accountName, string serverName, string targetCharacter) ReadLaunchContext()
+    // Also read by Graphics/AcGraphics.cs (which character's graphics override applies before login).
+    internal static (string accountName, string serverName, string targetCharacter) ReadLaunchContext()
     {
         try
         {

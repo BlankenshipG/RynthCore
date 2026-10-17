@@ -1900,12 +1900,14 @@ internal partial class MainWindow : Window
     {
         string resolvedPrefsPath = ResolveUserPrefsPath(account, launchContext.ServerName);
         bool needsPrefsSwap = !string.IsNullOrEmpty(resolvedPrefsPath) && File.Exists(resolvedPrefsPath);
+        // Per-character graphics write different values into the one INI: serialize like a swap.
+        bool needsLock = needsPrefsSwap || GraphicsNeedsLaunchLock();
 
         string entryAccountKey = BuildAccountKey(launchContext.AccountName, launchContext.ServerName);
         int crashHistCount = _crashHistoryByAccount.TryGetValue(entryAccountKey, out List<DateTime>? hist0) ? hist0.Count : 0;
         LauncherDiag.Info($"LaunchOneInjected ENTRY account='{launchContext.AccountName}' needsPrefsSwap={needsPrefsSwap} semCount={_userPrefsSwapLock.CurrentCount} sessionPids={_launchedSessionPids.Count} pidInfo={_launchedPidInfo.Count} crashHist={crashHistCount}");
 
-        if (needsPrefsSwap)
+        if (needsLock)
         {
             LauncherDiag.Info($"LaunchOneInjected acquiring _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
             await _userPrefsSwapLock.WaitAsync();
@@ -1915,6 +1917,8 @@ internal partial class MainWindow : Window
         try
         {
             PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
+            // RynthAi's Settings > Graphics over whatever the INI holds now (AC rewrites it on exit).
+            ApplyGraphicsForLaunch(acPath, launchContext);
 
             InjectionResult result = await Task.Run(() =>
                 _injector.LaunchSuspendedAndInject(
@@ -1952,12 +1956,12 @@ internal partial class MainWindow : Window
                 AppendActivity($"Launch failed for {launchSummary}: {result.Summary}");
             }
 
-            if (needsPrefsSwap)
+            if (needsLock)
                 await Task.Delay(UserPrefsSettleDelay);
         }
         finally
         {
-            if (needsPrefsSwap)
+            if (needsLock)
             {
                 LauncherDiag.Info($"LaunchOneInjected releasing _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
                 _userPrefsSwapLock.Release();
@@ -1978,12 +1982,14 @@ internal partial class MainWindow : Window
     {
         string resolvedPrefsPath = ResolveUserPrefsPath(account, launchContext.ServerName);
         bool needsPrefsSwap = !string.IsNullOrEmpty(resolvedPrefsPath) && File.Exists(resolvedPrefsPath);
+        // Per-character graphics write different values into the one INI: serialize like a swap.
+        bool needsLock = needsPrefsSwap || GraphicsNeedsLaunchLock();
 
         string entryAccountKey = BuildAccountKey(launchContext.AccountName, launchContext.ServerName);
         int crashHistCount = _crashHistoryByAccount.TryGetValue(entryAccountKey, out List<DateTime>? hist0) ? hist0.Count : 0;
         LauncherDiag.Info($"LaunchOneDecal ENTRY account='{launchContext.AccountName}' needsPrefsSwap={needsPrefsSwap} semCount={_userPrefsSwapLock.CurrentCount} sessionPids={_launchedSessionPids.Count} pidInfo={_launchedPidInfo.Count} crashHist={crashHistCount}");
 
-        if (needsPrefsSwap)
+        if (needsLock)
         {
             LauncherDiag.Info($"LaunchOneDecal acquiring _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
             await _userPrefsSwapLock.WaitAsync();
@@ -1993,6 +1999,8 @@ internal partial class MainWindow : Window
         try
         {
             PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
+            // RynthAi's Settings > Graphics over whatever the INI holds now (AC rewrites it on exit).
+            ApplyGraphicsForLaunch(acPath, launchContext);
 
             // enginePath != null: "Decal + RynthCore" - Decal is injected first, then the
             // RynthCore loader, before the client resumes.
@@ -2033,12 +2041,12 @@ internal partial class MainWindow : Window
                 AppendActivity($"Decal launch failed for {launchSummary}: {result.Summary}");
             }
 
-            if (needsPrefsSwap)
+            if (needsLock)
                 await Task.Delay(UserPrefsSettleDelay);
         }
         finally
         {
-            if (needsPrefsSwap)
+            if (needsLock)
             {
                 LauncherDiag.Info($"LaunchOneDecal releasing _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
                 _userPrefsSwapLock.Release();
@@ -2057,10 +2065,12 @@ internal partial class MainWindow : Window
     {
         string resolvedPrefsPath = ResolveUserPrefsPath(account, launchContext.ServerName);
         bool needsPrefsSwap = !string.IsNullOrEmpty(resolvedPrefsPath) && File.Exists(resolvedPrefsPath);
+        // Per-character graphics write different values into the one INI: serialize like a swap.
+        bool needsLock = needsPrefsSwap || GraphicsNeedsLaunchLock();
 
         LauncherDiag.Info($"LaunchOneNoInject ENTRY account='{launchContext.AccountName}' needsPrefsSwap={needsPrefsSwap} semCount={_userPrefsSwapLock.CurrentCount} sessionPids={_launchedSessionPids.Count} pidInfo={_launchedPidInfo.Count}");
 
-        if (needsPrefsSwap)
+        if (needsLock)
         {
             LauncherDiag.Info($"LaunchOneNoInject acquiring _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
             await _userPrefsSwapLock.WaitAsync();
@@ -2070,6 +2080,8 @@ internal partial class MainWindow : Window
         try
         {
             PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
+            // RynthAi's Settings > Graphics over whatever the INI holds now (AC rewrites it on exit).
+            ApplyGraphicsForLaunch(acPath, launchContext);
 
             Process? proc = null;
             Exception? launchEx = null;
@@ -2113,12 +2125,12 @@ internal partial class MainWindow : Window
             }
             AppendActivity($"Launched AC (no injection) using {launchSummary}.");
 
-            if (needsPrefsSwap)
+            if (needsLock)
                 await Task.Delay(UserPrefsSettleDelay);
         }
         finally
         {
-            if (needsPrefsSwap)
+            if (needsLock)
             {
                 LauncherDiag.Info($"LaunchOneNoInject releasing _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
                 _userPrefsSwapLock.Release();
@@ -4519,6 +4531,50 @@ internal partial class MainWindow : Window
         bool isOverride = !string.IsNullOrWhiteSpace(account.UserPrefsPath);
         LauncherDiag.Info($"PrefsSwap: account='{account.AccountName}' server='{serverName}' gen={generation} override={isOverride} changedLive={UserPrefsSwapRecovery.SwapChangedPrefs(swap)} stash='{swap.StashPath}'");
         return new PrefsSwapLaunch(swap, generation, isOverride, ResolveLegacyUserPrefsPath(account));
+    }
+
+    /// <summary>
+    /// True when RynthAi's graphics settings (graphics.json) have a per-character resolution or
+    /// window mode: two clients started together would then write different values into the one
+    /// UserPreferences.ini, so the launch takes _userPrefsSwapLock and waits for AC to read it.
+    /// </summary>
+    private static bool GraphicsNeedsLaunchLock()
+    {
+        try
+        {
+            return RynthCore.Graphics.AcGraphicsConfig.Load(RynthCore.Graphics.AcGraphicsPrefs.ConfigPath).Characters.Count > 0;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Writes RynthAi's Settings > Graphics (graphics.json) into the UserPreferences.ini files AC reads,
+    /// for this launch's character, just before the client starts (after any per-account prefs swap,
+    /// so RynthAi's values win). Keys left on "AC's choice" are not touched. Never throws.
+    /// </summary>
+    private void ApplyGraphicsForLaunch(string acPath, LaunchContextRecord launchContext)
+    {
+        try
+        {
+            var cfg = RynthCore.Graphics.AcGraphicsConfig.Load(RynthCore.Graphics.AcGraphicsPrefs.ConfigPath);
+            if (!cfg.HasAny)
+                return;
+            string charKey = RynthCore.Graphics.AcGraphicsPrefs.CharacterKey(launchContext.ServerName, launchContext.TargetCharacter);
+            Dictionary<string, string> values = cfg.IniValuesFor(charKey);
+            if (values.Count == 0)
+                return;
+            foreach (string ini in RynthCore.Graphics.AcGraphicsPrefs.IniPaths(Path.GetDirectoryName(acPath)))
+            {
+                List<string> changed = RynthCore.Graphics.AcPrefsIni.Apply(ini, values);
+                if (changed.Count > 0)
+                    AppendActivity($"Graphics settings applied for {launchContext.TargetCharacter}: {string.Join(", ", changed)} ({Path.GetFileName(Path.GetDirectoryName(ini))}).");
+                LauncherDiag.Info($"Graphics: {ini} char='{charKey}' changed=[{string.Join(", ", changed)}]");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"Graphics settings not applied: {ex.Message}");
+        }
     }
 
     /// <summary>Remembers which swap a launched client started with (no-op without a swap).</summary>
