@@ -1796,6 +1796,14 @@ internal static partial class PluginManager
                     }
 
                     eaten = HeldChatQueue.PluginsAteIt(eat, threw);
+                    // RynthChat's Hide rules / standard filters live in the engine, not in a plugin, so
+                    // without this a hidden line still printed in AC's own chat window. Only a held line
+                    // can still be kept out (one already printed has gone); a failure lets it show.
+                    if (!eaten && evt.Held != null)
+                    {
+                        try { eaten = UI.Data.ChatModel.ShouldHideInRetail(evt.Text, unchecked((int)evt.ChatType)); }
+                        catch (Exception ex) { RynthLog.Plugin($"PluginManager: retail chat filter check failed ({ex.GetType().Name}: {ex.Message})."); }
+                    }
                 }
                 finally
                 {
