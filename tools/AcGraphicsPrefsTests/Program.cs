@@ -89,6 +89,16 @@ try
     AcPrefsIni.Apply(fresh, new Dictionary<string, string> { ["Display.Resolution"] = "1280x720" });
     Check(AcPrefsIni.Read(fresh)["Display.Resolution"] == "1280x720", "creates a missing file");
 
+    // ── Which INI files: the game folder's first (the one this install's clients use) ──
+    string gameDir = Path.Combine(dir, "game");
+    Directory.CreateDirectory(gameDir);
+    string gameIni = Path.Combine(gameDir, "UserPreferences.ini");
+    Check(AcGraphicsPrefs.IniPaths(gameDir)[0] != gameIni || File.Exists(gameIni), "no game-folder INI: listed only as the fallback");
+    File.WriteAllText(gameIni, "[Display]\r\nResolution=1760x990\r\n");
+    List<string> paths = AcGraphicsPrefs.IniPaths(gameDir);
+    Check(paths.Count >= 1 && paths[0] == gameIni, "game folder's INI comes first when it exists");
+    Check(paths.TrueForAll(File.Exists), "only existing files listed when the game folder has one");
+
     // ── Every Render setting has sane metadata ──
     foreach (AcGraphicsSetting s in AcGraphicsPrefs.RenderSettings)
     {

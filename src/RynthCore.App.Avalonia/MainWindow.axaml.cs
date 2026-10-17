@@ -825,7 +825,7 @@ internal partial class MainWindow : Window
         // Defaults to the server selected in the list (a new server's first account), not the
         // first profile, which RefreshLaunchTargets would otherwise assign.
         var draft = new RynthCore.App.LaunchAccountProfile { ServerId = GetSelectedServer()?.Id ?? string.Empty };
-        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters);
+        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters, _settings.AcClientPath);
         bool? accepted = await dialog.ShowDialog<bool?>(this);
         if (accepted != true)
             return;
@@ -846,7 +846,7 @@ internal partial class MainWindow : Window
             return;
 
         LaunchAccountProfile draft = selected.Clone();
-        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters);
+        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters, _settings.AcClientPath);
         bool? accepted = await dialog.ShowDialog<bool?>(this);
         if (accepted != true)
             return;
@@ -1916,7 +1916,7 @@ internal partial class MainWindow : Window
 
         try
         {
-            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath, acPath) : null;
             // RynthAi's Settings > Graphics over whatever the INI holds now (AC rewrites it on exit).
             ApplyGraphicsForLaunch(acPath, launchContext);
 
@@ -1998,7 +1998,7 @@ internal partial class MainWindow : Window
 
         try
         {
-            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath, acPath) : null;
             // RynthAi's Settings > Graphics over whatever the INI holds now (AC rewrites it on exit).
             ApplyGraphicsForLaunch(acPath, launchContext);
 
@@ -2079,7 +2079,7 @@ internal partial class MainWindow : Window
 
         try
         {
-            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath, acPath) : null;
             // RynthAi's Settings > Graphics over whatever the INI holds now (AC rewrites it on exit).
             ApplyGraphicsForLaunch(acPath, launchContext);
 
@@ -4588,9 +4588,10 @@ internal partial class MainWindow : Window
     /// Copies the account's saved UserPreferences.ini over the live one (caller holds
     /// _userPrefsSwapLock) and returns what was swapped, or null when nothing was.
     /// </summary>
-    private PrefsSwapLaunch? ApplyPrefsSwap(LaunchAccountProfile account, string? serverName, string resolvedPrefsPath)
+    private PrefsSwapLaunch? ApplyPrefsSwap(LaunchAccountProfile account, string? serverName, string resolvedPrefsPath, string acPath)
     {
-        UserPrefsSwap? swap = _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity);
+        // Into the INI this install's clients actually read (the game folder's when it has one).
+        UserPrefsSwap? swap = _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity, acPath);
         if (swap == null)
             return null;
 
@@ -4717,10 +4718,8 @@ internal partial class MainWindow : Window
         if (string.IsNullOrEmpty(stashPath))
             return;
 
-        string livePath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "Asheron's Call",
-            "UserPreferences.ini");
+        // The INI the session actually wrote (the game folder's when it has one).
+        string livePath = AcClientLaunchSettingsService.LivePrefsPath(_settings.AcClientPath);
         if (!File.Exists(livePath))
             return;
 
