@@ -13,9 +13,10 @@
 //      reload, so a reload gives its memory back.
 //
 //  Either way the loader owns the reload event, the file watcher, the address-space
-//  guard, the reload cap (MaxHotReloads per client) and a MinHook facade (Hooks.c):
-//  every hook is installed once, through a permanent stub, and a reload only re-points
-//  the stub. For the managed engine it also sets up CoreCLR's crash dumps (Logs\dumps).
+//  guard, the reload cap (MaxHotReloads per client), the in-world MayHotReload hold
+//  (2.2+), and a MinHook facade (Hooks.c): every hook is installed once, through a
+//  permanent stub, and a reload only re-points the stub. For the managed engine it
+//  also sets up CoreCLR's crash dumps (Logs\dumps).
 // ============================================================================
 
 #include "Loader.h"
@@ -30,6 +31,9 @@
 #define ENGINE_REFUSED_EXPORT  "RynthCoreReloadRefused"
 #define ENGINE_MAXRELOADS_EXPORT "RynthCoreMaxHotReloads"
 #define ENGINE_CAPPED_EXPORT   "RynthCoreReloadCapped"
+// 1 = reload now, 0 = wait (in-world). Missing export = old engine, proceed.
+#define ENGINE_MAYRELOAD_EXPORT "RynthCoreMayHotReload"
+#define MAY_RELOAD_POLL_MS     2000
 #ifndef LOG_DIR                // the offline tests (tools\Loader*Tests) log into their own folder
 #define LOG_DIR                "C:\\Games\\RynthCore\\Logs"
 #define LOG_PARENT             "C:\\Games\\RynthCore"
@@ -59,6 +63,7 @@ typedef unsigned int (__stdcall *engine_u32_fn)(void* param);
 typedef unsigned int (__stdcall *engine_refused_fn)(int freeMb);
 typedef int (__stdcall *engine_max_reloads_fn)(void);
 typedef unsigned int (__stdcall *engine_capped_fn)(int reloads, int cap);
+typedef int (__stdcall *engine_may_reload_fn)(void);
 
 static volatile LONG g_initialized;
 static char g_loaderDir[MAX_PATH];
@@ -511,13 +516,58 @@ static DWORD WINAPI ReloadWatcher(LPVOID unused)
             LoaderLog("INF", "ReloadWatcher: reload already in flight; coalesced.");
             continue;
         }
+
+        // Hold before Shutdown while the engine says the player is still in the world
+        // (RynthCoreMayHotReload). The game keeps running on this generation; FileWatcher
+        // signals coalesce on the auto-reset event until we finish. Missing export = go now
+        // (old engines); their Shutdown path also waits in-world since 2026-10-16.
+        {
+            engine_may_reload_fn may = (engine_may_reload_fn)EngineExport(ENGINE_MAYRELOAD_EXPORT);
+            int loggedHold = 0;
+            while (may && may() == 0) {
+                if (!loggedHold) {
+                    LoaderLog("INF", "ReloadWatcher: holding reload - engine says not safe yet (in-world); "
+                        "will retry every %d ms until logout / character select.", MAY_RELOAD_POLL_MS);
+                    loggedHold = 1;
+                }
+                Sleep(MAY_RELOAD_POLL_MS);
+                // Cap / address space can change while we wait; refuse rather than tear down late.
+                reloadsDone = g_initCount - 1;
+                cap = CurrentReloadCap();
+                if (ReloadCapReached(reloadsDone, cap)) {
+                    LoaderLog("WRN", "ReloadWatcher: reload REFUSED while holding for the world - hot reload "
+                        "cap reached (%d of %d). Staying on gen %d.", reloadsDone, cap, g_initCount);
+                    engine_capped_fn capped = (engine_capped_fn)EngineExport(ENGINE_CAPPED_EXPORT);
+                    if (capped) capped(reloadsDone, cap);
+                    InterlockedExchange(&g_reloadInFlight, 0);
+                    goto next_signal;
+                }
+                freeMb = LoaderFreeAddressSpaceMb(&largestMb);
+                shortOf = ReloadSpaceShort(g_engineIsManaged, freeMb, largestMb);
+                if (shortOf) {
+                    LoaderLog("WRN", "ReloadWatcher: reload REFUSED while holding for the world - address space "
+                        "short (free %ld MB, largest %ld MB).", freeMb, largestMb);
+                    engine_refused_fn refused = (engine_refused_fn)EngineExport(ENGINE_REFUSED_EXPORT);
+                    if (refused) refused((int)(shortOf == 1 ? freeMb : largestMb));
+                    InterlockedExchange(&g_reloadInFlight, 0);
+                    goto next_signal;
+                }
+            }
+            if (loggedHold)
+                LoaderLog("INF", "ReloadWatcher: engine says reload is safe now; proceeding.");
+        }
+
         Reload();
         g_lastReloadDone = GetTickCount64();
         InterlockedExchange(&g_reloadInFlight, 0);
 
-        int drained = 0;
-        while (WaitForSingleObject(g_reloadEvent, 0) == WAIT_OBJECT_0) drained++;
-        if (drained) LoaderLog("INF", "ReloadWatcher: drained %d signal(s) received during the reload.", drained);
+        {
+            int drained = 0;
+            while (WaitForSingleObject(g_reloadEvent, 0) == WAIT_OBJECT_0) drained++;
+            if (drained) LoaderLog("INF", "ReloadWatcher: drained %d signal(s) received during the reload.", drained);
+        }
+    next_signal:
+        ;
     }
 }
 

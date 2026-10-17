@@ -17,7 +17,7 @@
 //  Credit: OpenAC (Tom's project) for the layout and sprite research.
 //
 //    title     retail title bar "Inventory of <name>", Remote / Sort / Count /
-//              GInv (+ Vault on Aelrynth), tool toggles, close
+//              GInv / Vault / size / tools / Modern toggles, close
 //    tools     search, sort, category chips (toggle, the funnel in the title)
 //    paperdoll the 24 equip slots at their retail places (the 3D figure isn't
 //              drawn, so the retail "Slots" view is always on)

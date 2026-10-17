@@ -49,6 +49,8 @@ internal static class EngineSettings
     private static bool _loadAllServerPlugins;
     // Read-only, like EnableLargeAddressAlignmentFix: only a hand-set value is written back.
     private static int _maxHotReloads = ReloadCapNotice.DefaultMaxHotReloads;
+    // Automatic FileWatcher hot reload while logged into the world (default off since 2026-10-16).
+    private static bool _allowInWorldAutoHotReload;
     // "IltServerNames" / "IltHosts": what counts as Infinite Leaftide (Compatibility/IltInfo.cs).
     // null = not in the file: IltDetect's defaults.
     private static List<string>? _iltServerNames;
@@ -473,6 +475,19 @@ internal static class EngineSettings
         }
     }
 
+    /// <summary>"AllowInWorldAutoHotReload" in engine.json (default false since 2026-10-16): when
+    /// false, every engine reload (FileWatcher and ERl / /rc rl) waits until the player leaves
+    /// the world (logout / character select). Mid-session CoreCLR re-init still AVs. True
+    /// restores the old mid-session reload behaviour (risky). Edited in the file.</summary>
+    public static bool AllowInWorldAutoHotReload
+    {
+        get
+        {
+            EnsureLoaded();
+            return _allowInWorldAutoHotReload;
+        }
+    }
+
     /// <summary>"ReportEndpoint" in engine.json: a test URL for "Report a problem" instead of the
     /// built-in https://aelrynth.com/rynth/report (ProblemReportCore.ResolveEndpoint accepts https,
     /// or http to this PC; anything else is ignored). Null when the file has none. Edited in the file.</summary>
@@ -718,6 +733,10 @@ internal static class EngineSettings
                 mhrEl.TryGetInt32(out int mhr))
                 _maxHotReloads = mhr;
 
+            if (doc.RootElement.TryGetProperty("AllowInWorldAutoHotReload", out var aiwEl) &&
+                (aiwEl.ValueKind == JsonValueKind.True || aiwEl.ValueKind == JsonValueKind.False))
+                _allowInWorldAutoHotReload = aiwEl.GetBoolean();
+
             if (doc.RootElement.TryGetProperty("ReportEndpoint", out var repEl) &&
                 repEl.ValueKind == JsonValueKind.String &&
                 repEl.GetString() is { Length: > 0 } rep)
@@ -796,7 +815,7 @@ internal static class EngineSettings
         "DecalInGameImGui", "DecalStandDown", "DisabledUiHooks", "ServerMessageStream",
         "FlightRecorder", "InsertReleasesUi", "BorderlessWindowed", "RememberWindowLayout",
         "IltServerNames", "IltHosts", "EnableLargeAddressAlignmentFix",
-        "MaxHotReloads", "ReportEndpoint", "CloseOnServerDisconnect", "AutoIdMode", "EnablePluginOverlayWindows", "LoggingLevel",
+        "MaxHotReloads", "AllowInWorldAutoHotReload", "ReportEndpoint", "CloseOnServerDisconnect", "AutoIdMode", "EnablePluginOverlayWindows", "LoggingLevel",
         "LoadAllServerPlugins",
     };
 
@@ -859,6 +878,8 @@ internal static class EngineSettings
                     w.WriteBoolean("LoadAllServerPlugins", true);
                 if (_maxHotReloads != ReloadCapNotice.DefaultMaxHotReloads)   // only a hand-set value is written
                     w.WriteNumber("MaxHotReloads", _maxHotReloads);
+                if (_allowInWorldAutoHotReload) // default false: only a hand-set true is written
+                    w.WriteBoolean("AllowInWorldAutoHotReload", true);
                 if (_reportEndpoint != null)   // only a hand-set value is written
                     w.WriteString("ReportEndpoint", _reportEndpoint);
                 WriteStringList(w, "IltServerNames", _iltServerNames);   // null (not in the file): left out

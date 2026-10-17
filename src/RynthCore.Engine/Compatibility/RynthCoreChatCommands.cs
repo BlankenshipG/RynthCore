@@ -527,8 +527,8 @@ internal static class RynthCoreChatCommands
                 // loader's reload shuts this engine down, and this handler runs
                 // inside AC's outgoing-chat hook.
                 RynthLog.Compat("RynthCoreChatCommands: /rc rl — engine reload requested.");
-                EntryPoint.NoteManualReload();   // by hand: not held for combat (EntryPoint.DeferReloadWhilePluginsObject)
-                System.Threading.ThreadPool.UnsafeQueueUserWorkItem(static _ => EngineLifecycle.SignalReload(), null);
+                // In-world: loader holds until logout; skips combat deferral once out of world.
+                System.Threading.ThreadPool.UnsafeQueueUserWorkItem(static _ => EntryPoint.RequestManualReload("/rc rl"), null);
                 return true;
 
             case "inv":

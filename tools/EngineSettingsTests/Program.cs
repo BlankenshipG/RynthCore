@@ -99,6 +99,7 @@ namespace EngineSettingsTests
                         Console.WriteLine("ImGuiBackend=" + EngineSettings.EnableImGuiBackend);
                         Console.WriteLine("ServerMessageStream=" + EngineSettings.ServerMessageStream);
                         Console.WriteLine("MaxHotReloads=" + EngineSettings.MaxHotReloads);
+                        Console.WriteLine("AllowInWorldAutoHotReload=" + EngineSettings.AllowInWorldAutoHotReload);
                         Console.WriteLine("CloseOnServerDisconnect=" + EngineSettings.CloseOnServerDisconnect);
                         Console.WriteLine("IltServerNames=" + (EngineSettings.IltServerNames is { } n ? string.Join("|", n) : "(none)"));
                         break;

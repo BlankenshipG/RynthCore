@@ -606,17 +606,28 @@ internal sealed partial class SkillsFace
             Label(e.Header, Text);
             Label(e.Next, Teal);
 
+            // Plan-to-target: calculator uses character AvailableLuminance + pack mats.
             int target = e.Target;
             ImGuiNET.ImGui.SetNextItemWidth(100);
-            if (ImGuiNET.ImGui.InputInt("Plan to level##prog_enlt", ref target))
+            if (ImGuiNET.ImGui.InputInt("Plan to enl##prog_enlt", ref target))
                 SendProg("enltarget " + Math.Max(e.Level + 1, target).ToString(CultureInfo.InvariantCulture));
-            foreach (string line in e.Plan) SafeImGui.BulletText(line);
+            ImGuiNET.ImGui.SetItemTooltip("Target enlightenment level. The calculator below shows each step and what you still need.");
+
+            if (e.Plan.Length > 0)
+            {
+                Label("Totals to plan:", Dim);
+                foreach (string line in e.Plan) SafeImGui.BulletText(line);
+            }
+
+            DrawEnlCalculator(e, w);
 
             int coinsPerToken = e.CoinsPerToken;
             ImGuiNET.ImGui.SetNextItemWidth(100);
             if (ImGuiNET.ImGui.InputInt("Coins per token (shop price)##prog_cpt", ref coinsPerToken))
                 SendProg("coinspertoken " + Math.Max(0, coinsPerToken).ToString(CultureInfo.InvariantCulture));
             if (e.TokensShort.Length > 0) Label(e.TokensShort, Dim);
+            if (e.Ecoins.Length > 0) Label(e.Ecoins, Text);
+            if (e.EcoinsLum.Length > 0) Label(e.EcoinsLum, Dim);
 
             ImGuiNET.ImGui.Separator();
             if (e.Blockers.Length == 0) Label("Client-side checks pass.", Green);
@@ -663,6 +674,93 @@ internal sealed partial class SkillsFace
         {
             ImGuiNET.ImGui.PopTextWrapPos();
             ImGuiNET.ImGui.Unindent(8);
+        }
+    }
+
+    /// <summary>
+    /// Per-level cost table (green while simulated stock covers the step), material still-need /
+    /// have, and the 301–325 sigil craft chain. Data from RynthILT AppendEnlCalculatorJson.
+    /// </summary>
+    private void DrawEnlCalculator(EnlPlanner e, float w)
+    {
+        if (e.Levels.Length == 0 && e.Materials.Length == 0) return;
+
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+        if (!ImGuiNET.ImGui.CollapsingHeader("Enl calculator##prog_enl_calc", ImGuiTreeNodeFlags.DefaultOpen))
+            return;
+
+        if (e.Levels.Length > 0
+            && ImGuiNET.ImGui.BeginTable("##enl_levels", 4,
+                ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp,
+                new Vector2(w - 16, 0)))
+        {
+            ImGuiNET.ImGui.TableSetupColumn("Enl", ImGuiTableColumnFlags.WidthFixed, 44);
+            ImGuiNET.ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthFixed, 90);
+            ImGuiNET.ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.WidthFixed, 40);
+            ImGuiNET.ImGui.TableSetupColumn("Lum");
+            ImGuiNET.ImGui.TableHeadersRow();
+            foreach (EnlLevelRow row in e.Levels)
+            {
+                uint c = row.Ok ? Green : Amber;
+                ImGuiNET.ImGui.TableNextRow();
+                ImGuiNET.ImGui.TableNextColumn(); Label(row.Level.ToString(CultureInfo.InvariantCulture), c);
+                ImGuiNET.ImGui.TableNextColumn(); Label(row.Item, c);
+                ImGuiNET.ImGui.TableNextColumn(); Label(row.Count > 0 ? row.Count.ToString(CultureInfo.InvariantCulture) : "-", c);
+                ImGuiNET.ImGui.TableNextColumn(); Label(row.Lum, c);
+            }
+            ImGuiNET.ImGui.EndTable();
+            Label("Green = pack + character lum still cover that step (simulated in order).", Dim);
+        }
+
+        if (e.Materials.Length > 0)
+        {
+            ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+            Label("Still need / have", Text);
+            if (ImGuiNET.ImGui.BeginTable("##enl_mats", 3,
+                ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp,
+                new Vector2(w - 16, 0)))
+            {
+                ImGuiNET.ImGui.TableSetupColumn("Material");
+                ImGuiNET.ImGui.TableSetupColumn("Still need", ImGuiTableColumnFlags.WidthFixed, 90);
+                ImGuiNET.ImGui.TableSetupColumn("Have", ImGuiTableColumnFlags.WidthFixed, 90);
+                ImGuiNET.ImGui.TableHeadersRow();
+                foreach (EnlMaterialRow m in e.Materials)
+                {
+                    uint c = m.Ok ? Green : Amber;
+                    ImGuiNET.ImGui.TableNextRow();
+                    ImGuiNET.ImGui.TableNextColumn(); Label(m.Label, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(m.Need, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(m.Have, c);
+                }
+                ImGuiNET.ImGui.EndTable();
+            }
+        }
+
+        if (e.Chain.Length > 0)
+        {
+            ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+            Label("Sigil craft chain (301–325)", Text);
+            if (e.ChainNote.Length > 0) Label(e.ChainNote, Dim);
+            if (ImGuiNET.ImGui.BeginTable("##enl_chain", 4,
+                ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp,
+                new Vector2(w - 16, 0)))
+            {
+                ImGuiNET.ImGui.TableSetupColumn("Item");
+                ImGuiNET.ImGui.TableSetupColumn("Need", ImGuiTableColumnFlags.WidthFixed, 70);
+                ImGuiNET.ImGui.TableSetupColumn("Have", ImGuiTableColumnFlags.WidthFixed, 70);
+                ImGuiNET.ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 56);
+                ImGuiNET.ImGui.TableHeadersRow();
+                foreach (EnlChainRow r in e.Chain)
+                {
+                    uint c = r.Ok ? Green : Amber;
+                    ImGuiNET.ImGui.TableNextRow();
+                    ImGuiNET.ImGui.TableNextColumn(); Label(r.Label, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(r.Need.ToString("N0", CultureInfo.InvariantCulture), c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(r.Have.ToString("N0", CultureInfo.InvariantCulture), c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(r.Craft ? "craft" : "", Dim);
+                }
+                ImGuiNET.ImGui.EndTable();
+            }
         }
     }
 

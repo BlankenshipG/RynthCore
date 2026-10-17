@@ -391,10 +391,9 @@ internal static class HotkeyService
             case "patrol": UI.Data.RynthAiCommands.SendNavCommand("{\"Cmd\":\"dunPatrol\"}", refreshPatrol: true); break;
             case "autosort": UI.Data.RynthSortCommands.ToggleAuto(); break;
             case "reload":
-                // As /rc rl and the bar's RL: signalled from a pool thread (the reload shuts this engine down).
+                // As /rc rl and the bar's RL: in-world holds until logout (mid-session CoreCLR re-init AVs).
                 RynthLog.Compat("Hotkeys: engine reload requested.");
-                EntryPoint.NoteManualReload();
-                ThreadPool.UnsafeQueueUserWorkItem(static _ => EngineLifecycle.SignalReload(), null);
+                ThreadPool.UnsafeQueueUserWorkItem(static _ => EntryPoint.RequestManualReload("hotkey reload"), null);
                 break;
             default:
                 Reply($"Hotkey {b.Combo}: '{a.Name}' isn't wired up in this engine.");

@@ -1447,8 +1447,8 @@ internal class RynthOverlayWindow : Window
             Foreground = Brushes.Khaki,
             Margin = new Thickness(8, 0, 0, 0),
         });
-        ToolTip.SetTip(reloadBtn, "Engine reload — shut down, FreeLibrary, reload from disk, re-init.");
-        reloadBtn.Click += (_, _) => EngineLifecycle.SignalReload();
+        ToolTip.SetTip(reloadBtn, "Engine reload. While in-world it waits until logout / character select.");
+        reloadBtn.Click += (_, _) => EntryPoint.RequestManualReload("Avalonia RL");
         stack.Children.Add(reloadBtn);
         // Register under a special key so RefreshHitTestSnapshot publishes
         // its rect to Win32Backend — without this, clicks over RL fall

@@ -37,6 +37,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Numerics;
+using System.Threading;
 using ImGuiNET;
 using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.ImGuiBackend.Hud;
@@ -62,13 +63,22 @@ internal sealed partial class SkillsFace : IImGuiPanel
 
     /// <summary>
     /// Draws the Skills / Attributes / Progress body into the current ImGui window
-    /// (Oracle embed). No outer panel chrome — Oracle owns the tab strip.
+    /// (Oracle embed). No outer panel chrome or Skills tab bar — Oracle owns those.
     /// </summary>
     public static void DrawEmbedded(int tab)
     {
         _embed ??= new SkillsFace();
         _embed.DrawHosted(tab);
     }
+
+    /// <summary>Selects Skills (0), Attributes (1) or Progress (2) on the next standalone Draw.</summary>
+    public static void RequestTab(int tab)
+    {
+        tab = tab < 0 ? 0 : tab > 2 ? 2 : tab;
+        Volatile.Write(ref _requestedTab, tab);
+    }
+
+    private static int _requestedTab = -1;
 
     // ── Palette (FaceKit's, plus the vitals') ────────────────────────────
     private static readonly uint Mana = RynthTheme.Argb(0xFF4DA6FF), Dim = RynthTheme.Argb(0xFF7F8FA0),
@@ -214,6 +224,10 @@ internal sealed partial class SkillsFace : IImGuiPanel
 
     public void Draw()
     {
+        // Standalone Skills window is retired under Oracle; keep Draw for hotkeys/compat
+        // that still open the panel, but prefer Oracle embed when active.
+        int req = Interlocked.Exchange(ref _requestedTab, -1);
+        if (req >= 0) _tab = req;
         PlayerProgressHooks.Want();
         Refresh();
         ApplyProgressionRequest();
@@ -229,10 +243,11 @@ internal sealed partial class SkillsFace : IImGuiPanel
         DrawProgressionConfirm();
     }
 
-    /// <summary>Oracle-hosted body (same content as the standalone panel tabs).</summary>
+    /// <summary>Oracle-hosted body (same content as the old Skills panel tabs).</summary>
     private void DrawHosted(int tab)
     {
         _tab = tab < 0 ? 0 : tab > 2 ? 2 : tab;
+        // First embed frame (and after a long gap) warms the same hooks as OnShown.
         long now = Environment.TickCount64;
         if (now - _embedShownMs > 2000)
         {
