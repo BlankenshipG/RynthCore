@@ -62,6 +62,12 @@ Name: "custom"; Description: "Custom"; Flags: iscustom
 Name: "core";          Description: "RynthCore launcher, engine and Loot Editor"; Types: full core custom; Flags: fixed
 Name: "rynthai";       Description: "RynthSuite: RynthAi plugin (installed and registered with the launcher)"; Types: full
 Name: "monstereditor"; Description: "RynthSuite: Monster Editor"; Types: full
+; RynthSuite companion plugins: on in a Full install, each registered with the launcher like RynthAi.
+Name: "suite";                 Description: "RynthSuite: Companion plugins"; Types: full
+Name: "suite\rynthoracle";     Description: "RynthOracle - quests, quest timers, markers, character, fellowship"; Types: full
+Name: "suite\rynthilt";        Description: "RynthILT - Infinite Leaftide features (hub, progression, banking, bounties)"; Types: full
+Name: "suite\rynthinventory";  Description: "RynthInventory - inventory, item counts and global manage"; Types: full
+Name: "suite\rynthsort";       Description: "RynthSort - inventory sorting"; Types: full
 ; Experimental plugins: unchecked by default in every install type (ticking one switches to Custom).
 Name: "experimental";              Description: "RynthSuite: Experimental plugins (work in progress)"
 Name: "experimental\rynthchat";    Description: "RynthChat - replacement chat window (classifies and owns game chat)"
@@ -108,6 +114,12 @@ Source: "staging\core\*"; DestDir: "{app}"; Components: core; Flags: ignoreversi
 Source: "staging\suite\RynthAi\RynthCore.Plugin.RynthAi.dll"; DestDir: "{code:GetSuiteDir}\RynthAi"; Components: rynthai; Flags: ignoreversion overwritereadonly
 ; Monster Editor: RynthAi's dashboard launches it from <RynthAi>\MonsterEditor\.
 Source: "staging\suite\RynthAi\MonsterEditor\*"; DestDir: "{code:GetSuiteDir}\RynthAi\MonsterEditor"; Components: monstereditor; Flags: ignoreversion recursesubdirs createallsubdirs overwritereadonly
+
+; Companion plugins: each in its own <RynthSuite>\<Name>\ folder, like the experimental ones below.
+Source: "staging\suite\RynthOracle\RynthCore.Plugin.RynthOracle.dll";       DestDir: "{code:GetSuiteDir}\RynthOracle";    Components: suite\rynthoracle;    Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthILT\RynthCore.Plugin.RynthILT.dll";             DestDir: "{code:GetSuiteDir}\RynthILT";       Components: suite\rynthilt;       Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthInventory\RynthCore.Plugin.RynthInventory.dll"; DestDir: "{code:GetSuiteDir}\RynthInventory"; Components: suite\rynthinventory; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthSort\RynthCore.Plugin.RynthSort.dll";           DestDir: "{code:GetSuiteDir}\RynthSort";      Components: suite\rynthsort;      Flags: ignoreversion overwritereadonly
 
 ; Experimental plugins: each in its own <RynthSuite>\<Name>\ folder (the layout the launcher already uses).
 Source: "staging\suite\RynthChat\RynthCore.Plugin.RynthChat.dll";       DestDir: "{code:GetSuiteDir}\RynthChat";    Components: experimental\rynthchat;    Flags: ignoreversion overwritereadonly
@@ -293,12 +305,37 @@ begin
   Result := WizardIsComponentSelected('experimental\' + Lowercase(ExperimentalPluginName(Index)));
 end;
 
+// Number of entries in SuitePluginName; keep in sync with the [Components]/[Files] suite rows.
+const
+  SuitePluginCount = 4;
+
+// Companion plugin names; component "suite\<lowercase name>" installs <Suite>\<Name>\RynthCore.Plugin.<Name>.dll.
+function SuitePluginName(Index: Integer): string;
+begin
+  case Index of
+    0: Result := 'RynthOracle';
+    1: Result := 'RynthILT';
+    2: Result := 'RynthInventory';
+    3: Result := 'RynthSort';
+  else
+    Result := '';
+  end;
+end;
+
+function SuitePluginSelected(Index: Integer): Boolean;
+begin
+  Result := WizardIsComponentSelected('suite\' + Lowercase(SuitePluginName(Index)));
+end;
+
 { True when anything is going into the RynthSuite folder (controls the Suite folder page / memo line). }
 function AnySuiteComponentSelected: Boolean;
 var
   I: Integer;
 begin
   Result := WizardIsComponentSelected('rynthai') or WizardIsComponentSelected('monstereditor');
+  for I := 0 to SuitePluginCount - 1 do
+    if SuitePluginSelected(I) then
+      Result := True;
   for I := 0 to ExperimentalCount - 1 do
     if ExperimentalSelected(I) then
       Result := True;
@@ -313,6 +350,14 @@ begin
   Result := '';
   if WizardIsComponentSelected('rynthai') then
     Result := GetSuiteDir('') + '\RynthAi\RynthCore.Plugin.RynthAi.dll';
+  for I := 0 to SuitePluginCount - 1 do
+    if SuitePluginSelected(I) then
+    begin
+      Name := SuitePluginName(I);
+      if Result <> '' then
+        Result := Result + ';';
+      Result := Result + GetSuiteDir('') + '\' + Name + '\RynthCore.Plugin.' + Name + '.dll';
+    end;
   for I := 0 to ExperimentalCount - 1 do
     if ExperimentalSelected(I) then
     begin
@@ -445,7 +490,7 @@ begin
   SuiteDirPage := CreateInputDirPage(wpSelectComponents,
     'Select RynthSuite Location',
     'Where should the RynthSuite plugins and their data be installed?',
-    'RynthAi, the Monster Editor and any experimental plugins you picked will be installed into the RynthSuite folder below, and your ' +
+    'RynthAi, the Monster Editor, the companion plugins and any experimental plugins you picked will be installed into the RynthSuite folder below, and your ' +
     'profiles (nav, loot, meta, settings) are kept there. To continue, click Next. ' +
     'If you would like to select a different folder, click Browse.',
     False, 'RynthSuite');
