@@ -158,7 +158,7 @@ internal static class AcWindowChrome
                 // skips while borderless), else where the framed window is now.
                 if (_savedRect is null)
                 {
-                    if (launch && file.Framed is RECT ff && IsRectOnAnyMonitor(ff))
+                    if (launch && file.Framed is RECT ff && IsRectOnAnyMonitor(ff) && !SavedClientIsLoginSize(hwnd, ff))
                         _savedRect = FitToWorkArea(ff);
                     else if (!missingChrome && GetWindowRect(hwnd, out RECT framed))
                         _savedRect = framed;
@@ -272,7 +272,7 @@ internal static class AcWindowChrome
     {
         IntPtr hwnd = ResolveGameHwnd();
         if (hwnd == IntPtr.Zero) return "The game window isn't known yet.";
-        if (!SavePlacement(hwnd, force: true)) return "Nothing saved (exclusive fullscreen, or the window is too small).";
+        if (!SavePlacement(hwnd, force: true)) return "Nothing saved (not in the world, exclusive fullscreen, or the window is too small).";
         bool borderless = (GetWindowLong(hwnd, GwlStyle) & WsCaption) == 0;
         return borderless ? "Borderless window position saved." : "Window position saved.";
     }
@@ -281,7 +281,7 @@ internal static class AcWindowChrome
     /// window's) or kept size (the saved rect at launch, else the framed window's game area).</summary>
     private static RECT ChooseBorderlessTarget(IntPtr hwnd, bool missingChrome, RECT? savedBorderless)
     {
-        bool useSaved = savedBorderless is RECT sb && IsRectOnAnyMonitor(sb);
+        bool useSaved = savedBorderless is RECT sb && IsRectOnAnyMonitor(sb) && !IsLoginScreenSize(Width(sb), Height(sb));
         if (EngineSettings.BorderlessFillMonitor)
         {
             if (useSaved && TryMonitorRectAt(savedBorderless!.Value, out RECT savedMon)) return savedMon;
@@ -380,12 +380,16 @@ internal static class AcWindowChrome
     {
         if (hwnd == IntPtr.Zero) return false;
         if (!force && !EngineSettings.RememberWindowLayout) return false;
+        // Only the world's window is the player's placement: at the login and character-select
+        // screens AC shrinks its window to 800x600, and saving that made every client start small.
+        if (Compatibility.UiFlowHooks.CurrentMode != Compatibility.UiFlowHooks.ModeGamePlay) return false;
         int style = GetWindowLong(hwnd, GwlStyle);
         bool framed = (style & WsCaption) != 0;
         // Frame-less and not made by us: exclusive fullscreen (or not ours to remember).
         if (!framed && !_borderlessApplied) return false;
         if (!GetWindowRect(hwnd, out RECT rc)) return false;
         if (Width(rc) < 160 || Height(rc) < 120) return false;
+        if (GetClientRect(hwnd, out RECT client) && IsLoginScreenSize(Width(client), Height(client))) return false;
 
         Placement p = ReadPlacementFile();
         if (framed) p.Framed = rc;
@@ -437,6 +441,14 @@ internal static class AcWindowChrome
         if (IsLikelyExclusiveFullscreen(hwnd, GetWindowLong(hwnd, GwlStyle))) return;
 
         if (ReadPlacementFile().Framed is not RECT r) return;
+        // A rect saved at the character-select screen (800x600 game area, before 2026.10.17.8)
+        // isn't the player's window: restoring it shrank the world window.
+        if (SavedClientIsLoginSize(hwnd, r))
+        {
+            RynthLog.UI(FormattableString.Invariant(
+                $"AcWindowChrome: ignoring saved placement {Width(r)}x{Height(r)} (AC's 800x600 login-screen size); leaving AC's own size."));
+            return;
+        }
         // Keep the restored rect on a visible monitor so a missing display does not
         // park the client off-screen.
         if (!IsRectOnAnyMonitor(r))
@@ -453,6 +465,19 @@ internal static class AcWindowChrome
             : FormattableString.Invariant($" (saved {Width(r)}x{Height(r)} at ({r.Left},{r.Top}) didn't fit the screen)");
         RynthLog.UI(FormattableString.Invariant(
             $"AcWindowChrome: restored AC window to ({fitted.Left},{fitted.Top}) {Width(fitted)}x{Height(fitted)}{note}."));
+    }
+
+    /// <summary>AC's login / character-select window: an 800x600 game area.</summary>
+    private static bool IsLoginScreenSize(int clientW, int clientH) => clientW == 800 && clientH == 600;
+
+    /// <summary>True when the saved framed rect <paramref name="saved"/> holds an 800x600 game area
+    /// with this window's frame (the frame size is taken from the window as it is now).</summary>
+    private static bool SavedClientIsLoginSize(IntPtr hwnd, RECT saved)
+    {
+        if (!GetWindowRect(hwnd, out RECT wr) || !GetClientRect(hwnd, out RECT cr)) return false;
+        if ((GetWindowLong(hwnd, GwlStyle) & WsCaption) == 0) return false;
+        int frameW = Width(wr) - Width(cr), frameH = Height(wr) - Height(cr);
+        return IsLoginScreenSize(Width(saved) - frameW, Height(saved) - frameH);
     }
 
     /// <summary><paramref name="r"/> moved, and shrunk if needed, to lie inside the work area of the
