@@ -676,22 +676,22 @@ internal static unsafe class DamageCommands
         MonstersPanel.Rule? from = string.IsNullOrEmpty(copyFrom) ? null
             : rules.Rules.Find(r => !IsDefault(r) && r.Name.Equals(copyFrom, StringComparison.OrdinalIgnoreCase));
         MonstersPanel.Rule clone = CopyOfDefault(from ?? s, name);
-        if (from != null) { clone.OffhandId = from.OffhandId; clone.PetDamage = from.PetDamage; clone.AttackPower = from.AttackPower; clone.Kite = from.Kite; }   // a name rule's own choices, kept
+        if (from != null) { clone.OffhandId = from.OffhandId; clone.PetDamage = from.PetDamage; clone.AttackPower = from.AttackPower; clone.Kite = from.Kite; clone.PreferredDamage = from.PreferredDamage; }   // a name rule's own choices, kept
         rules.Rules.Insert(defIdx >= 0 ? defIdx + 1 : 0, clone);
         return clone;
     }
 
     /// <summary>
-    /// A new rule named <paramref name="name"/> with Default's settings. Off hand, pet and attack
-    /// power are left on "follow Default" (0 / PAuto / Default) rather than copied, so a later
-    /// change on the DEFAULT line still reaches it.
+    /// A new rule named <paramref name="name"/> with Default's settings. Off hand, pet, attack
+    /// power, kite and preferred damage are left on "follow Default" (0 / PAuto / Default /
+    /// Default / Auto) rather than copied, so a later change on the DEFAULT line still reaches it.
     /// </summary>
     private static MonstersPanel.Rule CopyOfDefault(MonstersPanel.Rule s, string name) => new()
     {
         Name = name, Category = s.Category,
         MatchExpression = "",   // an exact-name rule matches by name, not by a (possibly false) expression
         Priority = s.Priority, DamageType = s.DamageType, WeaponId = s.WeaponId, OffhandId = 0,
-        ExVuln = s.ExVuln, PetDamage = "PAuto", AttackPower = "Default", Kite = "Default",
+        ExVuln = s.ExVuln, PetDamage = "PAuto", AttackPower = "Default", Kite = "Default", PreferredDamage = "Auto",
         Fester = s.Fester, Broadside = s.Broadside, GravityWell = s.GravityWell,
         Imperil = s.Imperil, Yield = s.Yield, Vuln = s.Vuln,
         UseArc = s.UseArc, UseBolt = s.UseBolt, UseRing = s.UseRing, UseStreak = s.UseStreak, UseBlast = s.UseBlast, UseWall = s.UseWall,
@@ -786,6 +786,9 @@ internal static unsafe class DamageCommands
     /// <summary>Rule.DamageType choices (Auto = from the monster's weaknesses).</summary>
     public static readonly string[] DamageTypes =
         { "Auto", "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether" };
+
+    /// <summary>Rule.PreferredDamage choices: the kind of damage to fight with when the character uses more than one.</summary>
+    public static readonly string[] PreferredDamages = { "Auto", "Melee", "Missile", "War Magic", "Void Magic" };
 
     /// <summary>Rule.OffhandId as RynthAi reads it: 0 = follow the DEFAULT line, 1-4 a mode, anything else an item id.</summary>
     public static readonly string[] OffhandModeNames = { "Default", "Auto", "Shield", "Dual wield", "None" };

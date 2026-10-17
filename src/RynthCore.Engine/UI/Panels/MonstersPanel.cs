@@ -107,6 +107,8 @@ internal static class MonstersPanel
         public string MatchExpression { get; set; } = string.Empty;
         public int Priority { get; set; } = 1;
         public string DamageType { get; set; } = "Auto";
+        /// <summary>Auto, Melee, Missile, "War Magic" or "Void Magic": the kind of damage to fight with. Off in rules saved before 2026-10-16.</summary>
+        public string PreferredDamage { get; set; } = "Auto";
         public int WeaponId { get; set; }
         public bool Fester { get; set; }
         public bool Broadside { get; set; }
@@ -1022,7 +1024,7 @@ internal static class MonstersPanel
         {
             var x = a[i]; var y = b[i];
             if (x.Name != y.Name || x.Category != y.Category || x.Priority != y.Priority
-                || x.DamageType != y.DamageType || x.ExVuln != y.ExVuln || x.PetDamage != y.PetDamage
+                || x.DamageType != y.DamageType || x.PreferredDamage != y.PreferredDamage || x.ExVuln != y.ExVuln || x.PetDamage != y.PetDamage
                 || (x.AttackPower ?? "") != (y.AttackPower ?? "")
                 || (x.Kite ?? "") != (y.Kite ?? "")
                 || x.WeaponId != y.WeaponId || x.OffhandId != y.OffhandId

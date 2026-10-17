@@ -67,27 +67,45 @@ internal sealed class ItemsFace : IImGuiPanel
         else
         {
             TableHeader("Element", bw);
-            for (int i = 0; i < _data.Weapons.Count; i++)
+            // Grouped by kind (the order only matters inside a group); with a single group the
+            // sub-headings would say nothing, so they are left out.
+            var groups = new List<(string Name, List<int> Idx)>();
+            foreach (string kind in KindOrder)
             {
-                ItemsPanel.WeaponEntry wpn = _data.Weapons[i];
-                ImGuiNET.ImGui.PushID("w" + i);
-                int r = Row(wpn.Name, wpn.Element, i, bw, _data.MissingIds.Contains(wpn.Id), DamageTypeColors.For(wpn.Element, Text));
-                ImGuiNET.ImGui.PopID();
-                if (r == 1)
+                var idx = new List<int>();
+                for (int i = 0; i < _data.Weapons.Count; i++)
+                    if (KindGroup(_data.Weapons[i].Kind) == kind) idx.Add(i);
+                if (idx.Count > 0) groups.Add((kind, idx));
+            }
+            bool removed = false;
+            int shown = 0;
+            foreach (var (groupName, idx) in groups)
+            {
+                if (groups.Count > 1) KindHeading(groupName, idx.Count, bw);
+                foreach (int i in idx)
                 {
-                    Vector2 at = ImGuiNET.ImGui.GetIO().MousePos;
-                    _picker.Open(at, ItemsCommands.Elements, Array.IndexOf(ItemsCommands.Elements, wpn.Element), e =>
+                    ItemsPanel.WeaponEntry wpn = _data.Weapons[i];
+                    ImGuiNET.ImGui.PushID("w" + i);
+                    int r = Row(wpn.Name, wpn.Element, shown++, bw, _data.MissingIds.Contains(wpn.Id), DamageTypeColors.For(wpn.Element, Text));
+                    ImGuiNET.ImGui.PopID();
+                    if (r == 1)
                     {
-                        wpn.Element = ItemsCommands.Elements[e];
+                        Vector2 at = ImGuiNET.ImGui.GetIO().MousePos;
+                        _picker.Open(at, ItemsCommands.Elements, Array.IndexOf(ItemsCommands.Elements, wpn.Element), e =>
+                        {
+                            wpn.Element = ItemsCommands.Elements[e];
+                            Save();
+                        }, 160);
+                    }
+                    else if (r == 2)
+                    {
+                        _data.Weapons.RemoveAt(i);
                         Save();
-                    }, 160);
+                        removed = true;
+                        break;
+                    }
                 }
-                else if (r == 2)
-                {
-                    _data.Weapons.RemoveAt(i);
-                    Save();
-                    break;
-                }
+                if (removed) break;
             }
         }
         AddSelected("##add_weapon", PhosphorIcons.Plus + " Add Selected Weapon", "(select a weapon in inventory first)", ItemsCommands.AddSelectedWeapon);
@@ -187,6 +205,26 @@ internal sealed class ItemsFace : IImGuiPanel
         dl.AddRectFilled(p, p + new Vector2(w, h), Selected);
         dl.AddText(bold, bold.FontSize, p + new Vector2(8, 4), Amber, title);
         ImGuiNET.ImGui.Dummy(new Vector2(w, h));
+    }
+
+    // The weapon groups, in the order shown. "Other" holds items RynthAi doesn't know right now (not carried).
+    private static readonly string[] KindOrder = { "Melee", "Missile", "War Magic", "Void Magic", "Shield", "Ammo", "Other" };
+
+    private static string KindGroup(string kind)
+    {
+        foreach (string k in KindOrder)
+            if (k.Equals(kind, StringComparison.OrdinalIgnoreCase)) return k;
+        return "Other";
+    }
+
+    private static void KindHeading(string title, int count, float w)
+    {
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        ImFontPtr f = ImGuiFonts.Get(UiFont.UiBold11);
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
+        dl.AddRectFilled(p, p + new Vector2(w, 20), PanelBg);
+        dl.AddText(f, f.FontSize, p + new Vector2(8, (20 - f.FontSize) * 0.5f), Teal, title + "  (" + count + ")");
+        ImGuiNET.ImGui.Dummy(new Vector2(w, 20));
     }
 
     private static void TableHeader(string column, float w)

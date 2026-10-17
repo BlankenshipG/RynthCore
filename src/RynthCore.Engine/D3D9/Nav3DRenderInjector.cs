@@ -189,6 +189,9 @@ internal static class Nav3DRenderInjector
 
         _markersRenderedThisFrame = true;
         _inRender = true;
+        // This frame's camera, not the one EndScene captured last frame (see RefreshView).
+        try { GameMatrixCapture.RefreshView(); }
+        catch { }
         try
         {
             // At the UI pass AC has set a full-screen viewport; the markers project

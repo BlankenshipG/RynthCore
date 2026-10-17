@@ -32,6 +32,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using RynthCore.Engine.Compatibility;
@@ -95,13 +96,22 @@ internal static class HotkeyService
             if (Volatile.Read(ref _pendingSaves) > 0) return;   // our own write is on its way; don't read a half-old file
             DateTime w = HotkeyStore.LastWriteUtc();
             if (_loaded && w == _seenWriteUtc) return;
-            HotkeyFile loaded = HotkeyStore.Load();
+            HotkeyFile read = HotkeyStore.Load();
+            // A file that was never offered the default keys (HotkeyDefaults: the one-touch heal keys) gets them
+            // once and is written back, so they show in Settings > Hotkeys and a removed one stays removed.
+            HotkeyFile loaded = HotkeyDefaults.Apply(read);
+            bool seeded = !ReferenceEquals(loaded, read);
             bool first = !_loaded;
             _loaded = true;
             _seenWriteUtc = w;
             Volatile.Write(ref _file, loaded);
             if (first || loaded.Bindings.Count > 0)
                 RynthLog.UI($"Hotkeys: {(first ? "loaded" : "reloaded")} {loaded.Bindings.Count} binding(s) from {HotkeyStore.FilePath} (hotkeys {(loaded.Enabled ? "on" : "off")}).");
+            if (seeded)
+            {
+                RynthLog.UI($"Hotkeys: added the default keys ({string.Join(", ", HotkeyDefaults.All.Select(d => d.Combo + " " + d.Action))}) where free.");
+                Commit(loaded);
+            }
         }
     }
 

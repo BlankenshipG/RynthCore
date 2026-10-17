@@ -177,6 +177,19 @@ internal static unsafe class GameMatrixCapture
         }
     }
 
+    /// <summary>
+    /// Rebuilds the view matrix from AC's camera as it is right now. CaptureFrame runs at
+    /// EndScene, after the frame's 3D scene and AC's UI pass are done, so a draw at the UI pass
+    /// (the Nav3D markers, the world overlays) would otherwise project with the PREVIOUS frame's
+    /// camera: one frame of camera travel off the depth buffer it is tested against, which makes
+    /// unclimbable-slope triangles blink while the player moves. AC's render thread.
+    /// </summary>
+    public static void RefreshView()
+    {
+        if (_hasProj)
+            BuildViewProjFromCamera();
+    }
+
     private static void BuildViewProjFromCamera()
     {
         if (!SmartBoxLocator.TryGetSmartBox(out IntPtr smartBox, out _, out _))
