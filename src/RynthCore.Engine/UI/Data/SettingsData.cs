@@ -694,7 +694,27 @@ internal static class SettingsSchema
                     }
                     catch { /* HWND may not be ready; Tick applies later */ }
                 },
-                "On: hide the Asheron's Call window title bar and borders while staying windowed (no exclusive fullscreen).\nOff (default): normal window chrome. Applies to all your clients; others pick it up when they start."),
+                "On: hide the Asheron's Call window title bar and borders while staying windowed (no exclusive fullscreen).\nOff (default): normal window chrome. Applies to all your clients; others pick it up when they start.\nStuck at a size you can't change? Reset Window Borders below, or /rc window reset in chat."),
+            Bool("Borderless Fills Monitor", _ => Plugins.EngineSettings.BorderlessFillMonitor,
+                (_, v) =>
+                {
+                    Plugins.EngineSettings.BorderlessFillMonitor = v;
+                    try { AcWindowChrome.ApplyFillMonitorChanged(AcWindowChrome.ResolveGameHwndForSettings()); }
+                    catch { /* HWND may not be ready; the next borderless apply uses the setting */ }
+                },
+                "On (default): borderless fills the whole monitor the game is on.\nOff: borderless keeps the game exactly where and how big the framed window had it. To set a custom\nborderless spot: turn Borderless Windowed off, move and size the window, then turn it back on.\nThe borderless position is remembered across launches (with Remember Open Windows and Positions on)."),
+            Button("Reset Window Borders", "Reset", () =>
+                {
+                    try { Compatibility.AcMainThreadQueue.EnqueueWriteToChat("[RynthCore] " + AcWindowChrome.ResetWindow(), 1); }
+                    catch { /* chat may not be ready */ }
+                },
+                "Turn borderless off and put the frame back: a normal, resizable window, centred at three quarters of the\nmonitor. Also replaces the saved window position, so the next launch isn't stuck either. Same as /rc window reset."),
+            Button("Save Window Position", "Save", () =>
+                {
+                    try { Compatibility.AcMainThreadQueue.EnqueueWriteToChat("[RynthCore] " + AcWindowChrome.SaveWindowNow(), 1); }
+                    catch { /* chat may not be ready */ }
+                },
+                "Save where the game window is now, framed or borderless (kept separately), for the next launch.\nIt is also saved every 10 seconds while Remember Open Windows and Positions is on. Same as /rc window save."),
             Spacer(),
             Section("Window and HUD Layout"),
             Bool("Remember Open Windows and Positions", _ => Plugins.EngineSettings.RememberWindowLayout,
