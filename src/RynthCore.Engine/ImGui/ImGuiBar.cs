@@ -502,11 +502,10 @@ internal static class ImGuiBar
         ImGuiNET.ImGui.SameLine(0, 6 * s);
         if (IconButton("##reload", iconFont, PhosphorIcons.ArrowsClockwise, square, RynthTheme.ReloadLabel))
         {
-            // By hand: not held while a plugin objects (combat, looting); the player chose the moment.
-            EntryPoint.NoteManualReload();
-            ThreadPool.UnsafeQueueUserWorkItem(static _ => EngineLifecycle.SignalReload(), null);
+            // In-world: loader holds until logout; skips combat deferral once out of world.
+            ThreadPool.UnsafeQueueUserWorkItem(static _ => EntryPoint.RequestManualReload("RL"), null);
         }
-        ImGuiNET.ImGui.SetItemTooltip("Engine reload (RL) — shut down, FreeLibrary, reload from disk, re-init.");
+        ImGuiNET.ImGui.SetItemTooltip("Engine reload (RL). While in-world it waits until logout / character select.");
 
         // The bar draws only as the ImGui face (ResolveFace), so it pops out as itself.
         ImGuiNET.ImGui.SameLine();

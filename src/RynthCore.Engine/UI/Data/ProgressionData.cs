@@ -171,6 +171,44 @@ internal sealed class EnlPlanner
     [JsonPropertyName("spendFirst")]    public bool SpendFirst { get; set; }
     [JsonPropertyName("checkEvery")]    public int CheckEvery { get; set; }
     [JsonPropertyName("status")]        public string Status { get; set; } = "";
+
+    // Calculator (RynthILT AppendEnlCalculatorJson): per-level rows, materials have/need, sigil chain.
+    [JsonPropertyName("levels")]     public EnlLevelRow[] Levels { get; set; } = Array.Empty<EnlLevelRow>();
+    [JsonPropertyName("materials")]  public EnlMaterialRow[] Materials { get; set; } = Array.Empty<EnlMaterialRow>();
+    [JsonPropertyName("chain")]      public EnlChainRow[] Chain { get; set; } = Array.Empty<EnlChainRow>();
+    [JsonPropertyName("chainNote")]  public string ChainNote { get; set; } = "";
+    [JsonPropertyName("ecoins")]     public string Ecoins { get; set; } = "";
+    [JsonPropertyName("ecoinsLum")]  public string EcoinsLum { get; set; } = "";
+}
+
+/// <summary>One enlightenment step in the plan-to-target calculator.</summary>
+internal sealed class EnlLevelRow
+{
+    [JsonPropertyName("t")]     public int Level { get; set; }
+    [JsonPropertyName("item")]  public string Item { get; set; } = "-";
+    [JsonPropertyName("count")] public int Count { get; set; }
+    [JsonPropertyName("lum")]   public string Lum { get; set; } = "-";
+    /// <summary>True while simulated stock (pack + character lum) still covers this step.</summary>
+    [JsonPropertyName("ok")]    public bool Ok { get; set; }
+}
+
+/// <summary>Still-need vs have for one material (or character luminance).</summary>
+internal sealed class EnlMaterialRow
+{
+    [JsonPropertyName("label")] public string Label { get; set; } = "";
+    [JsonPropertyName("need")]  public string Need { get; set; } = "0";
+    [JsonPropertyName("have")]  public string Have { get; set; } = "0";
+    [JsonPropertyName("ok")]    public bool Ok { get; set; }
+}
+
+/// <summary>One row of the 301–325 sigil craft chain.</summary>
+internal sealed class EnlChainRow
+{
+    [JsonPropertyName("label")] public string Label { get; set; } = "";
+    [JsonPropertyName("need")]  public long Need { get; set; }
+    [JsonPropertyName("have")]  public long Have { get; set; }
+    [JsonPropertyName("ok")]    public bool Ok { get; set; }
+    [JsonPropertyName("craft")] public bool Craft { get; set; }
 }
 
 [JsonSerializable(typeof(ProgressionInfo))]

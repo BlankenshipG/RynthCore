@@ -136,7 +136,7 @@ internal sealed class DcompOverlayWindow : Window
 
         var reloadBtn = MakeButton("RL");
         reloadBtn.Foreground = Brushes.Khaki;
-        reloadBtn.Click += (_, _) => EngineLifecycle.SignalReload();
+        reloadBtn.Click += (_, _) => EntryPoint.RequestManualReload("Dcomp RL");
 
         var barStack = new StackPanel
         {

@@ -369,14 +369,12 @@ internal static class RynthCoreShell
             new System.Threading.Thread(() =>
             {
                 System.Threading.Thread.Sleep(120);
-                // Asked for by hand: the reload deferral (EntryPoint.Shutdown) doesn't hold it.
-                EntryPoint.NoteManualReload();
-                bool ok = EngineLifecycle.SignalReload();
-                RynthLog.Info($"ERl: SignalReload returned {ok}.");
+                // In-world: loader holds until logout (mid-session CoreCLR re-init AVs).
+                EntryPoint.RequestManualReload("ERl");
             })
             { IsBackground = true, Name = "RynthCore.ERl" }.Start();
         }
-        ShowTooltip("Engine reload: shut down, FreeLibrary, reload from disk, re-init. Picks up new engine builds without restarting AC.");
+        ShowTooltip("Engine reload: picks up a new build. While in-world it waits until logout / character select (mid-session hot reload crashes).");
 
         ImGui.End();
         ImGui.PopStyleVar(3);

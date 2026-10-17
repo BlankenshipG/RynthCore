@@ -1103,6 +1103,16 @@ internal sealed partial class RynthAiFace : IImGuiPanel
                 : "RynthOracle Progress (RynthOracle isn't loaded).");
             PanelMenuItem(InventoryFace.Title, "/rc inventory");
             PanelMenuItem(ItemCountFace.Title, "/rc itemcount");
+            // RynthInventory's script window (same as /ginv / Inventory's GInv button).
+            const string ginvKey = "RynthInventory/Main";
+            bool hasGinv = UI.ScriptWindows.ScriptWindowRegistry.Has(ginvKey);
+            if (ImGuiNET.ImGui.MenuItem("Global Inventory", "/ginv",
+                    hasGinv && UI.ScriptWindows.ScriptWindowRegistry.IsOpen(ginvKey), hasGinv))
+                UI.ScriptWindows.ScriptWindowRegistry.PlayerSetVisible(ginvKey,
+                    !UI.ScriptWindows.ScriptWindowRegistry.IsOpen(ginvKey));
+            SafeImGui.SetItemTooltip(hasGinv
+                ? "Every character's saved packs and storage (RynthInventory)."
+                : "Global Inventory (RynthInventory isn't loaded).");
             PanelMenuItem(CharactersFace.Title, "/rc characters");
             // Radar / Sense live under RynthNav (header toggles); keep Char menu linkage.
             PanelMenuItem(RadarFace.Title, "/rc radar");

@@ -136,12 +136,31 @@ public static class EntryPoint
         return 0;
     }
 
+    /// <summary>
+    /// Loader asks before tearing the engine down (loader 2.2+): 1 = reload now, 0 = wait
+    /// (still in the world; poll again). Missing export = old engines, loader proceeds.
+    /// AllowInWorldAutoHotReload returns 1. Manual ERl does not bypass — mid-session CoreCLR
+    /// re-init still AVs (2026-10-16.5). Loader thread; never throws.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthCoreMayHotReload")]
+    public static int MayHotReload()
+    {
+        try
+        {
+            if (EngineSettings.AllowInWorldAutoHotReload) return 1;
+            return IsInWorldForAutoReloadDeferral() ? 0 : 1;
+        }
+        catch { return 1; } // fail open so a gate bug cannot wedge the loader forever
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthCoreShutdown")]
     public static uint Shutdown(IntPtr lpParam)
     {
         // Only the loader's hot reload calls this export (process exit and the engine's own
         // teardowns call EngineLifecycle.Shutdown directly), on its reload thread: wait here,
         // with the game running on this engine, while a plugin says a reload now would hurt.
+        // Also holds automatic reloads while in-world (ReloadInWorldGate) so old loaders that
+        // never call MayHotReload still avoid mid-session CoreCLR re-init crashes.
         try { DeferReloadWhilePluginsObject(); } catch { }
         try
         {
@@ -165,20 +184,72 @@ public static class EntryPoint
     private const long ManualReloadWindowMs = 10_000;
     internal static void NoteManualReload() => Interlocked.Exchange(ref _manualReloadAtMs, Environment.TickCount64);
 
+    /// <summary>True when ERl / /rc rl marked a hand reload within the window (does not clear it).</summary>
+    private static bool IsRecentManualReload()
+    {
+        long manualAt = Volatile.Read(ref _manualReloadAtMs);
+        return manualAt != 0 && Environment.TickCount64 - manualAt < ManualReloadWindowMs;
+    }
+
     /// <summary>
-    /// Reload deferral (2026-10-05, see ReloadDeferral.cs): asks the plugins
-    /// (RynthPluginReloadBlocker) and waits up to ReloadDeferral.DefaultCap while one objects,
-    /// e.g. "engine reload waiting: RynthAi in combat (a monster engaged, ...)". Says so in chat
-    /// once. Never throws; a query that fails counts as "nothing objects".
+    /// In the world after a successful login, and not yet logged out: automatic FileWatcher
+    /// reloads wait. Character select / disconnected / never logged in are safe to reload.
+    /// </summary>
+    private static bool IsInWorldForAutoReloadDeferral()
+    {
+        try
+        {
+            if (!Compatibility.LoginLifecycleHooks.HasObservedLoginComplete) return false;
+            if (Compatibility.LogoutLifecycleHooks.HasObservedLogout) return false;
+            int mode = Compatibility.UiFlowHooks.CurrentMode;
+            // Explicit non-world screens: safe for automatic reload.
+            if (mode == Compatibility.UiFlowHooks.ModeCharacterManagement
+                || mode == Compatibility.UiFlowHooks.ModeDisconnected
+                || mode == Compatibility.UiFlowHooks.ModeIntro
+                || mode == Compatibility.UiFlowHooks.ModeCharGen
+                || mode == Compatibility.UiFlowHooks.ModeCredits
+                || mode == Compatibility.UiFlowHooks.ModeDataPatch
+                || mode == Compatibility.UiFlowHooks.ModeEpilogue)
+                return false;
+            // ModeGamePlay, or ModeNone before the first mode sample after login: hold.
+            return true;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Reload deferral (2026-10-05 / 2026-10-16.5): first holds every reload while in-world
+    /// (ReloadInWorldGate; no force-timeout; ERl does not bypass — CoreCLR re-init still AVs),
+    /// then asks the plugins (RynthPluginReloadBlocker) and waits up to ReloadDeferral.DefaultCap
+    /// while one objects (ERl skips that combat hold once out of the world). Says so in chat once.
+    /// Never throws; a query that fails counts as "nothing objects".
     /// </summary>
     private static void DeferReloadWhilePluginsObject()
     {
         long manualAt = Interlocked.Exchange(ref _manualReloadAtMs, 0);
-        if (manualAt != 0 && Environment.TickCount64 - manualAt < ManualReloadWindowMs)
+        bool byHand = manualAt != 0 && Environment.TickCount64 - manualAt < ManualReloadWindowMs;
+
+        // Wait until out of the world (or AllowInWorldAutoHotReload). Manual ERl used to skip
+        // this and crash mid-session (pid 37684 @ 2026-10-16 10:25 after ERl while held).
+        if (ReloadInWorldGate.ShouldHold(byHand, EngineSettings.AllowInWorldAutoHotReload, IsInWorldForAutoReloadDeferral()))
         {
-            RynthLog.Info("engine reload: asked for by hand (ERl), so it isn't deferred for the plugins.");
+            var world = ReloadInWorldGate.Run(
+                stillHold: () => ReloadInWorldGate.ShouldHold(false, EngineSettings.AllowInWorldAutoHotReload, IsInWorldForAutoReloadDeferral()),
+                log: msg => RynthLog.Info(msg),
+                notify: why => Compatibility.AcMainThreadQueue.EnqueueWriteToChat(
+                    $"[RynthCore] A new RynthCore build is ready. It loads when you leave the world ({why}).", 1),
+                waited: out TimeSpan worldWaited);
+            if (world != ReloadInWorldGate.Outcome.Clear)
+                RynthLog.Info($"engine reload: in-world gate {world} after {worldWaited.TotalSeconds:0.0} s.");
+        }
+
+        // By hand: skip the combat / plugin blocker wait once the world gate has cleared.
+        if (byHand)
+        {
+            RynthLog.Info("engine reload: asked for by hand (ERl); not deferred for the plugins.");
             return;
         }
+
         var deferral = new ReloadDeferral
         {
             Query = PluginManager.QueryReloadBlockers,
@@ -189,6 +260,28 @@ public static class EntryPoint
         ReloadDeferral.Outcome outcome = deferral.Run(out TimeSpan waited);
         if (outcome != ReloadDeferral.Outcome.Clear)
             RynthLog.Info($"engine reload: deferral {outcome} after {waited.TotalSeconds:0.0} s.");
+    }
+
+    /// <summary>
+    /// Player asked for an engine reload (ERl / /rc rl / hotkey). While in-world the loader
+    /// keeps holding; we still signal so it applies on logout, and say so in chat once.
+    /// </summary>
+    internal static void RequestManualReload(string source)
+    {
+        NoteManualReload();
+        if (!EngineSettings.AllowInWorldAutoHotReload && IsInWorldForAutoReloadDeferral())
+        {
+            RynthLog.Info($"{source}: in-world — signaling reload; loader holds until logout / character select.");
+            try
+            {
+                Compatibility.AcMainThreadQueue.EnqueueWriteToChat(
+                    "[RynthCore] Engine reload will apply when you leave the world (logout / character select). Mid-session hot reload crashes the client.", 1);
+            }
+            catch { /* chat must not block the signal */ }
+        }
+        else
+            RynthLog.Info($"{source}: signaling reload.");
+        EngineLifecycle.SignalReload();
     }
 
     private static uint InitializeCore(IntPtr lpParam)
