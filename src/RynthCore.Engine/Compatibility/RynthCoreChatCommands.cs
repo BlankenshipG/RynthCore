@@ -519,6 +519,31 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
+        // /rc window reset : a stuck AC window (borderless too small, off-screen) back to a normal
+        // framed, resizable one, centred; borderless is turned off (UI/AcWindowChrome.cs).
+        if (IsVerb(sub, "window", out string windowArgs))
+        {
+            if (windowArgs.Equals("reset", StringComparison.OrdinalIgnoreCase))
+                Reply(UI.AcWindowChrome.ResetWindow());
+            else
+                Reply("Usage: /rc window reset  (borderless off, a normal resizable window, centred)");
+            return true;
+        }
+        // /rc borderless on|off : the Settings > Display toggle (on fills the monitor).
+        if (IsVerb(sub, "borderless", out string borderlessArgs))
+        {
+            if (borderlessArgs.Equals("on", StringComparison.OrdinalIgnoreCase)
+                || borderlessArgs.Equals("off", StringComparison.OrdinalIgnoreCase))
+            {
+                Plugins.EngineSettings.BorderlessWindowed = borderlessArgs.Equals("on", StringComparison.OrdinalIgnoreCase);
+                UI.AcWindowChrome.ApplyBorderlessDesired(UI.AcWindowChrome.ResolveGameHwndForSettings());
+                Reply("Borderless windowed " + (Plugins.EngineSettings.BorderlessWindowed ? "on (fills the monitor)." : "off."));
+            }
+            else
+                Reply("Usage: /rc borderless on|off  (stuck? /rc window reset)");
+            return true;
+        }
+
         switch (sub.ToLowerInvariant())
         {
             case "rl":
