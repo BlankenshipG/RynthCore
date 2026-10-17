@@ -1900,7 +1900,7 @@ internal partial class MainWindow : Window
     {
         string resolvedPrefsPath = ResolveUserPrefsPath(account, launchContext.ServerName);
         bool needsPrefsSwap = !string.IsNullOrEmpty(resolvedPrefsPath) && File.Exists(resolvedPrefsPath);
-        // Per-character graphics write different values into the one INI: serialize like a swap.
+        // Per-account graphics profiles write different values into the one INI: serialize like a swap.
         bool needsLock = needsPrefsSwap || GraphicsNeedsLaunchLock();
 
         string entryAccountKey = BuildAccountKey(launchContext.AccountName, launchContext.ServerName);
@@ -1917,7 +1917,7 @@ internal partial class MainWindow : Window
         try
         {
             PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath, acPath) : null;
-            // RynthAi's Settings > Graphics over whatever the INI holds now (AC rewrites it on exit).
+            // This account's RynthAi graphics profile over whatever the INI holds now (AC rewrites it on exit).
             ApplyGraphicsForLaunch(acPath, launchContext);
 
             InjectionResult result = await Task.Run(() =>
@@ -1982,7 +1982,7 @@ internal partial class MainWindow : Window
     {
         string resolvedPrefsPath = ResolveUserPrefsPath(account, launchContext.ServerName);
         bool needsPrefsSwap = !string.IsNullOrEmpty(resolvedPrefsPath) && File.Exists(resolvedPrefsPath);
-        // Per-character graphics write different values into the one INI: serialize like a swap.
+        // Per-account graphics profiles write different values into the one INI: serialize like a swap.
         bool needsLock = needsPrefsSwap || GraphicsNeedsLaunchLock();
 
         string entryAccountKey = BuildAccountKey(launchContext.AccountName, launchContext.ServerName);
@@ -1999,7 +1999,7 @@ internal partial class MainWindow : Window
         try
         {
             PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath, acPath) : null;
-            // RynthAi's Settings > Graphics over whatever the INI holds now (AC rewrites it on exit).
+            // This account's RynthAi graphics profile over whatever the INI holds now (AC rewrites it on exit).
             ApplyGraphicsForLaunch(acPath, launchContext);
 
             // enginePath != null: "Decal + RynthCore" - Decal is injected first, then the
@@ -2065,7 +2065,7 @@ internal partial class MainWindow : Window
     {
         string resolvedPrefsPath = ResolveUserPrefsPath(account, launchContext.ServerName);
         bool needsPrefsSwap = !string.IsNullOrEmpty(resolvedPrefsPath) && File.Exists(resolvedPrefsPath);
-        // Per-character graphics write different values into the one INI: serialize like a swap.
+        // Per-account graphics profiles write different values into the one INI: serialize like a swap.
         bool needsLock = needsPrefsSwap || GraphicsNeedsLaunchLock();
 
         LauncherDiag.Info($"LaunchOneNoInject ENTRY account='{launchContext.AccountName}' needsPrefsSwap={needsPrefsSwap} semCount={_userPrefsSwapLock.CurrentCount} sessionPids={_launchedSessionPids.Count} pidInfo={_launchedPidInfo.Count}");
@@ -2080,7 +2080,7 @@ internal partial class MainWindow : Window
         try
         {
             PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath, acPath) : null;
-            // RynthAi's Settings > Graphics over whatever the INI holds now (AC rewrites it on exit).
+            // This account's RynthAi graphics profile over whatever the INI holds now (AC rewrites it on exit).
             ApplyGraphicsForLaunch(acPath, launchContext);
 
             Process? proc = null;
@@ -4602,41 +4602,41 @@ internal partial class MainWindow : Window
     }
 
     /// <summary>
-    /// True when RynthAi's graphics settings (graphics.json) have a per-character resolution or
-    /// window mode: two clients started together would then write different values into the one
-    /// UserPreferences.ini, so the launch takes _userPrefsSwapLock and waits for AC to read it.
+    /// True when any account has a RynthAi graphics profile (graphics.json): accounts started
+    /// together would write different values into the one UserPreferences.ini, so the launch takes
+    /// _userPrefsSwapLock and waits for AC to read it before the next account writes.
     /// </summary>
     private static bool GraphicsNeedsLaunchLock()
     {
         try
         {
-            return RynthCore.Graphics.AcGraphicsConfig.Load(RynthCore.Graphics.AcGraphicsPrefs.ConfigPath).Characters.Count > 0;
+            return RynthCore.Graphics.AcGraphicsProfiles.Load(RynthCore.Graphics.AcGraphicsPrefs.ConfigPath).Accounts.Count > 0;
         }
         catch { return false; }
     }
 
     /// <summary>
-    /// Writes RynthAi's Settings > Graphics (graphics.json) into the UserPreferences.ini files AC reads,
-    /// for this launch's character, just before the client starts (after any per-account prefs swap,
-    /// so RynthAi's values win). Keys left on "AC's choice" are not touched. Never throws.
+    /// Writes the launching account's RynthAi graphics profile (Settings > Graphics, graphics.json) into
+    /// the UserPreferences.ini files AC reads, just before the client starts (after any per-account prefs
+    /// swap, so RynthAi's values win). Keys left on "AC's choice" are not touched; an account with no
+    /// profile changes nothing. Never throws.
     /// </summary>
     private void ApplyGraphicsForLaunch(string acPath, LaunchContextRecord launchContext)
     {
         try
         {
-            var cfg = RynthCore.Graphics.AcGraphicsConfig.Load(RynthCore.Graphics.AcGraphicsPrefs.ConfigPath);
+            var all = RynthCore.Graphics.AcGraphicsProfiles.Load(RynthCore.Graphics.AcGraphicsPrefs.ConfigPath);
+            string accountKey = RynthCore.Graphics.AcGraphicsPrefs.AccountKey(launchContext.ServerName, launchContext.AccountName);
+            RynthCore.Graphics.AcGraphicsConfig cfg = all.For(accountKey);
             if (!cfg.HasAny)
                 return;
-            string charKey = RynthCore.Graphics.AcGraphicsPrefs.CharacterKey(launchContext.ServerName, launchContext.TargetCharacter);
-            Dictionary<string, string> values = cfg.IniValuesFor(charKey);
-            if (values.Count == 0)
-                return;
+            Dictionary<string, string> values = cfg.IniValues();
             foreach (string ini in RynthCore.Graphics.AcGraphicsPrefs.IniPaths(Path.GetDirectoryName(acPath)))
             {
                 List<string> changed = RynthCore.Graphics.AcPrefsIni.Apply(ini, values);
                 if (changed.Count > 0)
-                    AppendActivity($"Graphics settings applied for {launchContext.TargetCharacter}: {string.Join(", ", changed)} ({Path.GetFileName(Path.GetDirectoryName(ini))}).");
-                LauncherDiag.Info($"Graphics: {ini} char='{charKey}' changed=[{string.Join(", ", changed)}]");
+                    AppendActivity($"Graphics profile applied for account {launchContext.AccountName}: {string.Join(", ", changed)} ({Path.GetFileName(Path.GetDirectoryName(ini))}).");
+                LauncherDiag.Info($"Graphics: {ini} account='{accountKey}' changed=[{string.Join(", ", changed)}]");
             }
         }
         catch (Exception ex)

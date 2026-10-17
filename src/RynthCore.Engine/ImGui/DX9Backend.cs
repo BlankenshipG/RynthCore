@@ -449,6 +449,55 @@ internal static unsafe class DX9Backend
         return creationParameters.hFocusWindow;
     }
 
+    // IDirect3DSurface9::GetDesc (IUnknown 3 + IDirect3DResource9 8 + GetContainer = slot 12).
+    private const int SurfaceGetDescSlot = 12;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct D3DSURFACE_DESC
+    {
+        public int Format, Type;
+        public uint Usage;
+        public int Pool, MultiSampleType;
+        public uint MultiSampleQuality, Width, Height;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int SurfaceGetDescD(IntPtr surface, D3DSURFACE_DESC* desc);
+
+    /// <summary>The size AC's back buffer is (what it really draws at), or false. AC's main thread
+    /// (EndScene). Used by the window code so the window follows AC's own resolution.</summary>
+    public static bool TryGetBackBufferSize(IntPtr pDevice, out int width, out int height)
+    {
+        width = height = 0;
+        if (pDevice == IntPtr.Zero) return false;
+        IntPtr backBuffer = IntPtr.Zero;
+        try
+        {
+            if (_getBackBuffer == null)
+            {
+                IntPtr vtable = Marshal.ReadIntPtr(pDevice);
+                _getBackBuffer = Get<GetBackBufferD>(vtable, DeviceVTableIndex.GetBackBuffer);
+            }
+            if (_getBackBuffer(pDevice, 0, 0, D3DBACKBUFFER_TYPE_MONO, out backBuffer) < 0 || backBuffer == IntPtr.Zero)
+                return false;
+            var getDesc = Get<SurfaceGetDescD>(Marshal.ReadIntPtr(backBuffer), SurfaceGetDescSlot);
+            D3DSURFACE_DESC desc = default;
+            if (getDesc(backBuffer, &desc) < 0) return false;
+            width = (int)desc.Width;
+            height = (int)desc.Height;
+            return width > 0 && height > 0;
+        }
+        catch (Exception ex)
+        {
+            LogOnce(nameof(TryGetBackBufferSize), ex);
+            return false;
+        }
+        finally
+        {
+            ReleaseComObject(backBuffer);
+        }
+    }
+
     public static bool IsRenderingToBackBuffer(IntPtr pDevice)
     {
         if (pDevice == IntPtr.Zero) return true;

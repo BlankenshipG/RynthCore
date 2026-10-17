@@ -674,15 +674,14 @@ internal static class SettingsSchema
     }
 
     // ── Settings > Graphics (Graphics/AcGraphics.cs, Graphics/AcGraphicsPrefs.cs) ─────────────
-    // AC's own graphics options, kept by RynthAi and written to UserPreferences.ini at every launch.
-    // "AC's choice" = not enforced (AC keeps whatever it has). Declared before Tabs: static field
-    // initializers run in order.
+    // AC's own graphics options as a profile per account, written to UserPreferences.ini by the
+    // launcher when it starts that account. "AC's choice" = not enforced (AC keeps whatever it has).
+    // Declared before Tabs: static field initializers run in order.
     private const string AcChoice = "AC's choice";
-    private const string SameAsAbove = "Same as above";
+    private const string DisplayToggles = "Display tab's toggles";
     private static readonly string[] GfxResolutions = Graphics.AcGraphics.AvailableResolutions();
     private static readonly string[] GfxResolutionItems = Prepend(AcChoice, GfxResolutions);
-    private static readonly string[] GfxCharResolutionItems = Prepend(SameAsAbove, GfxResolutions);
-    private static readonly string[] GfxCharModeItems = Prepend(SameAsAbove, global::RynthCore.Graphics.AcGraphicsPrefs.WindowModeLabels);
+    private static readonly string[] GfxModeItems = Prepend(DisplayToggles, global::RynthCore.Graphics.AcGraphicsPrefs.WindowModeLabels);
     private static readonly string[] GfxRefreshValues = Prepend("Auto", Graphics.AcGraphics.AvailableRefreshRates());
     private static readonly string[] GfxRefreshItems = Prepend(AcChoice, Array.ConvertAll(GfxRefreshValues, v => v == "Auto" ? "Auto" : v + " Hz"));
     private static readonly string[] GfxTriState = { AcChoice, "On", "Off" };
@@ -695,15 +694,11 @@ internal static class SettingsSchema
         return all;
     }
 
-    /// <summary>The global window mode as the combo shows it: Graphics' own, else the Display toggles'.</summary>
-    private static int GfxGlobalModeIndex()
-    {
-        string mode = Graphics.AcGraphics.GlobalWindowMode
-            ?? (!Plugins.EngineSettings.BorderlessWindowed ? global::RynthCore.Graphics.AcGraphicsPrefs.ModeWindowed
-                : Plugins.EngineSettings.BorderlessFillMonitor ? global::RynthCore.Graphics.AcGraphicsPrefs.ModeBorderlessFill
-                : global::RynthCore.Graphics.AcGraphicsPrefs.ModeBorderlessSized);
-        return Math.Max(0, Array.IndexOf(global::RynthCore.Graphics.AcGraphicsPrefs.WindowModeIds, mode));
-    }
+    /// <summary>The window-mode combo's index: 0 = the Display tab's toggles decide, else this account's mode.</summary>
+    private static int GfxModeIndex() =>
+        Graphics.AcGraphics.ProfileWindowMode is string m
+            ? Array.IndexOf(global::RynthCore.Graphics.AcGraphicsPrefs.WindowModeIds, m) + 1
+            : 0;
 
     /// <summary>A combo index for an enforced value in <paramref name="values"/> (0 = AC's choice / not listed).</summary>
     private static int GfxIndex(string id, string[] values)
@@ -719,7 +714,7 @@ internal static class SettingsSchema
     private static SettingRow[] GfxRows(global::RynthCore.Graphics.AcGraphicsSetting g)
     {
         string id = g.Id;
-        string tip = g.Help + "\nAC's choice: RynthAi leaves AC's own setting as it is. Applies at the next launch.";
+        string tip = g.Help + "\nAC's choice: RynthAi leaves AC's own setting as it is. This account only; applies at the next launch.";
         switch (g.Kind)
         {
             case global::RynthCore.Graphics.AcGraphicsKind.Choice:
@@ -761,43 +756,29 @@ internal static class SettingsSchema
         var rows = new System.Collections.Generic.List<SettingRow>
         {
             Status(_ => Graphics.AcGraphics.StatusLine()),
-            Note("AC reads these at startup, so most apply at the next launch: RynthAi writes them into AC's\n" +
-                 "UserPreferences.ini every time the launcher starts a client (and now, for the next start).\n" +
-                 "Window mode and resolution also change the window right away."),
+            Note("A profile per account: these apply to this account's clients only. AC reads them at startup, so\n" +
+                 "they apply at the next launch: the launcher writes this account's profile into AC's\n" +
+                 "UserPreferences.ini just before it starts the account. Only the window mode changes the window now;\n" +
+                 "the window always follows the resolution AC is really drawing at."),
             Section("Window"),
-            Combo("Window mode", global::RynthCore.Graphics.AcGraphicsPrefs.WindowModeLabels, _ => GfxGlobalModeIndex(),
-                (_, v) => Graphics.AcGraphics.SetGlobalWindowMode(global::RynthCore.Graphics.AcGraphicsPrefs.WindowModeIds[Math.Clamp(v, 0, 3)]),
-                "Windowed: a normal framed window, sized for the resolution.\n" +
+            Combo("Window mode", GfxModeItems, _ => GfxModeIndex(),
+                (_, v) => Graphics.AcGraphics.SetWindowMode(v <= 0 ? null
+                    : global::RynthCore.Graphics.AcGraphicsPrefs.WindowModeIds[Math.Clamp(v - 1, 0, 3)]),
+                "Display tab's toggles: Borderless Windowed / Fills Monitor decide (all clients).\n" +
+                "Windowed: a normal framed window, sized for AC's resolution.\n" +
                 "Borderless (fill the monitor): no frame, covering the whole monitor the game is on.\n" +
-                "Borderless (resolution size): no frame, the resolution's size, where the window was.\n" +
+                "Borderless (resolution size): no frame, AC's resolution in size, where the window was.\n" +
                 "Full screen (exclusive): AC's own full screen; starts at the next launch.\n" +
-                "The window's position is remembered; its size always follows the resolution. All clients."),
+                "This account only. The window's position is remembered; its size follows AC's resolution."),
             Combo("Resolution", GfxResolutionItems, _ => GfxIndex(global::RynthCore.Graphics.AcGraphicsPrefs.ResolutionId, GfxResolutions),
                 (_, v) => Graphics.AcGraphics.Set(global::RynthCore.Graphics.AcGraphicsPrefs.ResolutionId, v <= 0 ? null : GfxResolutions[v - 1]),
-                "AC's display resolution (the game's picture). The window is sized for it now; AC draws at the new\n" +
-                "resolution from the next launch. AC's choice: the resolution set in AC's own options. All clients."),
+                "AC's display resolution for this account, from the next launch (the window isn't changed now: it\n" +
+                "follows what AC draws at). AC's choice: whatever AC's own options have."),
             Combo("Refresh rate", GfxRefreshItems, _ => GfxIndex(global::RynthCore.Graphics.AcGraphicsPrefs.RefreshRateId, GfxRefreshValues),
                 (_, v) => Graphics.AcGraphics.Set(global::RynthCore.Graphics.AcGraphicsPrefs.RefreshRateId, v <= 0 ? null : GfxRefreshValues[v - 1]),
                 "The monitor refresh rate AC asks for in full screen. Auto: the monitor's own. Applies at the next launch."),
         };
         rows.AddRange(GfxRows(global::RynthCore.Graphics.AcGraphicsPrefs.SyncToRefresh));
-
-        rows.Add(Section("This character", _ => Graphics.AcGraphics.CharKey.Length > 0));
-        rows.Add(Note("A different window mode or resolution for this character only (the launcher uses it when it\n" +
-                      "starts this character).", _ => Graphics.AcGraphics.CharKey.Length > 0));
-        rows.Add(Combo("Window mode (this character)", GfxCharModeItems,
-            _ => Graphics.AcGraphics.CharacterOverride?.WindowMode is string m
-                ? Array.IndexOf(global::RynthCore.Graphics.AcGraphicsPrefs.WindowModeIds, m) + 1 : 0,
-            (_, v) => Graphics.AcGraphics.SetCharacterOverride(null,
-                v <= 0 ? null : global::RynthCore.Graphics.AcGraphicsPrefs.WindowModeIds[Math.Clamp(v - 1, 0, 3)], setResolution: false, setMode: true),
-            "This character's own window mode. Same as above: the Window mode row.")
-            with { VisibleWhen = _ => Graphics.AcGraphics.CharKey.Length > 0 });
-        rows.Add(Combo("Resolution (this character)", GfxCharResolutionItems,
-            _ => Graphics.AcGraphics.CharacterOverride?.Resolution is string r
-                ? Array.FindIndex(GfxResolutions, x => string.Equals(x, r, StringComparison.OrdinalIgnoreCase)) + 1 : 0,
-            (_, v) => Graphics.AcGraphics.SetCharacterOverride(v <= 0 ? null : GfxResolutions[v - 1], null, setResolution: true, setMode: false),
-            "This character's own resolution. Same as above: the Resolution row.")
-            with { VisibleWhen = _ => Graphics.AcGraphics.CharKey.Length > 0 });
 
         rows.Add(Spacer());
         rows.Add(Section("Graphics"));
@@ -806,10 +787,10 @@ internal static class SettingsSchema
 
         rows.Add(Spacer());
         rows.Add(Button("Write to AC's settings now", "Write", () => Graphics.AcGraphics.WriteIniNow(),
-            "Write these into AC's UserPreferences.ini now (the launcher also does it before every start)."));
+            "Write this account's profile into AC's UserPreferences.ini now, for the next start of a client the\n" +
+            "launcher doesn't start (the launcher does it before every start of this account)."));
         rows.Add(Button("Reset all to AC's choice", "Reset", () => Graphics.AcGraphics.ResetAll(),
-            "Stop enforcing every graphics setting here (and this character's own window mode / resolution).\n" +
-            "AC's own settings stay as they are now."));
+            "Stop enforcing every graphics setting for this account. AC's own settings stay as they are now."));
         return rows.ToArray();
     }
 
@@ -827,7 +808,7 @@ internal static class SettingsSchema
                 (_, v) =>
                 {
                     Plugins.EngineSettings.BorderlessWindowed = v;
-                    // This toggle decides again over Settings > Graphics' global window mode.
+                    // This toggle decides again over this account's Settings > Graphics window mode.
                     Graphics.AcGraphics.DisplayTogglesChanged();
                     try
                     {
@@ -845,13 +826,13 @@ internal static class SettingsSchema
                     try { AcWindowChrome.ApplyFillMonitorChanged(AcWindowChrome.ResolveGameHwndForSettings()); }
                     catch { /* HWND may not be ready; the next borderless apply uses the setting */ }
                 },
-                "On (default): borderless fills the whole monitor the game is on.\nOff: borderless is AC's resolution in size, where the framed window had the game. To move it: turn\nBorderless Windowed off, move the window, then turn it back on.\nThe borderless position is remembered across launches (with Remember Open Windows and Positions on).\nSettings > Graphics sets the window mode and resolution together (and per character)."),
+                "On (default): borderless fills the whole monitor the game is on.\nOff: borderless is AC's resolution in size, where the framed window had the game. To move it: turn\nBorderless Windowed off, move the window, then turn it back on.\nThe borderless position is remembered across launches (with Remember Open Windows and Positions on).\nSettings > Graphics can set a window mode per account instead."),
             Button("Reset Window Borders", "Reset", () =>
                 {
                     try { Compatibility.AcMainThreadQueue.EnqueueWriteToChat("[RynthCore] " + AcWindowChrome.ResetWindow(), 1); }
                     catch { /* chat may not be ready */ }
                 },
-                "Turn borderless off and put the frame back: a normal window sized for AC's resolution (Settings > Graphics,\nelse what AC started with), centred. Also replaces the saved window position, so the next launch isn't stuck\neither. Same as /rc window reset."),
+                "Turn borderless off and put the frame back: a normal window sized for the resolution AC is really drawing\nat, centred. Also replaces the saved window position, so the next launch isn't stuck\neither. Same as /rc window reset."),
             Button("Save Window Position", "Save", () =>
                 {
                     try { Compatibility.AcMainThreadQueue.EnqueueWriteToChat("[RynthCore] " + AcWindowChrome.SaveWindowNow(), 1); }

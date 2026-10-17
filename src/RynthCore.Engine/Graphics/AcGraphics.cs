@@ -1,22 +1,24 @@
 // ============================================================================
 //  RynthCore.Engine - Graphics/AcGraphics.cs
 //  The engine side of RynthAi's Settings > Graphics (AcGraphicsPrefs.cs has the
-//  shared model): which resolution and window mode this client should have,
-//  the edits from the panel, and writing them to graphics.json and AC's
-//  UserPreferences.ini.
+//  shared model): this account's graphics profile, the edits from the panel,
+//  and the size AC really draws at (for the window code).
 //
-//  Effective values for this client: the character's override, else the
-//  global one, else what AC launched with (UserPreferences.ini as read at
-//  engine start) and, for the window mode, the older Display toggles
-//  (EngineSettings.BorderlessWindowed / BorderlessFillMonitor).
+//  Per account (2026.10.18.3): graphics.json holds a profile per "server|account".
+//  A client edits only its own account's profile, re-reading the file first so it
+//  never overwrites another client's. The launcher writes the launching account's
+//  profile into UserPreferences.ini just before that client starts.
 //
-//  When things apply:
-//    - Window mode and resolution: the window now (AcWindowChrome); AC's picture
-//      (its D3D back buffer) takes a new resolution at the next launch.
-//    - Every other setting: the next launch. AC reads UserPreferences.ini only at
-//      startup and rewrites it itself, so the launcher re-applies graphics.json
-//      just before each client starts; edits here are also written to the INI
-//      at once, for a client started some other way.
+//  Never fights AC live (2026.10.18.3): the window is sized for the resolution AC
+//  is actually drawing (its back buffer, sampled from EndScene; else what it
+//  launched with), never for a Graphics value AC isn't using yet. A Resolution
+//  set here applies at the next launch. Clients don't write the shared INI on an
+//  edit either (each would put its own account's values over the others'); only
+//  the launcher, and "Write to AC's settings now", do.
+//
+//  Window mode is the exception that applies now: it is RynthCore's own window
+//  chrome (AcWindowChrome), not an AC setting (except exclusive full screen, which
+//  starts at the next launch).
 //
 //  Threads: reads are cheap snapshots from any thread; edits come from the
 //  Settings panel (AC's main thread) and queue their file writes on
@@ -37,79 +39,86 @@ namespace RynthCore.Engine.Graphics;
 internal static class AcGraphics
 {
     private static readonly object Sync = new();
-    private static AcGraphicsConfig _config = new();      // under Sync
+    private static AcGraphicsProfiles _profiles = new();   // under Sync
     private static bool _loaded;
     private static DateTime _configStamp;
     private static long _nextReloadCheck;
     // UserPreferences.ini as AC launched with it (read once, at the first use).
     private static Dictionary<string, string>? _launchIni;
     private static string _launchContextKey = "";
+    private static string _launchAccountName = "";
+    // AC's back buffer, sampled from EndScene (0 = not seen yet).
+    private static int _backBufferW, _backBufferH;
 
     // ── Reads ────────────────────────────────────────────────────────────────
 
-    /// <summary>"server|character" of this client: the logged-in one, else the launch context's.</summary>
-    public static string CharKey
+    /// <summary>"server|account" of this client: the logged-in one, else the launch context's.</summary>
+    public static string AccountKey
     {
         get
         {
-            string key = AcGraphicsPrefs.CharacterKey(SessionStateRegistry.LastServerName, SessionStateRegistry.LastCharacterName);
+            string key = AcGraphicsPrefs.AccountKey(SessionStateRegistry.LastServerName, SessionStateRegistry.LastAccountName);
             if (key.Length > 0) return key;
             EnsureLoaded();
             return _launchContextKey;
         }
     }
 
-    /// <summary>Display name of this client's character, empty before one is known.</summary>
-    public static string CharacterName => SessionStateRegistry.LastCharacterName;
-
-    /// <summary>The resolution this client should run at (width, height), or false when nothing says.</summary>
-    public static bool TryGetResolution(out int width, out int height)
-    {
-        string? res;
-        lock (Sync) { EnsureLoadedLocked(); res = _config.EffectiveResolution(CharKey); }
-        res ??= LaunchValue(AcGraphicsPrefs.ResolutionId);
-        return AcGraphicsPrefs.TryParseResolution(res, out width, out height);
-    }
-
-    /// <summary>The window mode in effect (one of AcGraphicsPrefs.WindowModeIds).</summary>
-    public static string WindowMode
+    /// <summary>This client's account name for the panel, empty before one is known.</summary>
+    public static string AccountName
     {
         get
         {
-            string? mode;
-            lock (Sync) { EnsureLoadedLocked(); mode = _config.EffectiveWindowMode(CharKey); }
-            return mode ?? LegacyWindowMode();
+            string name = SessionStateRegistry.LastAccountName;
+            if (name.Length > 0) return name;
+            EnsureLoaded();
+            return _launchAccountName;
         }
     }
+
+    /// <summary>A copy of this account's profile (empty when it has none).</summary>
+    private static AcGraphicsConfig Profile()
+    {
+        string key = AccountKey;
+        lock (Sync) { EnsureLoadedLocked(); return _profiles.For(key).Clone(); }
+    }
+
+    /// <summary>The size AC is drawing at: its back buffer once seen, else the resolution it launched
+    /// with. The window is sized for this, so it never fights AC's own resolution.</summary>
+    public static bool TryGetDrawSize(out int width, out int height)
+    {
+        width = Volatile.Read(ref _backBufferW);
+        height = Volatile.Read(ref _backBufferH);
+        if (width >= 640 && height >= 480) return true;
+        return AcGraphicsPrefs.TryParseResolution(LaunchValue(AcGraphicsPrefs.ResolutionId), out width, out height);
+    }
+
+    /// <summary>EndScene, about once a second: remembers AC's back-buffer size.</summary>
+    public static void SampleBackBuffer(IntPtr device)
+    {
+        if (!ImGuiBackend.DX9Backend.TryGetBackBufferSize(device, out int w, out int h)) return;
+        int oldW = Volatile.Read(ref _backBufferW), oldH = Volatile.Read(ref _backBufferH);
+        if (w == oldW && h == oldH) return;
+        Volatile.Write(ref _backBufferW, w);
+        Volatile.Write(ref _backBufferH, h);
+        RynthLog.UI($"AcGraphics: AC draws at {w}x{h}" + (oldW > 0 ? $" (was {oldW}x{oldH})." : "."));
+    }
+
+    /// <summary>The window mode in effect (one of AcGraphicsPrefs.WindowModeIds): this account's, else
+    /// the Display toggles'.</summary>
+    public static string WindowMode => Profile().WindowMode ?? LegacyWindowMode();
+
+    /// <summary>The account's own window mode, or null (the Display toggles decide).</summary>
+    public static string? ProfileWindowMode => Profile().WindowMode;
 
     /// <summary>RynthCore should strip the window frame (either borderless mode).</summary>
     public static bool WantBorderless => WindowMode is AcGraphicsPrefs.ModeBorderlessFill or AcGraphicsPrefs.ModeBorderlessSized;
 
-    /// <summary>Borderless fills the monitor (else it is the resolution's size).</summary>
+    /// <summary>Borderless fills the monitor (else it is AC's drawing size).</summary>
     public static bool FillMonitor => WindowMode != AcGraphicsPrefs.ModeBorderlessSized;
 
-    /// <summary>The value RynthAi enforces for <paramref name="id"/> ("Section.Key"), or null (AC's choice).</summary>
-    public static string? Get(string id)
-    {
-        lock (Sync) { EnsureLoadedLocked(); return _config.Values.TryGetValue(id, out string? v) ? v : null; }
-    }
-
-    /// <summary>The global window mode set in RynthAi, or null (the Display toggles decide).</summary>
-    public static string? GlobalWindowMode
-    {
-        get { lock (Sync) { EnsureLoadedLocked(); return _config.WindowMode; } }
-    }
-
-    /// <summary>This character's own resolution / window mode, or null (the global one).</summary>
-    public static AcGraphicsOverride? CharacterOverride
-    {
-        get
-        {
-            string key = CharKey;
-            if (key.Length == 0) return null;
-            lock (Sync) { EnsureLoadedLocked(); return _config.Characters.TryGetValue(key, out AcGraphicsOverride? o) ? o : null; }
-        }
-    }
+    /// <summary>The value this account enforces for <paramref name="id"/> ("Section.Key"), or null (AC's choice).</summary>
+    public static string? Get(string id) => Profile().Values.TryGetValue(id, out string? v) ? v : null;
 
     /// <summary>What AC launched with for <paramref name="id"/>, or null.</summary>
     public static string? LaunchValue(string id)
@@ -119,96 +128,54 @@ internal static class AcGraphics
         return ini != null && ini.TryGetValue(id, out string? v) ? v : null;
     }
 
-    // ── Edits (Settings > Graphics) ──────────────────────────────────────────
+    // ── Edits (Settings > Graphics), this account's profile only ─────────────
 
-    /// <summary>Sets (or with null clears: AC's choice) a value, saves, writes the INI.</summary>
-    public static void Set(string id, string? value)
-    {
-        lock (Sync)
-        {
-            EnsureLoadedLocked();
-            if (value == null) _config.Values.Remove(id);
-            else _config.Values[id] = value;
-        }
-        Changed(windowChanged: id == AcGraphicsPrefs.ResolutionId);
-    }
+    /// <summary>Sets (or with null clears: AC's choice) a value in this account's profile.</summary>
+    public static void Set(string id, string? value) =>
+        Edit(cfg => { if (value == null) cfg.Values.Remove(id); else cfg.Values[id] = value; }, windowChanged: false);
 
-    /// <summary>Sets the global window mode (null clears it). Also mirrors it onto the Display toggles.</summary>
-    public static void SetGlobalWindowMode(string? mode)
-    {
-        lock (Sync) { EnsureLoadedLocked(); _config.WindowMode = mode; }
-        if (mode != null)
-        {
-            EngineSettings.BorderlessWindowed = mode is AcGraphicsPrefs.ModeBorderlessFill or AcGraphicsPrefs.ModeBorderlessSized;
-            if (EngineSettings.BorderlessWindowed) EngineSettings.BorderlessFillMonitor = mode == AcGraphicsPrefs.ModeBorderlessFill;
-        }
-        Changed(windowChanged: true);
-    }
+    /// <summary>Sets this account's window mode (null clears it: the Display toggles decide).</summary>
+    public static void SetWindowMode(string? mode) => Edit(cfg => cfg.WindowMode = mode, windowChanged: true);
 
-    /// <summary>Sets this character's own resolution and/or window mode (null = the global one).</summary>
-    public static void SetCharacterOverride(string? resolution, string? windowMode, bool setResolution, bool setMode)
-    {
-        string key = CharKey;
-        if (key.Length == 0) return;
-        lock (Sync)
-        {
-            EnsureLoadedLocked();
-            if (!_config.Characters.TryGetValue(key, out AcGraphicsOverride? o)) _config.Characters[key] = o = new AcGraphicsOverride();
-            if (setResolution) o.Resolution = resolution;
-            if (setMode) o.WindowMode = windowMode;
-            if (o.IsEmpty) _config.Characters.Remove(key);
-        }
-        Changed(windowChanged: true);
-    }
-
-    /// <summary>"Reset Window Borders": the global mode becomes Windowed and this character's own mode is
-    /// dropped, so neither puts borderless back. Saves only (the caller places the window).</summary>
+    /// <summary>"Reset Window Borders": this account's window mode becomes Windowed if it was set. Saves only.</summary>
     public static void ResetWindowModeToWindowed()
     {
-        bool changed = false;
-        string key = CharKey;
-        lock (Sync)
-        {
-            EnsureLoadedLocked();
-            if (_config.WindowMode != null && _config.WindowMode != AcGraphicsPrefs.ModeWindowed)
-            {
-                _config.WindowMode = AcGraphicsPrefs.ModeWindowed;
-                changed = true;
-            }
-            if (key.Length > 0 && _config.Characters.TryGetValue(key, out AcGraphicsOverride? o) && o.WindowMode != null)
-            {
-                o.WindowMode = null;
-                if (o.IsEmpty) _config.Characters.Remove(key);
-                changed = true;
-            }
-        }
-        if (changed) QueueWrite(saveConfig: true);
+        if (Profile().WindowMode is null or AcGraphicsPrefs.ModeWindowed) return;
+        Edit(cfg => cfg.WindowMode = AcGraphicsPrefs.ModeWindowed, windowChanged: false);
     }
 
-    /// <summary>The Display toggles (Borderless Windowed / Fills Monitor, /rc borderless) were used: the
-    /// global Graphics window mode is cleared so they decide again. Saves only.</summary>
+    /// <summary>The Display toggles were used: this account's window mode is cleared so they decide again. Saves only.</summary>
     public static void DisplayTogglesChanged()
     {
-        lock (Sync)
-        {
-            EnsureLoadedLocked();
-            if (_config.WindowMode == null) return;
-            _config.WindowMode = null;
-        }
-        QueueWrite(saveConfig: true);
+        if (Profile().WindowMode == null) return;
+        Edit(cfg => cfg.WindowMode = null, windowChanged: false);
     }
 
-    /// <summary>Clears every RynthAi graphics value (AC's own settings stay as they are).</summary>
-    public static void ResetAll()
+    /// <summary>Clears this account's whole profile (AC's own settings stay as they are).</summary>
+    public static void ResetAll() => Edit(cfg => { cfg.Values.Clear(); cfg.WindowMode = null; }, windowChanged: true);
+
+    /// <summary>"Write to AC's settings now": this account's profile into UserPreferences.ini.</summary>
+    public static void WriteIniNow()
     {
-        lock (Sync) { EnsureLoadedLocked(); _config = new AcGraphicsConfig(); }
-        Changed(windowChanged: true);
+        Dictionary<string, string> values = Profile().IniValues();
+        UI.UiBackgroundWriter.Enqueue("graphics settings (write now)", () =>
+        {
+            try
+            {
+                if (values.Count == 0) { RynthLog.UI("AcGraphics: nothing to write (every setting is AC's choice)."); return; }
+                foreach (string ini in AcGraphicsPrefs.IniPaths(Environment.CurrentDirectory))
+                {
+                    List<string> changed = AcPrefsIni.Apply(ini, values);
+                    RynthLog.UI(changed.Count > 0
+                        ? $"AcGraphics: wrote {string.Join(", ", changed)} to {ini}."
+                        : $"AcGraphics: {ini} already matches this account's profile.");
+                }
+            }
+            catch (Exception ex) { RynthLog.UI($"AcGraphics: writing UserPreferences.ini failed - {ex.Message}"); }
+        });
     }
 
-    /// <summary>Writes the INI now (Settings > Graphics "Write to AC's settings now").</summary>
-    public static void WriteIniNow() => QueueWrite(saveConfig: false);
-
-    /// <summary>Called by the window code once a second or so: picks up another client's edits.</summary>
+    /// <summary>Called by the window code every couple of seconds: picks up another client's edits.</summary>
     public static void PollReload()
     {
         long now = Environment.TickCount64;
@@ -221,28 +188,27 @@ internal static class AcGraphics
             {
                 if (!_loaded || stamp == _configStamp) return;
             }
-            AcGraphicsConfig cfg = AcGraphicsConfig.Load(AcGraphicsPrefs.ConfigPath);
-            lock (Sync) { _config = cfg; _configStamp = stamp; }
-            RynthLog.UI("AcGraphics: graphics.json changed (another client); re-read.");
+            AcGraphicsProfiles all = AcGraphicsProfiles.Load(AcGraphicsPrefs.ConfigPath);
+            lock (Sync) { _profiles = all; _configStamp = stamp; }
         }
         catch (Exception ex) { RynthLog.UI($"AcGraphics: re-read failed - {ex.Message}"); }
     }
 
-    /// <summary>One line for the top of Settings > Graphics: what AC started with and what applies now.</summary>
+    /// <summary>One line for the top of Settings > Graphics.</summary>
     public static string StatusLine()
     {
         string launched = LaunchValue(AcGraphicsPrefs.ResolutionId) ?? "?";
         bool launchedFull = string.Equals(LaunchValue(AcGraphicsPrefs.FullScreenId), "True", StringComparison.OrdinalIgnoreCase);
-        string res = TryGetResolution(out int w, out int h) ? w + "x" + h : "?";
+        string draws = TryGetDrawSize(out int w, out int h) ? w + "x" + h : "?";
         int modeIdx = Array.IndexOf(AcGraphicsPrefs.WindowModeIds, WindowMode);
         string mode = modeIdx >= 0 ? AcGraphicsPrefs.WindowModeLabels[modeIdx] : WindowMode;
-        string who = CharacterName.Length > 0 ? " for " + CharacterName : "";
-        return $"AC started at {launched}{(launchedFull ? " full screen" : "")}. Now{who}: {res}, {mode}.";
+        string who = AccountName.Length > 0 ? $"Profile for account '{AccountName}'. " : "No account known yet. ";
+        return $"{who}AC started at {launched}{(launchedFull ? " full screen" : "")} and draws at {draws}; window: {mode}.";
     }
 
     // ── Display modes for the panel ──────────────────────────────────────────
 
-    /// <summary>The primary monitor's resolutions (32-bit), largest first, plus the launched one.</summary>
+    /// <summary>The primary monitor's resolutions (24/32-bit), largest first, plus the launched one.</summary>
     public static string[] AvailableResolutions()
     {
         var set = new SortedSet<(int W, int H)>(Comparer<(int W, int H)>.Create((a, b) => b.W != a.W ? b.W.CompareTo(a.W) : b.H.CompareTo(a.H)));
@@ -273,57 +239,58 @@ internal static class AcGraphics
         : EngineSettings.BorderlessFillMonitor ? AcGraphicsPrefs.ModeBorderlessFill
         : AcGraphicsPrefs.ModeBorderlessSized;
 
-    private static void Changed(bool windowChanged)
+    /// <summary>Changes this account's profile in memory and queues the save (re-read, replace this
+    /// account's entry, write), so another client's account is never overwritten.</summary>
+    private static void Edit(Action<AcGraphicsConfig> change, bool windowChanged)
     {
-        QueueWrite(saveConfig: true);
+        string key = AccountKey;
+        if (key.Length == 0)
+        {
+            RynthLog.UI("AcGraphics: no account known yet; graphics change not saved.");
+            return;
+        }
+        AcGraphicsConfig mine;
+        lock (Sync)
+        {
+            EnsureLoadedLocked();
+            mine = _profiles.For(key).Clone();
+            change(mine);
+            _profiles.Put(key, mine);
+        }
+        QueueSave();
         if (!windowChanged) return;
         try { UI.AcWindowChrome.ApplyGraphicsChanged(UI.AcWindowChrome.ResolveGameHwndForSettings()); }
         catch (Exception ex) { RynthLog.UI($"AcGraphics: window apply failed - {ex.Message}"); }
     }
 
-    // One queued write at a time: a slider drag edits every frame, and the job writes whatever is
+    // One queued save at a time: a slider drag edits every frame, and the job saves whatever is
     // current when it runs (an edit after it starts queues the next one).
-    private static int _writeQueued;
-    private static int _configDirty;
+    private static int _saveQueued;
 
-    private static void QueueWrite(bool saveConfig)
+    private static void QueueSave()
     {
-        if (saveConfig) Volatile.Write(ref _configDirty, 1);
-        if (Interlocked.Exchange(ref _writeQueued, 1) == 1) return;
+        if (Interlocked.Exchange(ref _saveQueued, 1) == 1) return;
         UI.UiBackgroundWriter.Enqueue("graphics settings", () =>
         {
-            Volatile.Write(ref _writeQueued, 0);
-            bool save = Interlocked.Exchange(ref _configDirty, 0) == 1;
-            string charKey = CharKey;
-            AcGraphicsConfig snapshot;
-            lock (Sync) { EnsureLoadedLocked(); snapshot = Clone(_config); }
+            Volatile.Write(ref _saveQueued, 0);
+            string key = AccountKey;
+            AcGraphicsConfig mine;
+            lock (Sync) { mine = _profiles.For(key).Clone(); }
             try
             {
-                if (save)
+                // Only this account's entry changes: the others come from the file as it is now.
+                string path = AcGraphicsPrefs.ConfigPath;
+                AcGraphicsProfiles onDisk = AcGraphicsProfiles.Load(path);
+                onDisk.Put(key, mine);
+                onDisk.Save(path);
+                lock (Sync)
                 {
-                    snapshot.Save(AcGraphicsPrefs.ConfigPath);
-                    lock (Sync) _configStamp = File.GetLastWriteTimeUtc(AcGraphicsPrefs.ConfigPath);
-                }
-                Dictionary<string, string> values = snapshot.IniValuesFor(charKey);
-                if (values.Count == 0) return;
-                foreach (string ini in AcGraphicsPrefs.IniPaths(Environment.CurrentDirectory))
-                {
-                    List<string> changed = AcPrefsIni.Apply(ini, values);
-                    if (changed.Count > 0)
-                        RynthLog.UI($"AcGraphics: wrote {string.Join(", ", changed)} to {ini}.");
+                    _profiles = onDisk;
+                    _configStamp = File.GetLastWriteTimeUtc(path);
                 }
             }
-            catch (Exception ex) { RynthLog.UI($"AcGraphics: saving graphics settings failed - {ex.Message}"); }
+            catch (Exception ex) { RynthLog.UI($"AcGraphics: saving graphics.json failed - {ex.Message}"); }
         });
-    }
-
-    private static AcGraphicsConfig Clone(AcGraphicsConfig c)
-    {
-        var copy = new AcGraphicsConfig { WindowMode = c.WindowMode };
-        foreach (KeyValuePair<string, string> kv in c.Values) copy.Values[kv.Key] = kv.Value;
-        foreach (KeyValuePair<string, AcGraphicsOverride> kv in c.Characters)
-            copy.Characters[kv.Key] = new AcGraphicsOverride { Resolution = kv.Value.Resolution, WindowMode = kv.Value.WindowMode };
-        return copy;
     }
 
     private static void EnsureLoaded()
@@ -338,7 +305,7 @@ internal static class AcGraphics
         try
         {
             string path = AcGraphicsPrefs.ConfigPath;
-            _config = AcGraphicsConfig.Load(path);
+            _profiles = AcGraphicsProfiles.Load(path);
             _configStamp = File.Exists(path) ? File.GetLastWriteTimeUtc(path) : default;
         }
         catch (Exception ex) { RynthLog.UI($"AcGraphics: reading graphics.json failed - {ex.Message}"); }
@@ -354,8 +321,9 @@ internal static class AcGraphics
         catch (Exception ex) { RynthLog.UI($"AcGraphics: reading UserPreferences.ini failed - {ex.Message}"); }
         try
         {
-            (_, string server, string character) = CharacterCaptureHooks.ReadLaunchContext();
-            _launchContextKey = AcGraphicsPrefs.CharacterKey(server, character);
+            (string account, string server, _) = CharacterCaptureHooks.ReadLaunchContext();
+            _launchContextKey = AcGraphicsPrefs.AccountKey(server, account);
+            _launchAccountName = account ?? "";
         }
         catch { /* no launch context: a client the launcher didn't start */ }
     }
