@@ -57,6 +57,8 @@ internal sealed class RynthChatSettingsDto
     [JsonPropertyName("activeChannel")]   public string? ActiveChannel  { get; set; }
     [JsonPropertyName("showTimestamps")]  public bool   ShowTimestamps  { get; set; } = true;
     [JsonPropertyName("mentionHighlight")] public bool  MentionHighlight { get; set; } = true;
+    /// <summary>Hidden lines are also kept out of AC's chat window; null (older files) = on.</summary>
+    [JsonPropertyName("hideInRetail")]    public bool?  HideInRetail    { get; set; }
     [JsonPropertyName("mentionSound")]    public bool   MentionSound    { get; set; }
     [JsonPropertyName("mentionWords")]    public string? MentionWords   { get; set; }
     // 2026-10-08: per-kind line colours (ChatLineColors), { "say": "#RRGGBB", "chan:General": ..., "tab:Chat": ... };

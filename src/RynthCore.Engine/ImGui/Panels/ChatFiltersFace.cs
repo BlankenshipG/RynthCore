@@ -196,6 +196,15 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         Label("Checked after the rules above, only for lines no rule moved or hid.", Mute);
         Label("Tick to hide the lines; pick a tab to move them there instead.", Mute);
         ImGuiNET.ImGui.PopFont();
+        bool retail = ChatModel.HideInRetailChat;
+        if (ImGuiNET.ImGui.Checkbox("Hidden lines are hidden in the retail chat too##hideretail", ref retail))
+        {
+            ChatModel.HideInRetailChat = retail;
+            ChatModel.SaveSettings();
+        }
+        SafeImGui.SetItemTooltip("On: a line a rule or standard filter hides doesn't print in AC's own chat window either.\n" +
+            "Off: hiding only applies to RynthChat; the retail chat shows everything.\n" +
+            "Moved / copied lines still show in the retail chat either way.");
         foreach (string group in UI.Panels.RynthChatPresets.Groups)
         {
             int on = 0, total = 0;
