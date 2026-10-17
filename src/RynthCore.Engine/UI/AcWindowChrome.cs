@@ -159,7 +159,7 @@ internal static class AcWindowChrome
                 if (_savedRect is null)
                 {
                     if (launch && file.Framed is RECT ff && IsRectOnAnyMonitor(ff))
-                        _savedRect = ff;
+                        _savedRect = FitToWorkArea(ff);
                     else if (!missingChrome && GetWindowRect(hwnd, out RECT framed))
                         _savedRect = framed;
                 }
@@ -196,7 +196,7 @@ internal static class AcWindowChrome
                 // Back to a framed, resizable window: the rect from before borderless, else the
                 // saved framed placement, else three quarters of the monitor, centred.
                 RECT target = _savedRect
-                    ?? (ReadPlacementFile().Framed is RECT ff && IsRectOnAnyMonitor(ff) ? ff : DefaultWindowedRect(hwnd));
+                    ?? (ReadPlacementFile().Framed is RECT ff && IsRectOnAnyMonitor(ff) ? FitToWorkArea(ff) : DefaultWindowedRect(hwnd));
                 MoveTo(hwnd, target);
                 _borderlessApplied = false;
                 _borderlessTarget = null;
@@ -289,7 +289,8 @@ internal static class AcWindowChrome
         }
         else
         {
-            if (useSaved) return savedBorderless!.Value;
+            // Kept size: never larger than, or partly off, the screen (AC's toolbar is bottom-right).
+            if (useSaved) return FitToWorkArea(savedBorderless!.Value);
             // Framed now: the client area in screen coordinates, so the game doesn't move.
             if (!missingChrome && TryClientRectOnScreen(hwnd, out RECT client)) return client;
             if (GetWindowRect(hwnd, out RECT wr)) return wr;
@@ -444,9 +445,27 @@ internal static class AcWindowChrome
             return;
         }
 
-        MoveTo(hwnd, r);
+        // AC anchors its toolbar to the window's bottom-right: a saved rect bigger than this
+        // monitor (another PC, a lower resolution, a torn read) parked it off-screen.
+        RECT fitted = FitToWorkArea(r);
+        MoveTo(hwnd, fitted);
+        string note = SameRect(fitted, r) ? ""
+            : FormattableString.Invariant($" (saved {Width(r)}x{Height(r)} at ({r.Left},{r.Top}) didn't fit the screen)");
         RynthLog.UI(FormattableString.Invariant(
-            $"AcWindowChrome: restored AC window to ({r.Left},{r.Top}) {Width(r)}x{Height(r)}."));
+            $"AcWindowChrome: restored AC window to ({fitted.Left},{fitted.Top}) {Width(fitted)}x{Height(fitted)}{note}."));
+    }
+
+    /// <summary><paramref name="r"/> moved, and shrunk if needed, to lie inside the work area of the
+    /// monitor holding its centre, so no edge of the window (or AC's toolbar) is off-screen.</summary>
+    private static RECT FitToWorkArea(RECT r)
+    {
+        var pt = new POINT { X = r.Left + Width(r) / 2, Y = r.Top + Height(r) / 2 };
+        if (!TryMonitorInfo(MonitorFromPoint(pt, 2 /* MONITOR_DEFAULTTONEAREST */), out _, out RECT work)) return r;
+        int w = Math.Min(Width(r), Width(work));
+        int h = Math.Min(Height(r), Height(work));
+        int left = Math.Clamp(r.Left, work.Left, work.Right - w);
+        int top = Math.Clamp(r.Top, work.Top, work.Bottom - h);
+        return new RECT { Left = left, Top = top, Right = left + w, Bottom = top + h };
     }
 
     /// <summary>ac_window.txt: the framed rect (left/top/width/height, as before) and the
@@ -467,7 +486,13 @@ internal static class AcWindowChrome
         int bl = 0, bt = 0, bw = 0, bh = 0;
         try
         {
-            foreach (string raw in File.ReadAllLines(path))
+            // Every client on the PC shares this file: read with sharing on, so a read never
+            // fails because another client has it open.
+            string text;
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var sr = new StreamReader(fs))
+                text = sr.ReadToEnd();
+            foreach (string raw in text.Split('\n'))
             {
                 string line = raw.Trim();
                 if (line.Length == 0 || line.StartsWith('#')) continue;
@@ -516,14 +541,53 @@ internal static class AcWindowChrome
             if (p.Borderless is RECT b)
                 sb.Append(FormattableString.Invariant(
                     $"bl_left={b.Left}\nbl_top={b.Top}\nbl_width={Width(b)}\nbl_height={Height(b)}\n"));
-            File.WriteAllText(path, sb.ToString());
-            return true;
+            string text = sb.ToString();
+
+            // Every client saves every 10 s: skip a write that changes nothing, so clients
+            // rarely touch the shared file at all.
+            if (ReadPlacementText(path) == text) return true;
+
+            // Write a temp file and swap it in, so another client never reads a half-written
+            // file (a torn read restored a wrong rect). A sharing clash is retried, then left
+            // for the next save.
+            string tmp = FormattableString.Invariant($"{path}.{Environment.ProcessId}.tmp");
+            File.WriteAllText(tmp, text);
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    File.Move(tmp, path, overwrite: true);
+                    return true;
+                }
+                catch (IOException) when (attempt < 3)
+                {
+                    System.Threading.Thread.Sleep(15);
+                }
+                catch (UnauthorizedAccessException) when (attempt < 3)
+                {
+                    System.Threading.Thread.Sleep(15);
+                }
+            }
         }
         catch (Exception ex)
         {
+            try { File.Delete(FormattableString.Invariant($"{PlacementPath}.{Environment.ProcessId}.tmp")); } catch { }
             try { RynthLog.UI($"AcWindowChrome: save placement failed - {ex.Message}"); } catch { }
             return false;
         }
+    }
+
+    /// <summary>The placement file's text (shared read), or null when missing or unreadable.</summary>
+    private static string? ReadPlacementText(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return null;
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var sr = new StreamReader(fs);
+            return sr.ReadToEnd();
+        }
+        catch { return null; }
     }
 
     /// <summary>Game HWND for Settings toggles (EntryPoint, else Win32Backend).</summary>
