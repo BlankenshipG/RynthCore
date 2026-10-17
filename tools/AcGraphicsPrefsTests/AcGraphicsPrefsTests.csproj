@@ -3,8 +3,9 @@
   <!--
     Offline checks for RynthAi's Settings > Graphics model (2026-10-17):
     src\RynthCore.Engine\Graphics\AcGraphicsPrefs.cs, compiled in (it is shared with the launcher).
-    graphics.json round-trips; per-character resolution / window mode win over the global ones;
-    the window mode drives Display.FullScreen; applying to a UserPreferences.ini replaces keys in
+    graphics.json round-trips as a profile per account; one account's save leaves the others alone;
+    the 2026.10.18.1 shared set is ignored; the window mode drives Display.FullScreen; applying to a
+    UserPreferences.ini replaces keys in
     place, adds missing keys and sections, leaves every other line alone, and writes nothing when
     nothing changed. Works on temp files only. Run: dotnet run -c Release (exit 0 = pass, 1 = fail)
   -->

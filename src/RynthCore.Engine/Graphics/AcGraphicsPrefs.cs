@@ -8,14 +8,15 @@
 //  Shared source: compiled into the engine AND the launcher
 //  (RynthCore.App.Avalonia links this file), so it depends on nothing else.
 //
-//  Model:
+//  Model: one profile per account ("server|account", lower case; 2026.10.18.3 -
+//  a single shared set made every client fight over one resolution). A profile:
 //    - Values: "Section.Key" -> the value as AC writes it ("Medium", "True",
 //      "0.89", "1760x990"). A key not in Values is "AC's choice": never touched.
 //    - WindowMode: Windowed / BorderlessFill / BorderlessSized / FullScreen
 //      (null = not set). FullScreen writes Display.FullScreen=True, every other
 //      mode False; the borderless modes are RynthCore's window chrome.
-//    - Characters: an optional per-character Resolution / WindowMode that wins
-//      over the global ones for that character ("server|character", lower case).
+//  The launcher writes the launching account's profile into UserPreferences.ini
+//  just before that client starts. The 2026.10.18.1 single global set is ignored.
 //
 //  The value lists come from acclient.exe's own strings (Render.* keys and the
 //  ID_Graphics_Value_* / TextureFiltering_* labels): VeryLow..Extreme, Bilinear /
@@ -126,12 +127,12 @@ public static class AcGraphicsPrefs
         return list;
     }
 
-    /// <summary>"server|character", trimmed and lower case; empty when either is missing.</summary>
-    public static string CharacterKey(string? server, string? character)
+    /// <summary>"server|account", trimmed and lower case; empty when either is missing.</summary>
+    public static string AccountKey(string? server, string? account)
     {
-        string s = (server ?? "").Trim(), c = (character ?? "").Trim();
-        if (s.Length == 0 || c.Length == 0) return "";
-        return (s + "|" + c).ToLowerInvariant();
+        string s = (server ?? "").Trim(), a = (account ?? "").Trim();
+        if (s.Length == 0 || a.Length == 0) return "";
+        return (s + "|" + a).ToLowerInvariant();
     }
 
     /// <summary>"1760x990" -> (1760, 990); false for anything else.</summary>
@@ -150,74 +151,84 @@ public static class AcGraphicsPrefs
     public static string FormatFloat(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
 }
 
-/// <summary>A character's own Resolution / WindowMode (null = the global one).</summary>
-public sealed class AcGraphicsOverride
-{
-    public string? Resolution;
-    public string? WindowMode;
-    public bool IsEmpty => Resolution == null && WindowMode == null;
-}
-
-/// <summary>graphics.json: what RynthAi enforces on AC's graphics settings.</summary>
+/// <summary>One account's graphics profile: what RynthAi enforces on AC's graphics settings.</summary>
 public sealed class AcGraphicsConfig
 {
     public Dictionary<string, string> Values { get; } = new(StringComparer.OrdinalIgnoreCase);
     public string? WindowMode { get; set; }
-    public Dictionary<string, AcGraphicsOverride> Characters { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>True when there is anything to enforce.</summary>
-    public bool HasAny => Values.Count > 0 || WindowMode != null || Characters.Count > 0;
+    public bool HasAny => Values.Count > 0 || WindowMode != null;
 
-    /// <summary>The resolution for this character: its override, else the global one (null = AC's choice).</summary>
-    public string? EffectiveResolution(string charKey) =>
-        charKey.Length > 0 && Characters.TryGetValue(charKey, out AcGraphicsOverride? o) && o.Resolution != null
-            ? o.Resolution
-            : Values.TryGetValue(AcGraphicsPrefs.ResolutionId, out string? r) ? r : null;
-
-    /// <summary>The window mode for this character: its override, else the global one (null = not set).</summary>
-    public string? EffectiveWindowMode(string charKey) =>
-        charKey.Length > 0 && Characters.TryGetValue(charKey, out AcGraphicsOverride? o) && o.WindowMode != null
-            ? o.WindowMode
-            : WindowMode;
-
-    /// <summary>Every "Section.Key" -> value to write for this character (FullScreen from the window mode).</summary>
-    public Dictionary<string, string> IniValuesFor(string charKey)
+    /// <summary>Every "Section.Key" -> value to write (FullScreen from the window mode).</summary>
+    public Dictionary<string, string> IniValues()
     {
         var map = new Dictionary<string, string>(Values, StringComparer.OrdinalIgnoreCase);
-        string? res = EffectiveResolution(charKey);
-        if (res != null) map[AcGraphicsPrefs.ResolutionId] = res;
-        else map.Remove(AcGraphicsPrefs.ResolutionId);
-        string? mode = EffectiveWindowMode(charKey);
-        if (mode != null) map[AcGraphicsPrefs.FullScreenId] = mode == AcGraphicsPrefs.ModeFullScreen ? "True" : "False";
+        if (WindowMode != null) map[AcGraphicsPrefs.FullScreenId] = WindowMode == AcGraphicsPrefs.ModeFullScreen ? "True" : "False";
         return map;
     }
 
-    public static AcGraphicsConfig Load(string path)
+    public AcGraphicsConfig Clone()
+    {
+        var copy = new AcGraphicsConfig { WindowMode = WindowMode };
+        foreach (KeyValuePair<string, string> kv in Values) copy.Values[kv.Key] = kv.Value;
+        return copy;
+    }
+
+    internal static AcGraphicsConfig Parse(JsonElement el)
     {
         var cfg = new AcGraphicsConfig();
-        if (!File.Exists(path)) return cfg;
-        using JsonDocument doc = JsonDocument.Parse(File.ReadAllBytes(path));
-        JsonElement root = doc.RootElement;
-        if (root.TryGetProperty("values", out JsonElement vals) && vals.ValueKind == JsonValueKind.Object)
+        if (el.TryGetProperty("values", out JsonElement vals) && vals.ValueKind == JsonValueKind.Object)
             foreach (JsonProperty p in vals.EnumerateObject())
                 if (p.Value.ValueKind == JsonValueKind.String && p.Value.GetString() is { Length: > 0 } v)
                     cfg.Values[p.Name] = v;
-        if (root.TryGetProperty("windowMode", out JsonElement wm) && wm.ValueKind == JsonValueKind.String
+        if (el.TryGetProperty("windowMode", out JsonElement wm) && wm.ValueKind == JsonValueKind.String
             && Array.IndexOf(AcGraphicsPrefs.WindowModeIds, wm.GetString()) >= 0)
             cfg.WindowMode = wm.GetString();
-        if (root.TryGetProperty("characters", out JsonElement chars) && chars.ValueKind == JsonValueKind.Object)
-            foreach (JsonProperty p in chars.EnumerateObject())
-            {
-                var o = new AcGraphicsOverride();
-                if (p.Value.TryGetProperty("resolution", out JsonElement r) && r.ValueKind == JsonValueKind.String
-                    && AcGraphicsPrefs.TryParseResolution(r.GetString(), out _, out _))
-                    o.Resolution = r.GetString();
-                if (p.Value.TryGetProperty("windowMode", out JsonElement m) && m.ValueKind == JsonValueKind.String
-                    && Array.IndexOf(AcGraphicsPrefs.WindowModeIds, m.GetString()) >= 0)
-                    o.WindowMode = m.GetString();
-                if (!o.IsEmpty) cfg.Characters[p.Name] = o;
-            }
         return cfg;
+    }
+
+    internal void Write(Utf8JsonWriter w)
+    {
+        w.WriteStartObject("values");
+        foreach (KeyValuePair<string, string> kv in Values) w.WriteString(kv.Key, kv.Value);
+        w.WriteEndObject();
+        if (WindowMode != null) w.WriteString("windowMode", WindowMode);
+    }
+}
+
+/// <summary>graphics.json: a graphics profile per account ("server|account").</summary>
+public sealed class AcGraphicsProfiles
+{
+    public Dictionary<string, AcGraphicsConfig> Accounts { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The account's profile, or an empty one (not added) when it has none.</summary>
+    public AcGraphicsConfig For(string accountKey) =>
+        accountKey.Length > 0 && Accounts.TryGetValue(accountKey, out AcGraphicsConfig? c) ? c : new AcGraphicsConfig();
+
+    /// <summary>Sets (or with an empty profile removes) one account's profile.</summary>
+    public void Put(string accountKey, AcGraphicsConfig cfg)
+    {
+        if (accountKey.Length == 0) return;
+        if (cfg.HasAny) Accounts[accountKey] = cfg;
+        else Accounts.Remove(accountKey);
+    }
+
+    public static AcGraphicsProfiles Load(string path)
+    {
+        var all = new AcGraphicsProfiles();
+        if (!File.Exists(path)) return all;
+        using JsonDocument doc = JsonDocument.Parse(File.ReadAllBytes(path));
+        // Only "accounts": the 2026.10.18.1 file's top-level "values" / "characters" were one set for
+        // every client (each fought the others over one resolution) and are left unused.
+        if (doc.RootElement.TryGetProperty("accounts", out JsonElement accounts) && accounts.ValueKind == JsonValueKind.Object)
+            foreach (JsonProperty p in accounts.EnumerateObject())
+            {
+                if (p.Value.ValueKind != JsonValueKind.Object) continue;
+                AcGraphicsConfig cfg = AcGraphicsConfig.Parse(p.Value);
+                if (cfg.HasAny) all.Accounts[p.Name] = cfg;
+            }
+        return all;
     }
 
     public string ToJson()
@@ -226,18 +237,13 @@ public sealed class AcGraphicsConfig
         using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = true }))
         {
             w.WriteStartObject();
-            w.WriteString("comment", "AC graphics settings RynthAi enforces on UserPreferences.ini every launch (Settings > Graphics).");
-            w.WriteStartObject("values");
-            foreach (KeyValuePair<string, string> kv in Values) w.WriteString(kv.Key, kv.Value);
-            w.WriteEndObject();
-            if (WindowMode != null) w.WriteString("windowMode", WindowMode);
-            w.WriteStartObject("characters");
-            foreach (KeyValuePair<string, AcGraphicsOverride> kv in Characters)
+            w.WriteString("comment", "AC graphics profiles per account (server|account) that RynthAi enforces on UserPreferences.ini when the launcher starts that account (Settings > Graphics).");
+            w.WriteStartObject("accounts");
+            foreach (KeyValuePair<string, AcGraphicsConfig> kv in Accounts)
             {
-                if (kv.Value.IsEmpty) continue;
+                if (!kv.Value.HasAny) continue;
                 w.WriteStartObject(kv.Key);
-                if (kv.Value.Resolution != null) w.WriteString("resolution", kv.Value.Resolution);
-                if (kv.Value.WindowMode != null) w.WriteString("windowMode", kv.Value.WindowMode);
+                kv.Value.Write(w);
                 w.WriteEndObject();
             }
             w.WriteEndObject();

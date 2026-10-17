@@ -14,42 +14,55 @@ string dir = Path.Combine(Path.GetTempPath(), "AcGraphicsPrefsTests-" + Environm
 Directory.CreateDirectory(dir);
 try
 {
-    // ── Effective values: the character's override wins; FullScreen follows the mode ──
-    var cfg = new AcGraphicsConfig { WindowMode = AcGraphicsPrefs.ModeBorderlessFill };
-    cfg.Values[AcGraphicsPrefs.ResolutionId] = "1920x1080";
-    cfg.Values["Render.TextureFiltering"] = "Anisotropic";
-    string kelpie = AcGraphicsPrefs.CharacterKey("InfiniteLeaftide", "Silentkelpie");
-    cfg.Characters[kelpie] = new AcGraphicsOverride { Resolution = "1280x720", WindowMode = AcGraphicsPrefs.ModeFullScreen };
+    // ── Per-account profiles: each account's own; FullScreen follows the mode ──
+    string kelpie = AcGraphicsPrefs.AccountKey("InfiniteLeaftide", "silentkelpie");
+    string storm = AcGraphicsPrefs.AccountKey("InfiniteLeaftide", "SilentStorm");
+    Check(kelpie == "infiniteleaftide|silentkelpie" && storm == "infiniteleaftide|silentstorm", "account key is server|account, lower case");
+    Check(AcGraphicsPrefs.AccountKey("", "X") == "" && AcGraphicsPrefs.AccountKey("S", " ") == "", "no key without server and account");
 
-    Check(kelpie == "infiniteleaftide|silentkelpie", "character key is server|character, lower case");
-    Check(AcGraphicsPrefs.CharacterKey("", "X") == "" && AcGraphicsPrefs.CharacterKey("S", " ") == "", "no key without server and character");
-    Check(cfg.EffectiveResolution(kelpie) == "1280x720", "override resolution wins");
-    Check(cfg.EffectiveResolution("other|char") == "1920x1080", "global resolution otherwise");
-    Check(cfg.EffectiveWindowMode(kelpie) == AcGraphicsPrefs.ModeFullScreen, "override window mode wins");
-    Check(cfg.EffectiveWindowMode("") == AcGraphicsPrefs.ModeBorderlessFill, "global window mode without a character");
+    var kcfg = new AcGraphicsConfig { WindowMode = AcGraphicsPrefs.ModeFullScreen };
+    kcfg.Values[AcGraphicsPrefs.ResolutionId] = "1280x720";
+    var scfg = new AcGraphicsConfig { WindowMode = AcGraphicsPrefs.ModeBorderlessFill };
+    scfg.Values["Render.TextureFiltering"] = "Anisotropic";
+    var all = new AcGraphicsProfiles();
+    all.Put(kelpie, kcfg);
+    all.Put(storm, scfg);
+    all.Put("x|y", new AcGraphicsConfig());
+    Check(all.Accounts.Count == 2, "an empty profile isn't kept");
 
-    Dictionary<string, string> forKelpie = cfg.IniValuesFor(kelpie);
-    Check(forKelpie[AcGraphicsPrefs.FullScreenId] == "True", "full screen mode writes FullScreen=True");
-    Check(forKelpie[AcGraphicsPrefs.ResolutionId] == "1280x720", "INI gets the override resolution");
-    Dictionary<string, string> forOther = cfg.IniValuesFor("other|char");
-    Check(forOther[AcGraphicsPrefs.FullScreenId] == "False", "borderless writes FullScreen=False");
-    Check(forOther["Render.TextureFiltering"] == "Anisotropic", "render values pass through");
+    Dictionary<string, string> forKelpie = all.For(kelpie).IniValues();
+    Check(forKelpie[AcGraphicsPrefs.FullScreenId] == "True" && forKelpie[AcGraphicsPrefs.ResolutionId] == "1280x720",
+        "Kelpie's profile: full screen at 1280x720");
+    Dictionary<string, string> forStorm = all.For(storm).IniValues();
+    Check(forStorm[AcGraphicsPrefs.FullScreenId] == "False" && !forStorm.ContainsKey(AcGraphicsPrefs.ResolutionId),
+        "Storm's profile: borderless, no resolution of Kelpie's");
+    Check(forStorm["Render.TextureFiltering"] == "Anisotropic", "render values pass through");
+    Check(all.For("infiniteleaftide|nobody").IniValues().Count == 0, "an account without a profile writes nothing");
 
-    var empty = new AcGraphicsConfig();
-    Check(!empty.HasAny && empty.IniValuesFor("a|b").Count == 0, "nothing set: nothing written");
-
-    // ── graphics.json round-trip ──
+    // ── graphics.json round-trip; another account's entry survives a save ──
     string json = Path.Combine(dir, "graphics.json");
-    cfg.Save(json);
-    AcGraphicsConfig back = AcGraphicsConfig.Load(json);
-    Check(back.WindowMode == AcGraphicsPrefs.ModeBorderlessFill, "window mode round-trips");
-    Check(back.Values.Count == 2 && back.Values["render.texturefiltering"] == "Anisotropic", "values round-trip (ids case-insensitive)");
-    Check(back.Characters.TryGetValue(kelpie, out AcGraphicsOverride? o) && o.Resolution == "1280x720" && o.WindowMode == AcGraphicsPrefs.ModeFullScreen,
-        "character override round-trips");
+    all.Save(json);
+    AcGraphicsProfiles back = AcGraphicsProfiles.Load(json);
+    Check(back.For(kelpie).WindowMode == AcGraphicsPrefs.ModeFullScreen && back.For(kelpie).Values[AcGraphicsPrefs.ResolutionId] == "1280x720",
+        "Kelpie's profile round-trips");
+    Check(back.For(storm).Values["render.texturefiltering"] == "Anisotropic", "Storm's profile round-trips (ids case-insensitive)");
     Check(!File.Exists(json + "." + Environment.ProcessId + ".tmp"), "no temp file left");
-    File.WriteAllText(json, "{\"windowMode\":\"Bogus\",\"characters\":{\"a|b\":{\"resolution\":\"12x7\"}}}");
-    AcGraphicsConfig bad = AcGraphicsConfig.Load(json);
-    Check(bad.WindowMode == null && bad.Characters.Count == 0, "unknown mode and bad resolution are dropped");
+
+    // A client edits only its own account: load, put, save (as AcGraphics.QueueSave does).
+    AcGraphicsProfiles onDisk = AcGraphicsProfiles.Load(json);
+    AcGraphicsConfig k2 = onDisk.For(kelpie).Clone();
+    k2.Values.Remove(AcGraphicsPrefs.ResolutionId);
+    onDisk.Put(kelpie, k2);
+    onDisk.Save(json);
+    AcGraphicsProfiles after = AcGraphicsProfiles.Load(json);
+    Check(!after.For(kelpie).Values.ContainsKey(AcGraphicsPrefs.ResolutionId), "Kelpie's change saved");
+    Check(after.For(storm).WindowMode == AcGraphicsPrefs.ModeBorderlessFill, "Storm's profile untouched by Kelpie's save");
+
+    // The 2026.10.18.1 single shared set is ignored (it made every client fight over one resolution).
+    File.WriteAllText(json, "{\"values\":{\"Display.Resolution\":\"1760x990\"},\"windowMode\":\"Windowed\",\"characters\":{}}");
+    Check(AcGraphicsProfiles.Load(json).Accounts.Count == 0, "old global graphics.json is not applied to anyone");
+    File.WriteAllText(json, "{\"accounts\":{\"a|b\":{\"windowMode\":\"Bogus\",\"values\":{}}}}");
+    Check(AcGraphicsProfiles.Load(json).Accounts.Count == 0, "unknown mode dropped; empty profile not kept");
 
     // ── Resolution parsing ──
     Check(AcGraphicsPrefs.TryParseResolution("1760x990", out int w, out int h) && w == 1760 && h == 990, "parses 1760x990");

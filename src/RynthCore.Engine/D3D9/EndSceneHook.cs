@@ -433,6 +433,10 @@ internal static class EndSceneHook
             EngineFrameController.OnEndScene(pDevice);
             _uiFrameCount++;
 
+            // AC's real drawing size, about once a second: the window code sizes the window for it.
+            if (_uiFrameCount % 60 == 1)
+                Graphics.AcGraphics.SampleBackBuffer(pDevice);
+
             if (_uiFrameCount == 60 && RynthCore.Engine.Plugins.EngineSettings.EnableImGuiBackend)
                 RynthLog.D3D9("EndSceneHook: 60 UI frames - ImGui is stable.");
             if (_renderCount == WarmupFrames && !RynthCore.Engine.Plugins.EngineSettings.EnableImGuiBackend)

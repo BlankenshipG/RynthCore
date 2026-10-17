@@ -116,7 +116,7 @@ internal static class AcWindowChrome
     public static void ApplyBorderlessDesired(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero) return;
-        // Settings > Graphics window mode (this character's, else global), else the Display toggles.
+        // Settings > Graphics window mode (this account's profile), else the Display toggles.
         bool want = Graphics.AcGraphics.WantBorderless;
         lock (Sync)
         {
@@ -255,13 +255,13 @@ internal static class AcWindowChrome
         IntPtr hwnd = ResolveGameHwnd();
         if (hwnd == IntPtr.Zero) return "The game window isn't known yet.";
         if (EngineSettings.BorderlessWindowed) EngineSettings.BorderlessWindowed = false;
-        // Settings > Graphics' window mode too (global and this character's), or it would win.
+        // This account's Settings > Graphics window mode too, or it would win.
         Graphics.AcGraphics.ResetWindowModeToWindowed();
         lock (Sync)
         {
             int style = GetWindowLong(hwnd, GwlStyle);
             SetWindowLong(hwnd, GwlStyle, style | BorderChromeMask);
-            // Centred, sized for AC's resolution (Settings > Graphics, else what AC launched with).
+            // Centred, sized for the resolution AC is really drawing at.
             RECT target = DefaultWindowedRect(hwnd);
             MoveTo(hwnd, target);
             _styleHwnd = hwnd;
@@ -308,7 +308,8 @@ internal static class AcWindowChrome
     }
 
     /// <summary>
-    /// Settings > Graphics changed the window mode or resolution: apply it to the window now.
+    /// Settings > Graphics changed the window mode: apply it to the window now (a Resolution change
+    /// waits for the next launch: the window always follows what AC really draws at).
     /// Borderless modes go through <see cref="ApplyBorderlessDesired"/> (and re-place a window that
     /// is already borderless); windowed and full screen get a frame sized for the resolution, where
     /// the window is. Full screen itself (AC's exclusive mode) starts at the next launch. AC's main thread.
@@ -346,14 +347,16 @@ internal static class AcWindowChrome
         public const string FullScreen = global::RynthCore.Graphics.AcGraphicsPrefs.ModeFullScreen;
     }
 
-    /// <summary>The outer size of a window with <paramref name="style"/> whose game area is AC's
-    /// resolution (Settings > Graphics, else what AC launched with). False when it isn't known.</summary>
+    /// <summary>The outer size of a window with <paramref name="style"/> whose game area is the size AC
+    /// is really drawing at (its back buffer, else the resolution it launched with). False when unknown.</summary>
     private static bool TryFramedSizeForResolution(IntPtr hwnd, int style, out int width, out int height)
     {
         width = height = 0;
-        if (!Graphics.AcGraphics.TryGetResolution(out int rw, out int rh)) return false;
+        if (!Graphics.AcGraphics.TryGetDrawSize(out int rw, out int rh)) return false;
         var r = new RECT { Left = 0, Top = 0, Right = rw, Bottom = rh };
-        int framedStyle = style | BorderChromeMask;
+        // The frame the window really has (AC's is fixed: no sizing border). A frame-less window
+        // gets the frame it will be given back (its style plus the chrome mask).
+        int framedStyle = (style & WsCaption) != 0 ? style : style | BorderChromeMask;
         if (!AdjustWindowRectEx(ref r, framedStyle, false, GetWindowLong(hwnd, GwlExStyle))) return false;
         width = Width(r);
         height = Height(r);
@@ -372,7 +375,7 @@ internal static class AcWindowChrome
     /// kept inside the screen; the monitor when the resolution isn't known.</summary>
     private static RECT BorderlessAtResolution(IntPtr hwnd, int left, int top)
     {
-        if (!Graphics.AcGraphics.TryGetResolution(out int rw, out int rh))
+        if (!Graphics.AcGraphics.TryGetDrawSize(out int rw, out int rh))
             return TryMonitorRect(hwnd, out RECT mon, out _) ? mon : DefaultWindowedRect(hwnd);
         return FitToWorkArea(new RECT { Left = left, Top = top, Right = left + rw, Bottom = top + rh });
     }
@@ -527,8 +530,8 @@ internal static class AcWindowChrome
         if (IsLikelyExclusiveFullscreen(hwnd, style)) return;
 
         if (ReadPlacementFile().Framed is not RECT saved) return;
-        // Only the saved position is the player's: the size always comes from AC's resolution
-        // (Settings > Graphics, else what AC launched with), so a size saved at another resolution
+        // Only the saved position is the player's: the size always comes from the resolution AC is
+        // really drawing at (its back buffer, else what it launched with), so a size saved at another resolution
         // or at the login screen can't shrink the window.
         bool sized = TryFramedSizeForResolution(hwnd, style, out int rw, out int rh);
         RECT r = sized
