@@ -183,6 +183,8 @@ internal static class HotkeyActions
     public const string PanelPrefix = "panel:";
     public const string VTankPrefix = "vt:";
     public const string VTankGroup = "VTank-style";
+    /// <summary>The one-touch heal / stamina / mana actions (RynthAi's /ra heal, /ra stam, /ra mana).</summary>
+    public const string HealId = "heal", StaminaId = "stamina", ManaId = "mana";
     /// <summary>The parameterized "Meta: set state" action (its binding's Command is the state name).</summary>
     public const string MetaStateId = VTankPrefix + "metastate";
 
@@ -222,6 +224,14 @@ internal static class HotkeyActions
         new("looting", "Toggle Looting"),
         new("meta", "Toggle Meta"),
         new("forcerebuff", "Force rebuff"),
+        // One-touch heal (RynthAi /ra heal | stam | mana): the best kit, spell or potion for that vital now.
+        // HotkeyDefaults binds them once to F6 / F7 / F8.
+        new(HealId, "Heal now (one touch)", Chat: "/ra heal", Tip: "Uses the best healing option you have right now: a healing kit, " +
+            "Heal Self or a health potion, whatever your Heal At lines say, even with the macro stopped (/ra heal)."),
+        new(StaminaId, "Restore stamina now (one touch)", Chat: "/ra stam", Tip: "A stamina kit, a stamina potion or Revitalize Self, " +
+            "now, even with the macro stopped (/ra stam)."),
+        new(ManaId, "Restore mana now (one touch)", Chat: "/ra mana", Tip: "Stamina to Mana Self or a mana potion, now, " +
+            "even with the macro stopped (/ra mana)."),
         new("patrol", "Start dungeon patrol"),
         new("autosort", "Toggle auto-sort (RynthSort)"),
         new("reload", "Reload the engine"),
@@ -572,8 +582,45 @@ internal static class HotkeyCommandParser
     private static HotkeyCommand Fail(string error) => new(HotkeyVerb.Error, Error: error);
 }
 
-/// <summary>The bindings and the master switch, as saved.</summary>
-internal sealed record HotkeyFile(bool Enabled, List<HotkeyBinding> Bindings);
+/// <summary>The bindings and the master switch, as saved. <paramref name="DefaultsApplied"/>: the
+/// <see cref="HotkeyDefaults"/> version already offered to this file (0 = never).</summary>
+internal sealed record HotkeyFile(bool Enabled, List<HotkeyBinding> Bindings, int DefaultsApplied = 0);
+
+/// <summary>
+/// Bindings a file gets once, when it has never been offered this version of them (a new PC, or an
+/// engine that brought new default keys): the one-touch heal keys. Added only where they cannot take
+/// anything from the player: an action already bound to any key is left alone, and so is a key already
+/// bound to anything. The version is saved with the file, so a default the player removes or changes
+/// stays gone. Raise <see cref="Version"/> with new entries; entries already offered are not offered again.
+/// </summary>
+internal static class HotkeyDefaults
+{
+    public const int Version = 1;
+
+    private const int VK_F6 = 0x75, VK_F7 = 0x76, VK_F8 = 0x77;
+
+    /// <summary>The default key for each action, in the order they are added. Tell the player where: Settings > Hotkeys.</summary>
+    public static readonly (KeyCombo Combo, string Action)[] All =
+    {
+        (new KeyCombo(VK_F6, HotkeyMods.None), HotkeyActions.HealId),
+        (new KeyCombo(VK_F7, HotkeyMods.None), HotkeyActions.StaminaId),
+        (new KeyCombo(VK_F8, HotkeyMods.None), HotkeyActions.ManaId),
+    };
+
+    /// <summary>The file with the defaults it has not been offered yet (the same file when it has been).</summary>
+    public static HotkeyFile Apply(HotkeyFile file)
+    {
+        if (file.DefaultsApplied >= Version) return file;
+        var list = new List<HotkeyBinding>(file.Bindings);
+        foreach (var (combo, action) in All)
+        {
+            bool actionBound = list.Exists(b => string.Equals(b.Action, action, StringComparison.OrdinalIgnoreCase));
+            bool keyBound = list.Exists(b => b.Combo == combo);
+            if (!actionBound && !keyBound) list.Add(new HotkeyBinding(combo, action));
+        }
+        return file with { Bindings = list, DefaultsApplied = Version };
+    }
+}
 
 /// <summary>
 /// %LOCALAPPDATA%\RynthCore\hotkeys.txt, for every client on this PC. Text, one binding a line:
@@ -599,6 +646,7 @@ internal static class HotkeyStore
         sb.Append("# RynthCore hotkeys (Settings > Hotkeys, /rc hotkey). Shared by every client on this PC.\n");
         sb.Append("# One per line: on|off <TAB> combo <TAB> action <TAB> chat command (action \"command\").\n");
         sb.Append("enabled=").Append(file.Enabled ? '1' : '0').Append('\n');
+        if (file.DefaultsApplied > 0) sb.Append("defaults=").Append(file.DefaultsApplied).Append('\n');
         foreach (HotkeyBinding b in file.Bindings)
         {
             if (b.Combo.IsEmpty) continue;
@@ -615,6 +663,7 @@ internal static class HotkeyStore
     {
         var file = new HotkeyFile(true, new List<HotkeyBinding>());
         bool enabled = true;
+        int defaults = 0;
         if (string.IsNullOrEmpty(text)) return file;
         foreach (string raw in text.Split('\n'))
         {
@@ -623,6 +672,11 @@ internal static class HotkeyStore
             if (line.StartsWith("enabled=", StringComparison.OrdinalIgnoreCase))
             {
                 enabled = line.Substring(8).Trim() != "0";
+                continue;
+            }
+            if (line.StartsWith("defaults=", StringComparison.OrdinalIgnoreCase))
+            {
+                int.TryParse(line.Substring(9).Trim(), out defaults);
                 continue;
             }
             string[] f = line.Split('\t', 4);
@@ -634,7 +688,7 @@ internal static class HotkeyStore
             bool on = !f[0].Trim().Equals("off", StringComparison.OrdinalIgnoreCase);
             file.Bindings.Add(new HotkeyBinding(combo, action, cmd, on));
         }
-        return file with { Enabled = enabled };
+        return file with { Enabled = enabled, DefaultsApplied = Math.Max(0, defaults) };
     }
 
     public static HotkeyFile Load()

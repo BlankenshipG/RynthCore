@@ -79,6 +79,9 @@ internal static class ItemsPanel
         [JsonPropertyName("element")] public string Element { get; set; } = "Slash";
         // "Weapon" or "Shield" (older settings may hold "Loot"). Round-tripped untouched.
         [JsonPropertyName("action")]  public string Action  { get; set; } = "Weapon";
+        // Melee, Missile, "War Magic", "Void Magic", Shield, Ammo, or "" (not known). Set by RynthAi for
+        // display (the Items face groups by it); sent back untouched and ignored there.
+        [JsonPropertyName("kind")]    public string Kind    { get; set; } = string.Empty;
 
         public bool IsShield => string.Equals(Action, ItemsCommands.ShieldAction, StringComparison.OrdinalIgnoreCase);
     }

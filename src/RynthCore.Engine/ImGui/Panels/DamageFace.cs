@@ -60,11 +60,11 @@ internal sealed class DamageFace : IImGuiPanel
 
     // Column widths (the Avalonia grid's) and their left edges.
     // Widths are the user's (dragged in the header, saved per PC), else these defaults.
-    private static readonly float[] DefaultColW = { 210, 72, 84, 92, 150, 130, 120, 56, 70, 96, 26 };
+    private static readonly float[] DefaultColW = { 210, 72, 84, 92, 150, 130, 120, 84, 56, 70, 96, 26 };
     // Saved width keys: the columns keep the keys they had before Priority was added (2026-10-03),
     // so a saved layout still fits them; Priority has its own.
     private static readonly string[] ColKeys =
-        { "col0", "colPrio", "col1", "col2", "col3", "col4", "col5", "col6", "col7", "col8", "col9" };
+        { "col0", "colPrio", "col1", "col2", "col3", "col4", "col5", "colPrefer", "col6", "col7", "col8", "col9" };
     private static readonly float[] ColW = LoadColW();
     private static float[] ColX = BuildColX();
 
@@ -76,9 +76,9 @@ internal sealed class DamageFace : IImGuiPanel
         return w;
     }
     private static readonly string[] Headers =
-        { "Monster", "Priority", "HP", "Weak to", "Weapon", "Offhand", "Pet", "Kills", "Sec/Kill", "Debuffs", "" };
-    private const int ColMonster = 0, ColPrio = 1, ColHp = 2, ColWeak = 3, ColWeapon = 4, ColOffhand = 5, ColPet = 6, ColKills = 7,
-        ColSec = 8, ColDebuffs = 9, ColDel = 10;
+        { "Monster", "Priority", "HP", "Weak to", "Weapon", "Offhand", "Pet", "Prefer", "Kills", "Sec/Kill", "Debuffs", "" };
+    private const int ColMonster = 0, ColPrio = 1, ColHp = 2, ColWeak = 3, ColWeapon = 4, ColOffhand = 5, ColPet = 6, ColPrefer = 7, ColKills = 8,
+        ColSec = 9, ColDebuffs = 10, ColDel = 11;
     private const float RowH = 22;
     private static float TableW => ColX[^1] + ColW[^1];
 
@@ -96,7 +96,8 @@ internal sealed class DamageFace : IImGuiPanel
         /// <summary>The name as shown: "Rampager (2 kinds)" for a row of several wcids.</summary>
         public string NameShown = "", NameTip = "";
         public string Weapon = "", Offhand = "", Pet = "", WeakTop = "", Sec = "", SecTip = "";
-        public bool CritSet, NonCritSet, WeaponGold, OffhandGold, PetGold;
+        public string Prefer = "Auto";
+        public bool CritSet, NonCritSet, WeaponGold, OffhandGold, PetGold, PreferGold;
         public string[] TierLines = Array.Empty<string>();
         /// <summary>Priority shown (int.MinValue = rules not loaded), whether it's the monster's own
         /// (gold), the rule an edit copies when it has none (a name rule covering it), and the tip.</summary>
@@ -280,6 +281,7 @@ internal sealed class DamageFace : IImGuiPanel
             ColWeapon => (a, b) => string.Compare(_text[a].Weapon, _text[b].Weapon, StringComparison.OrdinalIgnoreCase),
             ColOffhand => (a, b) => string.Compare(_text[a].Offhand, _text[b].Offhand, StringComparison.OrdinalIgnoreCase),
             ColPet => (a, b) => string.Compare(_text[a].Pet, _text[b].Pet, StringComparison.OrdinalIgnoreCase),
+            ColPrefer => (a, b) => string.Compare(_text[a].Prefer, _text[b].Prefer, StringComparison.OrdinalIgnoreCase),
             ColKills => (a, b) => a.Kills.CompareTo(b.Kills),
             ColSec => (a, b) => (a.SecKill > 0 ? a.SecKill : double.MaxValue).CompareTo(b.SecKill > 0 ? b.SecKill : double.MaxValue),
             _ => (a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase),
@@ -347,6 +349,9 @@ internal sealed class DamageFace : IImGuiPanel
             : ruleOff is >= 1 and <= 4 ? DamageCommands.OffhandModeNames[ruleOff]
             : ruleOff != 0 ? Trunc(WeaponName(unchecked((uint)ruleOff)), 16)
             : "Auto";
+        string pref = RuleFor(r.IsDefault ? "Default" : r.Name, out _)?.PreferredDamage ?? "";
+        t.PreferGold = pref.Length > 0 && !pref.Equals("Auto", StringComparison.OrdinalIgnoreCase);
+        t.Prefer = t.PreferGold ? pref : "Auto";
         t.PetGold = r.Pet.Length > 0;
         t.Pet = Trunc(t.PetGold ? r.PetLabel : "Auto", 16);
         int comma = r.Weak.IndexOf(',');
@@ -426,6 +431,8 @@ internal sealed class DamageFace : IImGuiPanel
         ImGuiNET.ImGui.SetItemTooltip("Keep the monster you're fighting (teal) and the ones on this landblock (green) at the top.");
         x += nw + 6;
 
+        x = PreferChip(x, p.Y);
+
         if (Button("##reset", ResetLabel, new Vector2(x, p.Y), new Vector2(84, 22), White, ResetBg, ResetBorder))
             _resetOpen = true;
         ImGuiNET.ImGui.SetItemTooltip("Clear all learned damage statistics (keeps monster names + your manual settings).");
@@ -436,6 +443,35 @@ internal sealed class DamageFace : IImGuiPanel
         dl.AddText(new Vector2(x + 4, p.Y + (22 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Dim, _status);
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + 22));
         ImGuiNET.ImGui.Dummy(new Vector2(0, 0));
+    }
+
+    // ── Preferred damage (2026-10-16) ────────────────────────────────────
+    // The Default rule's PreferredDamage: the kind of damage RynthAi fights with when the character
+    // uses more than one (Auto = the first listed weapon's kind). A monster's own rule can differ
+    // (Rule section of its detail drawer); one left on Auto follows this.
+
+    /// <summary>The "Prefer" chip at <paramref name="x"/>; returns the x after it.</summary>
+    private float PreferChip(float x, float y)
+    {
+        string current = _rules?.DefaultRule()?.PreferredDamage ?? "Auto";
+        int cur = Math.Max(0, Array.FindIndex(DamageCommands.PreferredDamages, v => v.Equals(current, StringComparison.OrdinalIgnoreCase)));
+        string label = "Prefer: " + DamageCommands.PreferredDamages[cur] + " " + PhosphorIcons.CaretDown;
+        float w = ImGuiNET.ImGui.CalcTextSize(label).X + 16;
+        if (Button("##prefer", label, new Vector2(x, y), new Vector2(w, 22), cur > 0 ? Gold : White, FilterBg, cur > 0 ? Gold : EntryBorder))
+        {
+            _pickItems.Clear();
+            for (int i = 0; i < DamageCommands.PreferredDamages.Length; i++)
+                _pickItems.Add(((uint)i, DamageCommands.PreferredDamages[i]));
+            OpenPicker(new Vector2(x, y + 22), (uint)cur,
+                id => DamageCommands.EditRule("Default", r => r.PreferredDamage = DamageCommands.PreferredDamages[Math.Min((int)id, DamageCommands.PreferredDamages.Length - 1)]));
+        }
+        SafeImGui.SetItemTooltip(
+            "The kind of damage to fight with, for a character who uses more than one kind.\n" +
+            "Auto = the kind of the first weapon in the Items list.\n" +
+            "Melee / Missile / War Magic / Void Magic = only weapons of that kind are wielded;\n" +
+            "with none listed (or usable) it falls back to Auto.\n" +
+            "A monster with its own Prefer setting (its drawer) keeps it; a weapon you set for it still wins.");
+        return x + w + 6;
     }
 
     // ── Aelrynth difficulty tier (2026-10-03) ────────────────────────────
@@ -764,6 +800,7 @@ internal sealed class DamageFace : IImGuiPanel
             }
             ImGuiNET.ImGui.SetItemTooltip("Default weapon: used by every monster that has no weapon of its own.");
             DefaultOffhandAndPet(p);
+            PreferCell("Default", true, t, p);
             DebuffCell("Default", p, ty);
             ImGuiNET.ImGui.PopID();
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + RowH));
@@ -837,6 +874,8 @@ internal sealed class DamageFace : IImGuiPanel
         }
         ImGuiNET.ImGui.SetItemTooltip("Summon for this monster. Auto = an essence of the element it takes most damage from (Weak to); or pick an element or a specific essence.");
 
+        PreferCell(r.Name, false, t, p);
+
         dl.AddText(new Vector2(p.X + ColX[ColKills] + 4, ty), White, t.Kills);
         dl.AddText(new Vector2(p.X + ColX[ColSec] + 4, ty), r.SecKill > 0 ? White : Dim, t.Sec);
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + ColX[ColSec], p.Y));
@@ -863,6 +902,29 @@ internal sealed class DamageFace : IImGuiPanel
     private static readonly (uint Id, string Name)[] OffhandModeChoices =
         { (1, "Auto"), (2, "Shield"), (3, "Dual wield"), (4, "None") };
     private static readonly string[] PetElements = { "Fire", "Cold", "Lightning", "Acid", "Nether", "Slash", "Pierce", "Bludgeon" };
+
+    /// <summary>The Prefer cell: Auto, Melee, Missile, War Magic or Void Magic for a monster's rule (or the DEFAULT line's).</summary>
+    private void PreferCell(string name, bool isDefault, RowText t, Vector2 p)
+    {
+        if (CellPicker("##pref", t.Prefer, t.PreferGold, p, ColPrefer))
+        {
+            string[] choices = DamageCommands.PreferredDamages;
+            _pickItems.Clear();
+            for (int i = 0; i < choices.Length; i++) _pickItems.Add(((uint)i, choices[i]));
+            int cur = Math.Max(0, Array.FindIndex(choices, v => v.Equals(t.Prefer, StringComparison.OrdinalIgnoreCase)));
+            bool hasOwn = isDefault || (_rules?.FindRule(name) != null);
+            OpenPicker(new Vector2(p.X + ColX[ColPrefer], p.Y + RowH), (uint)cur, id =>
+            {
+                string pick = choices[Math.Min((int)id, choices.Length - 1)];
+                // Auto on a monster with no rule of its own is already what it does: don't make one.
+                if (!hasOwn && pick == "Auto") return;
+                DamageCommands.EditRule(name, r => r.PreferredDamage = pick);
+            });
+        }
+        ImGuiNET.ImGui.SetItemTooltip(isDefault
+            ? "Default preferred damage: the kind of damage used against every monster without its own.\nAuto = the kind of the first weapon in the Items list. Same as the Prefer chip above."
+            : "The kind of damage to fight this monster with (Melee, Missile, War Magic, Void Magic).\nAuto = the DEFAULT line's. A weapon picked in the Weapon column still wins.");
+    }
 
     private void DefaultOffhandAndPet(Vector2 p)
     {

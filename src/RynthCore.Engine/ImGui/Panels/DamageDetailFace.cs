@@ -409,6 +409,15 @@ internal sealed class DamageDetailFace : IImGuiPanel
             pick => DamageCommands.EditRule(name, r => r.ExVuln = pick),
             "A vulnerability of another element, on top of Vuln (which follows the attack's element).");
 
+        // The DEFAULT line's own choice is the Prefer chip in the Damage panel's top bar.
+        if (!isDefault)
+            Combo("Prefer", "##prefer", DamageCommands.PreferredDamages, string.IsNullOrEmpty(view.PreferredDamage) ? "Auto" : view.PreferredDamage,
+                pick => DamageCommands.EditRule(name, r => r.PreferredDamage = pick),
+                "The kind of damage to fight this monster with, for a character who uses more than one kind.\n" +
+                "Auto = the Prefer chip's choice in the Damage panel's top bar.\n" +
+                "Melee / Missile / War Magic / Void Magic = only weapons of that kind are wielded; with none\n" +
+                "listed it falls back to Auto. A weapon you set for the monster in the Damage panel still wins.");
+
         // Match expression (Default never matches by name, so it has none)
         if (!isDefault)
         {

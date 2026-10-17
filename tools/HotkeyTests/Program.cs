@@ -39,6 +39,8 @@ internal static class Program
             Run("CommandParsing", CommandParsing);
             Run("VTankActions", VTankActions);
             Run("MetaStateParam", MetaStateParam);
+            Run("OneTouchHeal", OneTouchHeal);
+            Run("DefaultKeys", DefaultKeys);
             Run("IltPanelsOnlyOnIlt", IltPanelsOnlyOnIlt);
         }
         finally
@@ -472,6 +474,71 @@ internal static class Program
     }
 
     // "Meta: set state...": the state is the binding's parameter (its Command), kept in the file.
+    // One-touch heal (2026-10-16): three built-ins that run RynthAi's /ra heal | stam | mana.
+    private static void OneTouchHeal()
+    {
+        var want = new[] { ("heal", "/ra heal"), ("stamina", "/ra stam"), ("mana", "/ra mana") };
+        foreach (var (id, chat) in want)
+        {
+            HotkeyAction? a = HotkeyActions.Find(id);
+            Check(a != null && a.Chat == chat && a.Panel == null && a.Group.Length == 0 && !a.HasParam && a.Tip.Length > 20, $"{id}: a built-in that runs {chat}");
+            Check(a != null && HotkeyActions.ChatFor(a, new HotkeyBinding(new KeyCombo(VK_F5, HotkeyMods.None), id)) == chat, $"{id}: the chat line");
+        }
+        Check(HotkeyActions.Resolve("heal")?.Id == "heal", "Resolve: heal");
+        Check(HotkeyActions.Resolve("Heal now (one touch)")?.Id == "heal", "Resolve: by name");
+        Check(HotkeyActions.Resolve("Restore mana now (one touch)")?.Id == "mana", "Resolve: mana by name");
+        Check(HotkeyActions.Resolve("stamina")?.Id == "stamina", "Resolve: stamina");
+        Check(HotkeyActions.Describe(new HotkeyBinding(new KeyCombo(VK_F5, HotkeyMods.None), "heal")) == "Heal now (one touch)", "Describe");
+        HotkeyCommand c = HotkeyCommandParser.Parse("add F6 heal");
+        Check(c.Verb == HotkeyVerb.Add && c.Action == "heal", "/rc hotkey add F6 heal");
+        Check(HotkeyActions.BuiltIns.Select(a => a.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() == HotkeyActions.BuiltIns.Length, "every id is unique");
+        Check(HotkeyActions.Resolve("combat")?.Id == "combat" && HotkeyActions.Resolve("macro")?.Id == "macro", "older words still win");
+    }
+
+    // The default keys are offered once per version: only where neither the action nor the key is taken.
+    private static void DefaultKeys()
+    {
+        var f6 = new KeyCombo(0x75, HotkeyMods.None);
+        var f7 = new KeyCombo(0x76, HotkeyMods.None);
+        var f8 = new KeyCombo(0x77, HotkeyMods.None);
+        Check(HotkeyDefaults.All.Length == 3 && HotkeyDefaults.All[0] == (f6, "heal") && HotkeyDefaults.All[1] == (f7, "stamina")
+              && HotkeyDefaults.All[2] == (f8, "mana"), "F6 heal, F7 stamina, F8 mana");
+        foreach (var (combo, action) in HotkeyDefaults.All)
+            Check(HotkeyActions.Find(action) != null && HotkeyConflicts.CommonAcKey(combo) == null, $"{combo}: a real action, no AC key warning");
+
+        // A new PC (no file): all three, saved with the version.
+        HotkeyFile empty = new(true, new List<HotkeyBinding>());
+        HotkeyFile seeded = HotkeyDefaults.Apply(empty);
+        Check(!ReferenceEquals(seeded, empty) && seeded.DefaultsApplied == HotkeyDefaults.Version && seeded.Bindings.Count == 3, "empty file: three keys");
+        Check(seeded.Bindings.All(b => b.Enabled && !b.IsCommand), "enabled built-ins");
+        HotkeyFile back = HotkeyStore.Parse(HotkeyStore.Serialize(seeded));
+        Check(back.DefaultsApplied == HotkeyDefaults.Version && back.Bindings.Count == 3 && back.Enabled, "the version and keys round-trip");
+        Check(ReferenceEquals(HotkeyDefaults.Apply(back), back), "offered once: a second Apply changes nothing");
+
+        // A key the player removed does not come back once the file has been offered them.
+        HotkeyFile removed = back with { Bindings = back.Bindings.Where(b => b.Action != "heal").ToList() };
+        Check(HotkeyDefaults.Apply(removed).Bindings.Count == 2, "a removed default stays removed");
+
+        // Nothing of the player's is taken: a bound key, or an action already bound elsewhere.
+        var mine = new List<HotkeyBinding>
+        {
+            new(f6, "macro"),                                              // F6 is taken: no heal key
+            new(new KeyCombo(0x70, HotkeyMods.Ctrl), "mana"),              // mana is bound: no F8
+        };
+        HotkeyFile kept = HotkeyDefaults.Apply(new HotkeyFile(false, mine));
+        Check(!kept.Enabled, "the master switch is not touched");
+        Check(kept.Bindings.Count == 3 && kept.Bindings[0].Action == "macro" && kept.Bindings[1].Action == "mana", "the player's bindings stay, first");
+        Check(kept.Bindings[2] == new HotkeyBinding(f7, "stamina"), "only the free one is added: " + string.Join(", ", kept.Bindings.Select(b => b.Combo + " " + b.Action)));
+        Check(HotkeyDefaults.Apply(new HotkeyFile(true, new List<HotkeyBinding> { new(f7, "heal", Enabled: false) })).Bindings
+            .Count(b => b.Action == "heal") == 1, "a switched-off heal key counts as bound");
+
+        // An older file (no defaults= line) is offered them; an unreadable version counts as never.
+        HotkeyFile old = HotkeyStore.Parse("enabled=1\non\tCtrl+F1\tmacro\t\n");
+        Check(old.DefaultsApplied == 0 && HotkeyDefaults.Apply(old).Bindings.Count == 4, "an older file gets them next to its own");
+        Check(HotkeyStore.Parse("defaults=banana\n").DefaultsApplied == 0, "junk version = never offered");
+        Check(HotkeyStore.Parse("defaults=-3\n").DefaultsApplied == 0, "negative version = never offered");
+    }
+
     private static void MetaStateParam()
     {
         var f6 = new KeyCombo(0x75, HotkeyMods.Ctrl);
