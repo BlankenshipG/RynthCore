@@ -58,6 +58,8 @@
     <Compile Include="..\RynthCore.App\AcClientLaunchSettingsService.cs" Link="Shared\AcClientLaunchSettingsService.cs" />
     <Compile Include="..\RynthCore.App\DxvkPackageService.cs" Link="Shared\DxvkPackageService.cs" />
     <Compile Include="..\RynthCore.App\UserPrefsSwapRecovery.cs" Link="Shared\UserPrefsSwapRecovery.cs" />
+    <!-- RynthAi's Settings > Graphics: graphics.json, enforced on UserPreferences.ini before each launch. -->
+    <Compile Include="..\RynthCore.Engine\Graphics\AcGraphicsPrefs.cs" Link="Shared\AcGraphicsPrefs.cs" />
     <Compile Include="..\RynthCore.App\AcClientLoginAutomationService.cs" Link="Shared\AcClientLoginAutomationService.cs" />
     <Compile Include="..\RynthCore.App\CharacterCacheStore.cs" Link="Shared\CharacterCacheStore.cs" />
     <Compile Include="..\RynthCore.App\LaunchContextStore.cs" Link="Shared\LaunchContextStore.cs" />

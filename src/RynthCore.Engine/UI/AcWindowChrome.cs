@@ -32,6 +32,7 @@ namespace RynthCore.Engine.UI;
 internal static class AcWindowChrome
 {
     private const int GwlStyle = -16;
+    private const int GwlExStyle = -20;
     private const int WsCaption = 0x00C00000;
     private const int WsThickFrame = 0x00040000;
     private const int WsSysMenu = 0x00080000;
@@ -90,6 +91,9 @@ internal static class AcWindowChrome
 
         try
         {
+            // Another client may have changed Settings > Graphics (graphics.json).
+            Graphics.AcGraphics.PollReload();
+
             if (EngineSettings.RememberWindowLayout && !_placementRestored)
                 TryRestorePlacement(hwnd);
 
@@ -112,7 +116,8 @@ internal static class AcWindowChrome
     public static void ApplyBorderlessDesired(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero) return;
-        bool want = EngineSettings.BorderlessWindowed;
+        // Settings > Graphics window mode (this character's, else global), else the Display toggles.
+        bool want = Graphics.AcGraphics.WantBorderless;
         lock (Sync)
         {
             if (hwnd != _styleHwnd)
@@ -172,7 +177,7 @@ internal static class AcWindowChrome
                 _borderlessApplied = true;
                 _refills = 0;
                 _refillGaveUp = false;
-                string how = EngineSettings.BorderlessFillMonitor ? "filling the monitor" : "kept size";
+                string how = Graphics.AcGraphics.FillMonitor ? "filling the monitor" : "resolution size";
                 RynthLog.UI(FormattableString.Invariant(
                     $"AcWindowChrome: borderless windowed on at ({target.Left},{target.Top}) {Width(target)}x{Height(target)} ({how})."));
                 if (EngineSettings.RememberWindowLayout) SavePlacement(hwnd);
@@ -193,10 +198,11 @@ internal static class AcWindowChrome
 
                 if (style != restore)
                     SetWindowLong(hwnd, GwlStyle, restore);
-                // Back to a framed, resizable window: the rect from before borderless, else the
-                // saved framed placement, else three quarters of the monitor, centred.
-                RECT target = _savedRect
-                    ?? (ReadPlacementFile().Framed is RECT ff && IsRectOnAnyMonitor(ff) ? FitToWorkArea(ff) : DefaultWindowedRect(hwnd));
+                // Back to a framed window where it was before borderless (else the saved framed
+                // placement, else centred), sized for AC's resolution.
+                RECT at = _savedRect
+                    ?? (ReadPlacementFile().Framed is RECT ff && IsRectOnAnyMonitor(ff) ? ff : DefaultWindowedRect(hwnd));
+                RECT target = FramedAtResolution(hwnd, at, restore);
                 MoveTo(hwnd, target);
                 _borderlessApplied = false;
                 _borderlessTarget = null;
@@ -217,20 +223,21 @@ internal static class AcWindowChrome
         {
             if (!_borderlessApplied || (GetWindowLong(hwnd, GwlStyle) & WsCaption) != 0) return;
             RECT target;
-            if (EngineSettings.BorderlessFillMonitor)
+            if (Graphics.AcGraphics.FillMonitor)
             {
                 if (!TryMonitorRect(hwnd, out target, out _)) return;
             }
             else
             {
-                // The window fills the monitor now; the framed rect is the size it had before.
-                target = _savedRect is RECT fr && IsRectOnAnyMonitor(fr) ? fr : DefaultWindowedRect(hwnd);
+                // Resolution size, where the framed window was (else centred on the monitor).
+                RECT at = _savedRect is RECT fr && IsRectOnAnyMonitor(fr) ? fr : DefaultWindowedRect(hwnd);
+                target = BorderlessAtResolution(hwnd, at.Left, at.Top);
             }
             MoveTo(hwnd, target);
             _borderlessTarget = target;
             _refills = 0;
             _refillGaveUp = false;
-            string how = EngineSettings.BorderlessFillMonitor ? "filling the monitor" : "kept size";
+            string how = Graphics.AcGraphics.FillMonitor ? "filling the monitor" : "resolution size";
             RynthLog.UI(FormattableString.Invariant(
                 $"AcWindowChrome: borderless now {Width(target)}x{Height(target)} ({how})."));
             if (EngineSettings.RememberWindowLayout) SavePlacement(hwnd);
@@ -248,10 +255,13 @@ internal static class AcWindowChrome
         IntPtr hwnd = ResolveGameHwnd();
         if (hwnd == IntPtr.Zero) return "The game window isn't known yet.";
         if (EngineSettings.BorderlessWindowed) EngineSettings.BorderlessWindowed = false;
+        // Settings > Graphics' window mode too (global and this character's), or it would win.
+        Graphics.AcGraphics.ResetWindowModeToWindowed();
         lock (Sync)
         {
             int style = GetWindowLong(hwnd, GwlStyle);
             SetWindowLong(hwnd, GwlStyle, style | BorderChromeMask);
+            // Centred, sized for AC's resolution (Settings > Graphics, else what AC launched with).
             RECT target = DefaultWindowedRect(hwnd);
             MoveTo(hwnd, target);
             _styleHwnd = hwnd;
@@ -278,24 +288,93 @@ internal static class AcWindowChrome
     }
 
     /// <summary>Where a borderless window goes: fill (the saved rect's monitor at launch, else the
-    /// window's) or kept size (the saved rect at launch, else the framed window's game area).</summary>
+    /// window's) or resolution size (at the saved spot at launch, else where the framed window's game
+    /// area is, so the picture doesn't move).</summary>
     private static RECT ChooseBorderlessTarget(IntPtr hwnd, bool missingChrome, RECT? savedBorderless)
     {
         bool useSaved = savedBorderless is RECT sb && IsRectOnAnyMonitor(sb) && !IsLoginScreenSize(Width(sb), Height(sb));
-        if (EngineSettings.BorderlessFillMonitor)
+        if (Graphics.AcGraphics.FillMonitor)
         {
             if (useSaved && TryMonitorRectAt(savedBorderless!.Value, out RECT savedMon)) return savedMon;
             if (TryMonitorRect(hwnd, out RECT mon, out _)) return mon;
         }
         else
         {
-            // Kept size: never larger than, or partly off, the screen (AC's toolbar is bottom-right).
-            if (useSaved) return FitToWorkArea(savedBorderless!.Value);
-            // Framed now: the client area in screen coordinates, so the game doesn't move.
-            if (!missingChrome && TryClientRectOnScreen(hwnd, out RECT client)) return client;
-            if (GetWindowRect(hwnd, out RECT wr)) return wr;
+            if (useSaved) return BorderlessAtResolution(hwnd, savedBorderless!.Value.Left, savedBorderless.Value.Top);
+            if (!missingChrome && TryClientRectOnScreen(hwnd, out RECT client)) return BorderlessAtResolution(hwnd, client.Left, client.Top);
+            if (GetWindowRect(hwnd, out RECT wr)) return BorderlessAtResolution(hwnd, wr.Left, wr.Top);
         }
         return DefaultWindowedRect(hwnd);
+    }
+
+    /// <summary>
+    /// Settings > Graphics changed the window mode or resolution: apply it to the window now.
+    /// Borderless modes go through <see cref="ApplyBorderlessDesired"/> (and re-place a window that
+    /// is already borderless); windowed and full screen get a frame sized for the resolution, where
+    /// the window is. Full screen itself (AC's exclusive mode) starts at the next launch. AC's main thread.
+    /// </summary>
+    public static void ApplyGraphicsChanged(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return;
+        lock (Sync)
+        {
+            bool framed = (GetWindowLong(hwnd, GwlStyle) & WsCaption) != 0;
+            if (Graphics.AcGraphics.WantBorderless)
+            {
+                if (_borderlessApplied && !framed) ApplyFillMonitorChanged(hwnd);
+                else ApplyBorderlessDesired(hwnd);
+                return;
+            }
+            if (_borderlessApplied || !framed)
+            {
+                ApplyBorderlessDesired(hwnd);   // frame back, sized for the resolution
+                return;
+            }
+            if (!GetWindowRect(hwnd, out RECT wr)) return;
+            RECT target = FramedAtResolution(hwnd, wr, GetWindowLong(hwnd, GwlStyle));
+            if (!SameRect(target, wr)) MoveTo(hwnd, target);
+            string later = Graphics.AcGraphics.WindowMode == AcGraphicsModes.FullScreen ? " (full screen starts at the next launch)" : "";
+            RynthLog.UI(FormattableString.Invariant(
+                $"AcWindowChrome: window set to {Width(target)}x{Height(target)} for {Graphics.AcGraphics.WindowMode}{later}."));
+            if (EngineSettings.RememberWindowLayout) SavePlacement(hwnd);
+        }
+    }
+
+    /// <summary>Short names for the window mode ids (RynthCore.Graphics.AcGraphicsPrefs).</summary>
+    private static class AcGraphicsModes
+    {
+        public const string FullScreen = global::RynthCore.Graphics.AcGraphicsPrefs.ModeFullScreen;
+    }
+
+    /// <summary>The outer size of a window with <paramref name="style"/> whose game area is AC's
+    /// resolution (Settings > Graphics, else what AC launched with). False when it isn't known.</summary>
+    private static bool TryFramedSizeForResolution(IntPtr hwnd, int style, out int width, out int height)
+    {
+        width = height = 0;
+        if (!Graphics.AcGraphics.TryGetResolution(out int rw, out int rh)) return false;
+        var r = new RECT { Left = 0, Top = 0, Right = rw, Bottom = rh };
+        int framedStyle = style | BorderChromeMask;
+        if (!AdjustWindowRectEx(ref r, framedStyle, false, GetWindowLong(hwnd, GwlExStyle))) return false;
+        width = Width(r);
+        height = Height(r);
+        return true;
+    }
+
+    /// <summary>A framed rect at <paramref name="at"/>'s top-left, sized for AC's resolution (else
+    /// <paramref name="at"/>'s size), kept inside the screen.</summary>
+    private static RECT FramedAtResolution(IntPtr hwnd, RECT at, int style)
+    {
+        if (!TryFramedSizeForResolution(hwnd, style, out int w, out int h)) return FitToWorkArea(at);
+        return FitToWorkArea(new RECT { Left = at.Left, Top = at.Top, Right = at.Left + w, Bottom = at.Top + h });
+    }
+
+    /// <summary>A frame-less rect of AC's resolution at (<paramref name="left"/>, <paramref name="top"/>),
+    /// kept inside the screen; the monitor when the resolution isn't known.</summary>
+    private static RECT BorderlessAtResolution(IntPtr hwnd, int left, int top)
+    {
+        if (!Graphics.AcGraphics.TryGetResolution(out int rw, out int rh))
+            return TryMonitorRect(hwnd, out RECT mon, out _) ? mon : DefaultWindowedRect(hwnd);
+        return FitToWorkArea(new RECT { Left = left, Top = top, Right = left + rw, Bottom = top + rh });
     }
 
     /// <summary>Borderless but no longer where it should be (AC re-sized it): put it back, a few times at most.</summary>
@@ -328,13 +407,19 @@ internal static class AcWindowChrome
         Math.Abs(a.Left - b.Left) <= 2 && Math.Abs(a.Top - b.Top) <= 2
         && Math.Abs(a.Right - b.Right) <= 2 && Math.Abs(a.Bottom - b.Bottom) <= 2;
 
-    /// <summary>A framed window three quarters of the monitor's work area, centred on it.</summary>
+    /// <summary>A framed window centred on the monitor's work area: sized for AC's resolution, else
+    /// three quarters of the work area. Never bigger than the work area.</summary>
     private static RECT DefaultWindowedRect(IntPtr hwnd)
     {
         if (!TryMonitorRect(hwnd, out _, out RECT work))
             return new RECT { Left = 50, Top = 50, Right = 50 + 1296, Bottom = 50 + 759 };
         int ww = Width(work), wh = Height(work);
         int w = ww * 3 / 4, h = wh * 3 / 4;
+        if (TryFramedSizeForResolution(hwnd, GetWindowLong(hwnd, GwlStyle), out int rw, out int rh))
+        {
+            w = Math.Min(rw, ww);
+            h = Math.Min(rh, wh);
+        }
         int left = work.Left + (ww - w) / 2, top = work.Top + (wh - h) / 2;
         return new RECT { Left = left, Top = top, Right = left + w, Bottom = top + h };
     }
@@ -437,13 +522,21 @@ internal static class AcWindowChrome
         if (!EngineSettings.RememberWindowLayout) return;
         // Borderless restores its own rect (ApplyBorderlessDesired); the framed one would only
         // move the window first.
-        if (EngineSettings.BorderlessWindowed) return;
-        if (IsLikelyExclusiveFullscreen(hwnd, GetWindowLong(hwnd, GwlStyle))) return;
+        if (Graphics.AcGraphics.WantBorderless) return;
+        int style = GetWindowLong(hwnd, GwlStyle);
+        if (IsLikelyExclusiveFullscreen(hwnd, style)) return;
 
-        if (ReadPlacementFile().Framed is not RECT r) return;
-        // A rect saved at the character-select screen (800x600 game area, before 2026.10.17.8)
-        // isn't the player's window: restoring it shrank the world window.
-        if (SavedClientIsLoginSize(hwnd, r))
+        if (ReadPlacementFile().Framed is not RECT saved) return;
+        // Only the saved position is the player's: the size always comes from AC's resolution
+        // (Settings > Graphics, else what AC launched with), so a size saved at another resolution
+        // or at the login screen can't shrink the window.
+        bool sized = TryFramedSizeForResolution(hwnd, style, out int rw, out int rh);
+        RECT r = sized
+            ? new RECT { Left = saved.Left, Top = saved.Top, Right = saved.Left + rw, Bottom = saved.Top + rh }
+            : saved;
+        // Without a known resolution, a rect saved at the character-select screen (800x600 game
+        // area, before 2026.10.17.8) isn't the player's window: restoring it shrank the world window.
+        if (!sized && SavedClientIsLoginSize(hwnd, r))
         {
             RynthLog.UI(FormattableString.Invariant(
                 $"AcWindowChrome: ignoring saved placement {Width(r)}x{Height(r)} (AC's 800x600 login-screen size); leaving AC's own size."));
@@ -674,6 +767,9 @@ internal static class AcWindowChrome
 
     [DllImport("user32.dll")]
     private static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    private static extern bool AdjustWindowRectEx(ref RECT lpRect, int dwStyle, bool bMenu, int dwExStyle);
 
     [DllImport("user32.dll")]
     private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);

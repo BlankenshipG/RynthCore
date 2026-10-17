@@ -534,6 +534,7 @@ internal static class RynthCoreChatCommands
             else if (wa is "fill on" or "fill off")
             {
                 Plugins.EngineSettings.BorderlessFillMonitor = wa == "fill on";
+                Graphics.AcGraphics.DisplayTogglesChanged();
                 UI.AcWindowChrome.ApplyFillMonitorChanged(UI.AcWindowChrome.ResolveGameHwndForSettings());
                 Reply(Plugins.EngineSettings.BorderlessFillMonitor
                     ? "Borderless fills the monitor."
@@ -550,6 +551,7 @@ internal static class RynthCoreChatCommands
                 || borderlessArgs.Equals("off", StringComparison.OrdinalIgnoreCase))
             {
                 Plugins.EngineSettings.BorderlessWindowed = borderlessArgs.Equals("on", StringComparison.OrdinalIgnoreCase);
+                Graphics.AcGraphics.DisplayTogglesChanged();
                 UI.AcWindowChrome.ApplyBorderlessDesired(UI.AcWindowChrome.ResolveGameHwndForSettings());
                 Reply("Borderless windowed " + (Plugins.EngineSettings.BorderlessWindowed
                     ? (Plugins.EngineSettings.BorderlessFillMonitor ? "on (fills the monitor)." : "on (kept size).")
