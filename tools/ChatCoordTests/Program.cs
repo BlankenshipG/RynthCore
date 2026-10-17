@@ -22,6 +22,9 @@ internal static class Program
         One("Your location is: 0xA9B40019 [84.000 7.100 42.005] 0.0 0.0 0.0 1.0 = 42.1N, 33.6E", 42.1, 33.6, "42.1N, 33.6E");
         One("drudges at 42N 33E", 42, 33, "42.0N, 33.0E");
         One("0.0N, 101.9W", 0, -101.9, "0.0N, 101.9W");
+        // Pasted the way players often type them (lowercase, no space): RynthChat makes these links.
+        One("82.3n,34.2e", 82.3, 34.2, "82.3N, 34.2E");
+        One("Bob says, \"meet at 82.3n, 34.2e\"", 82.3, 34.2, "82.3N, 34.2E");
 
         // Two in one line, in order.
         var two = ChatCoords.Find("from 42.1N, 33.6E to 21.5S, 1.8W");

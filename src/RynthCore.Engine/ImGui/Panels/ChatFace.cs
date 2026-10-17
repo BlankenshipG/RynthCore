@@ -16,7 +16,9 @@
 //  so copy is mouse-driven). Right-click a line to copy it or to make a rule
 //  from it: move / copy lines like it to a tab, hide them, colour them. A line
 //  with map coordinates in it ("42.1N, 33.6E") also offers "Arrow to" and "Go
-//  to" them, sent to RynthNav (UI/Data/ChatCoords.cs finds them).
+//  to" them, sent to RynthNav (UI/Data/ChatCoords.cs finds them). The
+//  coordinates are also drawn as underlined links: click points RynthNav's
+//  arrow there (its overlay opens), Ctrl+click walks there.
 //  Follows the newest line until you scroll up; the scroll for new lines is set
 //  in the same frame they're drawn (DrawLines; until 2026-10-11 it landed a frame
 //  late and the text bounced). Scrolled up, the view holds still. The history is
@@ -584,10 +586,18 @@ internal sealed class ChatFace : IImGuiPanel
                 dl.AddText(font, font.FontSize, tp, col, line.Text, textW);
             else
                 foreach (Seg seg in lay.Segs)
+                {
                     dl.AddText(font, font.FontSize, tp + seg.Offset, seg.Argb == 0 ? col : RynthTheme.Argb(seg.Argb), seg.Text);
+                    if (seg.Link >= 0)   // a map coordinate: underlined, it's clickable
+                    {
+                        Vector2 u = tp + seg.Offset + new Vector2(0, font.FontSize - 1);
+                        dl.AddLine(u, u + new Vector2(seg.W, 0), RynthTheme.Argb(LinkCol), 1f);
+                    }
+                }
         }
         ImGuiNET.ImGui.Dummy(new Vector2(wrapW, Math.Max(1, total)));
-        HandleSelection(basePos, wrapW, scrollY, viewH, n);
+        HoverLink(basePos, tsW, n, out ChatCoord? hoveredLink);
+        HandleSelection(basePos, wrapW, scrollY, viewH, n, hoveredLink);
         HandleLineMenu(basePos, wrapW, n);
 
         _lastScrollY = scrollY;
@@ -675,7 +685,17 @@ internal sealed class ChatFace : IImGuiPanel
     {
         ChatLine line = _vis[i];
         ChatSpan[]? spans = line.Route.Spans;
-        if (spans != null)
+        // Map coordinates ("82.3N, 34.2E") become links. Found here, when the line is measured,
+        // never per frame; a line without any keeps the plain (or highlighted) path.
+        List<ChatCoord> coords = MayHaveCoords(line.Text) ? ChatCoords.Find(line.Text) : NoCoords;
+        if (coords.Count > 0)
+        {
+            ChatSpan[] withLinks = MergeLinkSpans(spans, coords);
+            SpanLayout lay = LayoutSpans(font, line.Text, withLinks, textW, coords);
+            _lay[i] = lay;
+            _h[i] = lay.Height;
+        }
+        else if (spans != null)
         {
             SpanLayout lay = LayoutSpans(font, line.Text, spans, textW);
             _lay[i] = lay;
@@ -705,21 +725,73 @@ internal sealed class ChatFace : IImGuiPanel
 
     // ── Highlighted lines: hand layout ───────────────────────────────────
 
-    private readonly record struct Seg(string Text, Vector2 Offset, uint Argb);   // Argb 0 = the line's colour
+    // Argb 0 = the line's colour. W: the run's width. Link: index into SpanLayout.Links (a map
+    // coordinate drawn as a link: click = RynthNav arrow, Ctrl+click = go), -1 for plain text.
+    private readonly record struct Seg(string Text, Vector2 Offset, uint Argb, float W = 0f, int Link = -1);
 
     private sealed class SpanLayout
     {
         public required float Height;
         public required Seg[] Segs;
+        /// <summary>The line's map coordinates (ChatCoords), when any are drawn as links.</summary>
+        public ChatCoord[]? Links;
     }
+
+    /// <summary>Coordinate links in chat lines: soft teal, underlined (0xAARRGGBB, like ChatSpan.Argb).</summary>
+    private const uint LinkCol = 0xFF5ECFE0;
 
     /// <summary>
     /// Word-wraps <paramref name="text"/> to <paramref name="wrapW"/> and cuts each
     /// row where a highlight starts or ends, so every run is drawn in its own
     /// colour. Called when a line is measured, never per frame.
     /// </summary>
-    private static SpanLayout LayoutSpans(ImFontPtr font, string text, ChatSpan[] spans, float wrapW)
+    private static readonly List<ChatCoord> NoCoords = new();
+
+    /// <summary>Cheap pre-check before the coordinate regex: a digit followed (soon) by a compass letter.</summary>
+    private static bool MayHaveCoords(string text)
     {
+        for (int i = 0; i + 1 < text.Length; i++)
+            if (char.IsDigit(text[i]))
+                for (int j = i + 1; j < text.Length && j <= i + 2; j++)
+                    if ("NnSsEeWw".IndexOf(text[j]) >= 0) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// The rules' highlight spans with the coordinate links laid over them: a link keeps its own
+    /// colour, and any highlight it overlaps is cut around it (sorted, never overlapping).
+    /// </summary>
+    private static ChatSpan[] MergeLinkSpans(ChatSpan[]? spans, List<ChatCoord> coords)
+    {
+        var result = new List<ChatSpan>();
+        foreach (ChatSpan s in spans ?? Array.Empty<ChatSpan>())
+        {
+            int a = s.Start, b = s.Start + s.Length;
+            foreach (ChatCoord c in coords)
+            {
+                int ca = c.Start, cb = c.Start + c.Length;
+                if (cb <= a || ca >= b) continue;
+                if (ca > a) result.Add(new ChatSpan(a, ca - a, s.Argb));
+                a = Math.Max(a, cb);
+            }
+            if (b > a) result.Add(new ChatSpan(a, b - a, s.Argb));
+        }
+        foreach (ChatCoord c in coords) result.Add(new ChatSpan(c.Start, c.Length, LinkCol));
+        result.Sort((x, y) => x.Start.CompareTo(y.Start));
+        return result.ToArray();
+    }
+
+    private static SpanLayout LayoutSpans(ImFontPtr font, string text, ChatSpan[] spans, float wrapW, List<ChatCoord>? links = null)
+    {
+        // Which coordinate link a run [s0, s1) belongs to (-1 none).
+        int LinkOf(int s0, int s1)
+        {
+            if (links == null) return -1;
+            for (int k = 0; k < links.Count; k++)
+                if (s0 >= links[k].Start && s1 <= links[k].Start + links[k].Length) return k;
+            return -1;
+        }
+
         float size = font.FontSize;
         float Width(int start, int end) => end <= start ? 0 : font.CalcTextSizeA(size, float.MaxValue, 0f, text[start..end]).X;
 
@@ -776,13 +848,14 @@ internal sealed class ChatFace : IImGuiPanel
                 int s0 = Math.Max(span.Start, a), s1 = Math.Min(span.Start + span.Length, b);
                 if (s1 <= s0) continue;
                 if (s0 > c) { segs.Add(new Seg(text[c..s0], new Vector2(sx, y), 0)); sx += Width(c, s0); }
-                segs.Add(new Seg(text[s0..s1], new Vector2(sx, y), span.Argb));
-                sx += Width(s0, s1);
+                float spanW = Width(s0, s1);
+                segs.Add(new Seg(text[s0..s1], new Vector2(sx, y), span.Argb, spanW, LinkOf(s0, s1)));
+                sx += spanW;
                 c = s1;
             }
             if (c < b) segs.Add(new Seg(text[c..b], new Vector2(sx, y), 0));
         }
-        return new SpanLayout { Height = Math.Max(1, rows.Count) * size, Segs = segs.ToArray() };
+        return new SpanLayout { Height = Math.Max(1, rows.Count) * size, Segs = segs.ToArray(), Links = links?.ToArray() };
     }
 
     /// <summary>Index of the line containing content y (clamped to the list).</summary>
@@ -797,7 +870,53 @@ internal sealed class ChatFace : IImGuiPanel
         return Math.Min(lo, Math.Max(0, n - 1));
     }
 
-    private void HandleSelection(Vector2 basePos, float wrapW, float scrollY, float viewH, int n)
+    /// <summary>
+    /// The map coordinate link under the mouse, if any (hand cursor and a tooltip). Only the
+    /// hovered line's runs are looked at.
+    /// </summary>
+    private void HoverLink(Vector2 basePos, float tsW, int n, out ChatCoord? link)
+    {
+        link = null;
+        if (n == 0 || _selDragging || !ImGuiNET.ImGui.IsWindowHovered()) return;
+        Vector2 mouse = ImGuiNET.ImGui.GetMousePos();
+        float contentY = mouse.Y - basePos.Y;
+        if (contentY < 0 || contentY >= _tops[n]) return;
+        int i = FirstAtOrBelow(contentY, n);
+        if (_lay[i] is not { Links: { Length: > 0 } links } lay) return;
+        Vector2 tp = basePos + new Vector2(3 + tsW, _tops[i]);
+        float h = ImGuiNET.ImGui.GetFontSize();
+        foreach (Seg seg in lay.Segs)
+        {
+            if (seg.Link < 0 || seg.Link >= links.Length) continue;
+            Vector2 a = tp + seg.Offset, b = a + new Vector2(seg.W, h);
+            if (mouse.X < a.X || mouse.X >= b.X || mouse.Y < a.Y || mouse.Y >= b.Y) continue;
+            link = links[seg.Link];
+            ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+            bool nav = ImGuiPanelHost.HasFace(RynthNavFace.Title);
+            SafeImGui.SetTooltip(nav
+                ? $"Click: point the arrow at {link.Value.Text}\nCtrl+click: RynthNav walks there\nRight-click: more"
+                : $"{link.Value.Text}\n(RynthNav isn't loaded: no arrow)");
+            return;
+        }
+    }
+
+    /// <summary>A click on a coordinate link: RynthNav's arrow there, or (Ctrl) walk there.</summary>
+    private void ClickLink(ChatCoord c)
+    {
+        if (!ImGuiPanelHost.HasFace(RynthNavFace.Title)) { Flash("RynthNav isn't loaded", 1.5); return; }
+        if (ImGuiNET.ImGui.GetIO().KeyCtrl)
+        {
+            RynthNavCommands.Go(c.Text, c.Ns, c.Ew);
+            Flash("Going to " + c.Text, 1.5);
+        }
+        else
+        {
+            RynthNavCommands.Arrow(c.Text, c.Ns, c.Ew);
+            Flash("Arrow: " + c.Text, 1.5);
+        }
+    }
+
+    private void HandleSelection(Vector2 basePos, float wrapW, float scrollY, float viewH, int n, ChatCoord? hoveredLink = null)
     {
         if (n == 0) { ClearSelection(); return; }
         Vector2 mouse = ImGuiNET.ImGui.GetMousePos();
@@ -814,6 +933,7 @@ internal sealed class ChatFace : IImGuiPanel
             _selDragging = true;
             _selMoved = false;
             _selDown = mouse;
+            _downLink = hoveredLink;   // a click (no drag) on it acts on release
             return;
         }
 
@@ -827,8 +947,15 @@ internal sealed class ChatFace : IImGuiPanel
 
         if (ImGuiNET.ImGui.IsMouseDown(ImGuiMouseButton.Left)) return;
         _selDragging = false;
-        // A drag (even within one line) copies; a plain click just clears.
-        if (!_selMoved && _selEnd == _selAnchor) { ClearSelection(); return; }
+        // A drag (even within one line) copies; a plain click just clears, or follows a
+        // coordinate link it was pressed on.
+        if (!_selMoved && _selEnd == _selAnchor)
+        {
+            ChatCoord? link = _downLink;
+            ClearSelection();
+            if (link is { } c) ClickLink(c);
+            return;
+        }
         int lo = Math.Min(_selAnchor, _selEnd), hi = Math.Max(_selAnchor, _selEnd);
         var parts = new List<string>(hi - lo + 1);
         for (int i = lo; i <= hi && i < _vis.Count; i++) parts.Add(CopyText(_vis[i]));
@@ -855,7 +982,11 @@ internal sealed class ChatFace : IImGuiPanel
     {
         _selAnchor = _selEnd = -1;
         _selDragging = _selMoved = false;
+        _downLink = null;
     }
+
+    /// <summary>The coordinate link the left button went down on (acted on if it comes up without a drag).</summary>
+    private ChatCoord? _downLink;
 
     // ── Input ────────────────────────────────────────────────────────────
 
