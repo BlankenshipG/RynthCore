@@ -40,7 +40,12 @@ internal static partial class PluginManager
     private readonly record struct PendingEnchantmentAdded(uint SpellId, double DurationSeconds);
     private readonly record struct PendingEnchantmentRemoved(uint EnchantmentId);
 
-    private const int MaxPendingIncomingChats = 256;
+    // A /myquests reply is one line per quest flag (hundreds on a played character) and arrives
+    // in one burst; a slow pump tick (a busy plugin window) must not drop its head. Lines are short
+    // strings, so a deep queue costs little. Drops are counted and logged (DispatchQueuedChatWindowText).
+    private const int MaxPendingIncomingChats = 4096;
+    private static long _droppedIncomingChats;          // lines dropped unheard since the last log
+    private static long _droppedIncomingChatsLoggedMs;  // when that was last logged
     private const int MaxPendingBusyCountEvents = 128;
     private const int MaxPendingTargetChanges = 128;
     private const int MaxPendingCombatModeChanges = 128;
@@ -675,7 +680,10 @@ internal static partial class PluginManager
         lock (PendingIncomingChatsLock)
         {
             if (_pendingIncomingChats.Count >= MaxPendingIncomingChats)
+            {
                 _pendingIncomingChats.Dequeue().Held?.Decide(eat: false); // dropped unheard: it shows
+                _droppedIncomingChats++;
+            }
 
             _pendingIncomingChats.Enqueue(new PendingIncomingChat(text, chatType, held));
         }
@@ -1723,14 +1731,26 @@ internal static partial class PluginManager
         System.Threading.Interlocked.Exchange(ref _chatPumpBeatMs, Environment.TickCount64);
 
         PendingIncomingChat[] pending;
+        long dropped = 0;
         lock (PendingIncomingChatsLock)
         {
-            if (_pendingIncomingChats.Count == 0)
-                return;
+            // Report drops at most every 10 s (a flood would otherwise flood the log too).
+            long nowMs = Environment.TickCount64;
+            if (_droppedIncomingChats > 0 && nowMs - _droppedIncomingChatsLoggedMs >= 10_000)
+            {
+                dropped = _droppedIncomingChats;
+                _droppedIncomingChats = 0;
+                _droppedIncomingChatsLoggedMs = nowMs;
+            }
 
-            pending = _pendingIncomingChats.ToArray();
+            pending = _pendingIncomingChats.Count == 0 ? Array.Empty<PendingIncomingChat>() : _pendingIncomingChats.ToArray();
             _pendingIncomingChats.Clear();
         }
+        // Logged outside the lock: AC's main thread queues chat under it.
+        if (dropped > 0)
+            RynthLog.Plugin($"PluginManager: {dropped} incoming chat line(s) dropped before plugins heard them (queue full at {MaxPendingIncomingChats}).");
+        if (pending.Length == 0)
+            return;
 
         unsafe
         {
