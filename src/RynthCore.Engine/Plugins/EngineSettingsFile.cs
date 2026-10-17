@@ -25,7 +25,14 @@ internal static class EngineSettingsFile
     /// nothing to keep. Returns null, with <paramref name="error"/> set, when the existing file
     /// isn't a readable JSON object: overwriting it would lose whatever it holds.
     /// </summary>
-    public static byte[]? Merge(string? existingJson, byte[] ownedJson, ICollection<string> ownedKeys, out string? error)
+    /// <param name="changedKeys">
+    /// When given (and the file exists): only these of the engine's keys are taken from
+    /// <paramref name="ownedJson"/> (one it left out, at its default, is removed); every other
+    /// key, owned or not, keeps the file's value. So a client that changed one setting doesn't
+    /// write its stale copy of the others over what other clients saved since.
+    /// </param>
+    public static byte[]? Merge(string? existingJson, byte[] ownedJson, ICollection<string> ownedKeys, out string? error,
+                                ICollection<string>? changedKeys = null)
     {
         error = null;
         JsonDocument? existing = null;
@@ -55,8 +62,11 @@ internal static class EngineSettingsFile
             using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = true }))
             {
                 w.WriteStartObject();
+                // Only the changed keys when there's a file to keep the rest from.
+                bool onlyChanged = changedKeys != null && existing != null;
                 foreach (JsonProperty p in owned.RootElement.EnumerateObject())
                 {
+                    if (onlyChanged && !changedKeys!.Contains(p.Name)) continue;
                     if (!written.Add(p.Name)) continue;
                     p.WriteTo(w);
                 }
@@ -64,7 +74,7 @@ internal static class EngineSettingsFile
                 {
                     foreach (JsonProperty p in existing.RootElement.EnumerateObject())
                     {
-                        if (ownedKeys.Contains(p.Name)) continue;
+                        if (onlyChanged ? changedKeys!.Contains(p.Name) : ownedKeys.Contains(p.Name)) continue;
                         if (!written.Add(p.Name)) continue;   // also drops a duplicate key in the old file
                         p.WriteTo(w);
                     }

@@ -227,7 +227,7 @@ internal static class EngineSettings
             EnsureLoaded();   // populate _pluginPaths before Save() rewrites the file
             if (_enableImGuiBackend == value) return;
             _enableImGuiBackend = value;
-            Save();
+            Save("EnableImGuiBackend");
         }
     }
 
@@ -288,7 +288,7 @@ internal static class EngineSettings
             EnsureLoaded();   // populate _pluginPaths before Save() rewrites the file
             if (_closeOnServerDisconnect == value) return;
             _closeOnServerDisconnect = value;
-            Save();
+            Save("CloseOnServerDisconnect");
         }
     }
 
@@ -370,7 +370,7 @@ internal static class EngineSettings
         EnsureLoaded();
         bool changed = enabled ? _disabledUiHooks.Remove(name) : _disabledUiHooks.Add(name);
         if (changed)
-            Save();
+            Save("DisabledUiHooks");
     }
 
     /// <summary>"ServerMessageStream" in engine.json (default true): the kill switch for the
@@ -416,7 +416,7 @@ internal static class EngineSettings
             EnsureLoaded();   // populate _pluginPaths before Save() rewrites the file
             if (_insertReleasesUi == value) return;
             _insertReleasesUi = value;
-            Save();
+            Save("InsertReleasesUi");
         }
     }
 
@@ -435,7 +435,7 @@ internal static class EngineSettings
             EnsureLoaded();
             if (_borderlessWindowed == value) return;
             _borderlessWindowed = value;
-            Save();
+            Save("BorderlessWindowed");
             // AcWindowChrome.Tick / Settings > Display apply the style; keep this
             // file free of HWND / UI refs so EngineSettingsTests can compile it alone.
         }
@@ -457,7 +457,7 @@ internal static class EngineSettings
             EnsureLoaded();
             if (_rememberWindowLayout == value) return;
             _rememberWindowLayout = value;
-            Save();
+            Save("RememberWindowLayout");
         }
     }
 
@@ -534,7 +534,7 @@ internal static class EngineSettings
         else list.RemoveAt(at);
         // Replaced, never edited in place: IltInfo reads the old list on other threads.
         _iltServerNames = list;
-        Save();
+        Save("IltServerNames");
         return true;
     }
 
@@ -564,7 +564,7 @@ internal static class EngineSettings
             EnsureLoaded();   // populate _pluginPaths before Save() rewrites the file
             if (_autoIdMode == value) return;
             _autoIdMode = value;
-            Save();
+            Save("AutoIdMode");
         }
     }
 
@@ -578,7 +578,7 @@ internal static class EngineSettings
                 return;
         }
         _pluginPaths.Add(full);
-        Save();
+        Save("PluginPaths");
     }
 
     public static void RemovePluginPath(int index)
@@ -587,7 +587,7 @@ internal static class EngineSettings
         if (index >= 0 && index < _pluginPaths.Count)
         {
             _pluginPaths.RemoveAt(index);
-            Save();
+            Save("PluginPaths");
         }
     }
 
@@ -819,6 +819,21 @@ internal static class EngineSettings
         "LoadAllServerPlugins",
     };
 
+    // The engine.json keys this client changed this session. Every client keeps the whole
+    // settings in memory, so writing all of them back let a client that never touched a
+    // setting put its stale value over another client's change (last writer won: a Display
+    // option set in one client came back in all of them). Only these keys are written now;
+    // every other key keeps what the file holds.
+    private static readonly HashSet<string> _changedKeys = new(StringComparer.Ordinal);
+    private static readonly object _changedLock = new();
+
+    /// <summary>Saves engine.json after <paramref name="key"/> changed (only changed keys are written).</summary>
+    private static void Save(string key)
+    {
+        lock (_changedLock) _changedKeys.Add(key);
+        Save();
+    }
+
     private static void Save()
     {
         try
@@ -891,7 +906,13 @@ internal static class EngineSettings
 
             // Keep the keys others write (the launcher's), and swap the file in atomically.
             string? existing = File.Exists(SettingsPath) ? File.ReadAllText(SettingsPath) : null;
-            byte[]? merged = EngineSettingsFile.Merge(existing, ms.ToArray(), OwnedKeys, out string? readError);
+            string[] changed;
+            lock (_changedLock)
+            {
+                changed = new string[_changedKeys.Count];
+                _changedKeys.CopyTo(changed);
+            }
+            byte[]? merged = EngineSettingsFile.Merge(existing, ms.ToArray(), OwnedKeys, out string? readError, changed);
             if (merged == null)
             {
                 RynthLog.Warn($"EngineSettings: not saving - {SettingsPath} can't be read ({readError}), and rewriting it would lose what it holds. The change holds until the client closes; fix or delete the file to save again.");
