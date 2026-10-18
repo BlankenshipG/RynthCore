@@ -9,7 +9,13 @@
 //    match     name + class (default), name only, items like this
 //    T11       "Include T11 attributes": also require the item's T11 tier,
 //              grade, damage %, modifiers, slot special and Cast on Strike,
-//              each at least this item's (any match; 2026-10-07)
+//              each at least this item's (any match; 2026-10-07). With a
+//              RynthAi that has it, the attribute checklist below replaces it.
+//    attrs     the attribute checklist (2026-10-18): every attribute the item
+//              has, grouped (Item, Weapon / Armor, Ratings, Spells, Pet
+//              essence, T11, Requirements); tick a row to require it, pick
+//              >= / = / <= (spells: or better / exact / any tier), type a
+//              value. "Items like this" pre-ticks its usual set.
 //    action    Keep, Keep # (with the count), Salvage, Sell, Read
 //    name      the rule's name (empty: RynthAi's default, "Keep Copper Pea")
 //    preview   the rule in words, where it goes in the list and why, notes
@@ -55,6 +61,13 @@ internal sealed class LootAddDialog
     private readonly byte[] _name = new byte[128];
     private int _keepEdit = 1;
 
+    // The attribute checklist: the rows the player changed (sent with every ask; the rest keep
+    // RynthAi's defaults), each typed value's text box, and the box being typed in (a new
+    // draft doesn't overwrite it).
+    private readonly System.Collections.Generic.Dictionary<string, LootEditItemChoiceDto> _choices = new();
+    private readonly System.Collections.Generic.Dictionary<string, byte[]> _valueBufs = new();
+    private string _editingId = string.Empty;
+
     // Seqs are unique across popups (the inventory's and the editor's share RynthAi's one draft):
     // a popup only takes an answer to something it asked.
     private static int s_seq;
@@ -94,6 +107,9 @@ internal sealed class LootAddDialog
         _keep = -1;
         _includeT11 = false;
         Array.Clear(_name);
+        _choices.Clear();
+        _valueBufs.Clear();
+        _editingId = string.Empty;
         _draft = null;
         _adding = false;
         _addedAt = default;
@@ -119,6 +135,8 @@ internal sealed class LootAddDialog
             {
                 ItemId = _itemId, Match = _match, Action = _action, KeepCount = _keep,
                 RuleName = Utf8(_name).Trim(), ToOpenProfile = _toOpenProfile, IncludeT11 = _includeT11, Seq = _seq,
+                // Null until the player changes a row: RynthAi's defaults (and its notes about them).
+                Choices = _choices.Count == 0 ? null : new System.Collections.Generic.List<LootEditItemChoiceDto>(_choices.Values),
             },
         });
     }
@@ -198,13 +216,21 @@ internal sealed class LootAddDialog
                 }
             }
             if (!ImGuiNET.ImGui.IsAnyItemActive() || first) _keepEdit = Math.Max(0, d.KeepCount);
+            // Value boxes show what the rule uses now, except the one being typed in.
+            foreach (LootEditItemAttributeDto a in d.Attributes)
+            {
+                if (!a.Editable || a.Id == _editingId) continue;
+                if (!_valueBufs.TryGetValue(a.Id, out byte[]? buf)) _valueBufs[a.Id] = buf = new byte[32];
+                WriteUtf8(buf, a.Value);
+            }
         }
     }
 
     /// <summary>The popup's contents; true when it should close.</summary>
     private bool Body()
     {
-        const float w = 380;
+        // Wider with the checklist (label, comparison, value on one line).
+        float w = _draft?.AttributesSupported == true ? 440 : 380;
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Amber);
         ImGuiNET.ImGui.TextUnformatted(PhosphorIcons.Plus + " Add to loot profile");
         ImGuiNET.ImGui.PopStyleColor();
@@ -260,24 +286,31 @@ internal sealed class LootAddDialog
             if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(MatchTips[i]);
         }
 
-        // T11 attributes. Shown for every item: a non-T11 item answers with a note saying so.
-        bool t11 = _includeT11;
-        if (ImGuiNET.ImGui.Checkbox("Include T11 attributes##la_t11", ref t11))
+        if (d.AttributesSupported)
         {
-            _includeT11 = t11;
-            changed = true;
+            changed |= DrawAttributes(d, w);
         }
-        if (ImGuiNET.ImGui.IsItemHovered())
-            SafeImGui.SetTooltip(
-                "Also require this item's T11 tier (the server's stamped tier when it sends one), weapon grade,\n" +
-                "damage %, gear grade, every modifier, slot special and Cast on Strike, each at least as good\n" +
-                "as this one. Works with any match.\n" +
-                "Not added: Can Wield (depends on your character), Zone Locked (depends on where it was assessed),\n" +
-                "and property slots / Tainted (bag state, not quality).");
-        if (!d.IsT11)
+        else
         {
-            ImGuiNET.ImGui.SameLine();
-            ImGuiNET.ImGui.TextDisabled("(not a T11 item)");
+            // An older RynthAi: the single T11 box. Shown for every item: a non-T11 item answers with a note saying so.
+            bool t11 = _includeT11;
+            if (ImGuiNET.ImGui.Checkbox("Include T11 attributes##la_t11", ref t11))
+            {
+                _includeT11 = t11;
+                changed = true;
+            }
+            if (ImGuiNET.ImGui.IsItemHovered())
+                SafeImGui.SetTooltip(
+                    "Also require this item's T11 tier (the server's stamped tier when it sends one), weapon grade,\n" +
+                    "damage %, gear grade, every modifier, slot special and Cast on Strike, each at least as good\n" +
+                    "as this one. Works with any match.\n" +
+                    "Not added: Can Wield (depends on your character), Zone Locked (depends on where it was assessed),\n" +
+                    "and property slots / Tainted (bag state, not quality).");
+            if (!d.IsT11)
+            {
+                ImGuiNET.ImGui.SameLine();
+                ImGuiNET.ImGui.TextDisabled("(not a T11 item)");
+            }
         }
 
         // Action.
@@ -368,6 +401,129 @@ internal sealed class LootAddDialog
         ImGuiNET.ImGui.SetCursorScreenPos(bp + new Vector2(0, 28));
         ImGuiNET.ImGui.Dummy(new Vector2(w, 0));
         return false;
+    }
+
+    /// <summary>
+    /// The attribute checklist: a scrolling list of the item's rows by group, each with a tick,
+    /// its comparison and its value (typed, or the item's named value). A group header's
+    /// "all" / "none" ticks its rows. True when a choice changed (the caller asks again).
+    /// </summary>
+    private bool DrawAttributes(LootEditItemDraftDto d, float w)
+    {
+        System.Collections.Generic.List<LootEditItemAttributeDto> rows = d.Attributes;
+        ImGuiNET.ImGui.TextDisabled("Attributes:");
+        ImGuiNET.ImGui.SameLine();
+        if (rows.Count == 0)
+        {
+            ImGuiNET.ImGui.TextDisabled("none known yet (assess the item, then reopen)");
+            return false;
+        }
+        int ticked = rows.FindAll(r => r.On).Count;
+        SafeImGui.TextDisabled($"{ticked} of {rows.Count} required (tick what the rule needs)");
+
+        int groups = 0;
+        string? last = null;
+        foreach (LootEditItemAttributeDto r in rows)
+            if (r.Group != last) { groups++; last = r.Group; }
+        float lineH = ImGuiNET.ImGui.GetFrameHeightWithSpacing();
+        float h = Math.Min(rows.Count * lineH + groups * lineH + 8, 300);
+
+        bool changed = false;
+        const float opX = 230, valueX = 330;
+        ImGuiNET.ImGui.BeginChild("##la_attrs", new Vector2(w, h), ImGuiChildFlags.Borders);
+        string? group = null;
+        foreach (LootEditItemAttributeDto r in rows)
+        {
+            if (r.Group != group)
+            {
+                group = r.Group;
+                ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Amber);
+                ImGuiNET.ImGui.TextUnformatted(group);
+                ImGuiNET.ImGui.PopStyleColor();
+                ImGuiNET.ImGui.SameLine(opX);
+                if (ImGuiNET.ImGui.SmallButton("all##la_all_" + group)) changed |= TickGroup(rows, group, true);
+                ImGuiNET.ImGui.SameLine();
+                if (ImGuiNET.ImGui.SmallButton("none##la_none_" + group)) changed |= TickGroup(rows, group, false);
+            }
+
+            bool on = r.On;
+            if (ImGuiNET.ImGui.Checkbox(r.Label + "##la_on_" + r.Id, ref on))
+            {
+                SetChoice(r, on: on);
+                changed = true;
+            }
+            if (ImGuiNET.ImGui.IsItemHovered() && r.Tip.Length > 0) SafeImGui.SetTooltip(r.Tip);
+
+            // The comparison: a picker when the row offers more than one.
+            ImGuiNET.ImGui.SameLine(opX);
+            if (r.Ops.Count > 1)
+            {
+                ImGuiNET.ImGui.SetNextItemWidth(90);
+                if (ImGuiNET.ImGui.BeginCombo("##la_op_" + r.Id, LootAttrOps.Label(r.Op)))
+                {
+                    foreach (int op in r.Ops)
+                        if (ImGuiNET.ImGui.Selectable(LootAttrOps.Label(op) + "##la_opv_" + r.Id + op.ToString(CultureInfo.InvariantCulture), op == r.Op) && op != r.Op)
+                        {
+                            SetChoice(r, op: op, on: true);   // picking a comparison means "require it"
+                            changed = true;
+                        }
+                    ImGuiNET.ImGui.EndCombo();
+                }
+            }
+            else
+                SafeImGui.TextDisabled(LootAttrOps.Label(r.Op));
+
+            // The value: a box for numbers, the item's value (by name) for the rest.
+            ImGuiNET.ImGui.SameLine(valueX);
+            if (r.Editable)
+            {
+                if (!_valueBufs.TryGetValue(r.Id, out byte[]? buf))
+                {
+                    _valueBufs[r.Id] = buf = new byte[32];
+                    WriteUtf8(buf, r.Value);
+                }
+                ImGuiNET.ImGui.SetNextItemWidth(w - valueX - 16);
+                ImGuiNET.ImGui.InputText("##la_val_" + r.Id, buf, (uint)buf.Length, ImGuiInputTextFlags.CharsDecimal);
+                if (ImGuiNET.ImGui.IsItemActive()) _editingId = r.Id;
+                if (ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
+                {
+                    _editingId = string.Empty;
+                    SetChoice(r, value: Utf8(buf).Trim(), on: true);   // typing a value means "require it"
+                    changed = true;
+                }
+                else if (_editingId == r.Id && !ImGuiNET.ImGui.IsItemActive())
+                    _editingId = string.Empty;
+                if (ImGuiNET.ImGui.IsItemHovered())
+                    SafeImGui.SetTooltip("This item: " + r.ItemValue + ". Type another value to require that instead.");
+            }
+            else
+                SafeImGui.TextDisabled(r.ItemValue);
+        }
+        ImGuiNET.ImGui.EndChild();
+        return changed;
+    }
+
+    /// <summary>Ticks or clears every row of <paramref name="group"/>; true when one changed.</summary>
+    private bool TickGroup(System.Collections.Generic.List<LootEditItemAttributeDto> rows, string group, bool on)
+    {
+        bool changed = false;
+        foreach (LootEditItemAttributeDto r in rows)
+        {
+            if (r.Group != group || r.On == on) continue;
+            SetChoice(r, on: on);
+            changed = true;
+        }
+        return changed;
+    }
+
+    /// <summary>The player's choice for a row: its current state with the given parts changed.</summary>
+    private void SetChoice(LootEditItemAttributeDto r, bool? on = null, int? op = null, string? value = null)
+    {
+        if (!_choices.TryGetValue(r.Id, out LootEditItemChoiceDto? c))
+            _choices[r.Id] = c = new LootEditItemChoiceDto { Id = r.Id, On = r.On, Op = r.Op, Value = r.Editable && r.Value != r.ItemValue ? r.Value : string.Empty };
+        if (on.HasValue) c.On = on.Value;
+        if (op.HasValue) c.Op = op.Value;
+        if (value != null) c.Value = value == r.ItemValue ? string.Empty : value;
     }
 
     private bool CloseRow(float w)
