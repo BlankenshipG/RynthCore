@@ -135,6 +135,8 @@ internal static class ChatHooks
         }
         if (++_listenFires <= 3)
             RynthLog.Compat($"ChatHooks: Listen fired #{_listenFires} this=0x{thisPtr.ToInt32():X8}");
+        // /rc chatlinkprobe: log what the chat UI is told (finding AC's chat link click).
+        ChatLinkProbe.OnChatUiMessage(thisPtr, msgInfo);
         try { _originalListen!(thisPtr, msgInfo); }
         catch (Exception ex) { try { RynthLog.Compat($"ChatHooks: Listen original threw {ex.GetType().Name}: {ex.Message}"); } catch { } throw; }
     }

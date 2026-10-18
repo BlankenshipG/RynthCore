@@ -37,6 +37,9 @@ namespace RynthCore.Engine.Compatibility;
 ///         — read / trade with the open vendor through the engine's vendor
 ///         primitives (<see cref="VendorTrade"/>); a manual test hook for the
 ///         plugin API. Replies go to chat from the main-thread drain and to the log.</item>
+///   <item><c>/rc chatlinkprobe [seconds|off]</c> — a temporary probe (<see cref="ChatLinkProbe"/>):
+///         coordinates in AC's chat window become AC links and every chat UI message is logged,
+///         to find how AC reports a click on a link (native coordinate links, no Decal).</item>
 ///   <item><c>/rc chathold [on|off|status]</c> — incoming chat waits for the plugins'
 ///         verdict before AC prints it, so a line a plugin eats is kept out of AC's chat
 ///         window too (<see cref="ChatCallbackHooks"/>). On at every start; not saved.</item>
@@ -156,6 +159,14 @@ internal static class RynthCoreChatCommands
         {
             try { HandleUiCommand(sub.Length > 2 ? sub.Substring(3).Trim() : string.Empty); }
             catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc ui failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc chatlinkprobe [seconds|off]: coordinates in AC's chat as links + chat UI messages logged
+        if (IsVerb(sub, "chatlinkprobe", out string probeArgs))
+        {
+            try { Reply(ChatLinkProbe.Command(probeArgs)); }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc chatlinkprobe failed - {ex.GetType().Name}: {ex.Message}"); }
             return true;
         }
 

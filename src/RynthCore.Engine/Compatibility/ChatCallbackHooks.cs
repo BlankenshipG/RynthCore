@@ -338,8 +338,19 @@ internal static class ChatCallbackHooks
             // Fall through and print. (If the line was handed over, it isn't handed over twice.)
         }
 
-        // 3. Call original
-        int result = pOriginal(thisPtr, text, chatType, unknown, stringInfo);
+        // 3. Call original (/rc chatlinkprobe: with coordinates as AC links, when AC strings can be built)
+        int result;
+        string? linked = _replayReady && stringInfo == IntPtr.Zero && MainThreadGuard.IsOnMainThread() ? ChatLinkProbe.LinkCoords(raw) : null;
+        if (linked != null)
+        {
+            fixed (char* chars = linked)
+            {
+                var wide = OutgoingWidePString.Create((ushort*)chars);
+                try { result = pOriginal(thisPtr, (IntPtr)(&wide), chatType, unknown, stringInfo); }
+                finally { wide.Dispose(); }
+            }
+        }
+        else result = pOriginal(thisPtr, text, chatType, unknown, stringInfo);
 
         // 4. Queue AFTER original returns — game state is consistent
         if (line != null && !handedOver)
@@ -425,7 +436,9 @@ internal static class ChatCallbackHooks
         _replayDepth++;
         try
         {
-            fixed (char* chars = h.Raw) // .NET strings end in a NUL, as the PStringBase ctor needs
+            // /rc chatlinkprobe: coordinates printed as AC links (plugins already heard the original).
+            string shown = ChatLinkProbe.LinkCoords(h.Raw) ?? h.Raw;
+            fixed (char* chars = shown) // .NET strings end in a NUL, as the PStringBase ctor needs
             {
                 var wide = OutgoingWidePString.Create((ushort*)chars);
                 try
