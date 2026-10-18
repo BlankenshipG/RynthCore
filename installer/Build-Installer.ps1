@@ -233,7 +233,8 @@ $LootEditorPublish    = "$RynthSuiteRoot\Tools\RynthCore.LootEditor\bin\$Configu
 $MonsterEditorPublish = "$RynthSuiteRoot\Tools\RynthCore.MonsterEditor\bin\$Configuration\net10.0\win-x86\publish"
 
 # Experimental RynthSuite plugins (optional installer components). Each installs to
-# <RynthSuite>\<Name>\RynthCore.Plugin.<Name>.dll and keeps its own semantic version.
+# <RynthSuite>\<Name>\RynthCore.Plugin.<Name>.dll. One with a <Version> in its csproj keeps that
+# semantic version; the rest take the release calver (Test-OwnVersion).
 $ExperimentalPlugins = @('RynthChat', 'RynthJuice', 'RynthNav', 'RynthTracker', 'RynthVision', 'UbRythai')
 # Project folders that don't follow Plugins\RynthCore.Plugin.<Name>\ (ub-Rythai keeps its own sub-tree).
 $ExperimentalProjectDirs = @{ 'UbRythai' = "$RynthSuiteRoot\Plugins\ub-Rythai\RynthCore.Plugin.UbRythai" }
@@ -242,6 +243,9 @@ function Get-ExperimentalDir([string]$Name) {
     return "$RynthSuiteRoot\Plugins\RynthCore.Plugin.$Name"
 }
 function Get-ExperimentalProject([string]$Name) { "$(Get-ExperimentalDir $Name)\RynthCore.Plugin.$Name.csproj" }
+# Only a plugin whose csproj sets its own <Version> (RynthJuice, UbRythai) keeps it; the others
+# (RynthNav, RynthChat, RynthTracker, RynthVision) would read 1.0.0, so they get the release calver.
+function Test-OwnVersion([string]$Name) { [bool](Select-String -Path (Get-ExperimentalProject $Name) -Pattern '<Version>' -Quiet) }
 function Get-ExperimentalPublish([string]$Name) { "$(Get-ExperimentalDir $Name)\bin\$Configuration\net10.0-windows\win-x86\publish" }
 
 # RynthSuite companion plugins (installer components, on in a Full install). Same layout as the
@@ -318,9 +322,11 @@ if (-not $SkipBuild) {
     Write-Host ""
     Write-Host "[7/7] Publishing experimental plugins (NativeAOT)..." -ForegroundColor Cyan
     foreach ($name in $ExperimentalPlugins) {
-        Write-Host "  $name"
+        $ownVersion = Test-OwnVersion $name
+        Write-Host "  $name$(if ($ownVersion) { ' (own version)' } else { '' })"
         $publishDir = (Get-ExperimentalPublish $name) + '/'
-        dotnet publish (Get-ExperimentalProject $name) -c $Configuration "-p:PublishDir=$publishDir"
+        $pluginVersionArgs = if ($ownVersion) { @() } else { $VersionArgs }
+        dotnet publish (Get-ExperimentalProject $name) -c $Configuration "-p:PublishDir=$publishDir" @pluginVersionArgs
         if ($LASTEXITCODE -ne 0) { throw "$name publish failed (exit $LASTEXITCODE)" }
     }
 
