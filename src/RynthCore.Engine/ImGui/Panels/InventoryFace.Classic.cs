@@ -16,8 +16,9 @@
 //  25 px title band isn't stretched) follow AcClientReborn's InventoryGeometry.
 //  Credit: OpenAC (Tom's project) for the layout and sprite research.
 //
-//    title     retail title bar "Inventory of <name>", Remote / Sort / Count /
-//              GInv / Vault / size / tools / Modern toggles, close
+//    title     retail title bar "Inventory of <name>", a "more" menu (Mini Remote,
+//              RynthSort, Item Count, Global Inventory), Vault (Aelrynth),
+//              size / tools / Modern toggles, close
 //    tools     search, sort, category chips (toggle, the funnel in the title)
 //    paperdoll the 24 equip slots at their retail places (the 3D figure isn't
 //              drawn, so the retail "Slots" view is always on)
@@ -211,6 +212,19 @@ internal sealed partial class InventoryFace
             dl.AddImage(tex, o + new Vector2(0, band), o + new Vector2(w, h), new Vector2(0, TitleH / ArtH), Vector2.One);
     }
 
+    /// <summary>The Classic title bar's "more" menu: open or close the panels related to the inventory.</summary>
+    private static void RelatedPanelsMenu(bool remoteOpen, bool sortOpen, bool countOpen, bool ginvOpen)
+    {
+        if (!ImGuiNET.ImGui.BeginPopup("##inv_related_menu")) return;
+        if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote", remoteOpen)) ToggleMiniRemote();
+        if (ImGuiNET.ImGui.MenuItem("RynthSort", "/rsort", sortOpen)) ToggleRynthSort();
+        if (!ScriptWindowRegistry.Has(RynthSortKey)) ImGuiNET.ImGui.SetItemTooltip("Needs the RynthSort plugin");
+        if (ImGuiNET.ImGui.MenuItem("Item Count", "/rc itemcount", countOpen)) ToggleItemCount();
+        if (ImGuiNET.ImGui.MenuItem("Global Inventory", "/ginv", ginvOpen)) ToggleGlobalInventory();
+        if (!ScriptWindowRegistry.Has(GlobalInventoryKey)) ImGuiNET.ImGui.SetItemTooltip("Needs the RynthInventory plugin");
+        ImGuiNET.ImGui.EndPopup();
+    }
+
     private void TitleBar(InventoryView view, ImDrawListPtr dl, Vector2 o, float w, float s)
     {
         float h = TitleH * s, closeW = 24 * s;
@@ -255,39 +269,9 @@ internal sealed partial class InventoryFace
             InventorySettingsStore.SetClassic(false);
         ImGuiNET.ImGui.SetItemTooltip("Modern look");
 
-        // Related panels + Vault sit left of the size / tools toggles.
+        // Vault (Aelrynth only) sits next to the size toggles: the contents area shows the account
+        // vault instead of the open pack.
         float leftmost = bMinus.X;
-        bool remoteOpen = ImGuiPanelHost.IsOpen(MiniRemoteFace.Title);
-        bool sortOpen = ScriptWindowRegistry.IsOpen(RynthSortKey);
-        bool ginvOpen = ScriptWindowRegistry.IsOpen(GlobalInventoryKey);
-        bool countOpen = ImGuiPanelHost.IsOpen(ItemCountFace.Title);
-        var gsz = new Vector2(MathF.Round(42 * s), btn);
-        var csz = new Vector2(MathF.Round(40 * s), btn);
-        var ssz = new Vector2(MathF.Round(36 * s), btn);
-        var rsz = new Vector2(MathF.Round(48 * s), btn);
-        var bGinv = new Vector2(leftmost - gsz.X - 6 * s, b2.Y);
-        var bCount = new Vector2(bGinv.X - csz.X - 4 * s, b2.Y);
-        var bSort = new Vector2(bCount.X - ssz.X - 4 * s, b2.Y);
-        var bRemote = new Vector2(bSort.X - rsz.X - 4 * s, b2.Y);
-        if (TitleTextToggle("##inv_ginv", "GInv", bGinv, gsz, ginvOpen))
-            ToggleGlobalInventory();
-        ImGuiNET.ImGui.SetItemTooltip(ScriptWindowRegistry.Has(GlobalInventoryKey)
-            ? "Global Inventory (/ginv): every character's saved packs and storage"
-            : "Global Inventory (/ginv) — needs the RynthInventory plugin");
-        if (TitleTextToggle("##inv_itemcount", "Count", bCount, csz, countOpen))
-            ToggleItemCount();
-        ImGuiNET.ImGui.SetItemTooltip("Item Count (/rc itemcount): how many of each named item you carry");
-        if (TitleTextToggle("##inv_rsort", "Sort", bSort, ssz, sortOpen))
-            ToggleRynthSort();
-        ImGuiNET.ImGui.SetItemTooltip(ScriptWindowRegistry.Has(RynthSortKey)
-            ? "RynthSort (/rsort): pack sort rules and auto-sort"
-            : "RynthSort (/rsort) — needs the RynthSort plugin");
-        if (TitleTextToggle("##inv_miniremote", "Remote", bRemote, rsz, remoteOpen))
-            ToggleMiniRemote();
-        ImGuiNET.ImGui.SetItemTooltip("Mini Remote (/rc miniremote): remote, sections and HUDs");
-        leftmost = bRemote.X;
-
-        // Vault (Aelrynth only): the contents area shows the account vault instead of the open pack.
         if (VaultFeed.Available)
         {
             var vsz = new Vector2(MathF.Round(38 * s), btn);
@@ -304,6 +288,19 @@ internal sealed partial class InventoryFace
         {
             _vaultOpen = false;
         }
+
+        // The related panels share one menu: as four text buttons they overran the 300 px bar and
+        // pushed Vault (and the title) off its left edge.
+        bool remoteOpen = ImGuiPanelHost.IsOpen(MiniRemoteFace.Title);
+        bool sortOpen = ScriptWindowRegistry.IsOpen(RynthSortKey);
+        bool ginvOpen = ScriptWindowRegistry.IsOpen(GlobalInventoryKey);
+        bool countOpen = ImGuiPanelHost.IsOpen(ItemCountFace.Title);
+        var bMore = new Vector2(leftmost - btn - 6 * s, b2.Y);
+        if (TitleToggle("##inv_related", PhosphorIcons.DotsThree, bMore, btn, remoteOpen || sortOpen || ginvOpen || countOpen))
+            ImGuiNET.ImGui.OpenPopup("##inv_related_menu");
+        ImGuiNET.ImGui.SetItemTooltip("Mini Remote, RynthSort, Item Count, Global Inventory");
+        leftmost = bMore.X;
+        RelatedPanelsMenu(remoteOpen, sortOpen, countOpen, ginvOpen);
 
         // Drag surface: the bar left of the toggles (moves the panel, like the header).
         float dragW = Math.Max(1, leftmost - o.X - 2);
