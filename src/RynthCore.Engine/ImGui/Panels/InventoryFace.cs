@@ -7,8 +7,9 @@
 //    Modern    the Phase 1 layout, below
 //
 //    header    burden (percent of capacity) and pyreals; item count; buttons for
-//              Mini Remote, RynthSort (/rsort), Item Count (/rc itemcount) and
-//              Global Inventory (/ginv)
+//              Mini Remote, RynthSort (/rsort), Item Count (/rc itemcount),
+//              Global Inventory (/ginv) and, on Aelrynth, the Vault (the grid
+//              shows the account vault; picking a pack goes back)
 //    tools     search box, attribute filter (InventoryFace.AttrFilter.cs), sort
 //              picker; category chips
 //    packs     All, Main pack, each side pack (its icon and fill), Worn
@@ -38,6 +39,7 @@ using System.Globalization;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Engine.Compatibility;
+using RynthCore.Engine.Net;
 using RynthCore.Engine.UI;
 using RynthCore.Engine.UI.ScriptWindows;
 using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
@@ -204,7 +206,10 @@ internal sealed partial class InventoryFace : IImGuiPanel
         float bodyH = Math.Max(60, origin.Y + size.Y - 6 - bottomH - bodyPos.Y);
         float colW = w >= 380 ? 128 : 46;
         PackColumn(view, bodyPos, colW, bodyH);
-        Grid(new Vector2(bodyPos.X + colW + 4, bodyPos.Y), new Vector2(w - colW - 4, bodyH));
+        // The Vault (Aelrynth) takes the grid's place; picking a pack in the column goes back to it.
+        if (_vaultOpen && (!VaultFeed.Available || _pack != _vaultOpenedOnPack)) _vaultOpen = false;
+        if (_vaultOpen) ModernVault(new Vector2(bodyPos.X + colW + 4, bodyPos.Y), new Vector2(w - colW - 4, bodyH));
+        else Grid(new Vector2(bodyPos.X + colW + 4, bodyPos.Y), new Vector2(w - colW - 4, bodyH));
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(bodyPos.X, bodyPos.Y + bodyH + 4));
         Zones(view, w);
         StatusRow(w);
@@ -311,11 +316,27 @@ internal sealed partial class InventoryFace : IImGuiPanel
             ToggleMiniRemote();
         ImGuiNET.ImGui.SetItemTooltip("Mini Remote (/rc miniremote): remote, sections and HUDs");
 
+        // Vault (Aelrynth only): the grid shows the account vault instead of the packs.
+        float leftmost = bRemote.X;
+        if (VaultFeed.Available)
+        {
+            var bVault = new Vector2(bRemote.X - 28, p.Y + 1);
+            if (IconButton("##inv_vault_m", PhosphorIcons.TreasureChest, bVault, new Vector2(22, 22),
+                    _vaultOpen ? Teal : Amber, BtnFill, font: UiFont.Ui11))
+            {
+                _vaultOpen = !_vaultOpen;
+                _vaultOpenedOnPack = _pack;
+                if (_vaultOpen) VaultFeed.ViewOpened();
+            }
+            ImGuiNET.ImGui.SetItemTooltip("Your Aelrynth account vault");
+            leftmost = bVault.X;
+        }
+
         float cw = ImGuiNET.ImGui.CalcTextSize(_countText).X;
-        dl.AddText(new Vector2(bRemote.X - cw - 6, ty), Mute, _countText);
+        dl.AddText(new Vector2(leftmost - cw - 6, ty), Mute, _countText);
 
         // Drag surface: the empty part of the header, between the pyreals and the count.
-        float dragFrom = x + 20 + ImGuiNET.ImGui.CalcTextSize(view.PyrealText).X + 6, dragTo = bRemote.X - cw - 10;
+        float dragFrom = x + 20 + ImGuiNET.ImGui.CalcTextSize(view.PyrealText).X + 6, dragTo = leftmost - cw - 10;
         if (dragTo > dragFrom)
         {
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(dragFrom, p.Y));
@@ -682,6 +703,109 @@ internal sealed partial class InventoryFace : IImGuiPanel
 
         ImGuiNET.ImGui.EndChild();
         ImGuiNET.ImGui.PopStyleColor();
+    }
+
+    // The pack showing when the Modern Vault opened (picking another pack closes the Vault).
+    private uint _vaultOpenedOnPack;
+
+    /// <summary>
+    /// The Modern look's Vault: the account vault's items in the grid's style, a caption with how full
+    /// it is and Refresh. Read-only apart from right-click > Withdraw (VaultContextMenu).
+    /// </summary>
+    private void ModernVault(Vector2 pos, Vector2 size)
+    {
+        VaultSnapshot? snap = VaultFeed.Snapshot;
+        VaultItem[] items = snap?.Items ?? Array.Empty<VaultItem>();
+        var pdl = ImGuiNET.ImGui.GetWindowDrawList();
+        const float CapH = 22;
+        float ty = pos.Y + (CapH - ImGuiNET.ImGui.GetFontSize()) * 0.5f;
+        pdl.AddText(new Vector2(pos.X + 4, ty), Text, VaultCaption(snap));
+        if (IconButton("##vault_refresh_m", PhosphorIcons.ArrowsClockwise, new Vector2(pos.X + size.X - 22, pos.Y), new Vector2(22, 20),
+                VaultFeed.Awaiting ? Teal : Amber, BtnFill, font: UiFont.Ui11))
+            VaultFeed.RequestRefresh();
+        ImGuiNET.ImGui.SetItemTooltip("Read the vault again");
+
+        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(pos.X, pos.Y + CapH));
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ChildBg, PanelBg);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(3, 3));
+        ImGuiNET.ImGui.BeginChild("##inv_vault_grid", new Vector2(size.X, Math.Max(30, size.Y - CapH)), ImGuiChildFlags.AlwaysUseWindowPadding);
+        ImGuiNET.ImGui.PopStyleVar();
+
+        float avail = ImGuiNET.ImGui.GetContentRegionAvail().X;
+        int cols = Math.Max(1, (int)(avail / Cell));
+        int rows = (items.Length + cols - 1) / cols;
+        Vector2 o = ImGuiNET.ImGui.GetCursorScreenPos();
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
+        if (items.Length == 0)
+        {
+            string empty = snap == null ? (VaultFeed.Awaiting ? "Reading the vault..." : VaultEmptyText) : "The vault is empty.";
+            dl.AddText(o + new Vector2(4, 4), Mute, empty);
+            ImGuiNET.ImGui.Dummy(new Vector2(avail, 20));
+        }
+        else
+        {
+            var content = new Vector2(cols * Cell, Math.Max(rows * Cell, 1));
+            ImGuiNET.ImGui.InvisibleButton("##vault_cells_m", content, ImGuiButtonFlags.MouseButtonLeft | ImGuiButtonFlags.MouseButtonRight);
+            bool hovered = ImGuiNET.ImGui.IsItemHovered();
+            Vector2 mouse = ImGuiNET.ImGui.GetMousePos();
+            int hoverIdx = -1;
+            if (hovered)
+            {
+                int c = (int)((mouse.X - o.X) / Cell), r = (int)((mouse.Y - o.Y) / Cell);
+                if (c >= 0 && c < cols && r >= 0 && r < rows && r * cols + c < items.Length) hoverIdx = r * cols + c;
+            }
+
+            // Visible rows only.
+            Vector2 clipMin = ImGuiNET.ImGui.GetWindowPos(), clipMax = clipMin + ImGuiNET.ImGui.GetWindowSize();
+            int firstRow = Math.Max(0, (int)((clipMin.Y - o.Y) / Cell));
+            int lastRow = Math.Min(rows - 1, (int)((clipMax.Y - o.Y) / Cell));
+            ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));   // stack counts
+            for (int r = firstRow; r <= lastRow; r++)
+            {
+                for (int c = 0; c < cols; c++)
+                {
+                    int i = r * cols + c;
+                    if (i >= items.Length) break;
+                    VaultItem it = items[i];
+                    var cmin = new Vector2(o.X + c * Cell, o.Y + r * Cell);
+                    var cmax = cmin + new Vector2(Cell - 2, Cell - 2);
+                    dl.AddRectFilled(cmin, cmax, i == hoverIdx ? CellHot : CellBg, 3);
+                    Vector2 imin = cmin + new Vector2(2, 2);
+                    if (ScriptIcons.TryGetItem(it.Icon, it.Underlay, it.Overlay, it.Effects, it.ItemType, out IntPtr tex))
+                    {
+                        IconSampling.Begin(dl);
+                        dl.AddImage(tex, imin, imin + new Vector2(Icon, Icon));
+                        IconSampling.End(dl);
+                    }
+                    else
+                        dl.AddRectFilled(imin, imin + new Vector2(Icon, Icon), Placeholder, 2);
+                    if (it.Stack > 1)
+                    {
+                        string st = it.Stack.ToString(CultureInfo.InvariantCulture);
+                        Vector2 ts = ImGuiNET.ImGui.CalcTextSize(st);
+                        var tp = new Vector2(cmax.X - ts.X - 2, cmax.Y - ts.Y - 1);
+                        dl.AddText(tp + Vector2.One, StackShadow, st);
+                        dl.AddText(tp, StackCol, st);
+                    }
+                }
+            }
+            ImGuiNET.ImGui.PopFont();
+
+            if (hoverIdx >= 0)
+            {
+                VaultItem hot = items[hoverIdx];
+                SafeImGui.SetTooltip(hot.Stack > 1 ? $"{hot.Name} ({hot.Stack:N0})" : hot.Name);
+                if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Right))
+                {
+                    _vaultCtx = hot;
+                    _openVaultCtx = true;
+                }
+            }
+        }
+
+        ImGuiNET.ImGui.EndChild();
+        ImGuiNET.ImGui.PopStyleColor();
+        VaultContextMenu();   // in the panel's window, outside the child
     }
 
     /// <summary>An item's icon (with underlay and overlay) from the shared icon cache, or a placeholder.</summary>

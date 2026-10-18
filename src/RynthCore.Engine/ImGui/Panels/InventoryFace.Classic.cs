@@ -670,6 +670,45 @@ internal sealed partial class InventoryFace
     private VaultItem? _vaultCtx;
     private bool _openVaultCtx;
 
+    /// <summary>The vault view's caption: how full it is, or the read's status before the first read.</summary>
+    private static string VaultCaption(VaultSnapshot? snap)
+    {
+        if (snap == null) return VaultFeed.Status;
+        int n = snap.Items.Length;
+        return snap.Max > 0 ? $"Aelrynth Vault: {n:N0} of {snap.Max:N0}" : $"Aelrynth Vault: {n:N0}";
+    }
+
+    /// <summary>What the vault view says before it has been read.</summary>
+    private static string VaultEmptyText => VaultFeed.Unsupported ? "The vault is not open on this server yet." : "Click Refresh to read the vault.";
+
+    /// <summary>
+    /// The vault's right-click menu (both looks): Withdraw the item. Call it in the panel's own window
+    /// (not inside a child), so the popup opened and drawn here share one ID.
+    /// </summary>
+    private void VaultContextMenu()
+    {
+        if (_openVaultCtx)
+        {
+            _openVaultCtx = false;
+            ImGuiNET.ImGui.OpenPopup("##vault_ctx");
+        }
+        PushMenuStyle();
+        if (ImGuiNET.ImGui.BeginPopup("##vault_ctx"))
+        {
+            VaultItem? it = _vaultCtx;
+            if (it == null) ImGuiNET.ImGui.CloseCurrentPopup();
+            else
+            {
+                SafeImGui.TextDisabled(it.Name);
+                ImGuiNET.ImGui.Separator();
+                if (ImGuiNET.ImGui.MenuItem("Withdraw", "", false, VaultFeed.Available))
+                    VaultFeed.Withdraw(it);
+            }
+            ImGuiNET.ImGui.EndPopup();
+        }
+        PopMenuStyle();
+    }
+
     /// <summary>A small labelled button in the title bar.</summary>
     private static bool TitleTextToggle(string id, string label, Vector2 pos, Vector2 size, bool on)
     {
@@ -701,9 +740,7 @@ internal sealed partial class InventoryFace
         VaultSnapshot? snap = VaultFeed.Snapshot;
         VaultItem[] items = snap?.Items ?? Array.Empty<VaultItem>();
         int cells = snap == null ? 0 : Math.Max(snap.Max, items.Length);
-        string caption = snap == null ? VaultFeed.Status
-            : snap.Max > 0 ? $"Aelrynth Vault: {items.Length:N0} of {snap.Max:N0}" : $"Aelrynth Vault: {items.Length:N0}";
-        CenterText(dl, ImGuiFonts.Get(UiFont.Ui14), caption, new Vector2(gridPos.X, field.Y), new Vector2(gridW, 15 * s), White, 12 * s);
+        CenterText(dl, ImGuiFonts.Get(UiFont.Ui14), VaultCaption(snap), new Vector2(gridPos.X, field.Y), new Vector2(gridW, 15 * s), White, 12 * s);
 
         // Read again (the vault changes when anything is deposited or withdrawn).
         var rb = new Vector2(gridPos.X + gridW - 44 * s, field.Y + 1 * s);
@@ -768,29 +805,10 @@ internal sealed partial class InventoryFace
         }
         else if (snap == null && !VaultFeed.Awaiting)
         {
-            dl.AddText(gridPos + new Vector2(4, 22 * s), Mute, VaultFeed.Unsupported ? "The vault is not open on this server yet." : "Click Refresh to read the vault.");
+            dl.AddText(gridPos + new Vector2(4, 22 * s), Mute, VaultEmptyText);
         }
 
-        if (_openVaultCtx)
-        {
-            _openVaultCtx = false;
-            ImGuiNET.ImGui.OpenPopup("##vault_ctx");
-        }
-        PushMenuStyle();
-        if (ImGuiNET.ImGui.BeginPopup("##vault_ctx"))
-        {
-            VaultItem? it = _vaultCtx;
-            if (it == null) ImGuiNET.ImGui.CloseCurrentPopup();
-            else
-            {
-                SafeImGui.TextDisabled(it.Name);
-                ImGuiNET.ImGui.Separator();
-                if (ImGuiNET.ImGui.MenuItem("Withdraw", "", false, VaultFeed.Available))
-                    VaultFeed.Withdraw(it);
-            }
-            ImGuiNET.ImGui.EndPopup();
-        }
-        PopMenuStyle();
+        VaultContextMenu();
 
         if (snap != null)   // nothing to scroll before the vault has been read
             Scrollbar("##inv_vaultsb", new Vector2(gridPos.X + gridW, gridPos.Y), rows * cell, s, ref _vaultFirstRow, totalRows, rows);
