@@ -325,7 +325,8 @@ if (-not $SkipBuild) {
         $ownVersion = Test-OwnVersion $name
         Write-Host "  $name$(if ($ownVersion) { ' (own version)' } else { '' })"
         $publishDir = (Get-ExperimentalPublish $name) + '/'
-        $pluginVersionArgs = if ($ownVersion) { @() } else { $VersionArgs }
+        # @(...) keeps it an array: a bare if/else unrolls one item to a string, which splats char by char.
+        $pluginVersionArgs = @(if (-not $ownVersion) { $VersionArgs })
         dotnet publish (Get-ExperimentalProject $name) -c $Configuration "-p:PublishDir=$publishDir" @pluginVersionArgs
         if ($LASTEXITCODE -ne 0) { throw "$name publish failed (exit $LASTEXITCODE)" }
     }
