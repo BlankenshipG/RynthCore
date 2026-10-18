@@ -120,6 +120,16 @@ try
         if (s.Kind == AcGraphicsKind.Float) Check(s.Max > s.Min && s.Step > 0, $"{s.Id}: slider range");
     }
     Check(AcGraphicsPrefs.WindowModeIds.Length == AcGraphicsPrefs.WindowModeLabels.Length, "a label per window mode");
+
+    // ── Memory risk: Adaptive degrade off with a far draw distance (2026-10-18) ──
+    Check(AcGraphicsPrefs.MemoryRisk("False", "Extreme", null).StartsWith("Warning"), "risk: degrade off, Extreme scenery");
+    Check(AcGraphicsPrefs.MemoryRisk("false", null, "High").Length > 0, "risk: degrade off, High landscape (any case)");
+    Check(AcGraphicsPrefs.MemoryRisk("False", "Medium", "Medium").Length == 0, "no risk: degrade off, Medium distances");
+    Check(AcGraphicsPrefs.MemoryRisk("True", "Extreme", "Extreme").Length == 0, "no risk: degrade on");
+    Check(AcGraphicsPrefs.MemoryRisk(null, "Extreme", "Extreme").Length == 0, "no risk: degrade at AC's default");
+    Check(AcGraphicsPrefs.MemoryRisk("False", null, null).Length == 0, "no risk: distances at AC's default");
+    foreach (string id in new[] { AcGraphicsPrefs.AutomaticDegradesId, AcGraphicsPrefs.SceneryDrawDistanceId, AcGraphicsPrefs.LandscapeDrawDistanceId })
+        Check(Array.Exists(AcGraphicsPrefs.RenderSettings, s => s.Id == id), $"{id} is a Render setting");
 }
 finally
 {

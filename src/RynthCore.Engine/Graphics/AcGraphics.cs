@@ -232,7 +232,98 @@ internal static class AcGraphics
         return list.ToArray();
     }
 
+    // ── Memory safeguard (2026.10.18.11) ─────────────────────────────────────
+
+    // A client this short of address space this soon after it started is being filled by AC's own
+    // loading (seen: 450 MB -> 3.1 GB in 13 s after login with Adaptive degrade off), not a slow leak.
+    private const long LowFreeMb = 200, LowLargestFreeMb = 128;
+    private const double LowMemoryWindowMinutes = 10;
+    private static int _lowMemoryHandled;
+    private static string _lowMemoryNote = string.Empty;
+    private static readonly DateTime ProcessStartLocal = ReadProcessStart();
+
+    private static DateTime ReadProcessStart()
+    {
+        try { return System.Diagnostics.Process.GetCurrentProcess().StartTime; }
+        catch { return DateTime.Now; }
+    }
+
+    /// <summary>What AC uses for <paramref name="id"/>: this account's value, else what it launched with.</summary>
+    private static string? Effective(string id) => Get(id) ?? LaunchValue(id);
+
+    /// <summary>The Graphics panel's warning: Adaptive degrade off with a far draw distance (empty when fine),
+    /// plus what the low-memory fallback did this session.</summary>
+    public static string MemoryWarning()
+    {
+        string risk = AcGraphicsPrefs.MemoryRisk(Effective(AcGraphicsPrefs.AutomaticDegradesId),
+            Effective(AcGraphicsPrefs.SceneryDrawDistanceId), Effective(AcGraphicsPrefs.LandscapeDrawDistanceId));
+        string note = Volatile.Read(ref _lowMemoryNote);
+        return note.Length == 0 ? risk : risk.Length == 0 ? note : note + "\n" + risk;
+    }
+
+    /// <summary>
+    /// Heartbeat (once a second, its own thread): when the address space is nearly gone within
+    /// <see cref="LowMemoryWindowMinutes"/> of the client starting and AC runs with Adaptive degrade
+    /// off, this account's profile turns it back on, saved at once (the client may be about to
+    /// die), so the launcher writes it into UserPreferences.ini at the next launch. Once a session.
+    /// </summary>
+    public static void CheckLowMemory(long freeMb, long largestFreeMb)
+    {
+        bool low = (freeMb >= 0 && freeMb < LowFreeMb) || (largestFreeMb >= 0 && largestFreeMb < LowLargestFreeMb);
+        if (!low || Volatile.Read(ref _lowMemoryHandled) != 0) return;
+        if ((DateTime.Now - ProcessStartLocal).TotalMinutes > LowMemoryWindowMinutes) return;
+        if (Interlocked.Exchange(ref _lowMemoryHandled, 1) != 0) return;
+
+        string? degrade = Effective(AcGraphicsPrefs.AutomaticDegradesId);
+        string where = $"free address space {freeMb} MB, largest block {largestFreeMb} MB, "
+                     + $"{(DateTime.Now - ProcessStartLocal).TotalSeconds:0} s after the client started";
+        if (!string.Equals(degrade, "False", StringComparison.OrdinalIgnoreCase))
+        {
+            RynthLog.UI($"AcGraphics: low memory ({where}); Adaptive degrade is already {(degrade ?? "AC's default")}, nothing changed.");
+            return;
+        }
+        string key = AccountKey;
+        if (key.Length == 0)
+        {
+            RynthLog.UI($"AcGraphics: low memory ({where}) with Adaptive degrade off, but no account is known; nothing changed.");
+            return;
+        }
+        try
+        {
+            AcGraphicsConfig mine;
+            lock (Sync)
+            {
+                EnsureLoadedLocked();
+                mine = _profiles.For(key).Clone();
+                mine.Values[AcGraphicsPrefs.AutomaticDegradesId] = "True";
+                _profiles.Put(key, mine);
+            }
+            SaveAccountProfile(key, mine);
+            string scenery = Effective(AcGraphicsPrefs.SceneryDrawDistanceId) ?? "AC's default";
+            Volatile.Write(ref _lowMemoryNote,
+                $"This client ran low on memory {(DateTime.Now - ProcessStartLocal).TotalSeconds:0} s after it started, with Adaptive degrade off "
+                + $"(scenery distance {scenery}): Adaptive degrade is now on for this account from the next launch.");
+            RynthLog.UI($"AcGraphics: LOW MEMORY ({where}) with Adaptive degrade off: turned it on in {key}'s profile; "
+                + $"the launcher writes it into UserPreferences.ini at the next launch (scenery distance {scenery}).");
+        }
+        catch (Exception ex) { RynthLog.UI($"AcGraphics: low-memory fallback failed - {ex.Message}"); }
+    }
+
     // ── Internals ────────────────────────────────────────────────────────────
+
+    /// <summary>Re-reads graphics.json and replaces only <paramref name="key"/>'s entry. Any thread.</summary>
+    private static void SaveAccountProfile(string key, AcGraphicsConfig mine)
+    {
+        string path = AcGraphicsPrefs.ConfigPath;
+        AcGraphicsProfiles onDisk = AcGraphicsProfiles.Load(path);
+        onDisk.Put(key, mine);
+        onDisk.Save(path);
+        lock (Sync)
+        {
+            _profiles = onDisk;
+            _configStamp = File.GetLastWriteTimeUtc(path);
+        }
+    }
 
     private static string LegacyWindowMode() =>
         !EngineSettings.BorderlessWindowed ? AcGraphicsPrefs.ModeWindowed
@@ -276,19 +367,8 @@ internal static class AcGraphics
             string key = AccountKey;
             AcGraphicsConfig mine;
             lock (Sync) { mine = _profiles.For(key).Clone(); }
-            try
-            {
-                // Only this account's entry changes: the others come from the file as it is now.
-                string path = AcGraphicsPrefs.ConfigPath;
-                AcGraphicsProfiles onDisk = AcGraphicsProfiles.Load(path);
-                onDisk.Put(key, mine);
-                onDisk.Save(path);
-                lock (Sync)
-                {
-                    _profiles = onDisk;
-                    _configStamp = File.GetLastWriteTimeUtc(path);
-                }
-            }
+            // Only this account's entry changes: the others come from the file as it is now.
+            try { SaveAccountProfile(key, mine); }
             catch (Exception ex) { RynthLog.UI($"AcGraphics: saving graphics.json failed - {ex.Message}"); }
         });
     }

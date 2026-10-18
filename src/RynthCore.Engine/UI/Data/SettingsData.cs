@@ -780,6 +780,8 @@ internal static class SettingsSchema
 
         rows.Add(Spacer());
         rows.Add(Section("Graphics"));
+        // Adaptive degrade off with a far draw distance can run the client out of memory (shown only then).
+        rows.Add(Status(_ => Graphics.AcGraphics.MemoryWarning()));
         foreach (global::RynthCore.Graphics.AcGraphicsSetting g in global::RynthCore.Graphics.AcGraphicsPrefs.RenderSettings)
             rows.AddRange(GfxRows(g));
 
