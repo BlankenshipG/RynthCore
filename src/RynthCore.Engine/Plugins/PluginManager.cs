@@ -279,6 +279,7 @@ internal static partial class PluginManager
     private static ArmConfirmationCallbackDelegate? _armConfirmationCallback;             // v85
     private static GetLastConfirmationCallbackDelegate? _getLastConfirmationCallback;     // v85
     private static GetServerStateJsonCallbackDelegate? _getServerStateJsonCallback;       // v86
+    private static GetWieldedItemsCallbackDelegate? _getWieldedItemsCallback;             // v87
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -3135,6 +3136,7 @@ internal static partial class PluginManager
         _armConfirmationCallback ??= ArmConfirmationAction;
         unsafe { _getLastConfirmationCallback ??= GetLastConfirmationAction; }
         unsafe { _getServerStateJsonCallback ??= GetServerStateJsonAction; }
+        unsafe { _getWieldedItemsCallback ??= GetWieldedItemsAction; }
 
         _api.Version = PluginContractVersion.Current;
         _api.LogFn = Marshal.GetFunctionPointerForDelegate(_logCallback);
@@ -3288,6 +3290,7 @@ internal static partial class PluginManager
         _api.ArmConfirmationFn = Marshal.GetFunctionPointerForDelegate(_armConfirmationCallback);
         _api.GetLastConfirmationFn = Marshal.GetFunctionPointerForDelegate(_getLastConfirmationCallback);
         _api.GetServerStateJsonFn = Marshal.GetFunctionPointerForDelegate(_getServerStateJsonCallback);
+        _api.GetWieldedItemsFn = Marshal.GetFunctionPointerForDelegate(_getWieldedItemsCallback);
         RouteApiThroughLoader();
     }
 
@@ -3485,6 +3488,20 @@ internal static partial class PluginManager
     /// v86: the server list as JSON (UI/Sections/ServerStateJson.cs) from the published snapshot.
     /// Any thread: the snapshot is immutable and the strings are volatile reads. -1 on failure.
     /// </summary>
+    /// <summary>v87: what the player wields (EquipmentTracker). -1 while it can't start.</summary>
+    private static unsafe int GetWieldedItemsAction(uint* ids, uint* locations, int max)
+    {
+        try
+        {
+            if (ids == null || locations == null || max <= 0) return -1;
+            return Compatibility.EquipmentTracker.Copy(new Span<uint>(ids, max), new Span<uint>(locations, max));
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
     private static unsafe int GetServerStateJsonAction(byte* buffer, int capacity)
     {
         try

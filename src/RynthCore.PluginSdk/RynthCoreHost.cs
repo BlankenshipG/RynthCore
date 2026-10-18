@@ -144,6 +144,8 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetServerInfo => _api.Version >= 75 && _api.GetServerInfoFn != IntPtr.Zero;
     /// <summary>v86: <see cref="TryGetServerStateJson"/> (the server list for every plugin).</summary>
     public bool HasGetServerStateJson => _api.Version >= 86 && _api.GetServerStateJsonFn != IntPtr.Zero;
+    /// <summary>v87: <see cref="TryGetWieldedItems"/> (what the player wields, from the server's messages).</summary>
+    public bool HasGetWieldedItems => _api.Version >= 87 && _api.GetWieldedItemsFn != IntPtr.Zero;
     /// <summary>v76: <see cref="CloseContainer"/> (close a corpse or chest like the client's window close).</summary>
     public bool HasCloseContainer => _api.Version >= 76 && _api.CloseContainerFn != IntPtr.Zero;
     /// <summary>v77: <see cref="GetScreenMode"/>, <see cref="GetUiHookFlags"/> and the UI callbacks
@@ -1125,6 +1127,27 @@ public readonly unsafe struct RynthCoreHost
     /// v86 or the call failed. Any thread; a few hundred bytes, so poll it (every second or two)
     /// rather than caching it for a session: an override changes it live.
     /// </summary>
+    /// <summary>
+    /// v87: what the player wields and where (EquipMask: 0x00100000 MeleeWeapon, 0x00200000 Shield,
+    /// 0x00400000 MissileWeapon, 0x00800000 MissileAmmo, 0x01000000 Held, 0x02000000 TwoHanded, ...),
+    /// from the server's wield / contain / drop messages. False when the engine doesn't have it or
+    /// can't start yet (no player). Any thread.
+    /// </summary>
+    public bool TryGetWieldedItems(out (uint Id, uint Location)[] items)
+    {
+        items = Array.Empty<(uint, uint)>();
+        if (!HasGetWieldedItems) return false;
+        const int Max = 64;
+        uint* ids = stackalloc uint[Max];
+        uint* locs = stackalloc uint[Max];
+        int n = ((delegate* unmanaged[Cdecl]<uint*, uint*, int, int>)_api.GetWieldedItemsFn)(ids, locs, Max);
+        if (n < 0) return false;
+        var list = new (uint, uint)[n];
+        for (int i = 0; i < n; i++) list[i] = (ids[i], locs[i]);
+        items = list;
+        return true;
+    }
+
     public bool TryGetServerStateJson(out string json)
     {
         json = string.Empty;

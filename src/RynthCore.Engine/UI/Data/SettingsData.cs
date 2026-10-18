@@ -40,6 +40,9 @@ internal sealed class RynthAiSettings
     public int TargetFPSBackground { get; set; } = 30;
     public bool EnableAutocram { get; set; }
     public bool PeaceModeWhenIdle { get; set; }
+    // RynthAi's Weapons Back After Heals. Nullable: an older RynthAi doesn't send it, and the
+    // engine then sends none back (a false would turn it off).
+    public bool? RearmAfterVitals { get; set; }
     public bool StartMacroOnLogin { get; set; }
     public bool PatrolOnLogin { get; set; }
     // RynthAi's Escape Acid and Lava. Default on; an older RynthAi doesn't send it, and a missing
@@ -720,6 +723,8 @@ internal static class SettingsSchema
             Bool("Auto Cram", s => s.EnableAutocram, (s, v) => s.EnableAutocram = v,
                 "Automatically moves items from your main pack into side packs.\nNote: recently used weapons stay in the main pack."),
             Bool("Peace Mode When Idle", s => s.PeaceModeWhenIdle, (s, v) => s.PeaceModeWhenIdle = v),
+            Bool("Weapons Back After Heals", s => s.RearmAfterVitals == true, (s, v) => s.RearmAfterVitals = v,
+                "After a heal, restam or remana spell with nothing to fight, put the last fight's weapons\n(main hand and off hand) back on instead of waiting for the next monster."),
             Bool("Start Macro On Login", s => s.StartMacroOnLogin, (s, v) => s.StartMacroOnLogin = v,
                 "Automatically starts the macro when RynthAi loads."),
             Bool("Patrol On Login", s => s.PatrolOnLogin, (s, v) => s.PatrolOnLogin = v,

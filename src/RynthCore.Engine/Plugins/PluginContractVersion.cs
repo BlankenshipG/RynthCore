@@ -23,5 +23,7 @@ internal static class PluginContractVersion
     //      craft chance, for a plugin; from SilentKelpie's build, 2026-10-15).
     // v86: GetServerStateJson (the server list, active server and owning plugins for every plugin;
     //      server plugins declare their server in their manifest; from SilentKelpie's build).
-    public const uint Current = 86;
+    // v87: GetWieldedItems (what the player wields and where, from the server's wield / contain /
+    //      drop messages: EquipmentTracker; the client's own fields go stale, 2026-10-18).
+    public const uint Current = 87;
 }

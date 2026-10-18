@@ -408,9 +408,22 @@ internal static class SmartBoxHooks
                          // nothing cached is a candidate. Here, not on the server message stream,
                          // so it works with that stream off (engine.json / /rc netmsg off).
                 if (size >= 12)
-                    AutoIdService.OnPutInContainer(
+                {
+                    uint putItem = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(data, 4)));
+                    uint putContainer = unchecked((uint)Marshal.ReadInt32(IntPtr.Add(data, 8)));
+                    AutoIdService.OnPutInContainer(putItem, putContainer);
+                    EquipmentTracker.OnContained(putItem, putContainer);
+                }
+                break;
+            case 0x0023: // WieldObject: [item u32][EquipMask u32] (ACE GameEventWieldItem).
+                if (size >= 12)
+                    EquipmentTracker.OnWield(
                         unchecked((uint)Marshal.ReadInt32(IntPtr.Add(data, 4))),
                         unchecked((uint)Marshal.ReadInt32(IntPtr.Add(data, 8))));
+                break;
+            case 0x019A: // InventoryPutObjectIn3D: [item u32] (ACE GameEventItemServerSaysMoveItem): dropped.
+                if (size >= 8)
+                    EquipmentTracker.OnDropped(unchecked((uint)Marshal.ReadInt32(IntPtr.Add(data, 4))));
                 break;
             case 0x00A0: // InventoryServerSaveFailed: [objectId u32][errorType u32] —
                          // the server refused an inventory change (wield, move, ...).

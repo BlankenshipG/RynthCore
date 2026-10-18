@@ -4084,6 +4084,24 @@ internal static class ClientObjectHooks
         TryGetPwdSnapshotInt(objectId, 6, out int capacity) && capacity > 0;
 
     /// <summary>
+    /// EquipmentTracker's start: the ids the PWD snapshot shows as wielded by <paramref name="playerId"/>
+    /// in no container, with their location. Both fields must agree: the wielder alone stays on an
+    /// item after it went into a pack (2026-10-17). Off-thread safe (snapshot only).
+    /// </summary>
+    internal static void CollectWieldedFromSnapshot(uint playerId, List<(uint Id, uint Loc)> dest)
+    {
+        lock (_weeniePtrSwapLock)
+        {
+            foreach (KeyValuePair<uint, PwdEntry> kv in _pwdFront)
+            {
+                if (kv.Key == playerId) continue;
+                if (kv.Value.Wielder == playerId && kv.Value.Container == 0 && kv.Value.Location != 0)
+                    dest.Add((kv.Key, kv.Value.Location));
+            }
+        }
+    }
+
+    /// <summary>
     /// Off-thread helper for UpdateObjectInventoryHooks: writes the ids whose PWD
     /// container or wielder is <paramref name="containerId"/> from the main-thread
     /// snapshot, under one lock, with no AC access. Returns the count written.
