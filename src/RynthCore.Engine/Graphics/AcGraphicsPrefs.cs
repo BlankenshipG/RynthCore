@@ -58,6 +58,25 @@ public static class AcGraphicsPrefs
     public const string FullScreenId = "Display.FullScreen";
     public const string RefreshRateId = "Display.RefreshRate";
     public const string SyncToRefreshId = "Display.SyncToRefresh";
+    public const string AutomaticDegradesId = "Render.AutomaticDegrades";
+    public const string SceneryDrawDistanceId = "Render.SceneryDrawDistance";
+    public const string LandscapeDrawDistanceId = "Render.LandscapeDrawDistance";
+
+    /// <summary>
+    /// The 32-bit client's memory risk (2026-10-18: a tester's client filled its 4 GB in 13 s after
+    /// login and died, every launch, once Adaptive degrade was off with a far scenery distance):
+    /// with degrades off AC loads every object in range at full detail. The warning text, or empty.
+    /// The values are what AC uses (this account's, else the INI's); null reads as AC's default.
+    /// </summary>
+    public static string MemoryRisk(string? automaticDegrades, string? sceneryDistance, string? landscapeDistance)
+    {
+        if (!string.Equals(automaticDegrades?.Trim(), "False", StringComparison.OrdinalIgnoreCase)) return string.Empty;
+        static bool Far(string? d) => Array.IndexOf(DistanceLevels, d?.Trim() ?? "") >= Array.IndexOf(DistanceLevels, "High");
+        if (!Far(sceneryDistance) && !Far(landscapeDistance)) return string.Empty;
+        return "Warning: Adaptive degrade is off with a far draw distance. AC then loads everything in range at full detail\n"
+             + "and can run out of memory (a 32-bit client has 4 GB) in a busy town, freezing and closing right after login.\n"
+             + "Turn Adaptive degrade on, or lower the scenery / landscape draw distance to Medium.";
+    }
 
     // Window modes: ids stored in graphics.json, labels shown in the panel (same order).
     public const string ModeWindowed = "Windowed";
