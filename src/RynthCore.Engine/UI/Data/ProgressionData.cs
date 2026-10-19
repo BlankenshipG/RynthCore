@@ -103,6 +103,11 @@ internal sealed class AugPlanner
     [JsonPropertyName("totCoins")]    public long TotalCoins { get; set; }
     [JsonPropertyName("coinsLine")]   public string CoinsLine { get; set; } = "";
     [JsonPropertyName("lumToBuy")]    public string LumToBuy { get; set; } = "";
+    // STILL NEEDED row (RynthILT 0.2.23+; empty from older): the plan's luminance less banked and
+    // character luminance, the e-coins still short, and the line that spells it out.
+    [JsonPropertyName("stillLum")]    public string StillLum { get; set; } = "";
+    [JsonPropertyName("stillCoins")]  public long StillCoins { get; set; }
+    [JsonPropertyName("stillLine")]   public string StillLine { get; set; } = "";
     /// <summary>Ready-made clipboard texts (UB's Copy Discord / Copy In-Game).</summary>
     [JsonPropertyName("copyDiscord")] public string CopyDiscord { get; set; } = "";
     [JsonPropertyName("copyIngame")]  public string CopyIngame { get; set; } = "";
@@ -161,6 +166,10 @@ internal sealed class EnlPlanner
     [JsonPropertyName("target")]        public int Target { get; set; }
     [JsonPropertyName("plan")]          public string[] Plan { get; set; } = Array.Empty<string>();
     [JsonPropertyName("coinsPerToken")] public int CoinsPerToken { get; set; }
+    // Sigil chain vendor trades (RynthILT 0.2.23+; -1 = an older RynthILT, no editors shown).
+    [JsonPropertyName("extractsPerAsc")] public int ExtractsPerAscension { get; set; } = -1;
+    [JsonPropertyName("trophyExtracts")] public int TrophyExtracts { get; set; } = -1;
+    [JsonPropertyName("trophyCount")]    public int TrophyCount { get; set; } = -1;
     [JsonPropertyName("tokensShort")]   public string TokensShort { get; set; } = "";
     /// <summary>Client-side requirements not yet met; empty = the client checks pass.</summary>
     [JsonPropertyName("blockers")]      public string[] Blockers { get; set; } = Array.Empty<string>();
@@ -199,6 +208,8 @@ internal sealed class EnlMaterialRow
     [JsonPropertyName("need")]  public string Need { get; set; } = "0";
     [JsonPropertyName("have")]  public string Have { get; set; } = "0";
     [JsonPropertyName("ok")]    public bool Ok { get; set; }
+    /// <summary>How to get it: a recipe or a vendor trade ("" = nothing to say; older RynthILT).</summary>
+    [JsonPropertyName("how")]   public string How { get; set; } = "";
 }
 
 /// <summary>One row of the 301–325 sigil craft chain.</summary>
@@ -209,6 +220,8 @@ internal sealed class EnlChainRow
     [JsonPropertyName("have")]  public long Have { get; set; }
     [JsonPropertyName("ok")]    public bool Ok { get; set; }
     [JsonPropertyName("craft")] public bool Craft { get; set; }
+    /// <summary>The recipe of a crafted item, or a vendor trade ("" = nothing to say; older RynthILT).</summary>
+    [JsonPropertyName("how")]   public string How { get; set; } = "";
 }
 
 [JsonSerializable(typeof(ProgressionInfo))]
