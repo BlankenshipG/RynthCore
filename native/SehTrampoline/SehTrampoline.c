@@ -27,7 +27,9 @@
 #include <windows.h>
 
 /* File version of this native module (bump with every behavioural change). */
-#define RC_SEH_TRAMPOLINE_VERSION 7   /* v7: stack sweeps bounded by this thread's stack (TEB), never
+#define RC_SEH_TRAMPOLINE_VERSION 8   /* v8: noise repeats only at powers of two, capped relogs per address,
+                                         a total byte budget for native-crash.log (CrashLogFilter.h);
+                                         v7: stack sweeps bounded by this thread's stack (TEB), never
                                          reading at or past StackBase;
                                          v6: AwfulWaffle's crash logger (per-address dedupe, pid/date,
                                          flush ring, RC_FlushCrashLog, module cache) merged with v3-v5;
@@ -546,7 +548,21 @@ static clf_class cl_first_frame_class(unsigned int esp)
 static void cl_write(const char* p, DWORD n)
 {
     DWORD wr;
-    if (g_logHandle != INVALID_HANDLE_VALUE) WriteFile(g_logHandle, p, n, &wr, NULL);
+    if (g_logHandle != INVALID_HANDLE_VALUE && WriteFile(g_logHandle, p, n, &wr, NULL))
+        g_filter.logBytes += wr;     /* under g_logOwner, like every writer */
+}
+
+/* The byte budget (CrashLogFilter.h). Under the lock, before an entry. Returns 1 when the
+ * entry may be written. The first refusal of an ordinary entry writes one marker line. */
+static int cl_budget(int fatal)
+{
+    clf_bytes b = clf_bytes_gate(&g_filter, fatal);
+    if (b == CLF_BYTES_MARK) {
+        const char* m = "\r\n==== NATIVE CRASH LOGGER: log size budget reached, further ordinary entries are dropped "
+                        "(fatal entries still get a reserve; restart the client or trim the file to resume) ====\r\n";
+        cl_write(m, (DWORD)lstrlenA(m));
+    }
+    return b == CLF_BYTES_OK;
 }
 
 /* Append " pid=N tid=N date=YYYY-MM-DD time=HH:MM:SS" (local time). */
@@ -569,7 +585,7 @@ static char* cl_stamp(char* p)
     return p;
 }
 
-static void cl_write_entry(PEXCEPTION_POINTERS ep, const char* kind, unsigned int hits)
+static void cl_write_entry(PEXCEPTION_POINTERS ep, const char* kind, unsigned int hits, int fatal)
 {
     char* p = g_buf;
     CONTEXT* c = ep->ContextRecord;
@@ -577,6 +593,7 @@ static void cl_write_entry(PEXCEPTION_POINTERS ep, const char* kind, unsigned in
     unsigned int exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
     unsigned int words;
     if (g_logHandle == INVALID_HANDLE_VALUE) return;
+    if (!cl_budget(fatal)) return;
 
     p = cl_str(p, "\r\n==== NATIVE CRASH LOGGER (");
     p = cl_str(p, kind);
@@ -604,6 +621,10 @@ static void cl_write_entry(PEXCEPTION_POINTERS ep, const char* kind, unsigned in
     p = cl_u(p, g_filter.otherRepeats);
     p = cl_str(p, " overCap=");
     p = cl_u(p, g_filter.overCap);
+    p = cl_str(p, " relogCapped=");
+    p = cl_u(p, g_filter.relogCapped);
+    p = cl_str(p, " logBytes=");
+    p = cl_u(p, g_filter.logBytes);
     p = cl_str(p, "\r\n  eip="); p = cl_sym(p, c->Eip, 1);
     p = cl_str(p, " esp=");      p = cl_hex(p, c->Esp);
     p = cl_str(p, " ebp=");      p = cl_hex(p, c->Ebp);
@@ -670,6 +691,7 @@ static void cl_flush_locked(const char* reason, unsigned int code, unsigned int 
         n = k;
     }
     if (n == 0 || g_logHandle == INVALID_HANDLE_VALUE) return;
+    if (!cl_budget(maxAgeMs == 0)) return;   /* last chance / crash exit are fatal: they get the reserve */
     p = g_buf;
     p = cl_str(p, "\r\n==== NATIVE CRASH LOGGER (flush: ");
     p = cl_str(p, reason);
@@ -731,7 +753,7 @@ static LONG CALLBACK CrashVeh(PEXCEPTION_POINTERS ep)
         if (slot) {
             /* A repeat: decided without touching any module. */
             if (clf_repeat(&g_filter, slot, code, now, &hits) == CLF_LOG_REPEAT) {
-                cl_write_entry(ep, slot->cls != CLF_CLASS_AC ? "first-chance, repeat, noise" : "first-chance, repeat", hits);
+                cl_write_entry(ep, slot->cls != CLF_CLASS_AC ? "first-chance, repeat, noise" : "first-chance, repeat", hits, 0);
                 written = 1;
             }
         } else {
@@ -742,11 +764,11 @@ static LONG CALLBACK CrashVeh(PEXCEPTION_POINTERS ep)
                 leaf == NULL && code == CLF_CODE_ACCESS_VIOLATION ? cl_first_frame_class(ep->ContextRecord->Esp) : CLF_CLASS_AC);
             clf_decision d = clf_new(&g_filter, code, exAddr, cls, now);
             if (d == CLF_LOG_COUNTED)
-                cl_write_entry(ep, "first-chance", 1);
+                cl_write_entry(ep, "first-chance", 1, 0);
             else if (d == CLF_LOG_NOISE)
                 cl_write_entry(ep, cls == CLF_CLASS_NETFX
                     ? "first-chance, .NET Framework noise, not counted"
-                    : "first-chance, managed (CoreCLR) noise, not counted", 1);
+                    : "first-chance, managed (CoreCLR) noise, not counted", 1, 0);
             written = d == CLF_LOG_COUNTED || d == CLF_LOG_NOISE;
         }
         /* Kept for a flush (memory only): the fatal hit is often one not written here. */
@@ -766,7 +788,7 @@ static LONG WINAPI CrashLastChance(PEXCEPTION_POINTERS ep)
     if (cl_lock()) {
         cl_flush_locked("last chance", ep->ExceptionRecord->ExceptionCode, 0);
         if (clf_last_chance(&g_filter) == CLF_LOG_LAST_CHANCE)
-            cl_write_entry(ep, "LAST-CHANCE, unhandled", 1);
+            cl_write_entry(ep, "LAST-CHANCE, unhandled", 1, 1);
         cl_unlock();
     }
     if (g_prevFilter && g_prevFilter != CrashLastChance) {
@@ -830,6 +852,9 @@ RC_InstallCrashLogger(const wchar_t* logPath)
                 FILE_ATTRIBUTE_NORMAL, NULL);
             if (h != INVALID_HANDLE_VALUE) {
                 HANDLE old = g_logHandle;
+                DWORD size = GetFileSize(h, NULL);   /* the budget counts what is already there */
+                g_filter.logBytes = size == INVALID_FILE_SIZE ? 0u : (unsigned int)size;
+                g_filter.capMarked = 0;
                 g_logHandle = h;
                 if (old != INVALID_HANDLE_VALUE) { CloseHandle(old); }
             }
@@ -949,7 +974,7 @@ static int gt_filter(PEXCEPTION_POINTERS ep, GT_FAULT* f)
             f->module[k] = 0;
         }
         if (InterlockedIncrement(&g_gameTickRecords) <= CL_MAX_GAMETICK) {
-            cl_write_entry(ep, "AV CAUGHT IN GAME TICK (Client::UseTime guard; tick dropped, client kept running)", 1);
+            cl_write_entry(ep, "AV CAUGHT IN GAME TICK (Client::UseTime guard; tick dropped, client kept running)", 1, 0);
         }
         cl_unlock();
         if (leaf && f->module && f->module[0]) {

@@ -181,6 +181,10 @@ internal static class HeartbeatLogger
                     }
                     // Safety net for the main-thread message box count (MainThreadFreeze).
                     MessageBoxHooks.ReconcileStaleMainThreadCount();
+                    // gateov=N = the world-transition gate's safety valve has opened N times (a death/portal
+                    // that outlasted WorldTransitionState.MaxHoldMs); omitted while 0.
+                    try { int gov = PlayerLifecycleLog.GateOverrides; if (gov > 0) vaField += $" gateov={gov}"; }
+                    catch { }
                     // pump=paused = plugin ticks paused because AC's main thread is frozen
                     // (MainThreadFreeze); omitted while running.
                     try { if (MainThreadFreeze.Paused) vaField += $" pump=paused stall={MainThreadFreeze.MainThreadStallMs}ms"; }

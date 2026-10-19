@@ -102,7 +102,13 @@ param(
     # Makes the bridge mandatory: no Decal means a failed build rather than a skipped bridge.
     [switch]$IncludeDecalBridge,
     # Decal's install folder, when not the default C:\Program Files (x86)\Decal 3.0.
-    [string]$DecalDir = ""
+    [string]$DecalDir = "",
+    # Managed (collectible) plugins, built by Publish-Update.ps1 (engine API 88): the folder of the
+    # plugins' common dependencies, staged into Runtime\PluginShared, and the managed RynthAi DLL,
+    # used instead of the NativeAOT RynthAi build. NativeAOT plugins can never be unloaded, so each
+    # reload kept a copy of every one (220-450 MB of address space per reload, 2026-10-19).
+    [string]$PluginSharedDir = "",
+    [string]$RynthAiDll = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -295,13 +301,15 @@ if (-not $SkipBuild) {
     }
     # (Default: the CoreCLR engine and native loader are built straight into staging below.)
 
-    # ── 4. RynthAi plugin (NativeAOT; keeps its own version) ─────────────────
-    Write-Host ""
-    Write-Host "[4/7] Publishing RynthAi plugin (NativeAOT)..." -ForegroundColor Cyan
-    # Its plugin version is RynthAiVersionCommand.HandWrittenVersion; the DLL's ProductVersion
-    # takes the release calver so an installed file never reads 1.0.0.
-    dotnet publish $PluginProject -c $Configuration @VersionArgs
-    if ($LASTEXITCODE -ne 0) { throw "Plugin publish failed (exit $LASTEXITCODE)" }
+    # ── 4. RynthAi plugin (NativeAOT; keeps its own version; a managed RynthAi from Publish-Update replaces it) ──
+    if (-not $RynthAiDll) {
+        Write-Host ""
+        Write-Host "[4/7] Publishing RynthAi plugin (NativeAOT)..." -ForegroundColor Cyan
+        # Its plugin version is RynthAiVersionCommand.HandWrittenVersion; the DLL's ProductVersion
+        # takes the release calver so an installed file never reads 1.0.0.
+        dotnet publish $PluginProject -c $Configuration @VersionArgs
+        if ($LASTEXITCODE -ne 0) { throw "Plugin publish failed (exit $LASTEXITCODE)" }
+    }
 
     # ── 5. Loot Editor (self-contained Avalonia tool) ─────────────────────────
     Write-Host ""
@@ -471,9 +479,17 @@ Copy-PublishTree $LootEditorPublish "$CoreStaging\Tools\LootEditor"
 
 # RynthAi plugin DLL → <RynthSuite>\RynthAi (next to its data dirs; the installer hands the
 # path to the launcher via HKA\Software\Rynth\PendingPluginRegistration).
-$pluginDll = "$PluginPublish\RynthCore.Plugin.RynthAi.dll"
+$pluginDll = if ($RynthAiDll) { $RynthAiDll } else { "$PluginPublish\RynthCore.Plugin.RynthAi.dll" }
 if (-not (Test-Path $pluginDll)) { throw "Plugin DLL not found at: $pluginDll" }
 Copy-Item $pluginDll "$SuiteStaging\RynthAi\" -Force
+
+# The managed plugins' common dependencies (engine API 88: ManagedPlugins looks in Runtime\PluginShared).
+if ($PluginSharedDir) {
+    if (-not (Test-Path $PluginSharedDir)) { throw "PluginShared folder not found at: $PluginSharedDir" }
+    New-Item -ItemType Directory -Path "$CoreStaging\Runtime\PluginShared" -Force | Out-Null
+    Copy-Item "$PluginSharedDir\*" "$CoreStaging\Runtime\PluginShared\" -Force
+    Write-Host "  Runtime\PluginShared: $((Get-ChildItem "$CoreStaging\Runtime\PluginShared" -File).Count) file(s)"
+}
 
 # Monster Editor → <RynthSuite>\RynthAi\MonsterEditor (RynthAi's dashboard launches it from there)
 Copy-PublishTree $MonsterEditorPublish "$SuiteStaging\RynthAi\MonsterEditor"

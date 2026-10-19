@@ -222,8 +222,87 @@ static void ring_order_overflow_and_written(void)
     check(got == 1 && out[0].addr == 0x9999 && older == 0, "after a flush, only what came since");
 }
 
+/* Review fix: Decal's handled null-ref AV at one JIT-code address about once a minute was
+ * written on EVERY hit (the 30 s relog applied to noise). A day of it: 1,440 hits. */
+static void noise_once_a_minute_is_not_written_every_hit(void)
+{
+    static clf_state s;
+    unsigned int hits, i, written = 0, now = 100000u;
+    for (i = 0; i < 1440; i++, now += 60000u)
+        if (is_write(FC(&s, AV, 0x433620C8u, CLF_CLASS_NETFX, now))) written++;
+    /* first + powers of two 2..1024 = 1 + 10 */
+    check(written == 11, "1,440 once-a-minute hits of one noise address: 11 entries, not 1,440");
+    check(s.counted == 0, "and none charged to the limit");
+    check(s.noiseRepeats == 1440 - 11, "skipped noise repeats are counted");
+    {
+        static clf_state m;
+        written = 0;
+        for (i = 0; i < 1440; i++) if (is_write(FC(&m, AV, 0x70001000u, CLF_CLASS_MANAGED, 5000u + i * 60000u))) written++;
+        check(written == 11, "managed noise is the same");
+    }
+}
+
+/* A genuine (AC) address keeps its 30 s relog, but only CLF_MAX_RELOGS times. */
+static void ac_relog_is_capped_per_address(void)
+{
+    static clf_state s;
+    unsigned int hits, i, written = 0, now = 1000u;
+    check(FC(&s, AV, 0x00416C86u, CLF_CLASS_AC, now) == CLF_LOG_COUNTED, "first sighting written");
+    for (i = 2; i <= 1500; i++) {
+        now += 31000u;
+        if (is_write(FC(&s, AV, 0x00416C86u, CLF_CLASS_AC, now))) written++;
+    }
+    {
+        unsigned int pow2 = 0, v;
+        for (v = 2; v <= 1500; v <<= 1) pow2++;          /* 2..1024 = 10 */
+        check(written == pow2 + CLF_MAX_RELOGS, "1,500 hits 31 s apart: the power-of-two ones + CLF_MAX_RELOGS time relogs");
+    }
+    check(s.relogCapped > 0, "the skipped relogs are counted");
+    check(clf_find(&s, 0x00416C86u)->relogs == CLF_MAX_RELOGS, "the slot used its relog budget");
+}
+
+/* A non-AV code at a known address is written, within the same per-address cap. */
+static void non_av_relog_is_capped(void)
+{
+    static clf_state s;
+    unsigned int hits, i, written = 0;
+    FC(&s, AV, 0x00500000u, CLF_CLASS_AC, 100);
+    for (i = 0; i < 200; i++)
+        if (is_write(FC(&s, CLF_CODE_HEAP_CORRUPTION, 0x00500000u, CLF_CLASS_AC, 200 + i))) written++;
+    /* hits 2..201: powers of two 2,4,..,128 = 7, plus the capped relogs */
+    check(written == 7 + CLF_MAX_RELOGS, "non-AV repeats: powers of two + CLF_MAX_RELOGS, not every hit");
+}
+
+/* The byte budget: ordinary entries stop after one marker; fatal ones get a reserve. */
+static void byte_budget(void)
+{
+    static clf_state s;
+    int i;
+    check(clf_bytes_gate(&s, 0) == CLF_BYTES_OK, "an empty log accepts an entry");
+    s.logBytes = CLF_MAX_LOG_BYTES - 1;
+    check(clf_bytes_gate(&s, 0) == CLF_BYTES_OK, "one byte under the budget still accepts");
+    s.logBytes = CLF_MAX_LOG_BYTES;
+    check(clf_bytes_gate(&s, 0) == CLF_BYTES_MARK, "at the budget: the marker, once");
+    for (i = 0; i < 5; i++)
+        check(clf_bytes_gate(&s, 0) == CLF_BYTES_DENY, "then ordinary entries are dropped");
+    check(s.byteDenied == 6, "and counted");
+    check(clf_bytes_gate(&s, 1) == CLF_BYTES_OK, "a fatal entry still fits in the reserve");
+    s.logBytes = CLF_MAX_LOG_BYTES + CLF_LOG_RESERVE_BYTES;
+    check(clf_bytes_gate(&s, 1) == CLF_BYTES_DENY, "and not past the reserve");
+    {
+        static clf_state t;   /* a log that starts over the budget (shared file already big) */
+        t.logBytes = CLF_MAX_LOG_BYTES + 10;
+        check(clf_bytes_gate(&t, 1) == CLF_BYTES_OK, "a fatal entry fits in the reserve of a log that opened over budget");
+        check(clf_bytes_gate(&t, 0) == CLF_BYTES_MARK, "its first ordinary entry gets the marker");
+    }
+}
+
 int main(void)
 {
+    noise_once_a_minute_is_not_written_every_hit();
+    ac_relog_is_capped_per_address();
+    non_av_relog_is_capped();
+    byte_budget();
     fatal_repeat_recovered_by_flush(5);
     fatal_repeat_recovered_by_flush(100);
     fatal_repeat_recovered_by_flush(1000);

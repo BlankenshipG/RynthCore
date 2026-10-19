@@ -1,10 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Offline checks for the in-world automatic hot-reload gate (2026-10-16):
-    src\RynthCore.Engine\ReloadInWorldGate.cs. Automatic reloads wait while the player is
-    in the world; manual / AllowInWorldAutoHotReload skip; leaving the world clears; a
-    throwing stillHold never wedges. Clock and sleep are fakes.
+    Offline checks for the opt-in in-world hot-reload hold (2026-10-18, from SilentKelpie's PR 6):
+    src\RynthCore.Engine\ReloadInWorldGate.cs. Off by default: never holds. On: an automatic reload
+    waits while the player is in the world; a reload asked for by hand is never held; leaving the
+    world (or switching the hold off, or a hand reload arriving mid-wait) releases it; at the
+    HoldReloadInWorldMaxMinutes bound it gives up, logs once, and the reload goes ahead; a
+    throwing query never wedges. Clock and sleep are fakes.
     Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
   -->
   <PropertyGroup>

@@ -31,6 +31,8 @@ internal static class PlayerLifecycleLog
     private static readonly WorldTransitionState _state = new();
     private static long _settleUntil;            // published copy for other threads
     private static volatile bool _portaling, _dead;
+    private static volatile bool _gateOpen;      // the valve opened, or engine.json TransitionGate is off
+    private static int _gateOverrides;
     private static long _portalEnteredAt, _diedAt;
 
     /// <summary>
@@ -39,7 +41,13 @@ internal static class PlayerLifecycleLog
     /// (BusyCountHooks' force-clear). As of the last game tick; any thread.
     /// </summary>
     public static bool InWorldTransition =>
-        _dead || _portaling || Environment.TickCount64 < Interlocked.Read(ref _settleUntil);
+        !_gateOpen && (_dead || _portaling || Environment.TickCount64 < Interlocked.Read(ref _settleUntil));
+
+    /// <summary>
+    /// Times the transition gate's safety valve opened (a transition held more than
+    /// WorldTransitionState.MaxHoldMs without a break), for the heartbeat (gateov=N).
+    /// </summary>
+    public static int GateOverrides => Volatile.Read(ref _gateOverrides);
 
     /// <summary>
     /// When the last settle window ends (TickCount64; 0 = no transition yet), as of the last
@@ -92,12 +100,24 @@ internal static class PlayerLifecycleLog
         uint landblock = cell >> 16;
 
         long now = Environment.TickCount64;
+        bool gateSetting = true;
+        try { gateSetting = Plugins.EngineSettings.TransitionGate; } catch { }
+        _state.Enabled = gateSetting;
         WorldTransitionState.Edge edges = _state.Sample(now, dead, portaling, landblock);
         _dead = _state.Dead;
         _portaling = _state.Portaling;
-        Interlocked.Exchange(ref _settleUntil, _state.SettleUntilMs);
+        PublishGate();
         if (edges == WorldTransitionState.Edge.None)
             return;
+
+        if ((edges & WorldTransitionState.Edge.GateOverride) != 0)
+        {
+            Interlocked.Exchange(ref _gateOverrides, _state.Overrides);
+            RynthLog.Warn($"[Lifecycle] world-transition gate OPENED by its safety valve after {_state.HeldForMs(now) / 1000} s held without a break " +
+                $"(dead={_state.Dead}, portaling={_state.Portaling}, health {health}/{maxHealth}, landblock 0x{landblock:X4}); queued game actions run again. " +
+                "A character that reads dead after a revive, or a stuck portal flag, would otherwise freeze every bot. " +
+                $"Open #{_state.Overrides} this session; engine.json TransitionGate=false turns the gate off.");
+        }
 
         if ((edges & WorldTransitionState.Edge.Died) != 0)
         {
@@ -126,9 +146,17 @@ internal static class PlayerLifecycleLog
     {
         long now = Environment.TickCount64;
         bool started = _state.OnTeleportMessage(now);
-        Interlocked.Exchange(ref _settleUntil, _state.SettleUntilMs);
+        PublishGate();
         if (started)
             RynthLog.Info($"[Lifecycle] PlayerTeleport (0xF751) received in landblock 0x{_state.Landblock:X4}; queued game actions held off for {WorldTransitionState.SettleMs / 1000} s.");
+    }
+
+    // Published for other threads: with the gate open (valve or setting off) the settle window reads as
+    // none, so InWorldTransition and AutoId's post-transition defer let go too.
+    private static void PublishGate()
+    {
+        _gateOpen = !_state.Enabled || _state.Overridden;
+        Interlocked.Exchange(ref _settleUntil, _gateOpen ? 0 : _state.SettleUntilMs);
     }
 
     private static string Ago(long since, long now) =>

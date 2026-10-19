@@ -208,6 +208,40 @@ internal static class ProcessExitHooks
     // never reaches the last-chance filter). Which codes count: CrashExitRule.
     private static bool IsCrashExit(uint code) => CrashExitRule.IsCrashExit(code);
 
+    // Review fix (2026-10-18): the managed dump this file used to write on TerminateProcess /
+    // NtTerminateProcess (f9c62ed, for Lucy's Town) was removed above on the grounds that
+    // createdump covers it. It covers only the paths the CLR itself ends: an AV that unwinds
+    // through one of our managed detours, or reaches the CLR's unhandled-exception filter (both
+    // checked offline with a small CoreCLR host: createdump runs). It does NOT cover a native AV
+    // that AC's own handler catches and answers with TerminateProcess: no CLR frame, no CLR
+    // filter, and nothing else here writes a dump. So the dump is back on that path, with what
+    // made the old one risky taken out:
+    //   - after the native log flush, so the crash log is on disk whatever happens next;
+    //   - on its own thread with a bounded wait (CrashDumpWaitMs): if the dying process is stuck
+    //     on a lock, the exit goes ahead after that, never hangs; a 0-byte file is deleted by
+    //     the next client's log housekeeping;
+    //   - once per process, and not at all when createdump already wrote clr_<pid>_*.dmp;
+    //   - small type only (CrashDump.WriteSelfDump), which also needs free space
+    //     (DumpBudget.SmallDumpMinFree), and only the newest few are kept.
+    private static int _crashDumped;
+    private const int CrashDumpWaitMs = 20_000;
+
+    private static void DumpCrashOnce(string via, uint code)
+    {
+        if (Interlocked.Exchange(ref _crashDumped, 1) != 0) return;
+        try
+        {
+            var worker = new Thread(() =>
+            {
+                try { CrashDump.WriteCrashDumpOnce(via, code); }
+                catch { }
+            }) { IsBackground = true, Name = "RynthCore.CrashDump" };
+            worker.Start();
+            worker.Join(CrashDumpWaitMs);
+        }
+        catch { /* never block or break the exit */ }
+    }
+
     private static bool TerminateProcessDetour(IntPtr hProcess, uint exitCode)
     {
         // Only log when terminating ourselves: TerminateProcess on other process handles is a
@@ -215,7 +249,11 @@ internal static class ProcessExitHooks
         bool selfKill = hProcess == new IntPtr(-1) || hProcess == GetCurrentProcessHandle();
         if (selfKill)
         {
-            if (IsCrashExit(exitCode)) SehTrampoline.FlushCrashLog(exitCode);
+            if (IsCrashExit(exitCode))
+            {
+                SehTrampoline.FlushCrashLog(exitCode);
+                DumpCrashOnce("TerminateProcess", exitCode);
+            }
             else LogTermination("TerminateProcess", hProcess, exitCode);
         }
         try { return _terminateOriginal!(hProcess, exitCode); }
@@ -246,7 +284,11 @@ internal static class ProcessExitHooks
         if (selfKill)
         {
             // A second flush (TerminateProcess calls this) writes nothing: records are written once.
-            if (IsCrashExit(exitStatus)) SehTrampoline.FlushCrashLog(exitStatus);
+            if (IsCrashExit(exitStatus))
+            {
+                SehTrampoline.FlushCrashLog(exitStatus);
+                DumpCrashOnce("NtTerminateProcess", exitStatus);
+            }
             else LogTermination("NtTerminateProcess", processHandle, exitStatus);
         }
         try { return _ntTermOriginal!(processHandle, exitStatus); }

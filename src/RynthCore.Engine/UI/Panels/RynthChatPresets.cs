@@ -92,21 +92,25 @@ internal static class RynthChatPresets
         @"|Your killing blow nearly turns .+ inside-out!|The thunder of crushing .+ is followed by the deafening silence of death!" +
         @"|Your attack stops .+ cold!)";
 
-    // Optional combat prefixes: "Critical hit! ", "Sneak Attack! ", "Recklessness! ".
-    private const string HitPrefix = @"^(?:(?:Critical [Hh]it|Sneak Attack|Recklessness)!\s+)*";
+    // Optional combat prefixes ("Critical hit! ", "Sneak Attack! " ...): the older presets' broad form.
+    private const string HitPrefix = @"^(?:[A-Z][\w ]{2,20}! )*";
+
+    // The new damage presets (melee_dealt ... magic_taken) name their prefixes: "Critical hit! ",
+    // "Sneak Attack! ", "Recklessness! ". HitPrefix above is left as it was for the older presets.
+    private const string KnownHitPrefix = @"^(?:(?:Critical [Hh]it|Sneak Attack|Recklessness)!\s+)*";
 
     // Outgoing physical (melee / missile): "... for N points of X damage!"
     private const string DealtMelee =
-        HitPrefix + @"You \S+ .+ for \d+ points? of .+ damage";
+        KnownHitPrefix + @"You \S+ .+ for \d+ points? of .+ damage";
     // Outgoing war / void magic: "... for N points with SpellName."
     private const string DealtMagic =
-        HitPrefix + @"You \S+ .+ for \d+ points? with ";
+        KnownHitPrefix + @"You \S+ .+ for \d+ points? with ";
     // Incoming melee / missile: body-part hits ("... your foot for N points of ...").
     private const string TakenMelee =
-        HitPrefix + @"(?!You ).+ your [a-z ]+ for \d+ points? of .+ damage";
+        KnownHitPrefix + @"(?!You ).+ your [a-z ]+ for \d+ points? of .+ damage";
     // Incoming spell damage: "... you for N points with SpellName."
     private const string TakenMagic =
-        HitPrefix + @"(?!You ).+ you for \d+ points? with ";
+        KnownHitPrefix + @"(?!You ).+ you for \d+ points? with ";
 
     private static readonly Preset[] _all =
     {
@@ -117,8 +121,8 @@ internal static class RynthChatPresets
         new("combat.defense_evades", "Combat", "You evade attacks",
             "You evade a monster's attack.",
             "You evaded Drudge Slinker!", Scope.NotPlayerChat, @"^You evaded "),
-
-        // Prefix-tagged hits (can filter these alone without hiding every swing).
+        // Prefix-tagged and melee / missile / magic damage, each its own switch (the older
+        // "Damage you deal / take" below keep their meaning). Specific before umbrella: FirstMatch order.
         new("combat.recklessness", "Combat", "Recklessness hits",
             "Lines prefixed with \"Recklessness!\" (your reckless swings).",
             "Recklessness! You slash Drudge Slinker for 54 points of slashing damage!", Scope.NotPlayerChat,
@@ -131,8 +135,6 @@ internal static class RynthChatPresets
             "Lines prefixed with \"Critical hit!\" / \"Critical Hit!\".",
             "Critical hit! You slash Drudge Slinker for 100 points of slashing damage!", Scope.NotPlayerChat,
             @"^Critical [Hh]it!"),
-
-        // Melee / missile vs magic (UB ChatHandler DamageMelee / DamageSpell / DamageOnTarget).
         new("combat.melee_dealt", "Combat", "Melee / missile damage you deal",
             "Your weapon hits: \"You slash … for N points of … damage!\" (missile uses the same form).",
             "You slash Drudge Slinker for 54 points of slashing damage!", Scope.NotPlayerChat, DealtMelee),
@@ -146,16 +148,12 @@ internal static class RynthChatPresets
             "Spell damage on you: \"… you for N points with SpellName.\"",
             "Drudge Sorcerer scorches you for 40 points with Flame Bolt III.", Scope.NotPlayerChat, TakenMagic),
 
-        // Umbrella damage (both of/with forms). Keep for players who want one switch.
-        new("combat.damage_dealt", "Combat", "All damage you deal",
-            "Every hit you land (melee, missile, magic), including critical / sneak / recklessness prefixes.",
-            "You slash Drudge Slinker for 54 points of slashing damage!", Scope.NotPlayerChat,
-            HitPrefix + @"You \S+ .+ for \d+ points? (?:of|with) "),
-        new("combat.damage_taken", "Combat", "All damage you take",
-            "Every hit that lands on you (melee / missile body-part and spell \"with\" forms).",
-            "Drudge Slinker grazes your foot for 12 points of slashing damage!", Scope.NotPlayerChat,
-            HitPrefix + @"(?!You ).+ (?:you|your [a-z ]+) for \d+ points? (?:of|with) "),
-
+        new("combat.damage_dealt", "Combat", "Damage you deal",
+            "Your melee, missile and war-spell hits (including critical / sneak attack prefixes).",
+            "You slash Drudge Slinker for 54 points of slashing damage!", Scope.NotPlayerChat, HitPrefix + @"You .+ for \d+ points? of "),
+        new("combat.damage_taken", "Combat", "Damage you take",
+            "Monster hits and spell damage landing on you.",
+            "Drudge Slinker slashes you for 12 points of slashing damage!", Scope.NotPlayerChat, HitPrefix + @"(?!You ).+ you (?:with .+ )?for \d+ points? of "),
         new("combat.attack_resists", "Combat", "Your spells resisted",
             "A target resists one of your spells.",
             "Drudge Slinker resists your spell", Scope.NotPlayerChat, @" resists your spell"),
@@ -181,10 +179,6 @@ internal static class RynthChatPresets
             "\"You receive N points of periodic … damage.\" DoTs on you.",
             "You receive 8 points of periodic acid damage.", Scope.NotPlayerChat,
             @"^You receive \d+ points of periodic .+damage"),
-        new("combat.periodic_healing", "Combat", "Periodic healing ticks",
-            "\"You receive N points of periodic healing.\" (same line as Items → Periodic healing).",
-            "You receive 12 points of periodic healing.", Scope.NotPlayerChat,
-            @"^You receive \d+ points of periodic healing"),
         new("combat.stamina", "Combat", "Stamina restore / spend",
             "Lines that restore or spend stamina (kits, consumables, S2H/S2M, Heal Self).",
             "You cast Revitalize Self V and restore 40 points of your stamina.", Scope.NotPlayerChat,
@@ -266,8 +260,8 @@ internal static class RynthChatPresets
             "The Mana Stone gives 4,500 points of mana to the following items:", Scope.NotPlayerChat,
             @"^The Mana Stone (?:gives|drains) |^You need .+ more mana to fully charge your items\.\s*$|^The .+ is destroyed\.\s*$"),
         new("item.regen", "Items", "Periodic healing ticks",
-            "Same as Combat → Periodic healing (kept here for the Items group).",
-            "You receive 12 points of periodic healing.", Scope.NotPlayerChat, @"^You receive \d+ points of periodic healing"),
+            "\"You receive N points of periodic healing.\"",
+            "You receive 12 points of periodic healing.", Scope.NotPlayerChat, @"^You receive .+ points of periodic healing"),
         new("item.aetheria_surge", "Items", "Aetheria surges",
             "\"Aetheria surges on…\" (classic UB Misc filter).",
             "Aetheria surges on Bob, increasing his damage.", Scope.NotPlayerChat, @"^Aetheria surges on"),
@@ -319,8 +313,8 @@ internal static class RynthChatPresets
             "Selected Colosseum spam (title / key / arena instructions); keeps \"Well done!\" / \"Good Luck!\".",
             "Master Arbitrator tells you, \"You shall be known…\"", Scope.Any,
             @"(?:^Master Arbitrator tells you,.+(?:""You shall be known|""Take this knowledge|""Use the the key)|(?:\[Fellowship\] )?Master Arbitrator says,.+(?:""Your fellowship|""Use one of the|""Don't forget))"),
-        new("npc.arbitrator", "NPCs", "All Master Arbitrator chat",
-            "Every Master Arbitrator line plus the fellowship-lock notice (Mag AllMasterArbitratorChat).",
+        new("npc.arbitrator", "NPCs", "Master Arbitrator (Colosseum)",
+            "All Master Arbitrator speech and the fellowship-lock notice.",
             "Master Arbitrator tells you, \"You shall be known…\"", Scope.Any,
             @"^Master Arbitrator (?:says|tells you)|^\[Fellowship\] Master Arbitrator |^Your fellowship is now locked\..*you have 15 minutes to be recruited"),
 

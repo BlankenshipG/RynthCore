@@ -30,6 +30,7 @@ internal static class EngineSettingsFile
     /// <paramref name="ownedJson"/> (one it left out, at its default, is removed); every other
     /// key, owned or not, keeps the file's value. So a client that changed one setting doesn't
     /// write its stale copy of the others over what other clients saved since.
+    /// Idea from Silentkelpie (rynth PR #6); re-implemented against our key set.
     /// </param>
     public static byte[]? Merge(string? existingJson, byte[] ownedJson, ICollection<string> ownedKeys, out string? error,
                                 ICollection<string>? changedKeys = null)

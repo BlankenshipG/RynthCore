@@ -285,6 +285,7 @@ internal static partial class PluginManager
     private static ArmConfirmationCallbackDelegate? _armConfirmationCallback;             // v85
     private static GetLastConfirmationCallbackDelegate? _getLastConfirmationCallback;     // v85
     private static GetServerStateJsonCallbackDelegate? _getServerStateJsonCallback;       // v86
+    private static GetWieldedItemsCallbackDelegate? _getWieldedItemsCallback;             // v87
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -672,8 +673,6 @@ internal static partial class PluginManager
         ImGuiBackend.Hud.HudFeed.OnChat(text);
         // Who to /reply and /retell to (ChatCommandDispatcher rewrites those to a /tell).
         Compatibility.TellMemory.Shared.OnChatLine(text);
-        // Luminance deposited into ACECustom's bank isn't session income (SessionRates).
-        Compatibility.EngineStatusMetrics.OnChatLine(text);
 
         if (!_initialized || _plugins.Count == 0)
             return false;
@@ -2882,6 +2881,7 @@ internal static partial class PluginManager
                 plugin.UIInitializedDispatched = false;
                 plugin.LoginCompleteDispatched = false;
                 RynthLog.Plugin($"PluginManager: {plugin.DisplayName} initialized OK (api v{PluginContractVersion.Current}).");
+                Compatibility.MemoryUse.Mark($"{plugin.DisplayName} Init");
             }
             else
             {
@@ -3185,6 +3185,7 @@ internal static partial class PluginManager
         _armConfirmationCallback ??= ArmConfirmationAction;
         unsafe { _getLastConfirmationCallback ??= GetLastConfirmationAction; }
         unsafe { _getServerStateJsonCallback ??= GetServerStateJsonAction; }
+        unsafe { _getWieldedItemsCallback ??= GetWieldedItemsAction; }
 
         _api.Version = PluginContractVersion.Current;
         _api.LogFn = Marshal.GetFunctionPointerForDelegate(_logCallback);
@@ -3338,6 +3339,7 @@ internal static partial class PluginManager
         _api.ArmConfirmationFn = Marshal.GetFunctionPointerForDelegate(_armConfirmationCallback);
         _api.GetLastConfirmationFn = Marshal.GetFunctionPointerForDelegate(_getLastConfirmationCallback);
         _api.GetServerStateJsonFn = Marshal.GetFunctionPointerForDelegate(_getServerStateJsonCallback);
+        _api.GetWieldedItemsFn = Marshal.GetFunctionPointerForDelegate(_getWieldedItemsCallback);
         RouteApiThroughLoader();
     }
 
@@ -3535,6 +3537,20 @@ internal static partial class PluginManager
     /// v86: the server list as JSON (UI/Sections/ServerStateJson.cs) from the published snapshot.
     /// Any thread: the snapshot is immutable and the strings are volatile reads. -1 on failure.
     /// </summary>
+    /// <summary>v87: what the player wields (EquipmentTracker). -1 while it can't start.</summary>
+    private static unsafe int GetWieldedItemsAction(uint* ids, uint* locations, int max)
+    {
+        try
+        {
+            if (ids == null || locations == null || max <= 0) return -1;
+            return Compatibility.EquipmentTracker.Copy(new Span<uint>(ids, max), new Span<uint>(locations, max));
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
     private static unsafe int GetServerStateJsonAction(byte* buffer, int capacity)
     {
         try
@@ -4099,14 +4115,14 @@ internal static partial class PluginManager
         }
     }
 
-    // v81: arm one answer for the next server yes/no prompt (ConfirmationResponder).
+    // v85: arm one answer for the next server yes/no prompt (ConfirmationResponder).
     private static int ArmConfirmationAction(uint type, int minPercent, int timeoutMs)
     {
         try { return ConfirmationResponder.Arm(type, minPercent, timeoutMs); }
         catch { return 0; }
     }
 
-    // v81: the last server yes/no prompt and what happened to it.
+    // v85: the last server yes/no prompt and what happened to it.
     private static unsafe int GetLastConfirmationAction(uint* type, uint* contextId, int* percent, int* outcome, int* ageMs)
     {
         try

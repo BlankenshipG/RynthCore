@@ -7,7 +7,10 @@
 //
 //  Per tick: take the new candidates, the one-shot login sweep, then look at the pending
 //  list in order (at most MaxEvaluatedPerTick, at most MaxPerTick sends) and decide each
-//  one with AutoIdPolicy. Waits stay; skips leave; a send leaves only when the main-thread
+//  one with AutoIdPolicy. When the evaluation budget runs out with items still unlooked-at,
+//  the ones just evaluated (and kept) move to the back, so the next tick starts where this
+//  one stopped: with more than MaxEvaluatedPerTick items waiting, a newer item at the end
+//  is reached in a few ticks instead of never (review fix 2026-10-18). Waits stay; skips leave; a send leaves only when the main-thread
 //  queue took it (a refusal, in a transition or with the ring full, keeps the entry and
 //  ends this tick's sending).
 //
@@ -93,6 +96,7 @@ internal sealed class AutoIdDrain
     private int _incomingCount;
     private readonly List<Pending> _pending = new(256);
     private readonly HashSet<uint> _pendingIds = new();
+    private readonly List<Pending> _rotateScratch = new(MaxEvaluatedPerTick);
     private int _pendingCount;
     private long _lastInventorySendMs;
     private long _sweptLoginAt;
@@ -225,11 +229,14 @@ internal sealed class AutoIdDrain
         bool sending = true;
 
         int keep = 0, evaluated = 0;
+        int keptBeforeBudgetEnd = -1;   // evaluated-and-kept items at the front when the budget ran out
         for (int i = 0; i < _pending.Count; i++)
         {
             Pending p = _pending[i];
             if (!sending || sent >= MaxPerTick || evaluated >= MaxEvaluatedPerTick)
             {
+                if (keptBeforeBudgetEnd < 0 && sending && sent < MaxPerTick)
+                    keptBeforeBudgetEnd = keep;   // only the evaluation budget ended it (not a send limit or a refusal)
                 _pending[keep++] = p;
                 continue;
             }
@@ -293,6 +300,15 @@ internal sealed class AutoIdDrain
             }
         }
         _pending.RemoveRange(keep, _pending.Count - keep);
+        // Round-robin: [evaluated and kept | not looked at] becomes [not looked at | evaluated and kept].
+        if (keptBeforeBudgetEnd > 0 && keptBeforeBudgetEnd < _pending.Count)
+        {
+            _rotateScratch.Clear();
+            for (int i = 0; i < keptBeforeBudgetEnd; i++) _rotateScratch.Add(_pending[i]);
+            _pending.RemoveRange(0, keptBeforeBudgetEnd);
+            _pending.AddRange(_rotateScratch);
+            _rotateScratch.Clear();
+        }
         Volatile.Write(ref _pendingCount, _pending.Count);
         return sent;
     }

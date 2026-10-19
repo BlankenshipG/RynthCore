@@ -944,6 +944,12 @@ internal struct RynthCoreAPI
     /// schema). Copies NUL-terminated UTF-8 JSON when it fits and returns its byte length either
     /// way (length &gt;= capacity: call again with a bigger buffer). Any thread. Requires API v86+.</summary>
     public IntPtr GetServerStateJsonFn;
+    /// <summary>v87: <c>int GetWieldedItems(uint* ids, uint* locations, int max)</c>: what the player
+    /// wields and where (EquipMask), from the server's WieldObject / InventoryPutObjInContainer /
+    /// InventoryPutObjectIn3D messages, started from the client's records where they agree
+    /// (Compatibility/EquipmentTracker.cs). Returns the count written (at most max), or -1 while
+    /// there is no player or nothing to start from. Any thread. Requires API v87+.</summary>
+    public IntPtr GetWieldedItemsFn;
 }
 
 /// <summary>v79 <see cref="TrainingInfoNative.Flags"/> bits.</summary>
@@ -1756,6 +1762,8 @@ internal unsafe delegate int GetServerInfoCallbackDelegate(byte* worldName, int 
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetServerStateJsonCallbackDelegate(byte* buffer, int capacity);
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetWieldedItemsCallbackDelegate(uint* ids, uint* locations, int max);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate int CloseContainerCallbackDelegate(uint containerId);

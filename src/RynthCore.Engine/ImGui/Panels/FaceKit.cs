@@ -223,7 +223,7 @@ internal static class FaceKit
     /// One popup list per face, opened from any button: call Open from the
     /// button's click and Draw once per frame at the end of the face's Draw
     /// (outside any child window, so the popup id always matches). Long lists
-    /// (Slayer Type's creature names, materials, long keys…) get a type-to-filter
+    /// (Slayer Type's creature names, materials, long keys) get a type-to-filter
     /// box so players can pick by name instead of scrolling.
     /// </summary>
     internal sealed class Picker
@@ -298,7 +298,7 @@ internal static class FaceKit
                     _focusFilter = false;
                     ImGuiNET.ImGui.SetKeyboardFocusHere(0);   // next widget = the filter box
                 }
-                TextBox("##pick_filter", _filter, fp, ImGuiNET.ImGui.GetContentRegionAvail().X, "Type to filter…", out _,
+                TextBox("##pick_filter", _filter, fp, ImGuiNET.ImGui.GetContentRegionAvail().X, "Type to filter...", out _,
                     ImGuiInputTextFlags.None, FilterH);
                 ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(fp.X, fp.Y + FilterH + 2));
                 filterText = Utf8(_filter);

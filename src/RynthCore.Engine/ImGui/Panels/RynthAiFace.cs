@@ -1027,6 +1027,22 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             PanelRouter.Toggle(title);
     }
 
+    /// <summary>
+    /// A Character menu line that opens Skills (0), Attributes (1) or Progress (2): in RynthOracle when its tabs
+    /// are there, else the standalone Skills panel on that tab. Checked while the place it opens is showing it.
+    /// </summary>
+    private static void SkillsMenuItem(string label, string command, int tab, string tooltip)
+    {
+        bool viaOracle = SkillsRouting.OracleTabsAvailable;
+        if (!viaOracle && (tab != 0 || !ImGuiPanelHost.HasFace(SkillsFace.Title))) return;   // standalone Skills has its own tab strip
+        bool on = viaOracle
+            ? UI.ScriptWindows.ScriptWindowRegistry.IsOpen(OracleMainKey) && OracleSkillsEmbed.ActiveTab == tab
+            : ImGuiPanelHost.IsOpen(SkillsFace.Title);
+        if (ImGuiNET.ImGui.MenuItem(label, viaOracle ? SkillsRouting.OracleCommand(tab) : command, on))
+            SkillsRouting.Open(tab);
+        SafeImGui.SetItemTooltip(viaOracle ? "RynthOracle's " + label + " tab: " + tooltip : tooltip);
+    }
+
     // RynthOracle's script window keys (RynthOraclePlugin: UiWindow keys).
     private const string OracleMainKey = "RynthOracle/Oracle";
     private const string OracleTimersKey = "RynthOracle/QuestTimers";
@@ -1088,22 +1104,14 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             SafeImGui.SetItemTooltip(hasOracle
                 ? "RynthOracle's Fellowship tab: members, leader, open / locked, XP sharing and (Infinite Leaftide) the /fship commands."
                 : "RynthOracle's Fellowship tab (RynthOracle isn't loaded).");
-            // Skills / Attributes / Progress live under RynthOracle (engine SkillsFace embed).
-            if (ImGuiNET.ImGui.MenuItem("Skills", "/ro skills", false, hasOracle)) UI.ServerMenus.Run("/ro skills");
-            SafeImGui.SetItemTooltip(hasOracle
-                ? "RynthOracle Skills: raise and train (was the standalone Skills panel)."
-                : "RynthOracle Skills (RynthOracle isn't loaded).");
-            if (ImGuiNET.ImGui.MenuItem("Attributes", "/ro attrs", false, hasOracle)) UI.ServerMenus.Run("/ro attrs");
-            SafeImGui.SetItemTooltip(hasOracle
-                ? "RynthOracle Attributes: attributes and vitals."
-                : "RynthOracle Attributes (RynthOracle isn't loaded).");
-            if (ImGuiNET.ImGui.MenuItem("Progress", "/ro progress", false, hasOracle)) UI.ServerMenus.Run("/ro progress");
-            SafeImGui.SetItemTooltip(hasOracle
-                ? "RynthOracle Progress: Infinite Leaftide progression planners (needs RynthILT)."
-                : "RynthOracle Progress (RynthOracle isn't loaded).");
+            // Skills / Attributes / Progress live under RynthOracle (raise/train + ILT planners) when Oracle
+            // provides the tabs; otherwise these open the standalone Skills panel (SkillsRouting).
+            SkillsMenuItem("Skills", "/rc skills", 0, "Raise and train skills.");
+            SkillsMenuItem("Attributes", "/ro attrs", 1, "Attributes and vitals.");
+            SkillsMenuItem("Progress", "/rc progression", 2, "Augmentation, Enlightenment and XP planners (Infinite Leaftide).");
             PanelMenuItem(InventoryFace.Title, "/rc inventory");
             PanelMenuItem(ItemCountFace.Title, "/rc itemcount");
-            // RynthInventory's script window (same as /ginv / Inventory's GInv button).
+            // RynthInventory's script window (same as /ginv and Inventory's GInv button).
             const string ginvKey = "RynthInventory/Main";
             bool hasGinv = UI.ScriptWindows.ScriptWindowRegistry.Has(ginvKey);
             if (ImGuiNET.ImGui.MenuItem("Global Inventory", "/ginv",

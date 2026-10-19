@@ -4,8 +4,8 @@
 //  "33.6E 42.1N", "0.5S, 101.2W"), for the chat window's right-click menu
 //  ("Arrow to ..." / "Go to ..." send them to RynthNav).
 //
-//  Runs when a line's menu opens, never per frame. No engine dependencies:
-//  tools/ChatCoordTests compiles this file.
+//  Runs when a line's menu opens or a line is measured (the underlined links), never per
+//  frame. No engine dependencies besides ChatSpan: tools/ChatCoordTests compiles this file.
 //
 //  To keep ordinary chat from turning into coordinates ("give me 5 s, 2 e"),
 //  a pair counts when both letters are capitals, or both numbers have a decimal
@@ -51,6 +51,42 @@ internal static class ChatCoords
         for (int i = found.Count - 1; i > 0; i--)
             if (found[i].Start < found[i - 1].Start + found[i - 1].Length) found.RemoveAt(i);
         return found;
+    }
+
+    /// <summary>Cheap pre-check before the coordinate regex: a digit followed (soon) by a compass letter.
+    /// Never false for a line <see cref="Find"/> would find something in.</summary>
+    public static bool MayHaveCoords(string text)
+    {
+        for (int i = 0; i + 1 < text.Length; i++)
+            if (char.IsDigit(text[i]))
+                for (int j = i + 1; j < text.Length && j <= i + 2; j++)
+                    if ("NnSsEeWw".IndexOf(text[j]) >= 0) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// The rules' highlight spans with the coordinate links laid over them: a link keeps its own
+    /// colour (<paramref name="linkArgb"/>), and any highlight it overlaps is cut around it. The result
+    /// is sorted by start and never overlaps (given sorted, non-overlapping spans and coords).
+    /// </summary>
+    public static ChatSpan[] LinkSpans(ChatSpan[]? spans, List<ChatCoord> coords, uint linkArgb)
+    {
+        var result = new List<ChatSpan>();
+        foreach (ChatSpan s in spans ?? Array.Empty<ChatSpan>())
+        {
+            int a = s.Start, b = s.Start + s.Length;
+            foreach (ChatCoord c in coords)
+            {
+                int ca = c.Start, cb = c.Start + c.Length;
+                if (cb <= a || ca >= b) continue;
+                if (ca > a) result.Add(new ChatSpan(a, ca - a, s.Argb));
+                a = Math.Max(a, cb);
+            }
+            if (b > a) result.Add(new ChatSpan(a, b - a, s.Argb));
+        }
+        foreach (ChatCoord c in coords) result.Add(new ChatSpan(c.Start, c.Length, linkArgb));
+        result.Sort((x, y) => x.Start.CompareTo(y.Start));
+        return result.ToArray();
     }
 
     private static void Collect(Regex rx, string text, bool nsFirst, List<ChatCoord> found)

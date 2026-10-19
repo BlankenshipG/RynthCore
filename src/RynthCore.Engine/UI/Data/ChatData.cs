@@ -398,15 +398,7 @@ internal static class ChatModel
     };
 
     /// <summary>The channel tab a ChatMessageType lands in; mirrors ChatClassifier.ChannelFor in the plugin.</summary>
-    public static string ChannelForType(int chatType) => (uint)chatType switch
-    {
-        0x02 or 0x03 or 0x04 or 0x0A or 0x0B or 0x0C or 0x12 or 0x13 => "Chat",
-        // 0x08/0x09 = retail channel; 0x1C (28) = ILT/ACECustom tagged [Trade]/[General] lines.
-        0x08 or 0x09 or 0x1C => "Channels",
-        0x00 or 0x05 or 0x0D or 0x14 or 0x17 or 0x18 or 0x19 or 0x1F => "System",
-        0x06 or 0x07 or 0x11 or 0x15 or 0x16 => "Combat",
-        _ => "Other",
-    };
+    public static string ChannelForType(int chatType) => ChatRetailVerdict.ChannelForType(chatType);
 
     public static string ConditionLabel(string when)
     {
@@ -772,15 +764,13 @@ internal static class ChatModel
     /// <summary>
     /// True when the rules or standard filters hide this incoming line, so AC shouldn't print
     /// it either (HideInRetailChat). Pump thread (PluginManager, before the held line's verdict).
-    /// The channel is worked out the way the RynthChat plugin does it: a [Trade]/[General]-style
-    /// tag first, then the chat type.
+    /// The channel is worked out the way the RynthChat plugin files the line (ChatRetailVerdict).
     /// </summary>
     internal static bool ShouldHideInRetail(string? text, int chatType)
     {
         if (!HideInRetailChat || string.IsNullOrEmpty(text)) return false;
         string line = ChatSource.StripAcLinks(text, out _);
         if (line.Length == 0) return false;
-        string channel = IsChannelTagged(line) ? "Channels" : ChannelForType(chatType);
 
         string name = PumpCharacterName();
         long version = FiltersVersion;
@@ -792,21 +782,8 @@ internal static class ChatModel
             router = new ChatRouter(Filters, mention: null, name, countHits: false);
             _retailRouter = (version, name, router);
         }
-        return router.Evaluate(line, channel, chatType, null).Hidden;
+        return ChatRetailVerdict.IsHidden(router, line, chatType);
     }
-
-    /// <summary>The RynthChat plugin's channel tags (ChatClassifier.IsChannelTagged): "[Trade] ..." etc.</summary>
-    private static bool IsChannelTagged(string text) =>
-        text.Length > 0 && text[0] == '['
-        && (text.StartsWith("[General]", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("[Trade]", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("[LFG]", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("[Roleplay]", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("[Society]", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("[Celestial Hand]", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("[Eldrytch Web]", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("[Radiant Blood]", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("[Admin]", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>A router for the rule editor's test box (UI thread, on an edit).</summary>
     public static ChatRouter TestRouter()
@@ -1381,12 +1358,9 @@ internal static class ChatModel
     // Every client shares rynthchat_settings.json and saves its whole state, so a client that
     // never re-read the file wrote back stale presets/rules over another client's change (last
     // writer won; a ticked standard filter came back off). Each client now re-reads the file
-    // when someone else changes it (PollSettingsFile). _lastSavedJson is this client's own last
-    // write, so its own saves don't count as a change.
-    private static string? _lastSavedJson;
-    private static DateTime _settingsSeenWriteUtc;
-    private static long _nextSettingsPollMs;
-    private const long SettingsPollMs = 2000;
+    // when someone else changes it (PollSettingsFile). SharedFileWatch remembers this client's own
+    // last write, so its own saves don't count as a change.
+    private static readonly SharedFileWatch SettingsWatch = new(pollMs: 2000);
 
     /// <summary>
     /// Pump thread (ChatSource.Poll): reloads the settings when another client saved the file.
@@ -1394,18 +1368,11 @@ internal static class ChatModel
     /// </summary>
     internal static void PollSettingsFile()
     {
-        long now = Environment.TickCount64;
-        if (now < _nextSettingsPollMs || Volatile.Read(ref _settingsLoaded) == 0) return;
-        _nextSettingsPollMs = now + SettingsPollMs;
+        if (Volatile.Read(ref _settingsLoaded) == 0) return;
         try
         {
-            string path = SettingsPath;
-            if (!File.Exists(path)) return;
-            DateTime written = File.GetLastWriteTimeUtc(path);
-            if (written == _settingsSeenWriteUtc) return;
-            _settingsSeenWriteUtc = written;
-            string json = File.ReadAllText(path);
-            if (json == Volatile.Read(ref _lastSavedJson)) return;   // our own save
+            string? json = SettingsWatch.Changed(Environment.TickCount64, SettingsPath);   // null: nobody else saved
+            if (json == null) return;
             RynthLog.UI("ChatModel: rynthchat_settings.json changed (another client saved it); reloading the rules and filters.");
             LoadSettings(json, reload: true);
         }
@@ -1418,7 +1385,7 @@ internal static class ChatModel
         {
             string path = SettingsPath;
             if (!File.Exists(path)) return;
-            _settingsSeenWriteUtc = File.GetLastWriteTimeUtc(path);
+            SettingsWatch.Seen(File.GetLastWriteTimeUtc(path));
             LoadSettings(File.ReadAllText(path), reload: false);
         }
         catch (Exception ex)
@@ -1575,7 +1542,7 @@ internal static class ChatModel
                 {
                     string json = JsonSerializer.Serialize(dto, RynthChatJsonContext.Default.RynthChatSettingsDto);
                     // Before the swap: PollSettingsFile must see this text as ours, not another client's.
-                    Volatile.Write(ref _lastSavedJson, json);
+                    SettingsWatch.Saved(json);
                     File.WriteAllText(tmp, json);
                     File.Move(tmp, path, overwrite: true);
                 }

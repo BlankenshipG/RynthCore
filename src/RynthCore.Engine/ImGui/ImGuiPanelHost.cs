@@ -459,6 +459,7 @@ internal static class ImGuiPanelHost
             Apply(req.Title, req.Kind, placeScale);
         RemoveUnregistered();
         SweepEmbedded();
+        Panels.OracleSkillsEmbed.Sweep(Environment.TickCount64);   // Oracle's Skills embed that stopped drawing
 
         List<Entry> order;
         lock (Sync) order = DrawOrder;

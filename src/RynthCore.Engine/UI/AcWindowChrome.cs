@@ -94,13 +94,13 @@ internal static class AcWindowChrome
             // Another client may have changed Settings > Graphics (graphics.json).
             Graphics.AcGraphics.PollReload();
 
-            if (EngineSettings.RememberWindowLayout && !_placementRestored)
+            if (EngineSettings.RememberAcWindowPosition && !_placementRestored)
                 TryRestorePlacement(hwnd);
 
             ApplyBorderlessDesired(hwnd);
 
             // Keep AC placement fresh while the user drags/resizes (throttled).
-            if (EngineSettings.RememberWindowLayout && now >= _nextPlacementSaveTick)
+            if (EngineSettings.RememberAcWindowPosition && now >= _nextPlacementSaveTick)
             {
                 _nextPlacementSaveTick = now + 10000;
                 SavePlacement(hwnd);
@@ -155,7 +155,7 @@ internal static class AcWindowChrome
                 if (_savedStyle is null)
                     _savedStyle = missingChrome ? (style | BorderChromeMask) : style;
 
-                Placement file = EngineSettings.RememberWindowLayout ? ReadPlacementFile() : default;
+                Placement file = EngineSettings.RememberAcWindowPosition ? ReadPlacementFile() : default;
                 bool launch = !_borderlessRestoreTried;
                 _borderlessRestoreTried = true;
 
@@ -180,7 +180,7 @@ internal static class AcWindowChrome
                 string how = Graphics.AcGraphics.FillMonitor ? "filling the monitor" : "resolution size";
                 RynthLog.UI(FormattableString.Invariant(
                     $"AcWindowChrome: borderless windowed on at ({target.Left},{target.Top}) {Width(target)}x{Height(target)} ({how})."));
-                if (EngineSettings.RememberWindowLayout) SavePlacement(hwnd);
+                if (EngineSettings.RememberAcWindowPosition) SavePlacement(hwnd);
             }
             else
             {
@@ -240,7 +240,7 @@ internal static class AcWindowChrome
             string how = Graphics.AcGraphics.FillMonitor ? "filling the monitor" : "resolution size";
             RynthLog.UI(FormattableString.Invariant(
                 $"AcWindowChrome: borderless now {Width(target)}x{Height(target)} ({how})."));
-            if (EngineSettings.RememberWindowLayout) SavePlacement(hwnd);
+            if (EngineSettings.RememberAcWindowPosition) SavePlacement(hwnd);
         }
     }
 
@@ -337,7 +337,7 @@ internal static class AcWindowChrome
             string later = Graphics.AcGraphics.WindowMode == AcGraphicsModes.FullScreen ? " (full screen starts at the next launch)" : "";
             RynthLog.UI(FormattableString.Invariant(
                 $"AcWindowChrome: window set to {Width(target)}x{Height(target)} for {Graphics.AcGraphics.WindowMode}{later}."));
-            if (EngineSettings.RememberWindowLayout) SavePlacement(hwnd);
+            if (EngineSettings.RememberAcWindowPosition) SavePlacement(hwnd);
         }
     }
 
@@ -467,7 +467,7 @@ internal static class AcWindowChrome
     public static bool SavePlacement(IntPtr hwnd, bool force = false)
     {
         if (hwnd == IntPtr.Zero) return false;
-        if (!force && !EngineSettings.RememberWindowLayout) return false;
+        if (!force && !EngineSettings.RememberAcWindowPosition) return false;
         // Only the world's window is the player's placement: at the login and character-select
         // screens AC shrinks its window to 800x600, and saving that made every client start small.
         if (Compatibility.UiFlowHooks.CurrentMode != Compatibility.UiFlowHooks.ModeGamePlay) return false;
@@ -522,7 +522,7 @@ internal static class AcWindowChrome
     private static void TryRestorePlacement(IntPtr hwnd)
     {
         _placementRestored = true;
-        if (!EngineSettings.RememberWindowLayout) return;
+        if (!EngineSettings.RememberAcWindowPosition) return;
         // Borderless restores its own rect (ApplyBorderlessDesired); the framed one would only
         // move the window first.
         if (Graphics.AcGraphics.WantBorderless) return;

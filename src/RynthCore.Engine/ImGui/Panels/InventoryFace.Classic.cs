@@ -16,9 +16,9 @@
 //  25 px title band isn't stretched) follow AcClientReborn's InventoryGeometry.
 //  Credit: OpenAC (Tom's project) for the layout and sprite research.
 //
-//    title     retail title bar "Inventory of <name>", a "more" menu (Mini Remote,
-//              RynthSort, Item Count, Global Inventory), Vault (Aelrynth),
-//              size / tools / Modern toggles, close
+//    title     retail title bar "Inventory of <name>", Vault, Remote / Sort / Count /
+//              GInv (text, icons or one menu: InventoryTitleLayout), size / tools /
+//              Modern toggles, close
 //    tools     search, sort, category chips (toggle, the funnel in the title)
 //    paperdoll the 24 equip slots at their retail places (the 3D figure isn't
 //              drawn, so the retail "Slots" view is always on)
@@ -137,6 +137,10 @@ internal sealed partial class InventoryFace
     private string? _hoverLabel, _hoverLabel2;
     private string _titleText = "Inventory";
     private string? _titleFor;
+    // The title cut to its room (InventoryTitleLayout.Elide), kept while the text and the room stay the same.
+    private string _titleCut = string.Empty;
+    private string? _titleCutFor;
+    private float _titleCutRoom, _titleCutW;
 
     // =====================================================================
     //  Body
@@ -246,85 +250,128 @@ internal sealed partial class InventoryFace
             dl.AddRect(o, o + new Vector2(barW, h - 1), Gold, 4);
         }
 
-        // Two toggles at the bar's right end: the tools row and the Modern look.
-        float btn = MathF.Round(18 * s);
-        var b2 = new Vector2(o.X + barW - 8 * s - btn, o.Y + (h - btn) * 0.5f);
-        var b1 = new Vector2(b2.X - btn - 2 * s, b2.Y);
-        var bPlus = new Vector2(b1.X - btn - 6 * s, b2.Y);
-        var bMinus = new Vector2(bPlus.X - btn - 2 * s, b2.Y);
-        if (TitleToggle("##inv_smaller", PhosphorIcons.Minus, bMinus, btn, false))
-            InventorySettingsStore.StepSize(-1);
-        SafeImGui.SetItemTooltip($"Smaller ({InventorySettingsStore.SizePct}%)");
-        if (TitleToggle("##inv_bigger", PhosphorIcons.Plus, bPlus, btn, false))
-            InventorySettingsStore.StepSize(+1);
-        SafeImGui.SetItemTooltip($"Bigger ({InventorySettingsStore.SizePct}%)");
-        if (TitleToggle("##inv_tools", PhosphorIcons.Funnel, b1, btn, InventorySettingsStore.ShowTools))
-        {
-            // Closing the search / filter row shows every item again.
-            if (InventorySettingsStore.ShowTools) ClearFilters();
-            InventorySettingsStore.SetShowTools(!InventorySettingsStore.ShowTools);
-        }
-        ImGuiNET.ImGui.SetItemTooltip("Search, sort and filter");
-        if (TitleToggle("##inv_modern", PhosphorIcons.SquaresFour, b2, btn, false))
-            InventorySettingsStore.SetClassic(false);
-        ImGuiNET.ImGui.SetItemTooltip("Modern look");
-
-        // Vault (Aelrynth only) sits next to the size toggles: the contents area shows the account
-        // vault instead of the open pack.
-        float leftmost = bMinus.X;
-        if (VaultFeed.Available)
-        {
-            var vsz = new Vector2(MathF.Round(38 * s), btn);
-            var bV = new Vector2(leftmost - vsz.X - 8 * s, b2.Y);
-            if (TitleTextToggle("##inv_vault", "Vault", bV, vsz, _vaultOpen))
-            {
-                _vaultOpen = !_vaultOpen;
-                if (_vaultOpen) VaultFeed.ViewOpened();
-            }
-            ImGuiNET.ImGui.SetItemTooltip("Your Aelrynth account vault");
-            leftmost = bV.X;
-        }
-        else
-        {
-            _vaultOpen = false;
-        }
-
-        // The related panels share one menu: as four text buttons they overran the 300 px bar and
-        // pushed Vault (and the title) off its left edge.
-        bool remoteOpen = ImGuiPanelHost.IsOpen(MiniRemoteFace.Title);
-        bool sortOpen = ScriptWindowRegistry.IsOpen(RynthSortKey);
-        bool ginvOpen = ScriptWindowRegistry.IsOpen(GlobalInventoryKey);
-        bool countOpen = ImGuiPanelHost.IsOpen(ItemCountFace.Title);
-        var bMore = new Vector2(leftmost - btn - 6 * s, b2.Y);
-        if (TitleToggle("##inv_related", PhosphorIcons.DotsThree, bMore, btn, remoteOpen || sortOpen || ginvOpen || countOpen))
-            ImGuiNET.ImGui.OpenPopup("##inv_related_menu");
-        ImGuiNET.ImGui.SetItemTooltip("Mini Remote, RynthSort, Item Count, Global Inventory");
-        leftmost = bMore.X;
-        RelatedPanelsMenu(remoteOpen, sortOpen, countOpen, ginvOpen);
-
-        // Drag surface: the bar left of the toggles (moves the panel, like the header).
-        float dragW = Math.Max(1, leftmost - o.X - 2);
-        ImGuiNET.ImGui.SetCursorScreenPos(o);
-        ImGuiNET.ImGui.InvisibleButton("##inv_titledrag", new Vector2(dragW, h));
-        ImGuiPanelHost.DragWindowWithLastItem();
-
-        // "Inventory of <name>", centred on the bar (left of the toggles when it's narrow).
+        // "Inventory of <name>": its width decides how much room the layout owes the title.
         if (!ReferenceEquals(_titleFor, view.PlayerName))
         {
             _titleFor = view.PlayerName;
             _titleText = view.PlayerName.Length > 0 ? "Inventory of " + view.PlayerName : "Inventory";
         }
         ImFontPtr f = ImGuiFonts.Get(UiFont.UiBold11);
-        ImGuiNET.ImGui.PushFont(f);
-        Vector2 ts = ImGuiNET.ImGui.CalcTextSize(_titleText);
-        ImGuiNET.ImGui.PopFont();
         float titlePx = 12 * s;
-        ts *= titlePx / f.FontSize;
-        float tx = o.X + (barW - ts.X) * 0.5f;
-        if (tx + ts.X > leftmost - 4) tx = Math.Max(o.X + 10 * s, leftmost - 4 - ts.X);
-        dl.PushClipRect(o + new Vector2(6 * s, 0), new Vector2(leftmost - 2, o.Y + h), true);
-        dl.AddText(f, titlePx, new Vector2(tx, o.Y + (h - ts.Y) * 0.5f), White, _titleText);
-        dl.PopClipRect();
+        float titleK = titlePx / f.FontSize;
+        ImGuiNET.ImGui.PushFont(f);
+        Vector2 ts = ImGuiNET.ImGui.CalcTextSize(_titleText) * titleK;
+        ImGuiNET.ImGui.PopFont();
+
+        // Where everything goes (UI/InventoryTitleLayout, tested): the four toggles at the right end, Vault
+        // next to them (always there on a vault server), then the related-panel buttons as text, as icons or
+        // as one "more" menu, whichever leaves the title its room. Nothing lands off the panel.
+        InventoryTitleLayout lay = InventoryTitleLayout.Compute(barW, s, VaultFeed.Available, ts.X);
+        float btn = lay.Btn;
+        float by = o.Y + (h - btn) * 0.5f;
+        Vector2 At(TitleSlot sl) => new(o.X + sl.X, by);
+
+        if (TitleToggle("##inv_smaller", PhosphorIcons.Minus, At(lay.Smaller), btn, false))
+            InventorySettingsStore.StepSize(-1);
+        SafeImGui.SetItemTooltip($"Smaller ({InventorySettingsStore.SizePct}%)");
+        if (TitleToggle("##inv_bigger", PhosphorIcons.Plus, At(lay.Bigger), btn, false))
+            InventorySettingsStore.StepSize(+1);
+        SafeImGui.SetItemTooltip($"Bigger ({InventorySettingsStore.SizePct}%)");
+        if (TitleToggle("##inv_tools", PhosphorIcons.Funnel, At(lay.Tools), btn, InventorySettingsStore.ShowTools))
+        {
+            // Closing the search / filter row shows every item again.
+            if (InventorySettingsStore.ShowTools) ClearFilters();
+            InventorySettingsStore.SetShowTools(!InventorySettingsStore.ShowTools);
+        }
+        ImGuiNET.ImGui.SetItemTooltip("Search, sort and filter");
+        if (TitleToggle("##inv_modern", PhosphorIcons.SquaresFour, At(lay.Modern), btn, false))
+            InventorySettingsStore.SetClassic(false);
+        ImGuiNET.ImGui.SetItemTooltip("Modern look");
+
+        // Vault (Aelrynth only): the contents area shows the account vault instead of the open pack.
+        if (lay.Vault.Present)
+        {
+            if (TitleTextToggle("##inv_vault", "Vault", At(lay.Vault), new Vector2(lay.Vault.W, btn), _vaultOpen))
+            {
+                _vaultOpen = !_vaultOpen;
+                if (_vaultOpen) VaultFeed.ViewOpened();
+            }
+            ImGuiNET.ImGui.SetItemTooltip("Your Aelrynth account vault");
+        }
+        else if (!VaultFeed.Available)
+        {
+            _vaultOpen = false;
+        }
+
+        // Related panels: Mini Remote, RynthSort, Item Count, Global Inventory.
+        switch (lay.Mode)
+        {
+            case TitleExtrasMode.Text:
+                if (TitleTextToggle("##inv_miniremote", "Remote", At(lay.Remote), new Vector2(lay.Remote.W, btn), MiniRemoteOpen))
+                    ToggleMiniRemote();
+                SafeImGui.SetItemTooltip(MiniRemoteTip);
+                if (TitleTextToggle("##inv_rsort", "Sort", At(lay.Sort), new Vector2(lay.Sort.W, btn), RynthSortOpen))
+                    ToggleRynthSort();
+                SafeImGui.SetItemTooltip(RynthSortTip());
+                if (TitleTextToggle("##inv_itemcount", "Count", At(lay.Count), new Vector2(lay.Count.W, btn), ItemCountOpen))
+                    ToggleItemCount();
+                SafeImGui.SetItemTooltip(ItemCountTip);
+                if (TitleTextToggle("##inv_ginv", "GInv", At(lay.GInv), new Vector2(lay.GInv.W, btn), GlobalInventoryOpen))
+                    ToggleGlobalInventory();
+                SafeImGui.SetItemTooltip(GlobalInventoryTip());
+                break;
+            case TitleExtrasMode.Icons:
+                if (TitleToggle("##inv_miniremote", PhosphorIcons.SlidersHorizontal, At(lay.Remote), btn, MiniRemoteOpen))
+                    ToggleMiniRemote();
+                SafeImGui.SetItemTooltip(MiniRemoteTip);
+                if (TitleToggle("##inv_rsort", PhosphorIcons.SortAscending, At(lay.Sort), btn, RynthSortOpen))
+                    ToggleRynthSort();
+                SafeImGui.SetItemTooltip(RynthSortTip());
+                if (TitleToggle("##inv_itemcount", PhosphorIcons.Bag, At(lay.Count), btn, ItemCountOpen))
+                    ToggleItemCount();
+                SafeImGui.SetItemTooltip(ItemCountTip);
+                if (TitleToggle("##inv_ginv", PhosphorIcons.GlobeHemisphereWest, At(lay.GInv), btn, GlobalInventoryOpen))
+                    ToggleGlobalInventory();
+                SafeImGui.SetItemTooltip(GlobalInventoryTip());
+                break;
+            case TitleExtrasMode.Menu:
+                if (TitleToggle("##inv_more", PhosphorIcons.DotsThree, At(lay.More), btn,
+                        MiniRemoteOpen || RynthSortOpen || ItemCountOpen || GlobalInventoryOpen))
+                    _openMore = true;
+                ImGuiNET.ImGui.SetItemTooltip("Mini Remote, RynthSort, Item Count, Global Inventory");
+                break;
+        }
+        RelatedMenu();
+
+        // Drag surface: the bar left of the buttons (moves the panel, like the header).
+        float dragW = Math.Max(1, lay.LeftmostX - 2);
+        ImGuiNET.ImGui.SetCursorScreenPos(o);
+        ImGuiNET.ImGui.InvisibleButton("##inv_titledrag", new Vector2(dragW, h));
+        ImGuiPanelHost.DragWindowWithLastItem();
+
+        // The title: centred on the bar when it fits, else against the left edge and cut with "...".
+        float room = lay.TitleWidth - 4 * s;
+        if (room >= 1)
+        {
+            string shown = _titleText;
+            if (ts.X > room)
+            {
+                if (!ReferenceEquals(_titleCutFor, _titleText) || _titleCutRoom != room)
+                {
+                    CutTitle(f, titleK, room);
+                }
+                shown = _titleCut;
+                ts.X = _titleCutW;
+            }
+            if (shown.Length > 0)
+            {
+                float left = o.X + lay.TitleLeft + 4 * s;
+                float tx = Math.Clamp(o.X + (barW - ts.X) * 0.5f, left, Math.Max(left, o.X + lay.TitleRight - ts.X));
+                dl.PushClipRect(o + new Vector2(lay.TitleLeft, 0), new Vector2(o.X + lay.TitleRight, o.Y + h), true);
+                dl.AddText(f, titlePx, new Vector2(tx, o.Y + (h - ts.Y) * 0.5f), White, shown);
+                dl.PopClipRect();
+            }
+        }
 
         // The retail close button.
         var cp = new Vector2(o.X + barW, o.Y);
@@ -338,6 +385,17 @@ internal sealed partial class InventoryFace
             dl.AddRect(cp + new Vector2(3 * s, 3 * s), cp + new Vector2(closeW - 3 * s, h - 3 * s), Gold, 2);
             dl.AddLine(cp + new Vector2(7 * s, h * 0.5f), cp + new Vector2(closeW - 7 * s, h * 0.5f), Gold, 2);
         }
+    }
+
+    /// <summary>Cuts the title text to <paramref name="room"/> px (only when it changed): _titleCut and its width.</summary>
+    private void CutTitle(ImFontPtr font, float k, float room)
+    {
+        ImGuiNET.ImGui.PushFont(font);
+        _titleCut = InventoryTitleLayout.Elide(_titleText, room, t => ImGuiNET.ImGui.CalcTextSize(t).X * k);
+        _titleCutW = _titleCut.Length == 0 ? 0 : ImGuiNET.ImGui.CalcTextSize(_titleCut).X * k;
+        ImGuiNET.ImGui.PopFont();
+        _titleCutFor = _titleText;
+        _titleCutRoom = room;
     }
 
     private static bool TitleToggle(string id, string glyph, Vector2 pos, float size, bool on)

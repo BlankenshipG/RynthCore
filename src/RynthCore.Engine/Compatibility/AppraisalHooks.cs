@@ -157,11 +157,19 @@ internal static class AppraisalHooks
         }
     }
 
-    /// <summary>The object was created again: its data is current, not merely kept.</summary>
-    public static void MarkLive(uint guid)
+    /// <summary>
+    /// The object was created again: its data is current, not merely kept. Except data kept since
+    /// a release longer ago than ReleasedObjectRetention.StaleAfterMs: the client sent no updates
+    /// meanwhile, so it is dropped here (the next appraisal refreshes it). Returns true when it was.
+    /// </summary>
+    public static bool MarkLive(uint guid, long nowMs)
     {
         lock (_cacheLock)
-            _released.Forget(guid);
+        {
+            if (!_released.TakeLive(guid, nowMs)) return false;
+            EvictLocked(guid);
+            return true;
+        }
     }
 
     /// <summary>Drops the data of objects released longer ago than the retention time. Timer thread.</summary>

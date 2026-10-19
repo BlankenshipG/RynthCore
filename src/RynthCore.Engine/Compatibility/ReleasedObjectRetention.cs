@@ -11,7 +11,10 @@
 //    - when RetainMs has passed (Expire, from AutoIdService's timer);
 //    - when the SERVER deleted the object (0xF747; AppraisalHooks.EvictObject);
 //    - at a session clear (logout), and under AppraisalHooks' object cap.
-//  A re-create (OnLive) makes the object current again.
+//  A re-create (TakeLive) makes the object current again, but data kept for StaleAfterMs or
+//  longer is dropped then (review fix 2026-10-18): the client sent no updates for an object it
+//  had released, so a stack count or a structure kept that long may be minutes old. A re-create
+//  after a short absence (walking out of and back into view) still finds its data.
 //
 //  Pure bookkeeping (released ids and when); no locking (AppraisalHooks holds its lock).
 //  Compiled into tools\EngineRobustnessTests.
@@ -25,6 +28,9 @@ internal sealed class ReleasedObjectRetention
 {
     public const long DefaultRetainMs = 10L * 60 * 1000;
     public const int DefaultMaxReleased = 4096;
+
+    /// <summary>A re-create this long after the release no longer trusts the kept data.</summary>
+    public const long StaleAfterMs = 2L * 60 * 1000;
 
     private readonly Dictionary<uint, long> _releasedAt;
     private readonly long _retainMs;
@@ -55,6 +61,17 @@ internal sealed class ReleasedObjectRetention
 
     /// <summary>The object is current again (re-created), or its data was dropped for another reason.</summary>
     public void Forget(uint id) => _releasedAt.Remove(id);
+
+    /// <summary>
+    /// The object was created again. Returns true when it had been released for
+    /// <paramref name="staleAfterMs"/> or longer (its kept data may be out of date: drop it);
+    /// false when it was not released, or only briefly. Either way it is current again.
+    /// </summary>
+    public bool TakeLive(uint id, long nowMs, long staleAfterMs = StaleAfterMs)
+    {
+        if (!_releasedAt.Remove(id, out long at)) return false;
+        return nowMs - at >= staleAfterMs;
+    }
 
     public bool IsReleased(uint id) => _releasedAt.ContainsKey(id);
 

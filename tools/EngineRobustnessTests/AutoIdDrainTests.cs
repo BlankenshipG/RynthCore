@@ -82,6 +82,41 @@ internal static partial class Program
         DrainBounds();
         DrainCombatHoldsInventory();
         DrainSweepRetriesAfterOverflow();
+        DrainReachesItemsBehindTheEvaluationBudget();
+    }
+
+    // Review fix 2026-10-18: more than MaxEvaluatedPerTick items waiting (here the pack waits through
+    // combat) used to leave the newest ones, at the end of the list, unlooked-at for as long as the
+    // earlier ones kept waiting. The drain now resumes where it stopped.
+    private static void DrainReachesItemsBehindTheEvaluationBudget()
+    {
+        _case = "drain round robin";
+        const uint Chest = 0x80000B00, Loot = 0x80000B01;
+        var w = new FakeWorld { Now = 1_000_000, Warm = true };
+        var d = new AutoIdDrain(w);
+        int pack = AutoIdDrain.MaxEvaluatedPerTick + 88;
+        for (uint i = 1; i <= pack; i++) { w.Snapshot[0x8000D000 + i] = (Me, 0); d.Offer(0x8000D000 + i, w.Now - 10_000); }
+        w.Snapshot[Loot] = (Chest, 0); d.Offer(Loot, w.Now - 10_000);   // newest: last in the list
+        AutoIdDrain.Context Fight() => new()
+        {
+            Now = w.Now, Mode = AutoIdMode.Limited, PlayerId = Me, OpenContainer = Chest, OpenedAtMs = w.Now - 5_000,
+            SettleUntilMs = 0, LoginCompleteAtMs = 1, CombatBusy = true,
+        };
+        d.Tick(Fight(), 0);
+        Check(d.PendingCount == pack + 1, $"first tick: the pack waits, the chest item is behind the budget (pending {d.PendingCount})");
+        Check(!w.Sent.Any(s => s.Id == Loot), "first tick: the chest item was not reached yet");
+        for (int k = 0; k < 4; k++) { w.Now += 100; d.Tick(Fight(), 0); }
+        Check(w.Sent.Any(s => s.Id == Loot), "within a few ticks the chest item is reached and sent although the pack keeps waiting");
+        Check(!w.Sent.Any(s => (s.Id & 0xFFFFF000) == 0x8000D000), "while the pack, in combat, sent nothing");
+        Check(d.PendingCount == pack, $"and the waiting pack is all still pending (pending {d.PendingCount})");
+        // Every pack item is looked at in turn: end the fight and they all go out.
+        AutoIdDrain.Context Calm() => new()
+        {
+            Now = w.Now, Mode = AutoIdMode.Limited, PlayerId = Me, OpenContainer = 0, OpenedAtMs = 0,
+            SettleUntilMs = 0, LoginCompleteAtMs = 1, CombatBusy = false,
+        };
+        for (int k = 0; k < 4000 && d.PendingCount > 0; k++) { w.Now += 100; d.Tick(Calm(), 0); }
+        Check(d.PendingCount == 0, $"after combat the whole backlog drains (pending {d.PendingCount})");
     }
 
     // The pack is created at login, before the snapshot is warm; it must still go out.

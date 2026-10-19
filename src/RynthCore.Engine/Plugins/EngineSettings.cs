@@ -45,14 +45,18 @@ internal static class EngineSettings
     private static bool _borderlessWindowed;
     // Settings > Display: borderless fills the monitor (default on) or keeps the framed game area.
     private static bool _borderlessFillMonitor = true;
-    // Settings > Display: persist open panels / AC placement / HUD layout (default on).
+    // Settings > Display: reopen Rynth panels where they were (default on: panels have always been remembered).
     private static bool _rememberWindowLayout = true;
+    // Settings > Display: save and restore the AC window's own position and size (default off, opt-in).
+    private static bool _rememberAcWindowPosition;
     // "LoadAllServerPlugins": hand-set only, written back only when true (PluginManifestGate).
     private static bool _loadAllServerPlugins;
     // Read-only, like EnableLargeAddressAlignmentFix: only a hand-set value is written back.
     private static int _maxHotReloads = ReloadCapNotice.DefaultMaxHotReloads;
-    // Automatic FileWatcher hot reload while logged into the world (default off since 2026-10-16).
-    private static bool _allowInWorldAutoHotReload;
+    // "HoldReloadInWorld": opt-in (default off). On = an automatic engine reload waits until the player
+    // leaves the world, for at most _holdReloadInWorldMaxMinutes (ReloadInWorldGate).
+    private static bool _holdReloadInWorld;
+    private static int _holdReloadInWorldMaxMinutes = ReloadInWorldGate.DefaultMaxMinutes;
     // "IltServerNames" / "IltHosts": what counts as Infinite Leaftide (Compatibility/IltInfo.cs).
     // null = not in the file: IltDetect's defaults.
     private static List<string>? _iltServerNames;
@@ -61,6 +65,8 @@ internal static class EngineSettings
     // For testing only (https, or http to this PC); read only, like MaxHotReloads.
     private static string? _reportEndpoint;
     private static Compatibility.AutoIdMode _autoIdMode = Compatibility.AutoIdPolicy.DefaultMode;
+    // "TransitionGate": default true. False = queued game actions are never held for a death / portal.
+    private static bool _transitionGate = true;
     private static bool _loaded;
 
     public static IReadOnlyList<string> PluginPaths
@@ -422,9 +428,10 @@ internal static class EngineSettings
         }
     }
 
-    /// <summary>"BorderlessWindowed" in engine.json (default false, 2026-10-15): strip the AC
-    /// window caption and thick frame while staying windowed. Exclusive fullscreen is left alone.
-    /// Set in game in Settings > Display.</summary>
+    /// <summary>"BorderlessWindowed" in engine.json (default false, 2026-10-18): strip the AC
+    /// window caption and thick frame while staying windowed. Exclusive fullscreen is left alone,
+    /// and chrome is only ever given back to a window this setting stripped (AcWindowChrome).
+    /// Set in game in Settings > Display. From SilentKelpie's PR 6.</summary>
     public static bool BorderlessWindowed
     {
         get
@@ -438,8 +445,8 @@ internal static class EngineSettings
             if (_borderlessWindowed == value) return;
             _borderlessWindowed = value;
             Save("BorderlessWindowed");
-            // AcWindowChrome.Tick / Settings > Display apply the style; keep this
-            // file free of HWND / UI refs so EngineSettingsTests can compile it alone.
+            // AcWindowChrome applies the style from the game thread; keep this file free of
+            // HWND / UI refs so EngineSettingsTests can compile it alone.
         }
     }
 
@@ -463,9 +470,9 @@ internal static class EngineSettings
         }
     }
 
-    /// <summary>"RememberWindowLayout" in engine.json (default true, 2026-10-15): reopen Rynth
-    /// panels where they were, keep Vision HUD / imgui.ini / AC window placement across launches.
-    /// Off: do not overwrite panel_state.txt or restore open panels / AC placement.
+    /// <summary>"RememberWindowLayout" in engine.json (default true: Rynth panels have always been
+    /// remembered). Off: panel_state.txt is not overwritten and open panels are not reopened from
+    /// the last session. Does not touch the AC window itself (RememberAcWindowPosition).
     /// Set in game in Settings > Display.</summary>
     public static bool RememberWindowLayout
     {
@@ -480,6 +487,25 @@ internal static class EngineSettings
             if (_rememberWindowLayout == value) return;
             _rememberWindowLayout = value;
             Save("RememberWindowLayout");
+        }
+    }
+
+    /// <summary>"RememberAcWindowPosition" in engine.json (default false, opt-in): save the Asheron's
+    /// Call window's position and size per character and put it back at the next login.
+    /// Set in game in Settings > Display.</summary>
+    public static bool RememberAcWindowPosition
+    {
+        get
+        {
+            EnsureLoaded();
+            return _rememberAcWindowPosition;
+        }
+        set
+        {
+            EnsureLoaded();
+            if (_rememberAcWindowPosition == value) return;
+            _rememberAcWindowPosition = value;
+            Save("RememberAcWindowPosition");
         }
     }
 
@@ -498,16 +524,46 @@ internal static class EngineSettings
         }
     }
 
-    /// <summary>"AllowInWorldAutoHotReload" in engine.json (default false since 2026-10-16): when
-    /// false, every engine reload (FileWatcher and ERl / /rc rl) waits until the player leaves
-    /// the world (logout / character select). Mid-session CoreCLR re-init still AVs. True
-    /// restores the old mid-session reload behaviour (risky). Edited in the file.</summary>
-    public static bool AllowInWorldAutoHotReload
+    /// <summary>"HoldReloadInWorld" in engine.json (default false, opt-in; from SilentKelpie's PR 6):
+    /// when true, an automatic engine reload (the loader's file watcher, an engine deploy) waits until
+    /// the player logs out / reaches character select instead of reloading mid-session, for at most
+    /// <see cref="HoldReloadInWorldMaxMinutes"/>. A reload asked for by hand (ERl, the bar RL button,
+    /// /rc rl, the hotkey) is never held. A workaround for CoreCLR re-init crashes on stacked
+    /// mid-session reloads. Only a true is written to the file. Set in game in Settings > Misc.</summary>
+    public static bool HoldReloadInWorld
     {
         get
         {
             EnsureLoaded();
-            return _allowInWorldAutoHotReload;
+            return _holdReloadInWorld;
+        }
+        set
+        {
+            EnsureLoaded();
+            if (_holdReloadInWorld == value) return;
+            _holdReloadInWorld = value;
+            Save("HoldReloadInWorld");
+        }
+    }
+
+    /// <summary>"HoldReloadInWorldMaxMinutes" in engine.json (default 10, valid 1-240): how long
+    /// <see cref="HoldReloadInWorld"/> holds a reload before it gives up, logs once, and reloads
+    /// anyway. The hold never lasts forever. Out-of-range values are clamped; only a non-default
+    /// value is written to the file.</summary>
+    public static int HoldReloadInWorldMaxMinutes
+    {
+        get
+        {
+            EnsureLoaded();
+            return _holdReloadInWorldMaxMinutes;
+        }
+        set
+        {
+            EnsureLoaded();
+            int v = ReloadInWorldGate.ClampMaxMinutes(value);
+            if (_holdReloadInWorldMaxMinutes == v) return;
+            _holdReloadInWorldMaxMinutes = v;
+            Save("HoldReloadInWorldMaxMinutes");
         }
     }
 
@@ -588,6 +644,28 @@ internal static class EngineSettings
             if (_autoIdMode == value) return;
             _autoIdMode = value;
             Save("AutoIdMode");
+        }
+    }
+
+    /// <summary>"TransitionGate" in engine.json (default true): the world-transition gate
+    /// (Compatibility/WorldTransitionState.cs) holds the engine's queued game actions (casts, uses,
+    /// appraisals, chat commands...) while the character is dead or in portal space, and for 5 s
+    /// after. False turns the gate off entirely: nothing is held. Even with it on, a gate held
+    /// continuously for WorldTransitionState.MaxHoldMs opens by itself (logged once, counted in the
+    /// heartbeat as gateov=N) in case a revived character reads as dead or the portal flag sticks.</summary>
+    public static bool TransitionGate
+    {
+        get
+        {
+            EnsureLoaded();
+            return _transitionGate;
+        }
+        set
+        {
+            EnsureLoaded();
+            if (_transitionGate == value) return;
+            _transitionGate = value;
+            Save("TransitionGate");
         }
     }
 
@@ -755,14 +833,23 @@ internal static class EngineSettings
                 (rwlEl.ValueKind == JsonValueKind.True || rwlEl.ValueKind == JsonValueKind.False))
                 _rememberWindowLayout = rwlEl.GetBoolean();
 
+            if (doc.RootElement.TryGetProperty("RememberAcWindowPosition", out var rapEl) &&
+                (rapEl.ValueKind == JsonValueKind.True || rapEl.ValueKind == JsonValueKind.False))
+                _rememberAcWindowPosition = rapEl.GetBoolean();
+
             if (doc.RootElement.TryGetProperty("MaxHotReloads", out var mhrEl) &&
                 mhrEl.ValueKind == JsonValueKind.Number &&
                 mhrEl.TryGetInt32(out int mhr))
                 _maxHotReloads = mhr;
 
-            if (doc.RootElement.TryGetProperty("AllowInWorldAutoHotReload", out var aiwEl) &&
-                (aiwEl.ValueKind == JsonValueKind.True || aiwEl.ValueKind == JsonValueKind.False))
-                _allowInWorldAutoHotReload = aiwEl.GetBoolean();
+            if (doc.RootElement.TryGetProperty("HoldReloadInWorld", out var hriwEl) &&
+                (hriwEl.ValueKind == JsonValueKind.True || hriwEl.ValueKind == JsonValueKind.False))
+                _holdReloadInWorld = hriwEl.GetBoolean();
+
+            if (doc.RootElement.TryGetProperty("HoldReloadInWorldMaxMinutes", out var hrimEl) &&
+                hrimEl.ValueKind == JsonValueKind.Number &&
+                hrimEl.TryGetInt32(out int hrim))
+                _holdReloadInWorldMaxMinutes = ReloadInWorldGate.ClampMaxMinutes(hrim);
 
             if (doc.RootElement.TryGetProperty("ReportEndpoint", out var repEl) &&
                 repEl.ValueKind == JsonValueKind.String &&
@@ -773,6 +860,10 @@ internal static class EngineSettings
                 aimEl.ValueKind == JsonValueKind.String &&
                 Compatibility.AutoIdPolicy.TryParseMode(aimEl.GetString(), out Compatibility.AutoIdMode aim))
                 _autoIdMode = aim;
+
+            if (doc.RootElement.TryGetProperty("TransitionGate", out var tgEl) &&
+                (tgEl.ValueKind == JsonValueKind.True || tgEl.ValueKind == JsonValueKind.False))
+                _transitionGate = tgEl.GetBoolean();
 
             if (doc.RootElement.TryGetProperty("PreventIdleLogoff", out var pilEl) &&
                 (pilEl.ValueKind == JsonValueKind.True || pilEl.ValueKind == JsonValueKind.False))
@@ -830,10 +921,11 @@ internal static class EngineSettings
         return list;
     }
 
-    /// <summary>Every engine.json key EnsureLoaded reads or Save writes. Save rewrites these from
-    /// memory (one written only when not the default is left out, as before) and keeps every
-    /// other key as the file had it. A new engine.json setting goes here too
-    /// (tools/EngineSettingsTests checks this list against this file).</summary>
+    /// <summary>Every engine.json key EnsureLoaded reads or Save writes. A save writes only the keys
+    /// this client changed (Save(key); one written only when not the default is left out, which
+    /// removes it) and keeps every other key as the file had it. A new engine.json setting goes
+    /// here too, and its setter calls Save("Key") (tools/EngineSettingsTests checks this list and
+    /// the Save calls against this file).</summary>
     internal static readonly HashSet<string> OwnedKeys = new(StringComparer.Ordinal)
     {
         "PluginPaths", "EnableImGuiShell", "EnablePlugins", "EnableDatShareHook",
@@ -841,16 +933,16 @@ internal static class EngineSettings
         "EnableImGuiBackend", "EnableHangMinidump", "PreventIdleLogoff", "DecalBridge",
         "DecalInGameImGui", "DecalStandDown", "DisabledUiHooks", "ServerMessageStream",
         "FlightRecorder", "InsertReleasesUi", "BorderlessWindowed", "BorderlessFillMonitor", "RememberWindowLayout",
-        "IltServerNames", "IltHosts", "EnableLargeAddressAlignmentFix",
-        "MaxHotReloads", "AllowInWorldAutoHotReload", "ReportEndpoint", "CloseOnServerDisconnect", "AutoIdMode", "EnablePluginOverlayWindows", "LoggingLevel",
-        "LoadAllServerPlugins",
+        "RememberAcWindowPosition", "IltServerNames", "IltHosts", "EnableLargeAddressAlignmentFix",
+        "MaxHotReloads", "ReportEndpoint", "CloseOnServerDisconnect", "AutoIdMode", "EnablePluginOverlayWindows", "LoggingLevel",
+        "LoadAllServerPlugins", "TransitionGate",
+        "HoldReloadInWorld", "HoldReloadInWorldMaxMinutes",
     };
 
-    // The engine.json keys this client changed this session. Every client keeps the whole
-    // settings in memory, so writing all of them back let a client that never touched a
-    // setting put its stale value over another client's change (last writer won: a Display
-    // option set in one client came back in all of them). Only these keys are written now;
-    // every other key keeps what the file holds.
+    // The engine.json keys this client changed this session. Every client keeps the whole settings
+    // in memory, so writing all of the engine's keys back let a client that never touched a setting
+    // put its stale value over another client's change (last writer won). Only these keys are
+    // written now; every other key keeps what the file holds. Idea from Silentkelpie (rynth PR #6).
     private static readonly HashSet<string> _changedKeys = new(StringComparer.Ordinal);
     private static readonly object _changedLock = new();
 
@@ -916,14 +1008,20 @@ internal static class EngineSettings
                     w.WriteBoolean("BorderlessFillMonitor", false);
                 if (!_rememberWindowLayout) // default true: leave the file as it was
                     w.WriteBoolean("RememberWindowLayout", false);
+                if (_rememberAcWindowPosition) // default false: leave the file as it was
+                    w.WriteBoolean("RememberAcWindowPosition", true);
                 if (!_closeOnServerDisconnect)   // default true: leave the file as it was
                     w.WriteBoolean("CloseOnServerDisconnect", false);
+                if (!_transitionGate)      // default true: only a hand-set false is written
+                    w.WriteBoolean("TransitionGate", false);
                 if (_loadAllServerPlugins) // default false: only a hand-set true is written
                     w.WriteBoolean("LoadAllServerPlugins", true);
                 if (_maxHotReloads != ReloadCapNotice.DefaultMaxHotReloads)   // only a hand-set value is written
                     w.WriteNumber("MaxHotReloads", _maxHotReloads);
-                if (_allowInWorldAutoHotReload) // default false: only a hand-set true is written
-                    w.WriteBoolean("AllowInWorldAutoHotReload", true);
+                if (_holdReloadInWorld)    // default false: only a true is written
+                    w.WriteBoolean("HoldReloadInWorld", true);
+                if (_holdReloadInWorldMaxMinutes != ReloadInWorldGate.DefaultMaxMinutes)   // only a non-default value is written
+                    w.WriteNumber("HoldReloadInWorldMaxMinutes", _holdReloadInWorldMaxMinutes);
                 if (_reportEndpoint != null)   // only a hand-set value is written
                     w.WriteString("ReportEndpoint", _reportEndpoint);
                 WriteStringList(w, "IltServerNames", _iltServerNames);   // null (not in the file): left out

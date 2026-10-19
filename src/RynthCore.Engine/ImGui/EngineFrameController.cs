@@ -278,7 +278,8 @@ internal static class EngineFrameController
             // in ImGui-off mode so Avalonia owner-window binding works.
             EnsureCore(pDevice);
 
-            // Settings > Display: borderless windowed + restore AC placement (throttled).
+            // Settings > Display: borderless windowed + AC window placement. Throttled; reads only
+            // here - the window itself is changed from the game WndProc (AcWindowChrome).
             try { UI.AcWindowChrome.Tick(_gameHwnd); }
             catch (Exception ex) { RynthLog.UI($"AcWindowChrome.Tick threw {ex.GetType().Name}: {ex.Message}"); }
 

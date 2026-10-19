@@ -38,8 +38,8 @@ internal sealed unsafe class ScriptWindowFace : IImGuiPanel
     /// <summary>Closed: as OnShown; a close the owner didn't ask for is the player's X unless the bar said otherwise.</summary>
     public void OnHidden()
     {
-        // Leaving Oracle clears the Skills embed so a later non-Oracle script window
-        // never inherits ActiveTab and paints SkillsFace by mistake.
+        // Leaving Oracle hides the Skills embed (its face's OnHidden runs once, releasing the
+        // Progression subscription) so a later non-Oracle script window never inherits ActiveTab.
         if (OracleSkillsEmbed.IsOraclePanel(_window.PanelKey))
             OracleSkillsEmbed.Clear();
         NoteVisibility(visible: false);

@@ -643,6 +643,8 @@ internal static class ScriptWindowRegistry
             Volatile.Write(ref _barItems, Array.Empty<ScriptBarItem>());
             Volatile.Write(ref _barButtons, Array.Empty<ScriptBarItem>());
         }
+        // Engine reload / shutdown: the Skills embed hides and Oracle's announcement is forgotten.
+        ImGuiBackend.Panels.OracleSkillsEmbed.Shutdown();
     }
 
     /// <summary>
@@ -882,6 +884,10 @@ internal static class ScriptWindowRegistry
         w.Removed = true;
         w.SubmittedVisible = false;
         _barDirty = true;
+        // Oracle's window went (plugin unloaded or stopped drawing it): its Skills embed hides now,
+        // not at the next frame, which may never come (reload, shutdown).
+        if (ImGuiBackend.Panels.OracleSkillsEmbed.IsOraclePanel(w.PanelKey))
+            ImGuiBackend.Panels.OracleSkillsEmbed.Clear();
         owner.Windows.Remove(w.Key);
         if (ByPanelKey.TryGetValue(w.PanelKey, out ScriptWindow? cur) && ReferenceEquals(cur, w))
             ByPanelKey.Remove(w.PanelKey);

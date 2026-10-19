@@ -37,9 +37,10 @@ internal sealed record KnownServer(
 /// The servers RynthSuite has a server plugin for, so an account can be set up on one by picking
 /// it. Hosts, ports and emulators come from the public server list
 /// (github.com/acresources/serverslist, Servers.xml, checked 2026-10-13); Aelrynth is not on
-/// that list and uses aelrynth.com:9020. Each Host must stay inside the matching plugin's
-/// RynthPluginServerHosts, or RynthCore's load gate won't pick the plugin for it
-/// (RynthServerPack.Tests checks this).
+/// that list and uses aelrynth.com:9020. A PluginName is the server plugin's folder under
+/// C:\Games\RynthSuite when one is installed; the picker works the same without it. A Host
+/// should stay inside that plugin's manifest "server" hosts, or RynthCore's server gate won't
+/// pick the plugin for it.
 /// </summary>
 internal static class KnownServerCatalog
 {

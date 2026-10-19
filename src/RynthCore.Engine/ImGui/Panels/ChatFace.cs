@@ -687,10 +687,10 @@ internal sealed class ChatFace : IImGuiPanel
         ChatSpan[]? spans = line.Route.Spans;
         // Map coordinates ("82.3N, 34.2E") become links. Found here, when the line is measured,
         // never per frame; a line without any keeps the plain (or highlighted) path.
-        List<ChatCoord> coords = MayHaveCoords(line.Text) ? ChatCoords.Find(line.Text) : NoCoords;
+        List<ChatCoord> coords = ChatCoords.MayHaveCoords(line.Text) ? ChatCoords.Find(line.Text) : NoCoords;
         if (coords.Count > 0)
         {
-            ChatSpan[] withLinks = MergeLinkSpans(spans, coords);
+            ChatSpan[] withLinks = ChatCoords.LinkSpans(spans, coords, LinkCol);
             SpanLayout lay = LayoutSpans(font, line.Text, withLinks, textW, coords);
             _lay[i] = lay;
             _h[i] = lay.Height;
@@ -740,47 +740,14 @@ internal sealed class ChatFace : IImGuiPanel
     /// <summary>Coordinate links in chat lines: soft teal, underlined (0xAARRGGBB, like ChatSpan.Argb).</summary>
     private const uint LinkCol = 0xFF5ECFE0;
 
+    private static readonly List<ChatCoord> NoCoords = new();
+
     /// <summary>
     /// Word-wraps <paramref name="text"/> to <paramref name="wrapW"/> and cuts each
     /// row where a highlight starts or ends, so every run is drawn in its own
     /// colour. Called when a line is measured, never per frame.
+    /// <paramref name="links"/>: the line's map coordinates, whose runs get a link index.
     /// </summary>
-    private static readonly List<ChatCoord> NoCoords = new();
-
-    /// <summary>Cheap pre-check before the coordinate regex: a digit followed (soon) by a compass letter.</summary>
-    private static bool MayHaveCoords(string text)
-    {
-        for (int i = 0; i + 1 < text.Length; i++)
-            if (char.IsDigit(text[i]))
-                for (int j = i + 1; j < text.Length && j <= i + 2; j++)
-                    if ("NnSsEeWw".IndexOf(text[j]) >= 0) return true;
-        return false;
-    }
-
-    /// <summary>
-    /// The rules' highlight spans with the coordinate links laid over them: a link keeps its own
-    /// colour, and any highlight it overlaps is cut around it (sorted, never overlapping).
-    /// </summary>
-    private static ChatSpan[] MergeLinkSpans(ChatSpan[]? spans, List<ChatCoord> coords)
-    {
-        var result = new List<ChatSpan>();
-        foreach (ChatSpan s in spans ?? Array.Empty<ChatSpan>())
-        {
-            int a = s.Start, b = s.Start + s.Length;
-            foreach (ChatCoord c in coords)
-            {
-                int ca = c.Start, cb = c.Start + c.Length;
-                if (cb <= a || ca >= b) continue;
-                if (ca > a) result.Add(new ChatSpan(a, ca - a, s.Argb));
-                a = Math.Max(a, cb);
-            }
-            if (b > a) result.Add(new ChatSpan(a, b - a, s.Argb));
-        }
-        foreach (ChatCoord c in coords) result.Add(new ChatSpan(c.Start, c.Length, LinkCol));
-        result.Sort((x, y) => x.Start.CompareTo(y.Start));
-        return result.ToArray();
-    }
-
     private static SpanLayout LayoutSpans(ImFontPtr font, string text, ChatSpan[] spans, float wrapW, List<ChatCoord>? links = null)
     {
         // Which coordinate link a run [s0, s1) belongs to (-1 none).

@@ -54,31 +54,8 @@ internal sealed partial class SkillsFace : IImGuiPanel
         new PanelSpec(new Vector2(480, 640), new Vector2(380, 320), EdgeToEdge: true, GripInBody: true),
         () => new SkillsFace());
 
-    /// <summary>Shared instance for drawing inside Oracle (no separate Skills window).</summary>
-    private static SkillsFace? _embed;
-    private long _embedShownMs;
-
     /// <summary>Numbers change on raises, buffs and XP: 4 Hz idle when popped out.</summary>
     public int PopOutIdleHz => 4;
-
-    /// <summary>
-    /// Draws the Skills / Attributes / Progress body into the current ImGui window
-    /// (Oracle embed). No outer panel chrome or Skills tab bar — Oracle owns those.
-    /// </summary>
-    public static void DrawEmbedded(int tab)
-    {
-        _embed ??= new SkillsFace();
-        _embed.DrawHosted(tab);
-    }
-
-    /// <summary>Selects Skills (0), Attributes (1) or Progress (2) on the next standalone Draw.</summary>
-    public static void RequestTab(int tab)
-    {
-        tab = tab < 0 ? 0 : tab > 2 ? 2 : tab;
-        Volatile.Write(ref _requestedTab, tab);
-    }
-
-    private static int _requestedTab = -1;
 
     // ── Palette (FaceKit's, plus the vitals') ────────────────────────────
     private static readonly uint Mana = RynthTheme.Argb(0xFF4DA6FF), Dim = RynthTheme.Argb(0xFF7F8FA0),
@@ -210,7 +187,17 @@ internal sealed partial class SkillsFace : IImGuiPanel
     private long _masteryPendingUntilMs;
     private int _masteryPendingVersion;
 
-    public void OnShown()
+    // Shown / hidden exactly once per visible stretch, however often the host (or the Oracle embed) asks:
+    // the Progression subscription it takes in OnShownCore is given back in OnHiddenCore, once.
+    private readonly ShownLatch _life;
+
+    public SkillsFace() => _life = new ShownLatch(OnShownCore, OnHiddenCore);
+
+    public void OnShown() => _life.Show();
+
+    public void OnHidden() => _life.Hide();
+
+    private void OnShownCore()
     {
         PlayerProgressHooks.Want();
         PlayerProgressHooks.RefreshSoon();
@@ -220,12 +207,10 @@ internal sealed partial class SkillsFace : IImGuiPanel
         ProgressionShown();
     }
 
-    public void OnHidden() => ProgressionHidden();
+    private void OnHiddenCore() => ProgressionHidden();
 
     public void Draw()
     {
-        // Standalone Skills window is retired under Oracle; keep Draw for hotkeys/compat
-        // that still open the panel, but prefer Oracle embed when active.
         int req = Interlocked.Exchange(ref _requestedTab, -1);
         if (req >= 0) _tab = req;
         PlayerProgressHooks.Want();
@@ -234,7 +219,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
         if (_tab == 2 && !ProgressionTabVisible) _tab = 0;
 
         float w = Begin(out Vector2 origin, out Vector2 size);
-        DrawPanelBody(w, origin, size, showOwnTabs: true);
+        DrawBody(w, origin, size, showOwnTabs: true);
         End(origin, size);
 
         _picker.Draw();
@@ -243,25 +228,47 @@ internal sealed partial class SkillsFace : IImGuiPanel
         DrawProgressionConfirm();
     }
 
-    /// <summary>Oracle-hosted body (same content as the old Skills panel tabs).</summary>
+    /// <summary>
+    /// Oracle-hosted body (the old Skills panel's tabs, without its frame or tab strip).
+    /// Called each frame the Oracle window shows a Skills / Attributes / Progress tab.
+    /// The first frame runs OnShown (via OracleSkillsEmbed's latch); OracleSkillsEmbed.Clear,
+    /// the Oracle window closing and the idle sweep run OnHidden. AC thread.
+    /// </summary>
+    public static void DrawEmbedded(int tab)
+    {
+        if (_embed == null)
+        {
+            _embed = new SkillsFace();
+            OracleSkillsEmbed.Bind(_embed.OnShown, _embed.OnHidden);
+        }
+        OracleSkillsEmbed.NoteDrawn(Environment.TickCount64);
+        _embed.DrawHosted(tab);
+    }
+
+    /// <summary>Selects Skills (0), Attributes (1) or Progress (2) on the next standalone Draw.</summary>
+    public static void RequestTab(int tab)
+    {
+        tab = tab < 0 ? 0 : tab > 2 ? 2 : tab;
+        Volatile.Write(ref _requestedTab, tab);
+    }
+
+    private static int _requestedTab = -1;
+
+    /// <summary>Shared instance that draws inside Oracle (no separate Skills window).</summary>
+    private static SkillsFace? _embed;
+
     private void DrawHosted(int tab)
     {
         _tab = tab < 0 ? 0 : tab > 2 ? 2 : tab;
-        // First embed frame (and after a long gap) warms the same hooks as OnShown.
-        long now = Environment.TickCount64;
-        if (now - _embedShownMs > 2000)
-        {
-            _embedShownMs = now;
-            OnShown();
-        }
         PlayerProgressHooks.Want();
         Refresh();
         ApplyProgressionRequest();
+        // Progress tab on a world without ILT: the tab stays selected and DrawProgression explains.
 
         Vector2 avail = ImGuiNET.ImGui.GetContentRegionAvail();
         float w = Math.Max(40f, avail.X);
         Vector2 origin = ImGuiNET.ImGui.GetCursorScreenPos();
-        DrawPanelBody(w, origin, new Vector2(w, Math.Max(120f, avail.Y)), showOwnTabs: false);
+        DrawBody(w, origin, new Vector2(w, Math.Max(120f, avail.Y)), showOwnTabs: false);
 
         _picker.Draw();
         DrawMulti();
@@ -269,16 +276,16 @@ internal sealed partial class SkillsFace : IImGuiPanel
         DrawProgressionConfirm();
     }
 
-    private void DrawPanelBody(float w, Vector2 origin, Vector2 size, bool showOwnTabs)
+    private void DrawBody(float w, Vector2 origin, Vector2 size, bool showOwnTabs)
     {
         DrawSummary(w);
         if (showOwnTabs) DrawTabs(w);
         if (_tab == 0) DrawToolbar(w);
         if (_tab != 2) DrawColumnHeader(w, _tab == 0 ? "Skill" : "Attribute");
 
-        float bodyH = showOwnTabs
-            ? Math.Max(60, Remaining(origin, size) - GripOverlap())
-            : Math.Max(60, size.Y - (ImGuiNET.ImGui.GetCursorScreenPos().Y - origin.Y));
+        float bodyH = Math.Max(60, showOwnTabs
+            ? Remaining(origin, size) - GripOverlap()
+            : size.Y - (ImGuiNET.ImGui.GetCursorScreenPos().Y - origin.Y));
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ChildBg, PanelBg);
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(0, 0));
         ImGuiNET.ImGui.BeginChild("##skills_body", new Vector2(w, bodyH));

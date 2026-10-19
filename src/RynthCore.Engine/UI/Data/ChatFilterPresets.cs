@@ -134,6 +134,14 @@ internal static class ChatFilterPresets
             ChatMatchMode.EndsWith, " evaded your attack.", "chan:Combat",
             new[] { L("Drudge Slinker evaded your attack.", "Combat", 22) },
             new[] { L("Bob says, \"it evaded your attack.\"", "Chat", Say) }),
+        new("combat.damage_taken", "Combat", "Damage you take",
+            "Tusker Guard grazes your foot for 4 points of bludgeoning damage! (critical hits too)",
+            ChatMatchMode.Regex, @"^(?:Critical hit! )?(?!You )\S.* (?:you|your [a-z ]+) for \d+ points? of ", "type:21",
+            new[] { L("Tusker Guard grazes your foot for 4 points of bludgeoning damage!", "Combat", EnemyCombat),
+                    L("Critical hit! Olthoi Swarm Nymph nicks your head for 21 points of piercing damage!", "Combat", EnemyCombat),
+                    L("Olthoi Swarm Gardener blisters your lower leg for 1 point of acid damage!", "Combat", EnemyCombat) },
+            new[] { L("You evaded Tusker Guard!", "Combat", EnemyCombat),
+                    L("Bob says, \"it hit your head for 5 points of damage\"", "Chat", Say) }),
         new("combat.melee_dealt", "Combat", "Melee / missile damage you deal",
             "You slash … for N points of … damage!",
             ChatMatchMode.Regex, @"^(?:(?:Critical [Hh]it|Sneak Attack|Recklessness)!\s+)*You \S+ .+ for \d+ points? of .+ damage", "chan:Combat",
@@ -166,15 +174,6 @@ internal static class ChatFilterPresets
             ChatMatchMode.Contains, "Sneak Attack!", "chan:Combat",
             new[] { L("Sneak Attack! You slash Drudge for 54 points of slashing damage!", "Combat", 22) },
             new[] { L("Bob says, \"Sneak Attack!\"", "Chat", Say) }),
-        new("combat.damage_taken", "Combat", "All damage you take",
-            "Body-part melee and spell \"with\" forms (critical prefixes too).",
-            ChatMatchMode.Regex, @"^(?:(?:Critical [Hh]it|Sneak Attack|Recklessness)!\s+)*(?!You )\S.* (?:you|your [a-z ]+) for \d+ points? (?:of|with) ", "chan:Combat",
-            new[] { L("Tusker Guard grazes your foot for 4 points of bludgeoning damage!", "Combat", EnemyCombat),
-                    L("Critical hit! Olthoi Swarm Nymph nicks your head for 21 points of piercing damage!", "Combat", EnemyCombat),
-                    L("Olthoi Swarm Gardener blisters your lower leg for 1 point of acid damage!", "Combat", EnemyCombat),
-                    L("Drudge Sorcerer scorches you for 40 points with Flame Bolt III.", "Combat", Magic) },
-            new[] { L("You evaded Tusker Guard!", "Combat", EnemyCombat),
-                    L("Bob says, \"it hit your head for 5 points of damage\"", "Chat", Say) }),
         new("combat.periodic_healing", "Combat", "Periodic healing ticks",
             "You receive N points of periodic healing.",
             ChatMatchMode.Regex, @"^You receive \d+ points of periodic healing", "",
@@ -228,7 +227,7 @@ internal static class ChatFilterPresets
             new[] { L("[LFG] Bob says, \"LF tank for the Graveyard\"", "Other", ServerChannel) },
             Array.Empty<(string, string, int)>()),
 
-        // ── Combat extras (UB-IT ChatFilterTool / classic ChatHandler) ────
+        // ── Combat extras and items (UB-IT ChatFilterTool / classic ChatHandler) ──────
         new("combat.attack_resists", "Combat", "Your spells resisted",
             "A target resists one of your spells.",
             ChatMatchMode.Contains, " resists your spell", "chan:Combat",
@@ -249,8 +248,6 @@ internal static class ChatFilterPresets
             ChatMatchMode.StartsWith, "Your missile attack hit the environment", "",
             new[] { L("Your missile attack hit the environment.", "Combat", EnemyCombat) },
             Array.Empty<(string, string, int)>()),
-
-        // ── Items / misc (UB-IT) ───────────────────────────────────────────
         new("item.heal_ok", "Items", "Healing kit success",
             "You heal yourself for N Health points…",
             ChatMatchMode.Contains, " heal yourself for ", "",

@@ -25,6 +25,14 @@
 //  fight, AC streams the neighbour in without tearing the player's world down, and a 5 s
 //  hold there would stall every border fight.
 //
+//  Safety valve (2026-10-18 review): the gate holds everything, with no way out but the
+//  transition ending. Dead is "MaxHealth > 0 && Health == 0" and the portal flag is AC's own;
+//  if a revived character kept reading Health 0, or the flag stuck, every bot would freeze
+//  silently. So a transition that has held CONTINUOUSLY for MaxHoldMs opens the gate by
+//  itself (Overridden: counted in Overrides, announced once through Edge.GateOverride) and
+//  stays open until the raw transition ends. Enabled = false (engine.json TransitionGate)
+//  turns the gate off altogether.
+//
 //  Pure: AC main thread only (single writer and reader: the UseTime sample and both
 //  main-thread drains). Compiled into tools\EngineRobustnessTests.
 // ============================================================================
@@ -37,6 +45,12 @@ internal sealed class WorldTransitionState
 {
     public const long SettleMs = 5_000;
 
+    /// <summary>
+    /// A transition held this long without a break opens the gate. A real death + portal +
+    /// settle is well under 30 s (a slow portal load or a very long death screen included).
+    /// </summary>
+    public const long MaxHoldMs = 120_000;
+
     [Flags]
     public enum Edge
     {
@@ -46,6 +60,8 @@ internal sealed class WorldTransitionState
         PortalEntered = 4,
         PortalExited = 8,
         LandblockJump = 16,
+        /// <summary>The valve opened: the transition outlasted <see cref="MaxHoldMs"/>.</summary>
+        GateOverride = 32,
     }
 
     private bool _init;
@@ -58,8 +74,46 @@ internal sealed class WorldTransitionState
     /// <summary>Last time a gate check saw the transition (0 = never).</summary>
     public long LastBlockedMs { get; private set; }
 
+    /// <summary>False = the gate is off (engine.json TransitionGate): nothing is ever held.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>The valve is open: the current transition outlasted <see cref="MaxHoldMs"/>.</summary>
+    public bool Overridden { get; private set; }
+
+    /// <summary>Times the valve has opened, over the life of this state.</summary>
+    public int Overrides { get; private set; }
+
+    /// <summary>How long the current transition has been held, as of the last sample (0 = none).</summary>
+    public long HeldForMs(long nowMs) => _heldSinceMs == 0 ? 0 : nowMs - _heldSinceMs;
+
+    private long _heldSinceMs;
+
+    /// <summary>Dead, portaling, or inside the settle window, whatever the valve and the setting say.</summary>
+    public bool RawInTransition(long nowMs) => Dead || Portaling || nowMs < SettleUntilMs;
+
     /// <summary>One game-tick sample. Returns the edges crossed (for the lifecycle log).</summary>
     public Edge Sample(long nowMs, bool dead, bool portaling, uint landblock)
+    {
+        Edge edges = SampleCore(nowMs, dead, portaling, landblock);
+        if (!RawInTransition(nowMs))
+        {
+            _heldSinceMs = 0;
+            Overridden = false;
+        }
+        else if (_heldSinceMs == 0)
+        {
+            _heldSinceMs = nowMs;
+        }
+        else if (!Overridden && nowMs - _heldSinceMs >= MaxHoldMs)
+        {
+            Overridden = true;
+            Overrides++;
+            edges |= Edge.GateOverride;
+        }
+        return edges;
+    }
+
+    private Edge SampleCore(long nowMs, bool dead, bool portaling, uint landblock)
     {
         if (!_init)
         {
@@ -115,8 +169,11 @@ internal sealed class WorldTransitionState
         return Math.Abs(dx) > 1 || Math.Abs(dy) > 1;
     }
 
-    /// <summary>Dead, portaling, or inside the settle window.</summary>
-    public bool InTransition(long nowMs) => Dead || Portaling || nowMs < SettleUntilMs;
+    /// <summary>
+    /// Dead, portaling, or inside the settle window, and the gate is on and its valve has not
+    /// opened: the answer every drain and every "is it safe to poke AC" check wants.
+    /// </summary>
+    public bool InTransition(long nowMs) => Enabled && !Overridden && RawInTransition(nowMs);
 
     public enum Verdict { Run, Hold, Drop }
 

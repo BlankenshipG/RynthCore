@@ -19,8 +19,14 @@ internal static class PluginContractVersion
     // v82: SalvageDirect (salvage without the salvage panel; was v81 on feature/salvage-direct).
     // v83: GetObjectServerAge and RemoveClientObject (ghost creatures, 2026-10-12).
     // v84: GetObjectProperties (every property of an object, for /ub propertydump; 2026-10-13).
-    // v85: ArmConfirmation and GetLastConfirmation (answer the craft-chance prompt for a plugin;
-    //      was v81, then v84 on build-comp-10-11, renumbered after upstream's v81-v84).
-    // v86: GetServerStateJson (the server list, active server and owning plugins for every plugin).
-    public const uint Current = 86;
+    // v85: ArmConfirmation and GetLastConfirmation (answer the server's yes/no prompt, e.g. the
+    //      craft chance, for a plugin; from SilentKelpie's build, 2026-10-15).
+    // v86: GetServerStateJson (the server list, active server and owning plugins for every plugin;
+    //      server plugins declare their server in their manifest; from SilentKelpie's build).
+    // v87: GetWieldedItems (what the player wields and where, from the server's wield / contain /
+    //      drop messages: EquipmentTracker; the client's own fields go stale, 2026-10-18).
+    // v88: managed plugins find their common dependencies in Runtime\PluginShared (installed with
+    //      RynthCore), so the update feed ships each managed plugin as one DLL; releases build the
+    //      plugins managed (collectible: a reload frees them) and they declare minEngineApi 88.
+    public const uint Current = 88;
 }

@@ -420,62 +420,47 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
-        // /rc oracle-skills <0|1|2|off> : Oracle sets which SkillsFace body to embed (engine bridge).
+        // /rc oracle-skills <skills|attrs|progress|off> : RynthOracle says which SkillsFace body to embed
+        // in its window (engine bridge; Silentkelpie's design). Any valid form also tells the engine that
+        // Oracle has the tabs, which hides the standalone Skills bar icon and routes /rc skills there.
         if (IsVerb(sub, "oracle-skills", out string oracleSkillsArgs))
         {
             string a = oracleSkillsArgs.Trim().ToLowerInvariant();
-            if (a is "off" or "clear" or "none" or "-1")
-                ImGuiBackend.Panels.OracleSkillsEmbed.Clear();
-            else if (a is "0" or "skills" or "skill")
-                ImGuiBackend.Panels.OracleSkillsEmbed.SetActiveTab(0);
-            else if (a is "1" or "attrs" or "attributes" or "vitals")
-                ImGuiBackend.Panels.OracleSkillsEmbed.SetActiveTab(1);
-            else if (a is "2" or "progress" or "progression")
-                ImGuiBackend.Panels.OracleSkillsEmbed.SetActiveTab(2);
-            else
+            int tab = a switch
+            {
+                "off" or "clear" or "none" or "-1" => -1,
+                "0" or "skills" or "skill" => 0,
+                "1" or "attrs" or "attributes" or "vitals" => 1,
+                "2" or "progress" or "progression" => 2,
+                _ => -2,
+            };
+            if (tab == -2)
                 Reply("Usage: /rc oracle-skills <skills|attrs|progress|off>");
+            else
+            {
+                ImGuiBackend.Panels.OracleSkillsEmbed.Announce();
+                if (tab < 0) ImGuiBackend.Panels.OracleSkillsEmbed.Clear();
+                else ImGuiBackend.Panels.OracleSkillsEmbed.SetActiveTab(tab);
+            }
             return true;
         }
 
-        // /rc skills [show|hide|toggle] : opens RynthOracle on Skills (raise/train live there now).
-        // Falls back to the standalone Skills panel when Oracle isn't loaded.
+        // /rc skills [show|hide|toggle] : RynthOracle's Skills tab when Oracle provides it (see
+        // SkillsRouting), else the standalone ImGui Skills panel. /rc progression (or progress) opens the
+        // Progress tab / the panel's Progression tab (ILT worlds; it shows once RynthILT reports ILT features).
         if (IsVerb(sub, "skills", out string skillsArgs))
         {
             if (!TryPanelMode(skillsArgs, out bool? show))
-            {
                 Reply("Usage: /rc skills [show|hide|toggle]");
-                return true;
-            }
-            const string oracleKey = "RynthOracle/Oracle";
-            if (UI.ScriptWindows.ScriptWindowRegistry.Has(oracleKey))
-            {
-                if (show == false)
-                {
-                    ImGuiBackend.Panels.OracleSkillsEmbed.Clear();
-                    if (UI.ScriptWindows.ScriptWindowRegistry.IsOpen(oracleKey))
-                        UI.ScriptWindows.ScriptWindowRegistry.PlayerSetVisible(oracleKey, false);
-                }
-                else if (show == true || !UI.ScriptWindows.ScriptWindowRegistry.IsOpen(oracleKey)
-                         || ImGuiBackend.Panels.OracleSkillsEmbed.ActiveTab != 0)
-                    UI.ServerMenus.Run("/ro skills");
-                return true;
-            }
-            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SkillsFace.Title))
+            else if (!ImGuiBackend.Panels.SkillsRouting.SetOpen(show))
                 Reply("The Skills panel isn't available (the ImGui layer is off?).");
-            else
-                SetPanelOpen(ImGuiBackend.Panels.SkillsFace.Title, show);
             return true;
         }
-        // /rc progression : Oracle Progress tab (ILT planners); fallback = standalone Skills Progression.
         if (sub.Equals("progression", StringComparison.OrdinalIgnoreCase)
             || sub.Equals("progress", StringComparison.OrdinalIgnoreCase))
         {
-            if (UI.ScriptWindows.ScriptWindowRegistry.Has("RynthOracle/Oracle"))
-                UI.ServerMenus.Run("/ro progress");
-            else if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SkillsFace.Title))
+            if (!ImGuiBackend.Panels.SkillsRouting.Open(2))
                 Reply("The Skills panel isn't available (the ImGui layer is off?).");
-            else
-                ImGuiBackend.Panels.SkillsFace.ShowProgression();
             return true;
         }
 

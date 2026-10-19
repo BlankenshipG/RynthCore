@@ -179,6 +179,8 @@ public struct RynthCoreApiNative
     public IntPtr GetLastConfirmationFn;     // int GetLastConfirmation(uint* type, uint* ctx, int* percent, int* outcome, int* ageMs) -> seq
     // v86: which server this is, for every plugin (servers, verdicts, overrides, owning plugins)
     public IntPtr GetServerStateJsonFn;      // int GetServerStateJson(byte* buffer, int capacity) -> UTF-8 byte length (>= capacity: too small)
+    // v87: what the player wields, from the server's messages (the client's own fields go stale)
+    public IntPtr GetWieldedItemsFn;         // int GetWieldedItems(uint* ids, uint* locations, int max) -> count, -1 not ready
 }
 
 /// <summary>

@@ -36,6 +36,9 @@ internal static class CrashDump
         IntPtr userStreamParam,
         IntPtr callbackParam);
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool GetDiskFreeSpaceExW(string directory, out ulong freeAvailable, out ulong total, out ulong totalFree);
+
     [DllImport("kernel32.dll")]
     private static extern IntPtr GetCurrentProcess();
 
@@ -73,6 +76,14 @@ internal static class CrashDump
             string dir = Path.Combine(LogPaths.LogDirectory, "dumps");
             Directory.CreateDirectory(dir);
 
+            // The small dump is tens of MB; with the volume nearly full it would only fail halfway.
+            long free = FreeBytes(dir);
+            if (!DumpBudget.SmallDumpAllowed(free))
+            {
+                RynthLog.Error($"CrashDump: not writing the {prefix} dump - {(free < 0 ? "free space unknown" : (free / (1024 * 1024)) + " MB free")} on the dump volume, reason={reason}");
+                return false;
+            }
+
             string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
             dumpPath = Path.Combine(dir, $"{prefix}_{Environment.ProcessId}_{stamp}.dmp");
             return WriteDumpFile(dumpPath, DumpTypePreferred, DumpTypeFallback, reason);
@@ -82,6 +93,45 @@ internal static class CrashDump
             RynthLog.Error($"CrashDump: exception {ex.GetType().Name}: {ex.Message}");
             return false;
         }
+    }
+
+    /// <summary>Free bytes available to this user on the volume holding <paramref name="dir"/>; -1 when unknown.</summary>
+    internal static long FreeBytes(string dir)
+    {
+        try
+        {
+            if (GetDiskFreeSpaceExW(dir, out ulong avail, out _, out _))
+                return avail > long.MaxValue ? long.MaxValue : (long)avail;
+        }
+        catch { }
+        return -1;
+    }
+
+    /// <summary>Crash dumps (<c>crash_&lt;pid&gt;_*.dmp</c>) kept in Logs\dumps.</summary>
+    internal const int CrashDumpsKept = 5;
+
+    /// <summary>
+    /// On a crash exit (ProcessExitHooks): one small dump of this process unless CoreCLR's
+    /// createdump already wrote <c>clr_&lt;pid&gt;_*.dmp</c> for it. Never throws.
+    /// </summary>
+    internal static void WriteCrashDumpOnce(string via, uint code)
+    {
+        try
+        {
+            string dir = Path.Combine(LogPaths.LogDirectory, "dumps");
+            try
+            {
+                if (Directory.Exists(dir) && Directory.GetFiles(dir, $"clr_{Environment.ProcessId}_*.dmp").Length > 0)
+                    return;   // the CLR's own crash dump is there: a second one adds nothing
+            }
+            catch { }
+            if (WriteSelfDump($"{via} 0x{code:X8}", out string path, "crash"))
+            {
+                RynthLog.Info($"ProcessExit: crash dump written {path} ({via} 0x{code:X8})");
+                PruneDumps(dir, "crash_", CrashDumpsKept);
+            }
+        }
+        catch { }
     }
 
     // Writes one dump to <paramref name="path"/>. On ERROR_INVALID_PARAMETER (87: AC's ancient
@@ -216,6 +266,12 @@ internal static class CrashDump
             Directory.CreateDirectory(dir);
 
             string path = Path.Combine(dir, $"{OutOfMemoryDumpPrefix}{Environment.ProcessId}_{DateTime.Now:yyyyMMdd_HHmmss}.dmp");
+            if (!ReserveFullDump(dir, path, out string refusal))
+            {
+                RynthLog.Error($"CrashDump: OUT OF MEMORY full-memory dump skipped ({refusal}); writing the small dump instead.");
+                WriteSelfDump(reason, out _, "oom-small");
+                return;
+            }
             if (WriteDumpFile(path, DumpTypeFull, DumpTypeFullFallback, reason))
             {
                 _fullDumpWrittenPath = path;
@@ -233,6 +289,96 @@ internal static class CrashDump
         {
             RynthLog.Error($"CrashDump: OOM dump writer failed {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    // Every client runs this check-then-create under one machine-wide (per logon session) mutex,
+    // and the empty placeholder it creates counts against the next client's check, so clients that
+    // hit OUT OF MEMORY together cannot all pass the check before any of them has started writing.
+    private const string FullDumpGateName = @"Local\RynthCore.FullDumpGate";
+    private const int FullDumpGateWaitMs = 10_000;
+
+    /// <summary>
+    /// Whether a full dump may be written to <paramref name="path"/> now (<see cref="DumpBudget"/>:
+    /// free space on the volume, and the number and bytes of full dumps already in the folder from
+    /// ALL clients). On a refusal it first prunes the folder down to
+    /// <c>OutOfMemoryDumpsKept - 1</c> (dumps of dead clients and our own older ones) and asks again.
+    /// On success an empty placeholder exists at <paramref name="path"/>.
+    /// </summary>
+    private static bool ReserveFullDump(string dir, string path, out string refusal)
+    {
+        refusal = string.Empty;
+        Mutex? gate = null;
+        bool held = false;
+        try
+        {
+            try
+            {
+                gate = new Mutex(false, FullDumpGateName);
+                held = gate.WaitOne(FullDumpGateWaitMs);
+            }
+            catch (AbandonedMutexException) { held = true; }   // a client died holding it: ours now
+            catch { /* no mutex available: decide without it */ }
+
+            long estimate = DumpBudget.EstimateFullDumpBytes(PrivateBytes());
+            DumpVerdict verdict = EvaluateFolder(dir, estimate, out long free, out int count, out long bytes);
+            if (verdict != DumpVerdict.Full)
+            {
+                // Older dumps are the thing most likely to be in the way: make room for this one.
+                PruneDumps(dir, OutOfMemoryDumpPrefix, Math.Max(0, OutOfMemoryDumpsKept - 1));
+                verdict = EvaluateFolder(dir, estimate, out free, out count, out bytes);
+            }
+            if (verdict != DumpVerdict.Full)
+            {
+                refusal = $"{verdict}: {(free < 0 ? "free space unknown" : (free / (1024 * 1024)) + " MB free")}, dump needs ~{estimate / (1024 * 1024)} MB, " +
+                          $"{count} full dump(s) / {bytes / (1024 * 1024)} MB already in {dir}";
+                return false;
+            }
+            try
+            {
+                using (new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite)) { }
+            }
+            catch (Exception ex)
+            {
+                refusal = $"cannot create {path}: {ex.GetType().Name}";
+                return false;
+            }
+            return true;
+        }
+        finally
+        {
+            if (gate != null)
+            {
+                if (held) { try { gate.ReleaseMutex(); } catch { } }
+                gate.Dispose();
+            }
+        }
+    }
+
+    private static DumpVerdict EvaluateFolder(string dir, long estimate, out long free, out int count, out long bytes)
+    {
+        free = FreeBytes(dir);
+        count = 0;
+        bytes = 0;
+        try
+        {
+            foreach (FileInfo f in new DirectoryInfo(dir).GetFiles(OutOfMemoryDumpPrefix + "*.dmp"))
+            {
+                count++;
+                try { bytes += f.Length; } catch { }
+            }
+        }
+        catch { }
+        return DumpBudget.Evaluate(free, estimate, count, bytes);
+    }
+
+    private static long PrivateBytes()
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.GetCurrentProcess();
+            return p.PrivateMemorySize64;
+        }
+        catch { return 0; }
     }
 
     /// <summary>

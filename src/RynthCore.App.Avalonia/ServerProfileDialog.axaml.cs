@@ -65,8 +65,8 @@ internal partial class ServerProfileDialog : Window
     private void ShowKnownServerNote(KnownServer? server)
     {
         KnownServerNote.Text = server == null
-            ? "Any server works. Known servers fill in the connection details and have a RynthSuite server plugin."
-            : $"{server.Note}  Server plugin: {server.PluginName} (RynthCore loads it when you connect to {server.Host}).";
+            ? "Any server works. Known servers fill in the connection details; each has a RynthSuite server plugin name."
+            : $"{server.Note}  Server plugin: {server.PluginName} (RynthCore loads it when you connect to {server.Host}, if it is installed).";
     }
 
     private void SaveAndClose()
