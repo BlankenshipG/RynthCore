@@ -11,6 +11,21 @@ namespace RynthCore.Engine.Compatibility
     }
 }
 
+namespace RynthCore.Engine.UI.Panels
+{
+    /// <summary>The standard filters ChatRouter checks after the rules: none enabled here.</summary>
+    internal static class RynthChatPresets
+    {
+        internal sealed class Preset
+        {
+            internal string Tab { get; } = "";
+            internal string Label { get; } = "";
+        }
+
+        internal static Preset? FirstMatch(string text, string channel) => null;
+    }
+}
+
 namespace RynthCore.Engine.UI.Data
 {
     internal static class ChatModel

@@ -41,6 +41,12 @@ internal sealed class ChatLine
     /// <summary>RynthChat's own number for the line (restarts when its plugin reloads); 0 when not
     /// from RynthChat. The Discord relay tells news from scrollback by it.</summary>
     public ulong Seq { get; init; }
+    /// <summary>
+    /// Automated system text (RynthChat's "auto", 0.3.4+): a reply to a plugin's own command,
+    /// the login burst, or a line a plugin ate. Unless a rule or standard filter routes it, it
+    /// shows in the System tab only (ChatModel.AutomatedToSystem).
+    /// </summary>
+    public bool Automated { get; init; }
     public string Timestamp { get; }
     /// <summary>The channel tab it belongs to (ChatClassifier in the plugin).</summary>
     public string Channel { get; }
@@ -238,22 +244,28 @@ internal sealed class ChatRouter
     /// <summary>ChatMessageType Emote (0x0C).</summary>
     private const int EmoteType = 0x0C;
 
+    /// <summary>The tab automated system text goes to (and the only one it shows in).</summary>
+    public const string AutomatedTab = "System";
+
     private readonly ChatFilterRule[] _rules;
     private readonly Regex? _mention;
     private readonly string _self;
     private readonly bool _countHits;
+    private readonly bool _automatedToSystem;
     private readonly long[] _passTicks;
     private long _passBudgetTicks = PassBudgetTicks;
     private bool _inPass;
 
     /// <param name="self">Your character's name ("" unknown): your own emotes don't mention you.</param>
     /// <param name="countHits">Count matches into ChatFilterRule.Hits (the pump's router; not the test box's).</param>
-    public ChatRouter(ChatFilterRule[] rules, Regex? mention, string self, bool countHits)
+    /// <param name="automatedToSystem">Automated system text no rule routed shows in <see cref="AutomatedTab"/> only.</param>
+    public ChatRouter(ChatFilterRule[] rules, Regex? mention, string self, bool countHits, bool automatedToSystem = false)
     {
         _rules = rules;
         _mention = mention;
         _self = self.Trim();
         _countHits = countHits;
+        _automatedToSystem = automatedToSystem;
         _passTicks = new long[rules.Length];
     }
 
@@ -298,10 +310,14 @@ internal sealed class ChatRouter
     /// <summary><see cref="Step.Rule"/> of a standard-filter (RynthChatPresets) step.</summary>
     public const int StandardFilterStep = -2;
 
-    public ChatRoute Evaluate(ChatLine line, List<Step>? trace) =>
-        Evaluate(line.Text, line.Channel, line.ChatType, trace);
+    /// <summary><see cref="Step.Rule"/> of the automated-system-text step (shown in System only).</summary>
+    public const int AutomatedStep = -3;
 
-    public ChatRoute Evaluate(string text, string channel, int chatType, List<Step>? trace)
+    public ChatRoute Evaluate(ChatLine line, List<Step>? trace) =>
+        Evaluate(line.Text, line.Channel, line.ChatType, trace, line.Automated);
+
+    /// <param name="automated">The line is automated system text (ChatLine.Automated).</param>
+    public ChatRoute Evaluate(string text, string channel, int chatType, List<Step>? trace, bool automated = false)
     {
         bool hidden = false, inHome = true, routed = false;
         List<string>? tabs = null;
@@ -406,6 +422,16 @@ internal sealed class ChatRouter
                     trace?.Add(new Step(StandardFilterStep, $"standard filter \"{preset.Label}\" moves it to {presetTab}"));
                 }
             }
+        }
+
+        // Automated system text (/myquests, /qb list, the login burst, lines a plugin ate)
+        // that neither the rules nor a standard filter placed: the System tab only, not All.
+        if (!routed && automated && _automatedToSystem)
+        {
+            routed = true;
+            inHome = false;
+            AddTab(ref tabs, AutomatedTab);
+            trace?.Add(new Step(AutomatedStep, $"automated system text: shown in {AutomatedTab} only"));
         }
 
         bool mention = false;

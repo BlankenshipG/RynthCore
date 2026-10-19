@@ -23,7 +23,10 @@
 //  and it can colour the whole line or just the matched text. Order: top to
 //  bottom. Copy rules add up; the first matching Move or Hide decides and
 //  stops the routing. The first matching line colour wins; matched-text
-//  colours add up, a higher rule winning where two overlap.
+//  colours add up, a higher rule winning where two overlap. After the rules
+//  and the standard filters, automated system text (2026-10-19: RynthChat's
+//  "auto" - /myquests and /qb list replies, the login burst, lines a plugin
+//  ate) that nothing placed shows in the System tab only (AutomatedToSystem).
 //
 //  Threads: rules are evaluated ONLY on the pump (ChatSource) - each new line
 //  once, and every kept line again when the rules change (in 8 ms slices, newest
@@ -167,6 +170,7 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
                                     dto.Sender is { Length: > 0 } s ? StripAcLinks(s, out _) : linkedName, text)
             {
                 Seq = dto.Seq,
+                Automated = dto.Auto,
             };
             line.Route = router.Evaluate(line, null);
             if (line.Route.Mention) ChatModel.PumpMentionSound();
@@ -429,6 +433,20 @@ internal static class ChatModel
     /// just RynthChat's (ShouldHideInRetail, from PluginManager's held-line verdict).
     /// </summary>
     public static volatile bool HideInRetailChat = true;
+    /// <summary>
+    /// Automated system text (the /myquests and /qb list replies, the login burst, lines a
+    /// plugin ate; ChatLine.Automated) shows in the System tab only, not under All. On by
+    /// default; a rule or standard filter that routes such a line still decides first.
+    /// </summary>
+    public static volatile bool AutomatedToSystem = true;
+
+    /// <summary>Turns <see cref="AutomatedToSystem"/> on or off: the kept lines are routed again, and it saves.</summary>
+    public static void SetAutomatedToSystem(bool on)
+    {
+        if (on == AutomatedToSystem) return;
+        AutomatedToSystem = on;
+        FiltersChanged();
+    }
     /// <summary>A short system beep on a new mention (at most every 3 s).</summary>
     public static volatile bool MentionSound;
     /// <summary>Extra words to highlight, comma-separated.</summary>
@@ -742,7 +760,7 @@ internal static class ChatModel
         long version = FiltersVersion;
         var cached = _pumpRouter;
         if (cached is { } c && c.Version == version && c.Name == name) return c.Router;
-        var router = new ChatRouter(Filters, BuildMentionRegex(name), name, countHits: true);
+        var router = new ChatRouter(Filters, BuildMentionRegex(name), name, countHits: true, AutomatedToSystem);
         _pumpRouter = (version, name, router);
         return router;
     }
@@ -795,7 +813,7 @@ internal static class ChatModel
     {
         string name = SessionStateRegistry.LastCharacterName;
         if (string.IsNullOrWhiteSpace(name)) name = _pumpName ?? "";
-        return new ChatRouter(Filters, BuildMentionRegex(name.Trim()), name, countHits: false);
+        return new ChatRouter(Filters, BuildMentionRegex(name.Trim()), name, countHits: false, AutomatedToSystem);
     }
 
     private static Regex? BuildMentionRegex(string name)
@@ -1441,6 +1459,7 @@ internal static class ChatModel
             ShowTimestamps = dto.ShowTimestamps;
             MentionHighlight = dto.MentionHighlight;
             HideInRetailChat = dto.HideInRetail ?? true;   // absent before 2026-10-16: on
+            AutomatedToSystem = dto.AutomatedToSystem ?? true;   // absent before 2026-10-19: on
             MentionSound = dto.MentionSound;
             MentionWords = dto.MentionWords ?? "";
             HistoryLines = ChatHistory.Clamp(dto.HistoryLines ?? 0);   // absent before 2026-10-11: the default
@@ -1528,6 +1547,7 @@ internal static class ChatModel
             ShowTimestamps = ShowTimestamps,
             MentionHighlight = MentionHighlight,
             HideInRetail = HideInRetailChat,
+            AutomatedToSystem = AutomatedToSystem,
             MentionSound = MentionSound,
             MentionWords = MentionWords,
             // Left out at the default, so a file follows the default if it ever changes.
