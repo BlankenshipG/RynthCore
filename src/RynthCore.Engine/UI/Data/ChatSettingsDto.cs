@@ -21,6 +21,8 @@ internal sealed class RynthChatLineDto
     [JsonPropertyName("type")]   public int Type       { get; set; } = -1;
     [JsonPropertyName("sender")] public string? Sender { get; set; }
     [JsonPropertyName("text")]   public string Text    { get; set; } = "";
+    /// <summary>Automated system text (RynthChat 0.3.4+): shown in the System tab only. Absent = false.</summary>
+    [JsonPropertyName("auto")]   public bool Auto      { get; set; }
 }
 
 // Property names match the legacy hand-written JSON so existing settings load.
@@ -59,6 +61,8 @@ internal sealed class RynthChatSettingsDto
     [JsonPropertyName("mentionHighlight")] public bool  MentionHighlight { get; set; } = true;
     /// <summary>Hidden lines are also kept out of AC's chat window; null (older files) = on.</summary>
     [JsonPropertyName("hideInRetail")]    public bool?  HideInRetail    { get; set; }
+    /// <summary>Automated system text shows in the System tab only, not under All; null (older files) = on.</summary>
+    [JsonPropertyName("automatedToSystem")] public bool? AutomatedToSystem { get; set; }
     [JsonPropertyName("mentionSound")]    public bool   MentionSound    { get; set; }
     [JsonPropertyName("mentionWords")]    public string? MentionWords   { get; set; }
     // 2026-10-08: per-kind line colours (ChatLineColors), { "say": "#RRGGBB", "chan:General": ..., "tab:Chat": ... };

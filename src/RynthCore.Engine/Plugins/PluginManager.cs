@@ -1755,6 +1755,11 @@ internal static partial class PluginManager
 
         unsafe
         {
+            // RynthChat's RynthChatNoteEaten (0.3.4+), looked up once per batch on first need:
+            // no plugin loads or unloads in the middle of this loop (same thread).
+            delegate* unmanaged[Cdecl]<IntPtr, int> noteEaten = null;
+            bool noteEatenResolved = false;
+
             foreach (PendingIncomingChat evt in pending)
             {
                 IntPtr textPtr = IntPtr.Zero;
@@ -1797,6 +1802,21 @@ internal static partial class PluginManager
                     }
 
                     eaten = HeldChatQueue.PluginsAteIt(eat, threw);
+                    // A plugin ate it: a reply to that plugin's own command (/myquests, /qb list,
+                    // a login probe). RynthChat marks it automated so it shows in System only.
+                    if (eaten && textPtr != IntPtr.Zero)
+                    {
+                        if (!noteEatenResolved)
+                        {
+                            noteEatenResolved = true;
+                            noteEaten = (delegate* unmanaged[Cdecl]<IntPtr, int>)UI.Data.PluginExportBinder.Resolve("RynthChat", "RynthChatNoteEaten");
+                        }
+                        if (noteEaten != null)
+                        {
+                            try { noteEaten(textPtr); }
+                            catch (Exception ex) { RynthLog.Plugin($"PluginManager: RynthChat eaten-line note failed ({ex.GetType().Name}: {ex.Message})."); }
+                        }
+                    }
                     // RynthChat's Hide rules / standard filters live in the engine, not in a plugin, so
                     // without this a hidden line still printed in AC's own chat window. Only a held line
                     // can still be kept out (one already printed has gone); a failure lets it show.
