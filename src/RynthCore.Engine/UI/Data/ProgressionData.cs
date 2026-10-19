@@ -8,6 +8,7 @@
 // ============================================================================
 
 using System;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -171,6 +172,94 @@ internal sealed class EnlPlanner
     [JsonPropertyName("spendFirst")]    public bool SpendFirst { get; set; }
     [JsonPropertyName("checkEvery")]    public int CheckEvery { get; set; }
     [JsonPropertyName("status")]        public string Status { get; set; } = "";
+
+    // Enl calculator (RynthILT's IltProgression.AppendEnlCalculatorJson; Silentkelpie's rynth PR 6): per-level
+    // rows, materials still-need / have, the 301-325 sigil chain and the e-coin lines. All of it is absent from
+    // an older RynthILT (or RynthAi) and from a server without ILT: the arrays stay empty, the strings "", and
+    // the calculator is not drawn. The row arrays are read leniently (see EnlRowConverters): a null, a
+    // non-array, a non-object row or a mistyped field costs that row, never the whole Progression snapshot.
+    [JsonPropertyName("levels")]        [JsonConverter(typeof(EnlLevelRowsConverter))]
+    public EnlLevelRow[] Levels { get; set; } = Array.Empty<EnlLevelRow>();
+    [JsonPropertyName("materials")]     [JsonConverter(typeof(EnlMaterialRowsConverter))]
+    public EnlMaterialRow[] Materials { get; set; } = Array.Empty<EnlMaterialRow>();
+    [JsonPropertyName("chain")]         [JsonConverter(typeof(EnlChainRowsConverter))]
+    public EnlChainRow[] Chain { get; set; } = Array.Empty<EnlChainRow>();
+    [JsonPropertyName("chainNote")]     public string ChainNote { get; set; } = "";
+    /// <summary>"E-coins needed: N   have M (bank + pack)..." ("" when no e-coins are involved).</summary>
+    [JsonPropertyName("ecoins")]        public string Ecoins { get; set; } = "";
+    /// <summary>"Lum to buy e-coins: ~X" or the hint to set Lum per e-coin ("" when no coins are needed).</summary>
+    [JsonPropertyName("ecoinsLum")]     public string EcoinsLum { get; set; } = "";
+
+    /// <summary>The snapshot has anything for the calculator section to draw.</summary>
+    [JsonIgnore] public bool HasCalculator => Levels.Length > 0 || Materials.Length > 0 || Chain.Length > 0;
+}
+
+/// <summary>One enlightenment step of the calculator's per-level table (RynthILT lists at most 100).</summary>
+internal sealed class EnlLevelRow
+{
+    private string? _levelText, _countText;
+
+    /// <summary>The enlightenment level this step reaches.</summary>
+    [JsonPropertyName("t")]     public int Level { get; set; }
+    /// <summary>"Tokens" / "Medallions" / "Sigils" / "Crests", or "-" for a step with no item.</summary>
+    [JsonPropertyName("item")]  public string Item { get; set; } = "-";
+    [JsonPropertyName("count")] public int Count { get; set; }
+    /// <summary>Luminance for the step, preformatted ("1.50B"), "-" for none.</summary>
+    [JsonPropertyName("lum")]   public string Lum { get; set; } = "-";
+    /// <summary>The simulated stock (pack items, the sigil chain, luminance) still covers this step.</summary>
+    [JsonPropertyName("ok")]    public bool Ok { get; set; }
+
+    // Display text, formatted once per snapshot instead of every frame.
+    [JsonIgnore] public string LevelText => _levelText ??= Level.ToString(CultureInfo.InvariantCulture);
+    [JsonIgnore] public string CountText => _countText ??= Count > 0 ? Count.ToString("N0", CultureInfo.InvariantCulture) : "-";
+}
+
+/// <summary>Still-need vs have for one material (or luminance); need / have arrive preformatted.</summary>
+internal sealed class EnlMaterialRow
+{
+    [JsonPropertyName("label")] public string Label { get; set; } = "";
+    [JsonPropertyName("need")]  public string Need { get; set; } = "0";
+    [JsonPropertyName("have")]  public string Have { get; set; } = "0";
+    [JsonPropertyName("ok")]    public bool Ok { get; set; }
+}
+
+/// <summary>One row of the 301-325 sigil craft chain. Craft rows count crafts left, raw rows what to get.</summary>
+internal sealed class EnlChainRow
+{
+    private string? _needText, _haveText, _displayLabel;
+
+    [JsonPropertyName("label")] public string Label { get; set; } = "";
+    [JsonPropertyName("need")]  public long Need { get; set; }
+    [JsonPropertyName("have")]  public long Have { get; set; }
+    [JsonPropertyName("ok")]    public bool Ok { get; set; }
+    /// <summary>An in-between item the player crafts (Ascension Coins, Lifeblood Elixirs, Lifebloom Resins).</summary>
+    [JsonPropertyName("craft")] public bool Craft { get; set; }
+
+    /// <summary>The label with "(craft)" for an in-between item the player crafts.</summary>
+    [JsonIgnore] public string DisplayLabel => _displayLabel ??= Craft ? Label + " (craft)" : Label;
+    [JsonIgnore] public string NeedText => _needText ??= Need.ToString("N0", CultureInfo.InvariantCulture);
+    [JsonIgnore] public string HaveText => _haveText ??= Have.ToString("N0", CultureInfo.InvariantCulture);
+}
+
+/// <summary>How much of the Enl calculator the Progression tab draws (pure, so it is tested).</summary>
+internal static class EnlCalculatorView
+{
+    /// <summary>Per-level rows shown until "Show all" is pressed.</summary>
+    public const int PreviewLevels = 12;
+    /// <summary>Per-level rows drawn at most (RynthILT sends 100 at most), in a scrolling table.</summary>
+    public const int MaxLevels = 100;
+    /// <summary>Material / chain rows drawn at most (RynthILT sends 5 and 8).</summary>
+    public const int MaxListRows = 16;
+
+    /// <summary>Per-level rows to draw for <paramref name="total"/> rows; <paramref name="showAll"/> lifts the preview limit.</summary>
+    public static int VisibleLevels(int total, bool showAll)
+    {
+        if (total <= 0) return 0;
+        return Math.Min(total, showAll ? MaxLevels : PreviewLevels);
+    }
+
+    /// <summary>There are more rows than the preview shows, so the Show all toggle is offered.</summary>
+    public static bool CanExpand(int total) => total > PreviewLevels;
 }
 
 [JsonSerializable(typeof(ProgressionInfo))]
@@ -201,10 +290,27 @@ internal sealed unsafe class ProgressionSource : UiSource<ProgressionInfo>
         if (_getProgressionJson == null) return;
         IntPtr p = _getProgressionJson();
         string json = p == IntPtr.Zero ? "{}" : (_utf8 ? Marshal.PtrToStringUTF8(p) : Marshal.PtrToStringAnsi(p)) ?? "{}";
+        Publish(ParseJson(json));
+    }
+
+    /// <summary>
+    /// The snapshot for a plugin's JSON: an unreadable payload is an empty snapshot (Available false, the tab
+    /// hides), never an exception. The Enl calculator's own fields degrade on their own (EnlRowConverters).
+    /// </summary>
+    internal static ProgressionInfo ParseJson(string? json)
+    {
         ProgressionInfo info;
-        try { info = JsonSerializer.Deserialize(json, ProgressionJsonContext.Default.ProgressionInfo) ?? new ProgressionInfo(); }
+        try { info = JsonSerializer.Deserialize(json ?? "{}", ProgressionJsonContext.Default.ProgressionInfo) ?? new ProgressionInfo(); }
         catch (JsonException) { info = new ProgressionInfo(); }
-        Publish(info);
+        EnlPlanner? enl = info.Enl;
+        if (enl != null)
+        {
+            // JSON null into a string property: the UI reads .Length.
+            enl.ChainNote ??= "";
+            enl.Ecoins ??= "";
+            enl.EcoinsLum ??= "";
+        }
+        return info;
     }
 
     protected internal override void Reset()

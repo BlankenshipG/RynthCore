@@ -459,6 +459,7 @@ internal static class ImGuiPanelHost
             Apply(req.Title, req.Kind, placeScale);
         RemoveUnregistered();
         SweepEmbedded();
+        Panels.OracleSkillsEmbed.Sweep(Environment.TickCount64);   // Oracle's Skills embed that stopped drawing
 
         List<Entry> order;
         lock (Sync) order = DrawOrder;
@@ -512,6 +513,8 @@ internal static class ImGuiPanelHost
     {
         if (_restored) return;
         _restored = true;
+        // Settings > Display "Remember Open Windows and Positions" (default on).
+        if (!Plugins.EngineSettings.RememberWindowLayout) return;
         List<string> titles = new();
         // Script windows (dynamic) open when their owner says so, not from the saved state.
         lock (Sync)

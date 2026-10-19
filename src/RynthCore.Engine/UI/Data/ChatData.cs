@@ -92,6 +92,8 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
 
     protected internal override void Poll()
     {
+        // Another client saved the shared settings: pick up its rules / filters (every 2 s at most).
+        ChatModel.PollSettingsFile();
         try { PollLines(); }
         finally
         {
@@ -392,14 +394,7 @@ internal static class ChatModel
     };
 
     /// <summary>The channel tab a ChatMessageType lands in; mirrors ChatClassifier.ChannelFor in the plugin.</summary>
-    public static string ChannelForType(int chatType) => (uint)chatType switch
-    {
-        0x02 or 0x03 or 0x04 or 0x0A or 0x0B or 0x0C or 0x12 or 0x13 => "Chat",
-        0x08 or 0x09 => "Channels",
-        0x00 or 0x05 or 0x0D or 0x14 or 0x17 or 0x18 or 0x19 or 0x1F => "System",
-        0x06 or 0x07 or 0x11 or 0x15 or 0x16 => "Combat",
-        _ => "Other",
-    };
+    public static string ChannelForType(int chatType) => ChatRetailVerdict.ChannelForType(chatType);
 
     public static string ConditionLabel(string when)
     {
@@ -421,6 +416,11 @@ internal static class ChatModel
     public static volatile bool ShowTimestamps = true;
     /// <summary>Highlight your character's name (and MentionWords) in chat and channel lines.</summary>
     public static volatile bool MentionHighlight = true;
+    /// <summary>
+    /// A line the rules or standard filters hide is also kept out of AC's own chat window, not
+    /// just RynthChat's (ShouldHideInRetail, from PluginManager's held-line verdict).
+    /// </summary>
+    public static volatile bool HideInRetailChat = true;
     /// <summary>A short system beep on a new mention (at most every 3 s).</summary>
     public static volatile bool MentionSound;
     /// <summary>Extra words to highlight, comma-separated.</summary>
@@ -737,6 +737,34 @@ internal static class ChatModel
         var router = new ChatRouter(Filters, BuildMentionRegex(name), name, countHits: true);
         _pumpRouter = (version, name, router);
         return router;
+    }
+
+    // The retail-chat verdict's own router: no hit counting (RynthChat's pass already counts the
+    // same line), rebuilt when the rules or the name change. Pump thread only, like PumpRouter.
+    private static (long Version, string Name, ChatRouter Router)? _retailRouter;
+
+    /// <summary>
+    /// True when the rules or standard filters hide this incoming line, so AC shouldn't print
+    /// it either (HideInRetailChat). Pump thread (PluginManager, before the held line's verdict).
+    /// The channel is worked out the way the RynthChat plugin files the line (ChatRetailVerdict).
+    /// </summary>
+    internal static bool ShouldHideInRetail(string? text, int chatType)
+    {
+        if (!HideInRetailChat || string.IsNullOrEmpty(text)) return false;
+        string line = ChatSource.StripAcLinks(text, out _);
+        if (line.Length == 0) return false;
+
+        string name = PumpCharacterName();
+        long version = FiltersVersion;
+        var cached = _retailRouter;
+        ChatRouter router;
+        if (cached is { } c && c.Version == version && c.Name == name) router = c.Router;
+        else
+        {
+            router = new ChatRouter(Filters, mention: null, name, countHits: false);
+            _retailRouter = (version, name, router);
+        }
+        return ChatRetailVerdict.IsHidden(router, line, chatType);
     }
 
     /// <summary>A router for the rule editor's test box (UI thread, on an edit).</summary>
@@ -1309,13 +1337,54 @@ internal static class ChatModel
         LoadSettings();
     }
 
+    // Every client shares rynthchat_settings.json and saves its whole state, so a client that
+    // never re-read the file wrote back stale presets/rules over another client's change (last
+    // writer won; a ticked standard filter came back off). Each client now re-reads the file
+    // when someone else changes it (PollSettingsFile). SharedFileWatch remembers this client's own
+    // last write, so its own saves don't count as a change.
+    private static readonly SharedFileWatch SettingsWatch = new(pollMs: 2000);
+
+    /// <summary>
+    /// Pump thread (ChatSource.Poll): reloads the settings when another client saved the file.
+    /// Rules, standard filters, tabs and display options follow; this client's selected tab stays.
+    /// </summary>
+    internal static void PollSettingsFile()
+    {
+        if (Volatile.Read(ref _settingsLoaded) == 0) return;
+        try
+        {
+            string? json = SettingsWatch.Changed(Environment.TickCount64, SettingsPath);   // null: nobody else saved
+            if (json == null) return;
+            RynthLog.UI("ChatModel: rynthchat_settings.json changed (another client saved it); reloading the rules and filters.");
+            LoadSettings(json, reload: true);
+        }
+        catch (Exception ex) { RynthLog.UI($"ChatModel: settings re-read failed ({ex.GetType().Name}: {ex.Message})."); }
+    }
+
     private static void LoadSettings()
     {
         try
         {
             string path = SettingsPath;
             if (!File.Exists(path)) return;
-            var dto = JsonSerializer.Deserialize(File.ReadAllText(path), RynthChatJsonContext.Default.RynthChatSettingsDto);
+            SettingsWatch.Seen(File.GetLastWriteTimeUtc(path));
+            LoadSettings(File.ReadAllText(path), reload: false);
+        }
+        catch (Exception ex)
+        {
+            RynthLog.UI($"ChatModel: settings load failed: {ex.Message}");
+            KeepUnreadable();
+        }
+    }
+
+    /// <param name="reload">Another client changed the file: presets it doesn't list go off, and
+    /// this client's selected tab is kept.</param>
+    private static void LoadSettings(string json, bool reload)
+    {
+        try
+        {
+            string path = SettingsPath;
+            var dto = JsonSerializer.Deserialize(json, RynthChatJsonContext.Default.RynthChatSettingsDto);
             if (dto == null) return;
 
             if (dto.Version < SettingsVersion)
@@ -1338,6 +1407,7 @@ internal static class ChatModel
             AvaloniaOverlay.ChatCtrlGatedClickThrough = dto.CtrlGatedClickThrough;
             ShowTimestamps = dto.ShowTimestamps;
             MentionHighlight = dto.MentionHighlight;
+            HideInRetailChat = dto.HideInRetail ?? true;   // absent before 2026-10-16: on
             MentionSound = dto.MentionSound;
             MentionWords = dto.MentionWords ?? "";
             HistoryLines = ChatHistory.Clamp(dto.HistoryLines ?? 0);   // absent before 2026-10-11: the default
@@ -1358,6 +1428,13 @@ internal static class ChatModel
                     && !IsBaseTab(rule.Tab) && !tabs.Contains(rule.Tab, StringComparer.OrdinalIgnoreCase))
                     tabs.Add(rule.Tab);
             }
+            // The file lists only presets that are on or moved; on a reload every other one goes back off.
+            if (reload)
+                foreach (var preset in RynthCore.Engine.UI.Panels.RynthChatPresets.All)
+                {
+                    preset.Enabled = false;
+                    preset.Tab = "";
+                }
             foreach (RynthChatPresetDto p in dto.Presets ?? Array.Empty<RynthChatPresetDto>())
             {
                 var preset = p.Id == null ? null : RynthCore.Engine.UI.Panels.RynthChatPresets.Get(p.Id);
@@ -1372,13 +1449,15 @@ internal static class ChatModel
             _filters = rules.ToArray();
             Interlocked.Increment(ref _filtersVersion);
 
-            if (!string.IsNullOrEmpty(dto.ActiveChannel) && AllTabs().Contains(dto.ActiveChannel, StringComparer.OrdinalIgnoreCase))
+            if (!reload && !string.IsNullOrEmpty(dto.ActiveChannel) && AllTabs().Contains(dto.ActiveChannel, StringComparer.OrdinalIgnoreCase))
                 ActiveChannel = dto.ActiveChannel;
+            else if (reload && !AllTabs().Contains(ActiveChannel, StringComparer.OrdinalIgnoreCase))
+                ActiveChannel = "All";   // the tab this client was on was removed elsewhere
         }
-        catch (Exception ex)
+        catch (Exception ex) when (reload)
         {
-            RynthLog.UI($"ChatModel: settings load failed: {ex.Message}");
-            KeepUnreadable();
+            // A half-written or broken file from another client: keep what this client has.
+            RynthLog.UI($"ChatModel: settings re-read skipped (unreadable: {ex.Message}).");
         }
     }
 
@@ -1415,6 +1494,7 @@ internal static class ChatModel
             ActiveChannel = ActiveChannel,
             ShowTimestamps = ShowTimestamps,
             MentionHighlight = MentionHighlight,
+            HideInRetail = HideInRetailChat,
             MentionSound = MentionSound,
             MentionWords = MentionWords,
             // Left out at the default, so a file follows the default if it ever changes.
@@ -1440,7 +1520,10 @@ internal static class ChatModel
                 string tmp = $"{path}.{Environment.ProcessId}.tmp";   // every client shares the file
                 try
                 {
-                    File.WriteAllText(tmp, JsonSerializer.Serialize(dto, RynthChatJsonContext.Default.RynthChatSettingsDto));
+                    string json = JsonSerializer.Serialize(dto, RynthChatJsonContext.Default.RynthChatSettingsDto);
+                    // Before the swap: PollSettingsFile must see this text as ours, not another client's.
+                    SettingsWatch.Saved(json);
+                    File.WriteAllText(tmp, json);
                     File.Move(tmp, path, overwrite: true);
                 }
                 catch

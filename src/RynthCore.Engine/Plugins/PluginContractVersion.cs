@@ -25,5 +25,8 @@ internal static class PluginContractVersion
     //      server plugins declare their server in their manifest; from SilentKelpie's build).
     // v87: GetWieldedItems (what the player wields and where, from the server's wield / contain /
     //      drop messages: EquipmentTracker; the client's own fields go stale, 2026-10-18).
-    public const uint Current = 87;
+    // v88: managed plugins find their common dependencies in Runtime\PluginShared (installed with
+    //      RynthCore), so the update feed ships each managed plugin as one DLL; releases build the
+    //      plugins managed (collectible: a reload frees them) and they declare minEngineApi 88.
+    public const uint Current = 88;
 }

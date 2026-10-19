@@ -23,10 +23,14 @@
     <Compile Include="..\..\src\RynthCore.Engine\Plugins\EngineSettings.cs" Link="Engine\EngineSettings.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Plugins\EngineSettingsFile.cs" Link="Engine\EngineSettingsFile.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\ReloadCapNotice.cs" Link="Engine\ReloadCapNotice.cs" />
+    <!-- HoldReloadInWorldMaxMinutes: the default and the 1-240 clamp live with the gate. -->
+    <Compile Include="..\..\src\RynthCore.Engine\ReloadInWorldGate.cs" Link="Engine\ReloadInWorldGate.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Compatibility\AutoIdPolicy.cs" Link="Engine\AutoIdPolicy.cs" />
     <!-- EditIltServerName starts from IltDetect's defaults (IltDetect shares a parser with AelrynthWire). -->
     <Compile Include="..\..\src\RynthCore.Engine\Compatibility\IltDetect.cs" Link="Engine\IltDetect.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Compatibility\AelrynthWire.cs" Link="Engine\AelrynthWire.cs" />
+    <!-- Settings > Display for the AC window: the borderless / window-position decisions (pure functions). -->
+    <Compile Include="..\..\src\RynthCore.Engine\UI\AcWindowChromePolicy.cs" Link="Engine\AcWindowChromePolicy.cs" />
   </ItemGroup>
 
 </Project>

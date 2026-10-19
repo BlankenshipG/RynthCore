@@ -44,6 +44,7 @@ param(
     # (its id is a hash of every file); otherwise the live feed's entry is carried over.
     [string]$NavDataDir = "C:\Games\RynthCore\NavData",
     [switch]$SkipNavData,      # leave navdata out of this feed (launchers then keep what they have)
+    [switch]$NativeAotPlugins, # the old NativeAOT plugin builds (each reload keeps a copy of every one)
     # The World Map's optional sizes (RynthNav.Baker --map-world): worldmap-hd.rmap, worldmap-ultra.rmap and worldmap-p32.rmap from this
     # folder are offered by the launcher as separate downloads ("mappacks" in the feed). Each is uploaded once under
     # mappacks/<first 16 hex of its SHA-256>/ and kept by later releases. Without this folder the live feed's packs are
@@ -127,8 +128,61 @@ $rel = Join-Path $ScriptDir "Releases\$release"
 if (Test-Path $rel) { Remove-Item $rel -Recurse -Force }
 New-Item -ItemType Directory -Force "$rel\plugins", "$rel\build" | Out-Null
 
+# Plugins: built MANAGED by default (collectible: a reload frees them; NativeAOT plugins can never be
+# unloaded, so every reload kept a copy of each one - 220-450 MB of address space per reload,
+# 2026-10-19). Each managed plugin still ships as one DLL in the feed: their common dependencies
+# (RynthCore.PluginSdk, PluginCore, ImGui.NET, MoonSharp, ...) go into the installer's
+# Runtime\PluginShared, where the engine (API 88) finds them. The plugins declare minEngineApi 88,
+# so an older engine refuses them instead of failing to load them. -NativeAotPlugins: the old builds.
+$suitePlugins = "RynthChat", "RynthTracker", "RynthNav", "RynthVision", "RynthLua", "RynthOracle", "RynthInventory", "RynthSort", "RynthILT", "RynthThreads", "RynthNet"
+# Server plugins (Plugins\Shared\ServerPack; SilentKelpie's): one per game server, each loaded by the
+# engine only for its own server. They go in the feed only, so the launcher offers each one under
+# Available plugins for the player to install; not in RynthSuite-Plugins.zip or the installer.
+$serverPlugins = "RynthAChard", "RynthAelrynth", "RynthColdeve", "RynthConquest", "RynthDerptide", "RynthDreamWeave", "RynthEversong",
+                 "RynthFrostACE", "RynthFrostcull", "RynthLeafDawn", "RynthLeafdawning", "RynthPortalStorm", "RynthReefcull", "RynthSundering", "RynthThistlecrown"
+$managedArgs = if ($NativeAotPlugins) { @() } else {
+    @("-p:PublishAot=false", "-p:NativeLib=", "-p:SelfContained=false", "-p:RuntimeIdentifier=win-x86",
+      "-p:GenerateRuntimeConfigurationFiles=false", "-p:RynthPluginMinEngineApi=88")
+}
+function Build-Plugin([string]$name, [string]$label) {
+    Step "Building $name$label"
+    $proj = Join-Path $RynthSuiteRoot "Plugins\RynthCore.Plugin.$name\RynthCore.Plugin.$name.csproj"
+    # PublishDir overrides the projects' own (RynthNav/RynthVision publish into the live C:\Games folders).
+    dotnet publish $proj -c Release "-p:Version=$Version" "-p:PublishDir=$rel\build\$name\" @managedArgs -v q -nologo
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $name" }
+}
+foreach ($name in @("RynthAi") + $suitePlugins) { Build-Plugin $name "" }
+foreach ($name in $serverPlugins) { Build-Plugin $name " (server plugin, feed only)" }
+
+$sharedDir = ""
+if (-not $NativeAotPlugins) {
+    # Every plugin's dependencies, once each; the same name must be the same file in every plugin
+    # (they all build from this commit), else the release stops.
+    $sharedDir = "$rel\build\PluginShared"
+    New-Item -ItemType Directory -Force $sharedDir | Out-Null
+    $seen = @{}
+    foreach ($name in @("RynthAi") + $suitePlugins + $serverPlugins) {
+        foreach ($f in Get-ChildItem "$rel\build\$name\*.dll") {
+            if ($f.Name -like "RynthCore.Plugin.*.dll") { continue }
+            $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash
+            if ($seen.ContainsKey($f.Name)) {
+                if ($seen[$f.Name] -ne $hash) { throw "PluginShared: $($f.Name) differs between plugins ($name) - not publishing." }
+                continue
+            }
+            $seen[$f.Name] = $hash
+            Copy-Item $f.FullName "$sharedDir\"
+        }
+    }
+    Write-Host "  PluginShared: $($seen.Count) file(s): $(($seen.Keys | Sort-Object) -join ', ')"
+}
+
 Step "Building the installer ($Version)"
-& (Join-Path $ScriptDir "Build-Installer.ps1") -Version $Version -RynthSuiteRoot $RynthSuiteRoot
+$installerArgs = @{ Version = $Version; RynthSuiteRoot = $RynthSuiteRoot }
+if (-not $NativeAotPlugins) {
+    $installerArgs.PluginSharedDir = $sharedDir
+    $installerArgs.RynthAiDll = "$rel\build\RynthAi\RynthCore.Plugin.RynthAi.dll"
+}
+& (Join-Path $ScriptDir "Build-Installer.ps1") @installerArgs
 if (-not $?) { throw "Build-Installer.ps1 failed" }
 # The Decal bridge ships in every release (experimental, opt-in per account): the installer
 # carries it, so a launcher that updates through this feed gets it as a fresh install does.
@@ -138,27 +192,7 @@ if (-not (Test-Path $bridgeStaged)) { throw "The installer was built without the
 Write-Host "  Decal bridge in the installer: $((Get-Item $bridgeStaged).VersionInfo.FileVersion)"
 Copy-Item (Join-Path $ScriptDir "Output\RynthCore-Setup.exe") "$rel\RynthCore-Setup.exe"
 Copy-Item (Join-Path $ScriptDir "staging\plugins\RynthAi\RynthCore.Plugin.RynthAi.dll") "$rel\plugins\"
-
-$suitePlugins = "RynthChat", "RynthTracker", "RynthNav", "RynthVision", "RynthLua", "RynthOracle", "RynthInventory", "RynthSort", "RynthILT", "RynthThreads", "RynthNet"
-foreach ($name in $suitePlugins) {
-    Step "Building $name"
-    $proj = Join-Path $RynthSuiteRoot "Plugins\RynthCore.Plugin.$name\RynthCore.Plugin.$name.csproj"
-    # PublishDir overrides the projects' own (RynthNav/RynthVision publish into the live C:\Games folders).
-    dotnet publish $proj -c Release "-p:Version=$Version" "-p:PublishDir=$rel\build\$name\" -v q -nologo
-    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $name" }
-    Copy-Item "$rel\build\$name\RynthCore.Plugin.$name.dll" "$rel\plugins\"
-}
-
-# Server plugins (Plugins\Shared\ServerPack; SilentKelpie's): one per game server, each loaded by the
-# engine only for its own server. They go in the feed only, so the launcher offers each one under
-# Available plugins for the player to install; not in RynthSuite-Plugins.zip or the installer.
-$serverPlugins = "RynthAChard", "RynthAelrynth", "RynthColdeve", "RynthConquest", "RynthDerptide", "RynthDreamWeave", "RynthEversong",
-                 "RynthFrostACE", "RynthFrostcull", "RynthLeafDawn", "RynthLeafdawning", "RynthPortalStorm", "RynthReefcull", "RynthSundering", "RynthThistlecrown"
-foreach ($name in $serverPlugins) {
-    Step "Building $name (server plugin, feed only)"
-    $proj = Join-Path $RynthSuiteRoot "Plugins\RynthCore.Plugin.$name\RynthCore.Plugin.$name.csproj"
-    dotnet publish $proj -c Release "-p:Version=$Version" "-p:PublishDir=$rel\build\$name\" -v q -nologo
-    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $name" }
+foreach ($name in $suitePlugins + $serverPlugins) {
     Copy-Item "$rel\build\$name\RynthCore.Plugin.$name.dll" "$rel\plugins\"
 }
 

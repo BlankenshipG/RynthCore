@@ -409,6 +409,28 @@ internal sealed class DamageDetailFace : IImGuiPanel
             pick => DamageCommands.EditRule(name, r => r.ExVuln = pick),
             "A vulnerability of another element, on top of Vuln (which follows the attack's element).");
 
+        // Melee/missile attack power against it
+        string power = string.IsNullOrEmpty(view.AttackPower) ? "Default" : view.AttackPower;
+        Combo("Power", "##power", DamageCommands.AttackPowerModes, power,
+            pick => DamageCommands.EditRule(name, r => r.AttackPower = pick),
+            (isDefault
+                ? "Melee/missile attack power for every monster without its own. Default = the Power settings (Melee Combat).\n"
+                : "Melee/missile attack power against the monsters it covers. Default = the DEFAULT line's.\n") +
+            "High = 100%. Reckless = 80% (needs Recklessness trained, else 100%).\n" +
+            "Variable = a new random power each attack, between Variable Min and Max (Settings).\n" +
+            "Reckless + Variable = random, kept inside the Recklessness band (20-80%).");
+
+        // Pull-away kite: tag then run until the mob is clear of its spawn pack
+        ImGuiNET.ImGui.SameLine(0, 14);
+        string kite = string.IsNullOrEmpty(view.Kite) ? "Default" : view.Kite;
+        Combo("Kite", "##kite", DamageCommands.KiteModes, kite,
+            pick => DamageCommands.EditRule(name, r => r.Kite = pick),
+            (isDefault
+                ? "Pull-away for every monster without its own. Default = Off (fight in place).\n"
+                : "Pull-away for the monsters it covers. Default = the DEFAULT line's.\n") +
+            "Off = kill where it stands. PullAway = tag, run until it has been dragged\n" +
+            "Kite Pull Distance metres from its lock spot (Settings > Melee Combat), then kill.");
+
         // The DEFAULT line's own choice is the Prefer chip in the Damage panel's top bar.
         if (!isDefault)
             Combo("Prefer", "##prefer", DamageCommands.PreferredDamages, string.IsNullOrEmpty(view.PreferredDamage) ? "Auto" : view.PreferredDamage,

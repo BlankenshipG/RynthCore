@@ -6,7 +6,11 @@
 //              pictures (InventoryFace.Classic.cs; Phase 2)
 //    Modern    the Phase 1 layout, below
 //
-//    header    burden (percent of capacity) and pyreals; item count
+//    header    burden (percent of capacity) and pyreals; item count; buttons for
+//              Mini Remote, RynthSort (/rsort), Item Count (/rc itemcount) and
+//              Global Inventory (/ginv), folded into one menu when the header is short;
+//              on Aelrynth also the Vault (always there; the grid shows the account
+//              vault, picking a pack goes back)
 //    tools     search box, attribute filter (InventoryFace.AttrFilter.cs), sort
 //              picker; category chips
 //    packs     All, Main pack, each side pack (its icon and fill), Worn
@@ -36,6 +40,8 @@ using System.Globalization;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Engine.Compatibility;
+using RynthCore.Engine.Net;
+using RynthCore.Engine.UI;
 using RynthCore.Engine.UI.ScriptWindows;
 using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
 
@@ -201,10 +207,97 @@ internal sealed partial class InventoryFace : IImGuiPanel
         float bodyH = Math.Max(60, origin.Y + size.Y - 6 - bottomH - bodyPos.Y);
         float colW = w >= 380 ? 128 : 46;
         PackColumn(view, bodyPos, colW, bodyH);
-        Grid(new Vector2(bodyPos.X + colW + 4, bodyPos.Y), new Vector2(w - colW - 4, bodyH));
+        // The Vault (Aelrynth) takes the grid's place; picking a pack in the column goes back to it.
+        if (_vaultOpen && (!VaultFeed.Available || _pack != _vaultOpenedOnPack)) _vaultOpen = false;
+        if (_vaultOpen) ModernVault(new Vector2(bodyPos.X + colW + 4, bodyPos.Y), new Vector2(w - colW - 4, bodyH));
+        else Grid(new Vector2(bodyPos.X + colW + 4, bodyPos.Y), new Vector2(w - colW - 4, bodyH));
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(bodyPos.X, bodyPos.Y + bodyH + 4));
         Zones(view, w);
         StatusRow(w);
+    }
+
+    /// <summary>RynthInventory's Global Inventory script window key (UiWindow "RynthInventory/Main").</summary>
+    private const string GlobalInventoryKey = "RynthInventory/Main";
+    /// <summary>RynthSort's script window key (UiWindow "RynthSort/Main").</summary>
+    private const string RynthSortKey = "RynthSort/Main";
+
+    private static bool MiniRemoteOpen => ImGuiPanelHost.IsOpen(MiniRemoteFace.Title);
+    private static bool ItemCountOpen => ImGuiPanelHost.IsOpen(ItemCountFace.Title);
+    private static bool RynthSortOpen => ScriptWindowRegistry.IsOpen(RynthSortKey);
+    private static bool GlobalInventoryOpen => ScriptWindowRegistry.IsOpen(GlobalInventoryKey);
+
+    private const string MiniRemoteTip = "Mini Remote (/rc miniremote): remote, sections and HUDs";
+    private const string ItemCountTip = "Item Count (/rc itemcount): how many of each named item you carry";
+    private static string RynthSortTip() => ScriptWindowRegistry.Has(RynthSortKey)
+        ? "RynthSort (/rsort): pack sort rules and auto-sort"
+        : "RynthSort (/rsort) - needs the RynthSort plugin";
+    private static string GlobalInventoryTip() => ScriptWindowRegistry.Has(GlobalInventoryKey)
+        ? "Global Inventory (/ginv): every character's saved packs and storage"
+        : "Global Inventory (/ginv) - needs the RynthInventory plugin";
+
+    /// <summary>Opens or closes the Item Count panel (same as /rc itemcount).</summary>
+    private static void ToggleItemCount()
+    {
+        if (!ImGuiPanelHost.HasFace(ItemCountFace.Title)) return;
+        PanelRouter.Toggle(ItemCountFace.Title);
+    }
+
+    /// <summary>Opens or closes the Mini Remote (same as /rc miniremote).</summary>
+    private static void ToggleMiniRemote()
+    {
+        if (!ImGuiPanelHost.HasFace(MiniRemoteFace.Title)) return;
+        PanelRouter.Toggle(MiniRemoteFace.Title);
+    }
+
+    /// <summary>
+    /// Opens or closes a plugin script window by key, or runs <paramref name="fallbackCmd"/>
+    /// when the plugin hasn't submitted it yet.
+    /// </summary>
+    private static void ToggleScriptWindow(string key, string fallbackCmd)
+    {
+        if (ScriptWindowRegistry.Has(key))
+        {
+            ScriptWindowRegistry.PlayerSetVisible(key, !ScriptWindowRegistry.IsOpen(key));
+            return;
+        }
+        ServerMenus.Run(fallbackCmd);
+    }
+
+    /// <summary>Opens or closes RynthInventory's Global Inventory (same as /ginv).</summary>
+    private static void ToggleGlobalInventory() => ToggleScriptWindow(GlobalInventoryKey, "/ginv");
+
+    /// <summary>Opens or closes RynthSort (same as /rsort).</summary>
+    private static void ToggleRynthSort() => ToggleScriptWindow(RynthSortKey, "/rsort");
+
+    // The "more" menu both looks use when their bar is too short for the four buttons.
+    private bool _openMore;
+
+    /// <summary>The "more" popup: the four related panels as menu lines (checked while open). Draw where its button was.</summary>
+    private void RelatedMenu()
+    {
+        if (_openMore)
+        {
+            _openMore = false;
+            ImGuiNET.ImGui.OpenPopup("##inv_more_menu");
+        }
+        PushMenuStyle();
+        if (ImGuiNET.ImGui.BeginPopup("##inv_more_menu"))
+        {
+            if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote", MiniRemoteOpen, ImGuiPanelHost.HasFace(MiniRemoteFace.Title)))
+                ToggleMiniRemote();
+            SafeImGui.SetItemTooltip(MiniRemoteTip);
+            if (ImGuiNET.ImGui.MenuItem("RynthSort", "/rsort", RynthSortOpen))
+                ToggleRynthSort();
+            SafeImGui.SetItemTooltip(RynthSortTip());
+            if (ImGuiNET.ImGui.MenuItem("Item Count", "/rc itemcount", ItemCountOpen, ImGuiPanelHost.HasFace(ItemCountFace.Title)))
+                ToggleItemCount();
+            SafeImGui.SetItemTooltip(ItemCountTip);
+            if (ImGuiNET.ImGui.MenuItem("Global Inventory", "/ginv", GlobalInventoryOpen))
+                ToggleGlobalInventory();
+            SafeImGui.SetItemTooltip(GlobalInventoryTip());
+            ImGuiNET.ImGui.EndPopup();
+        }
+        PopMenuStyle();
     }
 
     // ── Header: burden, pyreals, count ──────────────────────────────────
@@ -239,11 +332,62 @@ internal sealed partial class InventoryFace : IImGuiPanel
             InventorySettingsStore.SetClassic(true);
         ImGuiNET.ImGui.SetItemTooltip("Classic look (the retail inventory window)");
 
+        // Related panels (Mini Remote, RynthSort, Item Count, Global Inventory): four icons when the room
+        // left of the Classic / Close buttons holds them, else one "more" menu, else none (the Character
+        // menu has them all). The item count text gives way last. On Aelrynth the Vault button sits next
+        // to the Classic button and takes its room first: it is never dropped
+        // (UI/InventoryTitleLayout.InventoryHeaderLayout, tested in tools/BarDeclutterTests).
         float cw = ImGuiNET.ImGui.CalcTextSize(_countText).X;
-        dl.AddText(new Vector2(tb.X - cw - 6, ty), Mute, _countText);
+        float leftEnd = x + 20 + ImGuiNET.ImGui.CalcTextSize(view.PyrealText).X + 6;
+        InventoryHeaderLayout hl = InventoryHeaderLayout.Compute(w, leftEnd - p.X, cw, VaultFeed.Available);
+        Vector2 At(TitleSlot s) => new(p.X + s.X, p.Y + 1);
+        var btn22 = new Vector2(InventoryHeaderLayout.Btn, InventoryHeaderLayout.Btn);
+        if (hl.Plan.Extras == TitleExtrasMode.Icons)
+        {
+            if (IconButton("##inv_ginv", PhosphorIcons.GlobeHemisphereWest, At(hl.GInv), btn22,
+                    GlobalInventoryOpen ? Teal : Amber, BtnFill, font: UiFont.Ui11))
+                ToggleGlobalInventory();
+            SafeImGui.SetItemTooltip(GlobalInventoryTip());
+            if (IconButton("##inv_itemcount", PhosphorIcons.Bag, At(hl.Count), btn22,
+                    ItemCountOpen ? Teal : Amber, BtnFill, font: UiFont.Ui11))
+                ToggleItemCount();
+            SafeImGui.SetItemTooltip(ItemCountTip);
+            if (IconButton("##inv_rsort", PhosphorIcons.SortAscending, At(hl.Sort), btn22,
+                    RynthSortOpen ? Teal : Amber, BtnFill, font: UiFont.Ui11))
+                ToggleRynthSort();
+            SafeImGui.SetItemTooltip(RynthSortTip());
+            if (IconButton("##inv_miniremote", PhosphorIcons.SquaresFour, At(hl.Remote), btn22,
+                    MiniRemoteOpen ? Teal : Amber, BtnFill, font: UiFont.Ui11))
+                ToggleMiniRemote();
+            SafeImGui.SetItemTooltip(MiniRemoteTip);
+        }
+        else if (hl.Plan.Extras == TitleExtrasMode.Menu)
+        {
+            if (IconButton("##inv_more", PhosphorIcons.DotsThree, At(hl.More), btn22,
+                    MiniRemoteOpen || RynthSortOpen || ItemCountOpen || GlobalInventoryOpen ? Teal : Amber, BtnFill, font: UiFont.Ui11))
+                _openMore = true;
+            ImGuiNET.ImGui.SetItemTooltip("Mini Remote, RynthSort, Item Count, Global Inventory");
+        }
+        RelatedMenu();
+
+        // Vault (Aelrynth only): the grid shows the account vault instead of the packs.
+        if (hl.Plan.Vault)
+        {
+            if (IconButton("##inv_vault_m", PhosphorIcons.TreasureChest, At(hl.Vault), btn22,
+                    _vaultOpen ? Teal : Amber, BtnFill, font: UiFont.Ui11))
+            {
+                _vaultOpen = !_vaultOpen;
+                _vaultOpenedOnPack = _pack;
+                if (_vaultOpen) VaultFeed.ViewOpened();
+            }
+            ImGuiNET.ImGui.SetItemTooltip("Your Aelrynth account vault");
+        }
+
+        if (hl.Plan.ShowCount) dl.AddText(new Vector2(p.X + hl.CountX, ty), Mute, _countText);
+        float countLeft = hl.Plan.ShowCount ? p.X + hl.CountX : p.X + hl.RightEdge;
 
         // Drag surface: the empty part of the header, between the pyreals and the count.
-        float dragFrom = x + 20 + ImGuiNET.ImGui.CalcTextSize(view.PyrealText).X + 6, dragTo = tb.X - cw - 10;
+        float dragFrom = leftEnd, dragTo = countLeft - 4;
         if (dragTo > dragFrom)
         {
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(dragFrom, p.Y));
@@ -610,6 +754,109 @@ internal sealed partial class InventoryFace : IImGuiPanel
 
         ImGuiNET.ImGui.EndChild();
         ImGuiNET.ImGui.PopStyleColor();
+    }
+
+    // The pack showing when the Modern Vault opened (picking another pack closes the Vault).
+    private uint _vaultOpenedOnPack;
+
+    /// <summary>
+    /// The Modern look's Vault: the account vault's items in the grid's style, a caption with how full
+    /// it is and Refresh. Read-only apart from right-click > Withdraw (VaultContextMenu).
+    /// </summary>
+    private void ModernVault(Vector2 pos, Vector2 size)
+    {
+        VaultSnapshot? snap = VaultFeed.Snapshot;
+        VaultItem[] items = snap?.Items ?? Array.Empty<VaultItem>();
+        var pdl = ImGuiNET.ImGui.GetWindowDrawList();
+        const float CapH = 22;
+        float ty = pos.Y + (CapH - ImGuiNET.ImGui.GetFontSize()) * 0.5f;
+        pdl.AddText(new Vector2(pos.X + 4, ty), Text, VaultCaption(snap));
+        if (IconButton("##vault_refresh_m", PhosphorIcons.ArrowsClockwise, new Vector2(pos.X + size.X - 22, pos.Y), new Vector2(22, 20),
+                VaultFeed.Awaiting ? Teal : Amber, BtnFill, font: UiFont.Ui11))
+            VaultFeed.RequestRefresh();
+        ImGuiNET.ImGui.SetItemTooltip("Read the vault again");
+
+        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(pos.X, pos.Y + CapH));
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ChildBg, PanelBg);
+        ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(3, 3));
+        ImGuiNET.ImGui.BeginChild("##inv_vault_grid", new Vector2(size.X, Math.Max(30, size.Y - CapH)), ImGuiChildFlags.AlwaysUseWindowPadding);
+        ImGuiNET.ImGui.PopStyleVar();
+
+        float avail = ImGuiNET.ImGui.GetContentRegionAvail().X;
+        int cols = Math.Max(1, (int)(avail / Cell));
+        int rows = (items.Length + cols - 1) / cols;
+        Vector2 o = ImGuiNET.ImGui.GetCursorScreenPos();
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
+        if (items.Length == 0)
+        {
+            string empty = snap == null ? (VaultFeed.Awaiting ? "Reading the vault..." : VaultEmptyText) : "The vault is empty.";
+            dl.AddText(o + new Vector2(4, 4), Mute, empty);
+            ImGuiNET.ImGui.Dummy(new Vector2(avail, 20));
+        }
+        else
+        {
+            var content = new Vector2(cols * Cell, Math.Max(rows * Cell, 1));
+            ImGuiNET.ImGui.InvisibleButton("##vault_cells_m", content, ImGuiButtonFlags.MouseButtonLeft | ImGuiButtonFlags.MouseButtonRight);
+            bool hovered = ImGuiNET.ImGui.IsItemHovered();
+            Vector2 mouse = ImGuiNET.ImGui.GetMousePos();
+            int hoverIdx = -1;
+            if (hovered)
+            {
+                int c = (int)((mouse.X - o.X) / Cell), r = (int)((mouse.Y - o.Y) / Cell);
+                if (c >= 0 && c < cols && r >= 0 && r < rows && r * cols + c < items.Length) hoverIdx = r * cols + c;
+            }
+
+            // Visible rows only.
+            Vector2 clipMin = ImGuiNET.ImGui.GetWindowPos(), clipMax = clipMin + ImGuiNET.ImGui.GetWindowSize();
+            int firstRow = Math.Max(0, (int)((clipMin.Y - o.Y) / Cell));
+            int lastRow = Math.Min(rows - 1, (int)((clipMax.Y - o.Y) / Cell));
+            ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));   // stack counts
+            for (int r = firstRow; r <= lastRow; r++)
+            {
+                for (int c = 0; c < cols; c++)
+                {
+                    int i = r * cols + c;
+                    if (i >= items.Length) break;
+                    VaultItem it = items[i];
+                    var cmin = new Vector2(o.X + c * Cell, o.Y + r * Cell);
+                    var cmax = cmin + new Vector2(Cell - 2, Cell - 2);
+                    dl.AddRectFilled(cmin, cmax, i == hoverIdx ? CellHot : CellBg, 3);
+                    Vector2 imin = cmin + new Vector2(2, 2);
+                    if (ScriptIcons.TryGetItem(it.Icon, it.Underlay, it.Overlay, it.Effects, it.ItemType, out IntPtr tex))
+                    {
+                        IconSampling.Begin(dl);
+                        dl.AddImage(tex, imin, imin + new Vector2(Icon, Icon));
+                        IconSampling.End(dl);
+                    }
+                    else
+                        dl.AddRectFilled(imin, imin + new Vector2(Icon, Icon), Placeholder, 2);
+                    if (it.Stack > 1)
+                    {
+                        string st = it.Stack.ToString(CultureInfo.InvariantCulture);
+                        Vector2 ts = ImGuiNET.ImGui.CalcTextSize(st);
+                        var tp = new Vector2(cmax.X - ts.X - 2, cmax.Y - ts.Y - 1);
+                        dl.AddText(tp + Vector2.One, StackShadow, st);
+                        dl.AddText(tp, StackCol, st);
+                    }
+                }
+            }
+            ImGuiNET.ImGui.PopFont();
+
+            if (hoverIdx >= 0)
+            {
+                VaultItem hot = items[hoverIdx];
+                SafeImGui.SetTooltip(hot.Stack > 1 ? $"{hot.Name} ({hot.Stack:N0})" : hot.Name);
+                if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Right))
+                {
+                    _vaultCtx = hot;
+                    _openVaultCtx = true;
+                }
+            }
+        }
+
+        ImGuiNET.ImGui.EndChild();
+        ImGuiNET.ImGui.PopStyleColor();
+        VaultContextMenu();   // in the panel's window, outside the child
     }
 
     /// <summary>An item's icon (with underlay and overlay) from the shared icon cache, or a placeholder.</summary>

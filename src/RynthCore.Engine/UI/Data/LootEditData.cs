@@ -141,7 +141,53 @@ internal sealed class LootEditItemRequestDto
     public bool ToOpenProfile { get; set; }
     /// <summary>Also require the item's T11 attributes (added 2026-10-07; an older RynthAi ignores it).</summary>
     public bool IncludeT11 { get; set; }
+    /// <summary>The attribute checklist's choices (added 2026-10-18); null: every row at its default.</summary>
+    public List<LootEditItemChoiceDto>? Choices { get; set; }
     public int Seq { get; set; }
+}
+
+/// <summary>One checklist row as the player set it (LootEditWire's LootEditItemChoice).</summary>
+internal sealed class LootEditItemChoiceDto
+{
+    public string Id { get; set; } = string.Empty;
+    public bool On { get; set; }
+    /// <summary>A comparison code (LootAttrOps); -1 = the row's default.</summary>
+    public int Op { get; set; } = -1;
+    /// <summary>The typed value; empty = the item's own.</summary>
+    public string Value { get; set; } = string.Empty;
+}
+
+/// <summary>One row of the popup's attribute checklist (LootEditWire's LootEditItemAttribute).</summary>
+internal sealed class LootEditItemAttributeDto
+{
+    public string Id { get; set; } = string.Empty;
+    public string Group { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    public string ItemValue { get; set; } = string.Empty;
+    public string Value { get; set; } = string.Empty;
+    public int Op { get; set; }
+    public List<int> Ops { get; set; } = new();
+    public bool Editable { get; set; }
+    public bool On { get; set; }
+    public string Tip { get; set; } = string.Empty;
+}
+
+/// <summary>The checklist's comparison codes (LootSdk LootItemAttributeOp) and how the popup labels them.</summary>
+internal static class LootAttrOps
+{
+    public const int AtLeast = 0, Exactly = 1, AtMost = 2, Not = 3, SpellExact = 10, SpellOrBetter = 11, SpellAnyTier = 12;
+
+    public static string Label(int op) => op switch
+    {
+        AtLeast => ">=",
+        Exactly => "=",
+        AtMost => "<=",
+        Not => "not",
+        SpellExact => "exact",
+        SpellOrBetter => "or better",
+        SpellAnyTier => "any tier",
+        _ => "?",
+    };
 }
 
 /// <summary>The rule an item makes and what an add did (LootEditWire's LootEditItemDraft).</summary>
@@ -172,6 +218,10 @@ internal sealed class LootEditItemDraftDto
     public int RuleCount { get; set; }
     public string OrderNote { get; set; } = string.Empty;
     public List<string> Notes { get; set; } = new();
+    /// <summary>RynthAi has the attribute checklist (added 2026-10-18; false from an older one: the T11 box shows instead).</summary>
+    public bool AttributesSupported { get; set; }
+    /// <summary>The item's checklist rows in display order (added 2026-10-18).</summary>
+    public List<LootEditItemAttributeDto> Attributes { get; set; } = new();
     public bool Added { get; set; }
     public string Message { get; set; } = string.Empty;
 }

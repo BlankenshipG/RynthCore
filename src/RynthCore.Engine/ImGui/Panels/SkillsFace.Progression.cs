@@ -595,11 +595,15 @@ internal sealed partial class SkillsFace
                 SendProg("enltarget " + Math.Max(e.Level + 1, target).ToString(CultureInfo.InvariantCulture));
             foreach (string line in e.Plan) SafeImGui.BulletText(line);
 
+            DrawEnlCalculator(e, w);
+
             int coinsPerToken = e.CoinsPerToken;
             ImGuiNET.ImGui.SetNextItemWidth(100);
             if (ImGuiNET.ImGui.InputInt("Coins per token (shop price)##prog_cpt", ref coinsPerToken))
                 SendProg("coinspertoken " + Math.Max(0, coinsPerToken).ToString(CultureInfo.InvariantCulture));
             if (e.TokensShort.Length > 0) Label(e.TokensShort, Dim);
+            if (!string.IsNullOrEmpty(e.Ecoins)) Label(e.Ecoins, Text);
+            if (!string.IsNullOrEmpty(e.EcoinsLum)) Label(e.EcoinsLum, Dim);
 
             ImGuiNET.ImGui.Separator();
             if (e.Blockers.Length == 0) Label("Client-side checks pass.", Green);
@@ -646,6 +650,171 @@ internal sealed partial class SkillsFace
         {
             ImGuiNET.ImGui.PopTextWrapPos();
             ImGuiNET.ImGui.Unindent(8);
+        }
+    }
+
+    // ── Enl calculator ──────────────────────────────────────────────────
+    //
+    // RynthILT's AppendEnlCalculatorJson (Silentkelpie's rynth PR 6 drew it first): per-level cost rows, still-need /
+    // have materials and the 301-325 sigil craft chain. Read-only: it only draws the Progression snapshot already
+    // subscribed by ProgressionShown, so it adds no subscription and no per-frame work beyond the table rows
+    // (row text is formatted once per snapshot, in the DTOs). A snapshot without the fields (older RynthILT) has
+    // empty arrays and nothing here is drawn.
+    //
+    // Width: the three tables are w - 16 wide inside the Indent(8) of DrawEnlPlanner, with a stretch label
+    // column and narrow fixed number columns scaled down below the retail width (300); text in a cell wraps at
+    // the cell instead of running off the panel. Level rows show a preview (12), "Show all" lists up to 100 in a
+    // table that scrolls on its own.
+
+    private const float EnlRetailTableWidth = 284f;   // retail panel width (300) - 16
+    private bool _enlShowAllLevels;
+    private string _enlToggleLabel = "";
+    private int _enlToggleTotal = -1;
+    private bool _enlToggleAll;
+
+    private void DrawEnlCalculator(EnlPlanner e, float w)
+    {
+        if (!e.HasCalculator) return;
+
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+        if (!ImGuiNET.ImGui.CollapsingHeader("Enl calculator##prog_enl_calc", ImGuiTreeNodeFlags.DefaultOpen))
+            return;
+
+        float tw = Math.Max(120f, w - 16);
+        float k = Math.Min(1f, tw / EnlRetailTableWidth);   // fixed columns shrink on a narrower panel
+        DrawEnlLevels(e.Levels, tw, k);
+        DrawEnlMaterials(e.Materials, tw, k);
+        DrawEnlChain(e, tw, k);
+    }
+
+    private void DrawEnlLevels(EnlLevelRow[] rows, float tw, float k)
+    {
+        if (rows.Length == 0) return;
+        bool canExpand = EnlCalculatorView.CanExpand(rows.Length);
+        bool all = canExpand && _enlShowAllLevels;
+        int shown = EnlCalculatorView.VisibleLevels(rows.Length, all);
+
+        ImGuiTableFlags flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp;
+        var size = new Vector2(tw, 0);
+        if (all)
+        {
+            // Own scroll area, a preview's worth of rows tall (+ header): the long list never pushes the panel.
+            flags |= ImGuiTableFlags.ScrollY;
+            size.Y = (ImGuiNET.ImGui.GetTextLineHeightWithSpacing() + 4f) * (EnlCalculatorView.PreviewLevels + 1);
+        }
+
+        ImGuiNET.ImGui.PushTextWrapPos(0f);   // wrap in the cell, not at the panel's wrap position
+        try
+        {
+            if (ImGuiNET.ImGui.BeginTable("##enl_levels", 4, flags, size))
+            {
+                ImGuiNET.ImGui.TableSetupColumn("Enl", ImGuiTableColumnFlags.WidthFixed, 40 * k);
+                ImGuiNET.ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthFixed, 84 * k);
+                ImGuiNET.ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.WidthFixed, 44 * k);
+                ImGuiNET.ImGui.TableSetupColumn("Lum");
+                if (all) ImGuiNET.ImGui.TableSetupScrollFreeze(0, 1);
+                ImGuiNET.ImGui.TableHeadersRow();
+                for (int i = 0; i < shown; i++)
+                {
+                    EnlLevelRow row = rows[i];
+                    uint c = row.Ok ? Green : Amber;
+                    ImGuiNET.ImGui.TableNextRow();
+                    ImGuiNET.ImGui.TableNextColumn(); Label(row.LevelText, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(row.Item, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(row.CountText, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(row.Lum, c);
+                }
+                ImGuiNET.ImGui.EndTable();
+            }
+        }
+        finally
+        {
+            ImGuiNET.ImGui.PopTextWrapPos();
+        }
+
+        if (canExpand)
+        {
+            // The label is rebuilt only when the row count or the mode changes, not every frame.
+            if (_enlToggleTotal != rows.Length || _enlToggleAll != all)
+            {
+                _enlToggleTotal = rows.Length;
+                _enlToggleAll = all;
+                _enlToggleLabel = (all ? "Show first " + EnlCalculatorView.PreviewLevels.ToString(CultureInfo.InvariantCulture)
+                                       : "Show all " + Math.Min(rows.Length, EnlCalculatorView.MaxLevels).ToString(CultureInfo.InvariantCulture) + " steps")
+                                  + "##enl_lv_all";
+            }
+            if (ImGuiNET.ImGui.SmallButton(_enlToggleLabel)) _enlShowAllLevels = !all;
+        }
+        Label("Green = pack items and banked luminance still cover that step (simulated in order).", Dim);
+    }
+
+    private static void DrawEnlMaterials(EnlMaterialRow[] rows, float tw, float k)
+    {
+        if (rows.Length == 0) return;
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+        Label("Still need / have", Text);
+        ImGuiNET.ImGui.PushTextWrapPos(0f);
+        try
+        {
+            if (ImGuiNET.ImGui.BeginTable("##enl_mats", 3,
+                ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp, new Vector2(tw, 0)))
+            {
+                ImGuiNET.ImGui.TableSetupColumn("Material");
+                ImGuiNET.ImGui.TableSetupColumn("Still need", ImGuiTableColumnFlags.WidthFixed, 72 * k);
+                ImGuiNET.ImGui.TableSetupColumn("Have", ImGuiTableColumnFlags.WidthFixed, 72 * k);
+                ImGuiNET.ImGui.TableHeadersRow();
+                int n = Math.Min(rows.Length, EnlCalculatorView.MaxListRows);
+                for (int i = 0; i < n; i++)
+                {
+                    EnlMaterialRow m = rows[i];
+                    uint c = m.Ok ? Green : Amber;
+                    ImGuiNET.ImGui.TableNextRow();
+                    ImGuiNET.ImGui.TableNextColumn(); Label(m.Label, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(m.Need, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(m.Have, c);
+                }
+                ImGuiNET.ImGui.EndTable();
+            }
+        }
+        finally
+        {
+            ImGuiNET.ImGui.PopTextWrapPos();
+        }
+    }
+
+    private static void DrawEnlChain(EnlPlanner e, float tw, float k)
+    {
+        EnlChainRow[] rows = e.Chain;
+        if (rows.Length == 0) return;
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+        Label("Sigil craft chain (301-325)", Text);
+        if (!string.IsNullOrEmpty(e.ChainNote)) Label(e.ChainNote, Dim);   // wraps at the panel's wrap position
+        ImGuiNET.ImGui.PushTextWrapPos(0f);
+        try
+        {
+            if (ImGuiNET.ImGui.BeginTable("##enl_chain", 3,
+                ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp, new Vector2(tw, 0)))
+            {
+                ImGuiNET.ImGui.TableSetupColumn("Item");
+                ImGuiNET.ImGui.TableSetupColumn("Need", ImGuiTableColumnFlags.WidthFixed, 72 * k);
+                ImGuiNET.ImGui.TableSetupColumn("Have", ImGuiTableColumnFlags.WidthFixed, 72 * k);
+                ImGuiNET.ImGui.TableHeadersRow();
+                int n = Math.Min(rows.Length, EnlCalculatorView.MaxListRows);
+                for (int i = 0; i < n; i++)
+                {
+                    EnlChainRow r = rows[i];
+                    uint c = r.Ok ? Green : Amber;
+                    ImGuiNET.ImGui.TableNextRow();
+                    ImGuiNET.ImGui.TableNextColumn(); Label(r.DisplayLabel, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(r.NeedText, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(r.HaveText, c);
+                }
+                ImGuiNET.ImGui.EndTable();
+            }
+        }
+        finally
+        {
+            ImGuiNET.ImGui.PopTextWrapPos();
         }
     }
 

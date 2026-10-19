@@ -48,6 +48,11 @@ internal static class Program
         WhenParsing();
         PresetsCatchAndSpare();
         PresetsWellFormed();
+        RetailChannels();
+        RetailStandardFilters();
+        RetailRules();
+        RetailSetting();
+        SharedFileReload();
         LineColorTags();
         LineColorKinds();
         LineColorDefaultsUnchanged();
@@ -429,6 +434,246 @@ internal static class Program
         Check(!ChatRuleMatching.WhenMatches("Combat", -1, "Chat", 21), "other channel");
         Check(ChatRuleMatching.WhenMatches(null, 21, "Combat", 21) && !ChatRuleMatching.WhenMatches(null, 21, "Combat", 22), "type");
         Check(ChatRuleMatching.WhenMatches(null, -1, "Chat", 2), "any");
+    }
+
+    // ── Retail chat verdict (2026-10-19; idea from Silentkelpie, rynth PR 6) ──
+    // A line the rules or standard filters hide also stays out of AC's own chat window.
+    // ChatRetailVerdict is the pure part of ChatModel.ShouldHideInRetail.
+
+    private static ChatRouter RetailRouter(params ChatFilterRule[] rules) =>
+        new(rules, mention: null, self: "", countHits: false);
+
+    private static ChatFilterRule Rule(string pattern, ChatRuleAction action, string when = "", string tab = "")
+    {
+        var r = new ChatFilterRule { Pattern = pattern, Action = action, Tab = tab };
+        r.When = when;
+        r.Recompile();
+        return r;
+    }
+
+    private static void ResetPresets()
+    {
+        foreach (var p in RynthCore.Engine.UI.Panels.RynthChatPresets.All)
+        {
+            p.Enabled = false;
+            p.Tab = "";
+        }
+    }
+
+    private static void RetailChannels()
+    {
+        Case("retail verdict: the channel is the one the RynthChat plugin files the line under");
+        (string Line, int Type, string Channel)[] cases =
+        {
+            ("Bob says, \"hi\"", 2, "Chat"),
+            ("Bob tells you, \"hi\"", 3, "Chat"),
+            ("[Trade] Bob says, \"WTS\"", 8, "Channels"),
+            ("[Trade] Bob says, \"WTS\"", 0x1C, "Channels"),           // ILT / ACECustom deliver channel lines as 0x1C
+            ("[General] Bob says, \"hi\"", 3, "Channels"),             // the tag wins over the type
+            ("[Celestial Hand] Bob says, \"hi\"", 3, "Channels"),
+            ("[general] Bob says, \"hi\"", 3, "Channels"),             // the tag is case-insensitive
+            ("[Generals] Bob says, \"hi\"", 3, "Chat"),                // not a tag
+            ("You have killed 12 Drudges!", 0, "System"),
+            ("You evaded Tusker Guard!", 6, "Combat"),
+            ("Your spell fizzled.", 0x11, "Combat"),
+            ("[RynthAi] Nav loaded", 0, "Rynth"),
+            ("[RynthChat] hello", 3, "Rynth"),                         // plugin output is Rynth whatever type it was written with
+            ("[rynthai] lower case", 0, "Rynth"),
+            ("[RynthAi Item] Sword of Bob", 3, "Items"),               // item info is checked before the Rynth prefix
+            ("[RynthAi Item]no space", 3, "Rynth"),                    // the Items prefix has its trailing space
+            ("something", 0x7F, "Other"),
+        };
+        foreach (var (line, type, chan) in cases)
+            Check(ChatRetailVerdict.ChannelFor(line, type) == chan, $"'{line}' type {type} -> {chan} (got {ChatRetailVerdict.ChannelFor(line, type)})");
+        Check(ChatRetailVerdict.ChannelFor("", 2) == "Chat" && ChatRetailVerdict.ChannelFor("", 0x7F) == "Other", "an empty line falls back to the type");
+        for (int t = 0; t < 40; t++)
+            Check(ChatRetailVerdict.ChannelForType(t) == ChatRetailVerdict.ChannelFor("plain", t), $"type {t}: no tag, the type decides");
+    }
+
+    private static void RetailStandardFilters()
+    {
+        Case("retail verdict: ticked standard filters hide their lines, moves and unticked ones don't");
+        var presets = RynthCore.Engine.UI.Panels.RynthChatPresets.All;
+        try
+        {
+            ResetPresets();
+            ChatRouter none = RetailRouter();
+            foreach (var p in presets)
+            {
+                int type = p.Where switch
+                {
+                    RynthCore.Engine.UI.Panels.RynthChatPresets.Scope.CombatOnly => 0x11,
+                    RynthCore.Engine.UI.Panels.RynthChatPresets.Scope.ChannelsOnly => 0x08,
+                    _ => 0x00,
+                };
+                Check(!ChatRetailVerdict.IsHidden(none, p.Example, type), $"{p.Id}: unticked, '{p.Example}' prints");
+                p.Enabled = true;   // hide
+                Check(ChatRetailVerdict.IsHidden(none, p.Example, type), $"{p.Id}: ticked, '{p.Example}' stays out of the retail chat");
+                p.Tab = "Spam";     // moved to a tab: RynthChat shows it there, AC still prints it
+                Check(!ChatRetailVerdict.IsHidden(none, p.Example, type), $"{p.Id}: moved to a tab, '{p.Example}' still prints in AC");
+                p.Enabled = false;
+                p.Tab = "";
+            }
+
+            // The reported case: Kill task progress.
+            var kill = RynthCore.Engine.UI.Panels.RynthChatPresets.Get("social.kill_task_progress");
+            Check(kill != null, "social.kill_task_progress exists");
+            if (kill != null)
+            {
+                const string killLine = "You have killed 22556 Fanatical Fiuns! You must kill 100000 to complete your task.";
+                kill.Enabled = true;
+                Check(ChatRetailVerdict.IsHidden(none, killLine, 0x00), "the kill-task line from the report is hidden");
+                Check(ChatRetailVerdict.IsHidden(none, killLine, 0x1B), "...whatever system-ish type it arrives with");
+                Check(!ChatRetailVerdict.IsHidden(none, "You have killed 3 Drudges! Your task is complete!", 0x00), "other kill lines print");
+                // Player speech is never taken by a filter held to non-chat channels.
+                Check(!ChatRetailVerdict.IsHidden(none, "Bob says, \"" + killLine + "\"", 0x02), "a player saying it in Local prints");
+                Check(!ChatRetailVerdict.IsHidden(none, "Bob tells you, \"" + killLine + "\"", 0x03), "a player telling it prints");
+            }
+        }
+        finally { ResetPresets(); }
+    }
+
+    private static void RetailRules()
+    {
+        Case("retail verdict: Hide rules hide, Move / Copy / colour rules and off rules don't");
+        try
+        {
+            ResetPresets();
+            Check(!ChatRetailVerdict.IsHidden(RetailRouter(), "anything", 3), "no rules: nothing hidden");
+            Check(!ChatRetailVerdict.IsHidden(RetailRouter(Rule("spam", ChatRuleAction.Hide)), "fine line", 3), "a line the rule doesn't match prints");
+            Check(ChatRetailVerdict.IsHidden(RetailRouter(Rule("spam", ChatRuleAction.Hide)), "buy spam now", 3), "a Hide rule hides it");
+            Check(ChatRetailVerdict.IsHidden(RetailRouter(Rule("spam", ChatRuleAction.Hide)), "SPAM", 3), "...case-insensitively");
+
+            var off = Rule("spam", ChatRuleAction.Hide);
+            off.Enabled = false;
+            Check(!ChatRetailVerdict.IsHidden(RetailRouter(off), "buy spam now", 3), "a rule that is switched off hides nothing");
+            Check(!ChatRetailVerdict.IsHidden(RetailRouter(Rule("spam", ChatRuleAction.Move, tab: "Mail")), "buy spam now", 3), "a Move rule prints in AC");
+            Check(!ChatRetailVerdict.IsHidden(RetailRouter(Rule("spam", ChatRuleAction.Copy, tab: "Mail")), "buy spam now", 3), "a Copy rule prints in AC");
+            var colour = Rule("spam", ChatRuleAction.Color);
+            colour.ColorMode = ChatColorMode.Line;
+            Check(!ChatRetailVerdict.IsHidden(RetailRouter(colour), "buy spam now", 3), "a colour rule prints in AC");
+
+            // First routing rule decides, as in RynthChat.
+            Check(!ChatRetailVerdict.IsHidden(RetailRouter(Rule("spam", ChatRuleAction.Move, tab: "Mail"), Rule("spam", ChatRuleAction.Hide)), "spam", 3),
+                "a Move rule ahead of a Hide rule decides: not hidden");
+            Check(ChatRetailVerdict.IsHidden(RetailRouter(Rule("spam", ChatRuleAction.Hide), Rule("spam", ChatRuleAction.Move, tab: "Mail")), "spam", 3),
+                "a Hide rule ahead of a Move rule decides: hidden");
+
+            // "When" conditions see the channel RynthChat gives the line.
+            Check(ChatRetailVerdict.IsHidden(RetailRouter(Rule("Sword", ChatRuleAction.Hide, "chan:Items")), "[RynthAi Item] Sword of Bob", 3), "chan:Items rule hides item info");
+            Check(!ChatRetailVerdict.IsHidden(RetailRouter(Rule("Sword", ChatRuleAction.Hide, "chan:Items")), "Bob says, \"Sword\"", 2), "...but not other lines");
+            Check(ChatRetailVerdict.IsHidden(RetailRouter(Rule("loaded", ChatRuleAction.Hide, "chan:Rynth")), "[RynthAi] Nav loaded", 0), "chan:Rynth rule hides plugin output");
+            Check(ChatRetailVerdict.IsHidden(RetailRouter(Rule("WTS", ChatRuleAction.Hide, "chan:Channels")), "[Trade] Bob says, \"WTS\"", 0x1C), "chan:Channels rule hides a tagged 0x1C channel line");
+            Check(ChatRetailVerdict.IsHidden(RetailRouter(Rule("WTS", ChatRuleAction.Hide, "chan:Channels")), "[Trade] Bob says, \"WTS\"", 8), "...and a type 8 one");
+            Check(!ChatRetailVerdict.IsHidden(RetailRouter(Rule("WTS", ChatRuleAction.Hide, "chan:Channels")), "Bob tells you, \"WTS\"", 3), "...not a tell");
+            Check(ChatRetailVerdict.IsHidden(RetailRouter(Rule("busy", ChatRuleAction.Hide, "type:26")), "You're too busy!", 26), "type:26 rule hides a type 26 line");
+            Check(!ChatRetailVerdict.IsHidden(RetailRouter(Rule("busy", ChatRuleAction.Hide, "type:26")), "You're too busy!", 0), "...not another type");
+
+            // A custom rule decides before the standard filters, as in RynthChat: a Move rule keeps a ticked filter from hiding the line.
+            var kill = RynthCore.Engine.UI.Panels.RynthChatPresets.Get("social.kill_task_progress")!;
+            kill.Enabled = true;
+            const string killLine = "You have killed 12 Drudges! You must kill 50 to complete your task.";
+            Check(ChatRetailVerdict.IsHidden(RetailRouter(Rule("nothing", ChatRuleAction.Hide)), killLine, 0), "a ticked filter hides when no rule decided first");
+            Check(!ChatRetailVerdict.IsHidden(RetailRouter(Rule("killed", ChatRuleAction.Move, tab: "Kills")), killLine, 0), "a Move rule ahead of the ticked filter keeps the line");
+
+            // The retail router must not double count what RynthChat's own pass counts.
+            var counted = Rule("spam", ChatRuleAction.Hide);
+            RetailRouter(counted).Evaluate("spam", "Chat", 3, null);
+            Check(counted.Hits == 0, "a router built with countHits: false leaves Hits alone");
+        }
+        finally { ResetPresets(); }
+    }
+
+    private static void RetailSetting()
+    {
+        Case("retail verdict: the hideInRetail setting (on unless a file says false)");
+        var opts = RynthChatJsonContext.Default.RynthChatSettingsDto;
+        RynthChatSettingsDto old = JsonSerializer.Deserialize(OldFile, opts)!;
+        Check(old.HideInRetail == null, "a file from before the setting has no value (ChatModel reads that as on)");
+        string saved = JsonSerializer.Serialize(old, opts);
+        Check(!saved.Contains("hideInRetail", StringComparison.Ordinal), "saving an old file writes no hideInRetail key");
+
+        old.HideInRetail = false;
+        string off = JsonSerializer.Serialize(old, opts);
+        Check(off.Contains("\"hideInRetail\":false", StringComparison.Ordinal), "off is saved as hideInRetail:false");
+        Check(JsonSerializer.Deserialize(off, opts)!.HideInRetail == false, "off loads back");
+        old.HideInRetail = true;
+        Check(JsonSerializer.Deserialize(JsonSerializer.Serialize(old, opts), opts)!.HideInRetail == true, "on round-trips");
+        Check(JsonSerializer.Deserialize("{\"hideInRetail\":null}", opts)!.HideInRetail == null, "null reads as absent");
+        Check(JsonSerializer.Deserialize(off, opts)!.Filters!.Length == 3, "the other fields are untouched");
+    }
+
+    // ── Shared settings reload (2026-10-19; idea from Silentkelpie, rynth PR 6) ──
+    // SharedFileWatch: another client rewrote rynthchat_settings.json -> read it; our own saves don't count.
+
+    private static void SharedFileReload()
+    {
+        Case("shared settings: a client re-reads the file when ANOTHER client saved it");
+        string dir = Path.Combine(Path.GetTempPath(), "rynth-sharedwatch-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string path = Path.Combine(dir, "rynthchat_settings.json");
+            DateTime t0 = new(2026, 10, 19, 12, 0, 0, DateTimeKind.Utc);
+            void Write(string text, int secondsAfterT0)
+            {
+                File.WriteAllText(path, text);
+                File.SetLastWriteTimeUtc(path, t0.AddSeconds(secondsAfterT0));
+            }
+
+            // No file yet: nothing to read, no error.
+            var w = new SharedFileWatch(pollMs: 2000);
+            Check(w.Changed(10_000, path) == null, "no file: null");
+
+            // Loaded at start: that timestamp is not a change.
+            Write("{\"v\":1}", 0);
+            w.Seen(File.GetLastWriteTimeUtc(path));
+            Check(w.Changed(20_000, path) == null, "the file we loaded is not a change");
+
+            // Another client saves: read once.
+            Write("{\"v\":2}", 5);
+            Check(w.Changed(20_500, path) == null, "...but not before the poll interval (2 s) is up");
+            Check(w.Changed(22_000, path) == "{\"v\":2}", "another client's save is returned");
+            Check(w.Changed(24_000, path) == null, "...once");
+
+            // Our own save (Saved is called just before the swap) is not a change.
+            string mine = "{\"v\":3,\"mine\":true}";
+            w.Saved(mine);
+            Write(mine, 10);
+            Check(w.Changed(26_000, path) == null, "this client's own save is not a change");
+            Check(w.Changed(28_000, path) == null, "...and stays quiet");
+
+            // Another client saves after ours: read.
+            Write("{\"v\":4}", 15);
+            Check(w.Changed(30_000, path) == "{\"v\":4}", "another client's later save is returned");
+            // It saves the same text as our last save again (a copy of our settings): still ours by text.
+            Write(mine, 20);
+            Check(w.Changed(32_000, path) == null, "text identical to our last save is treated as ours");
+
+            // The same timestamp again (nothing written): not read.
+            Check(w.Changed(34_000, path) == null, "an unchanged timestamp is not read");
+
+            // A file that is being swapped (cannot be read): the change is offered again, not lost.
+            Write("{\"v\":5}", 25);
+            using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                bool threw = false;
+                try { w.Changed(36_000, path); }
+                catch (IOException) { threw = true; }
+                Check(threw, "an unreadable file throws (the caller logs it)");
+            }
+            Check(w.Changed(38_000, path) == "{\"v\":5}", "the change that could not be read is returned at the next poll");
+
+            // The file is removed: nothing, no throw.
+            File.Delete(path);
+            Check(w.Changed(40_000, path) == null, "a removed file is null");
+
+            // A watcher that never saw the file (no file at start) reads the first one it finds.
+            var late = new SharedFileWatch(pollMs: 2000);
+            Write("{\"v\":6}", 30);
+            Check(late.Changed(50_000, path) == "{\"v\":6}", "a file that appears after start is read");
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
     }
 
     // ── Standard filters ─────────────────────────────────────────────────

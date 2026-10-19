@@ -50,7 +50,13 @@ param(
     # Old opt-in switch, kept so existing command lines still work; the bridge is the default now.
     [switch]$IncludeDecalBridge,
     # Decal's install folder, when not the default C:\Program Files (x86)\Decal 3.0.
-    [string]$DecalDir = ""
+    [string]$DecalDir = "",
+    # Managed (collectible) plugins, built by Publish-Update.ps1 (engine API 88): the folder of the
+    # plugins' common dependencies, staged into Runtime\PluginShared, and the managed RynthAi DLL,
+    # used instead of the NativeAOT RynthAi build. NativeAOT plugins can never be unloaded, so each
+    # reload kept a copy of every one (220-450 MB of address space per reload, 2026-10-19).
+    [string]$PluginSharedDir = "",
+    [string]$RynthAiDll = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -126,11 +132,13 @@ if (-not $SkipBuild) {
     }
     # (Default: the CoreCLR engine and native loader are built straight into staging below.)
 
-    # ── 4. Plugin (NativeAOT) ─────────────────────────────────────────────────
-    Write-Host ""
-    Write-Host "[4/5] Publishing Plugin (NativeAOT)..." -ForegroundColor Cyan
-    dotnet publish $PluginProject -c $Configuration @VersionArgs
-    if ($LASTEXITCODE -ne 0) { throw "Plugin publish failed (exit $LASTEXITCODE)" }
+    # ── 4. Plugin (NativeAOT; a managed RynthAi from Publish-Update replaces it) ──
+    if (-not $RynthAiDll) {
+        Write-Host ""
+        Write-Host "[4/5] Publishing Plugin (NativeAOT)..." -ForegroundColor Cyan
+        dotnet publish $PluginProject -c $Configuration @VersionArgs
+        if ($LASTEXITCODE -ne 0) { throw "Plugin publish failed (exit $LASTEXITCODE)" }
+    }
 
     # ── 5. Loot Editor (self-contained Avalonia tool) ─────────────────────────
     Write-Host ""
@@ -213,9 +221,17 @@ if ($NativeAot -and (Test-Path "$EnginePublish\Native")) {
 # Plugin DLL only — staged separately so the .iss file can install it to an
 # absolute path outside {app}. The engine no longer auto-scans Runtime\Plugins\;
 # the user explicitly adds the plugin path via the launcher's Plugins tab.
-$pluginDll = "$PluginPublish\RynthCore.Plugin.RynthAi.dll"
+$pluginDll = if ($RynthAiDll) { $RynthAiDll } else { "$PluginPublish\RynthCore.Plugin.RynthAi.dll" }
 if (-not (Test-Path $pluginDll)) { throw "Plugin DLL not found at: $pluginDll" }
 Copy-Item $pluginDll "$pluginStagingDir\RynthAi\" -Force
+
+# The managed plugins' common dependencies (engine API 88: ManagedPlugins looks in Runtime\PluginShared).
+if ($PluginSharedDir) {
+    if (-not (Test-Path $PluginSharedDir)) { throw "PluginShared folder not found at: $PluginSharedDir" }
+    New-Item -ItemType Directory -Path "$StagingDir\Runtime\PluginShared" -Force | Out-Null
+    Copy-Item "$PluginSharedDir\*" "$StagingDir\Runtime\PluginShared\" -Force
+    Write-Host "  Runtime\PluginShared: $((Get-ChildItem "$StagingDir\Runtime\PluginShared" -File).Count) file(s)"
+}
 
 # Loot Editor (self-contained — copy everything from publish, drop pdbs)
 if (-not (Test-Path $LootEditorPublish)) { throw "Loot Editor publish not found at: $LootEditorPublish" }

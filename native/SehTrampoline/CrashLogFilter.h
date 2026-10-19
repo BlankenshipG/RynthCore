@@ -17,10 +17,20 @@
  *     heap corruption.
  *   - Each faulting address has a slot with its hit count and the time it was last
  *     written. The first sighting is written. A repeat is written again (with its count)
- *     when the count is a power of two, when 30 s have passed since that address was
- *     last written, or when the code is not an AV. So a contained AV that later recurs
- *     as the fatal one is not swallowed as "seen before": a fatal fault is usually a
- *     terminate from some handler, and then no last-chance filter ever runs.
+ *     when the count is a power of two (any class), or, for an AC-class address only,
+ *     when 30 s have passed since it was last written, or when the code is not an AV.
+ *     So a contained AV that later recurs as the fatal one is not swallowed as "seen
+ *     before": a fatal fault is usually a terminate from some handler, and then no
+ *     last-chance filter ever runs.
+ *     Review fix (2026-10-18): the 30 s relog used to apply to noise too, so Decal's
+ *     handled null-ref AV (about once a minute, one address) was written on EVERY hit:
+ *     ~1,440 entries (~5-6 KB each with the stack sweep) per day per client. Noise now
+ *     repeats only at powers of two (about 11 entries a day for that address), and the
+ *     30 s / non-AV relogs are capped per address (CLF_MAX_RELOGS); what a cap or the
+ *     dedupe skips is still in the flush ring, so a fatal hit is recovered at exit.
+ *   - A total byte budget (CLF_MAX_LOG_BYTES, counted from the file's size at install plus
+ *     what this process writes): past it ordinary entries are dropped after ONE marker
+ *     line; fatal entries (last-chance, crash-exit flush) get CLF_LOG_RESERVE_BYTES more.
  *   - Noise is classified, written once per address like the rest, and never charged to
  *     the AC limit:
  *       .NET Framework (Decal plugins): faulting module clr.dll, mscorwks.dll, mscorlib;
@@ -50,6 +60,9 @@
 #define CLF_MAX_LAST_CHANCE   8
 #define CLF_ADDR_SLOTS      128
 #define CLF_RELOG_MS      30000u
+#define CLF_MAX_RELOGS       16        /* non-power-of-two rewrites per address */
+#define CLF_MAX_LOG_BYTES    (3u * 1024u * 1024u)   /* ordinary entries stop here */
+#define CLF_LOG_RESERVE_BYTES (256u * 1024u)        /* extra room for fatal entries */
 
 #define CLF_CODE_ACCESS_VIOLATION 0xC0000005u
 #define CLF_CODE_FAIL_FAST        0xC0000602u
@@ -80,6 +93,7 @@ typedef struct {
     unsigned int lastWriteMs;
     unsigned char cls;           /* clf_class */
     unsigned char used;
+    unsigned char relogs;        /* writes that were not first / power-of-two (time, non-AV) */
 } clf_slot;
 
 typedef struct {
@@ -90,6 +104,10 @@ typedef struct {
     unsigned int otherRepeats;   /* other repeats not written */
     unsigned int overCap;        /* not written: limit reached */
     unsigned int untracked;      /* AC addresses written but not tracked (table full of AC) */
+    unsigned int relogCapped;    /* relogs skipped: the address used its CLF_MAX_RELOGS */
+    unsigned int logBytes;       /* bytes in the log file: size at install + written since */
+    unsigned int byteDenied;     /* entries dropped by the byte budget */
+    unsigned char capMarked;     /* the budget marker line has been written */
 } clf_state;
 
 static int clf_is_logged_code(unsigned int code)
@@ -152,9 +170,21 @@ static clf_decision clf_repeat(clf_state* s, clf_slot* slot, unsigned int code, 
 {
     slot->hits++;
     if (hits) *hits = slot->hits;
-    if (clf_is_pow2(slot->hits) || nowMs - slot->lastWriteMs >= CLF_RELOG_MS || code != CLF_CODE_ACCESS_VIOLATION) {
+    if (clf_is_pow2(slot->hits)) {
         slot->lastWriteMs = nowMs;
         return CLF_LOG_REPEAT;
+    }
+    /* The 30 s relog is for genuine (AC-class) faults only: noise at one address (Decal's
+     * handled null-ref, about once a minute) would otherwise be written on every hit. A
+     * non-AV code is always written, within the per-address cap. */
+    if ((slot->cls == CLF_CLASS_AC && nowMs - slot->lastWriteMs >= CLF_RELOG_MS)
+        || code != CLF_CODE_ACCESS_VIOLATION) {
+        if (slot->relogs < CLF_MAX_RELOGS) {
+            slot->relogs++;
+            slot->lastWriteMs = nowMs;
+            return CLF_LOG_REPEAT;
+        }
+        s->relogCapped++;
     }
     if (slot->cls != CLF_CLASS_AC) s->noiseRepeats++; else s->otherRepeats++;
     return CLF_SKIP_REPEAT;
@@ -189,6 +219,7 @@ static clf_decision clf_new(clf_state* s, unsigned int code, unsigned int addr, 
         slot->hits = 1;
         slot->lastWriteMs = nowMs;
         slot->cls = (unsigned char)cls;
+        slot->relogs = 0;
         slot->used = 1;
     } else {
         s->untracked++;
@@ -264,6 +295,26 @@ static int clf_ring_take(clf_ring* g, clf_rec* out, unsigned int* older)
     }
     g->flushedTo = g->pushed;
     return n;
+}
+
+typedef enum {
+    CLF_BYTES_OK = 0,        /* write the entry */
+    CLF_BYTES_MARK,          /* over the budget: write the one marker line, then no entry */
+    CLF_BYTES_DENY,          /* over the budget: write nothing */
+} clf_bytes;
+
+/*
+ * The byte budget, asked before each entry. fatal: a last-chance / crash-exit entry,
+ * which may use CLF_LOG_RESERVE_BYTES beyond CLF_MAX_LOG_BYTES. The caller adds what it
+ * writes to s->logBytes (the marker included).
+ */
+static clf_bytes clf_bytes_gate(clf_state* s, int fatal)
+{
+    unsigned int limit = CLF_MAX_LOG_BYTES + (fatal ? CLF_LOG_RESERVE_BYTES : 0u);
+    if (s->logBytes < limit) return CLF_BYTES_OK;
+    s->byteDenied++;
+    if (!fatal && !s->capMarked) { s->capMarked = 1; return CLF_BYTES_MARK; }
+    return CLF_BYTES_DENY;
 }
 
 /* The last-chance (unhandled) filter. Any code: whatever reaches it is fatal. */

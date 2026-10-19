@@ -592,10 +592,10 @@ internal static class Program
         Eq(RynthCore.PluginSdk.TrainingInfoFlags.Busy, RynthCore.Engine.Plugins.TrainingInfoFlags.Busy, "info flag bits");
         Eq(RynthCore.PluginSdk.TrainingEntryFlags.Trainable, RynthCore.Engine.Plugins.TrainingEntryFlags.Trainable, "entry flag bits");
         // The three v79 slots follow v78's, then v80's two and v81's GetMergeStackResultFn (v82-v85 follow).
-        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(7).TakeLast(6).ToArray();
+        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(8).TakeLast(6).ToArray();
         Check(names.SequenceEqual(new[] { "GetTrainingInfoFn", "RaiseFn", "TrainSkillFn", "GetContainerOrderFn", "PutItemInContainerFn", "GetMergeStackResultFn" }),
             "v79, v80 then v81 slots last: " + string.Join(",", names));
-        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(7).TakeLast(6).ToArray();
+        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(8).TakeLast(6).ToArray();
         Check(sdkNames.SequenceEqual(names), "SDK v79, v80 and v81 slots in the same order");
     }
 
@@ -607,17 +607,19 @@ internal static class Program
         var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).ToArray();
         var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).ToArray();
         // v81's GetMergeStackResultFn follows v80's two slots.
-        Check(names.SkipLast(8).TakeLast(2).SequenceEqual(new[] { "GetContainerOrderFn", "PutItemInContainerFn" }), "v80 slots before v81's to v85's: " + string.Join(",", names.SkipLast(8).TakeLast(2)));
-        Check(sdkNames.SkipLast(8).TakeLast(2).SequenceEqual(names.SkipLast(8).TakeLast(2)), "SDK v80 slots in the same order");
-        Check(names.SkipLast(6).Last() == "SalvageDirectFn", "v82 slot before v83's");
+        Check(names.SkipLast(9).TakeLast(2).SequenceEqual(new[] { "GetContainerOrderFn", "PutItemInContainerFn" }), "v80 slots before v81's to v85's: " + string.Join(",", names.SkipLast(9).TakeLast(2)));
+        Check(sdkNames.SkipLast(9).TakeLast(2).SequenceEqual(names.SkipLast(9).TakeLast(2)), "SDK v80 slots in the same order");
+        Check(names.SkipLast(7).Last() == "SalvageDirectFn", "v82 slot before v83's");
         // v83: GetObjectServerAge and RemoveClientObject (ghost creatures), then v84's slot.
-        Check(names.SkipLast(4).TakeLast(2).SequenceEqual(new[] { "GetObjectServerAgeFn", "RemoveClientObjectFn" }), "v83 slots before v84's: " + string.Join(",", names.SkipLast(4).TakeLast(2)));
+        Check(names.SkipLast(5).TakeLast(2).SequenceEqual(new[] { "GetObjectServerAgeFn", "RemoveClientObjectFn" }), "v83 slots before v84's: " + string.Join(",", names.SkipLast(5).TakeLast(2)));
         // v84: GetObjectProperties (every property of an object, /ub propertydump), then v85's two.
-        Check(names.SkipLast(3).Last() == "GetObjectPropertiesFn", "v84 slot before v85's: " + names.SkipLast(3).Last());
+        Check(names.SkipLast(4).Last() == "GetObjectPropertiesFn", "v84 slot before v85's: " + names.SkipLast(4).Last());
         // v85: ArmConfirmation and GetLastConfirmation (the server's yes/no prompts), then v86's slot.
-        Check(names.SkipLast(1).TakeLast(2).SequenceEqual(new[] { "ArmConfirmationFn", "GetLastConfirmationFn" }), "v85 slots before v86's: " + string.Join(",", names.SkipLast(1).TakeLast(2)));
-        // v86: GetServerStateJson ends the table (which server this is, for every plugin).
-        Check(names.Last() == "GetServerStateJsonFn", "v86 slot last: " + names.Last());
+        Check(names.SkipLast(2).TakeLast(2).SequenceEqual(new[] { "ArmConfirmationFn", "GetLastConfirmationFn" }), "v85 slots before v86's: " + string.Join(",", names.SkipLast(2).TakeLast(2)));
+        // v86: GetServerStateJson (which server this is, for every plugin), then v87's slot.
+        Check(names.SkipLast(1).Last() == "GetServerStateJsonFn", "v86 slot before v87's: " + names.SkipLast(1).Last());
+        // v87: GetWieldedItems ends the table (what the player wields, from the server's messages).
+        Check(names.Last() == "GetWieldedItemsFn", "v87 slot last: " + names.Last());
         Check(typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SequenceEqual(typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name)), "SDK table has the engine's slots in the same order");
         Eq(Marshal.SizeOf<RynthCore.PluginSdk.RynthCoreApiNative>(), Marshal.SizeOf<RynthCore.Engine.Plugins.RynthCoreAPI>(), "SDK table size = engine table size");
         Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("PutItemInContainerFn"),
@@ -640,6 +642,8 @@ internal static class Program
            (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetLastConfirmationFn"), "GetLastConfirmationFn offset");
         Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("GetServerStateJsonFn"),
            (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetServerStateJsonFn"), "GetServerStateJsonFn offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("GetWieldedItemsFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetWieldedItemsFn"), "GetWieldedItemsFn offset");
     }
 
     private sealed class ProbePlugin : RynthCore.PluginCore.RynthPluginBase { }

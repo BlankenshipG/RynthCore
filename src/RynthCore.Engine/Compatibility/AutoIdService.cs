@@ -164,10 +164,12 @@ internal static class AutoIdService
             return;
 
         // Created again: data kept since a client release is current again (and still cached
-        // if the release was inside ReleasedObjectRetention's time).
-        AppraisalHooks.MarkLive(objectId);
-        bool cached = AppraisalHooks.HasAppraisalData(objectId);
+        // if the release was inside ReleasedObjectRetention's time), unless it was kept so long
+        // that it may be out of date (StaleAfterMs): then it is dropped and the object, uncached,
+        // is a candidate again.
         long now = Environment.TickCount64;
+        AppraisalHooks.MarkLive(objectId, now);
+        bool cached = AppraisalHooks.HasAppraisalData(objectId);
         AutoIdEligibility.CreateDecision decision;
         lock (_gate)
             decision = _eligibility.OnCreate(objectId, now, cached);

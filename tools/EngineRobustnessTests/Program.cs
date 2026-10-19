@@ -37,6 +37,10 @@ internal static partial class Program
         TransitionDiagonalAndBorderWalksNeverHold();
         TransitionTwoLandblockJumpHolds();
         TransitionDrainHoldThenStopsSurvive();
+        TransitionValveOpensAfterMaxHold();
+        TransitionValveStuckPortalAndReset();
+        TransitionGateDisabledNeverHolds();
+        TransitionValveIgnoresShortTransitions();
 
         AddressSpaceFold();
 
@@ -264,6 +268,104 @@ internal static partial class Program
         s.Sample(9000, false, false, 0x00AE);   // revived
         Check(s.InTransition(9000 + WorldTransitionState.SettleMs - 1), "settle window after revival");
         Check(!s.InTransition(9000 + WorldTransitionState.SettleMs), "window ends");
+    }
+
+    // The safety valve (review 2026-10-18): a character that keeps reading dead (Health 0 after a
+    // revive) must not freeze every queued action for good.
+    private static void TransitionValveOpensAfterMaxHold()
+    {
+        _case = "valve dead forever";
+        var s = Started();
+        long t = 2000;
+        var e = s.Sample(t, true, false, 0x00AE);
+        Check((e & WorldTransitionState.Edge.Died) != 0 && !s.Overridden, "dead: gate held, valve shut");
+        Check(s.Decide(t, 1500, false) == WorldTransitionState.Verdict.Hold, "an action queued before is held");
+        int overrideEdges = 0;
+        long openedAt = 0;
+        for (t += 1000; t <= 2000 + WorldTransitionState.MaxHoldMs + 10_000; t += 1000)
+        {
+            e = s.Sample(t, true, false, 0x00AE);   // still reading dead
+            if ((e & WorldTransitionState.Edge.GateOverride) != 0) { overrideEdges++; openedAt = t; }
+            if (t < 2000 + WorldTransitionState.MaxHoldMs)
+                Check(s.InTransition(t) && !s.Overridden, $"held before the bound (t={t})");
+        }
+        Check(overrideEdges == 1, $"exactly one override edge, got {overrideEdges}");
+        Check(openedAt == 2000 + WorldTransitionState.MaxHoldMs, $"opens at the bound, got {openedAt - 2000} ms");
+        Check(s.Overridden && s.Overrides == 1, "valve open, counted once");
+        long now = t;
+        Check(!s.InTransition(now), "open: nothing is in transition any more");
+        Check(s.RawInTransition(now), "(the raw state still says dead)");
+        Check(s.Decide(now, now - 10, false) == WorldTransitionState.Verdict.Run, "new work runs");
+        Check(s.Decide(now, 1500, false) == WorldTransitionState.Verdict.Drop, "work queued during the hold is dropped as stale, like after any transition");
+        Check(s.Decide(now, 1500, true) == WorldTransitionState.Verdict.Run, "a stop queued during the hold still runs");
+        // The character does come back later: the raw transition ends, and the valve re-arms.
+        s.Sample(now + 1000, false, false, 0x00AE);
+        Check(s.Overridden, "revived, but the settle window is still running: still open");
+        s.Sample(now + 1000 + WorldTransitionState.SettleMs, false, false, 0x00AE);
+        Check(!s.Overridden && !s.RawInTransition(now + 1000 + WorldTransitionState.SettleMs), "settled: valve re-armed");
+        var d = s.Sample(now + 20_000, true, false, 0x00AE);
+        Check((d & WorldTransitionState.Edge.Died) != 0 && s.InTransition(now + 20_000), "the next death holds again");
+        Check(s.HeldForMs(now + 20_000) == 0, "held-for restarts from the new transition");
+    }
+
+    private static void TransitionValveStuckPortalAndReset()
+    {
+        _case = "valve stuck portal";
+        var s = Started();
+        s.Sample(2000, false, true, 0x00AE);
+        long t = 2000;
+        bool opened = false;
+        for (; t < 2000 + WorldTransitionState.MaxHoldMs + 5000; t += 500)
+            if ((s.Sample(t, false, true, 0x00AE) & WorldTransitionState.Edge.GateOverride) != 0) opened = true;
+        Check(opened && !s.InTransition(t) && s.Overrides == 1, "a portal flag that never clears opens the gate once");
+        // Exiting the portal ends it.
+        s.Sample(t, false, false, 0x00AE);
+        s.Sample(t + WorldTransitionState.SettleMs + 1, false, false, 0x00AE);
+        Check(!s.Overridden, "re-armed after the transition ends");
+    }
+
+    private static void TransitionGateDisabledNeverHolds()
+    {
+        _case = "gate disabled";
+        var s = Started();
+        s.Enabled = false;
+        s.Sample(2000, true, false, 0x00AE);
+        Check(s.RawInTransition(2000) && !s.InTransition(2000), "dead, gate off: not in transition");
+        Check(!s.CheckHolding(2000) && s.LastBlockedMs == 0, "nothing held, nothing recorded");
+        Check(s.Decide(2000, 1900, false) == WorldTransitionState.Verdict.Run, "work runs through a death");
+        Check(s.Decide(2000, 1900, true) == WorldTransitionState.Verdict.Run, "and stops too");
+        long late = 2000 + WorldTransitionState.MaxHoldMs + 1000;
+        s.Sample(late, true, false, 0x00AE);
+        Check(s.Overrides == 1, "the valve counter still counts (only information while the gate is off)");
+        s.Enabled = true;
+        s.Sample(late + 1000, true, false, 0x00AE);
+        Check(!s.InTransition(late + 1000), "turned on again while the valve is open: stays open until the transition ends");
+    }
+
+    private static void TransitionValveIgnoresShortTransitions()
+    {
+        _case = "valve short transitions";
+        var s = Started();
+        long t = 2000;
+        // 40 deaths/portals in a row, each well under the bound, each followed by a quiet spell.
+        for (int i = 0; i < 40; i++)
+        {
+            s.Sample(t, true, false, 0x00AE);
+            t += 20_000;
+            s.Sample(t, false, true, 0x00AE);
+            t += 20_000;
+            s.Sample(t, false, false, 0x00AE);
+            t += WorldTransitionState.SettleMs + 1000;
+            s.Sample(t, false, false, 0x00AE);
+            t += 10_000;
+        }
+        Check(s.Overrides == 0, $"transitions that end on their own never trip it, got {s.Overrides}");
+        // A death straight into a portal without a gap is ONE continuous transition.
+        var u = Started();
+        u.Sample(2000, true, false, 0x00AE);
+        u.Sample(2000 + 60_000, false, true, 0x00AE);
+        var edges = u.Sample(2000 + 125_000, false, true, 0x00AE);
+        Check((edges & WorldTransitionState.Edge.GateOverride) != 0, "dead then portaling without a gap: one transition, valve opens at the bound");
     }
 
     private static void TransitionLandblockJumpWithoutPortalHolds()

@@ -124,6 +124,22 @@ internal sealed class RynthAiSettings
     public bool UseNativeAttack { get; set; } = true;
     public bool SummonPets { get; set; }
     public int PetMinMonsters { get; set; } = 1;
+    // RynthAi's Variable attack power, environment-hit throttle and pull-away kite (2026-10-12 and
+    // 2026-10-16; Silentkelpie's). Mirrors of RynthAi's own settings, nullable like the Vaulted
+    // switch below: a RynthAi that predates them omits them, the rows stay hidden, and a save
+    // sends null, which RynthAi leaves alone. Their defaults here are only what a row shows for a
+    // value that arrived.
+    public int? VariablePowerMin { get; set; }
+    public int? VariablePowerMax { get; set; }
+    public int? MissileEnvironmentResponse { get; set; }
+    public int? MagicEnvironmentResponse { get; set; }
+    public int? EnvironmentImpactLimit { get; set; }
+    public int? EnvironmentImpactWindowSec { get; set; }
+    public int? EnvironmentApproachMeters { get; set; }
+    public int? EnvironmentMinDistance { get; set; }
+    public int? EnvironmentSkipSec { get; set; }
+    public int? KitePullMeters { get; set; }
+    public bool? KiteTagFirst { get; set; }
     // Spell Combat
     public int SpellCastIntervalMs { get; set; } = 400;
     public int AttackSpellIntervalMs { get; set; } = 1500;
@@ -151,6 +167,14 @@ internal sealed class RynthAiSettings
     public double CorpseApproachRangeMin { get; set; } = 2.0;
     // Navigation
     public bool BoostNavPriority { get; set; }
+    /// <summary>
+    /// RynthAi's "Vaulted Dungeons" setting: the master switch of RynthILT's Vaulted Dungeons keeper
+    /// (Infinite Leaftide / ACECustom only), off by default. It lives in the RynthAi profile (this is
+    /// only a mirror, so there is exactly one copy); RynthILT reads it from RynthAi. Nullable like
+    /// the Nav panel's switches: a RynthAi that predates it omits it, the row then stays hidden and a
+    /// save sends null, which RynthAi leaves alone.
+    /// </summary>
+    public bool? EnableVaultedDungeons { get; set; }
     public float FollowNavMin { get; set; } = 1.5f;
     public float NavRingThickness { get; set; } = 6f;
     public float NavLineThickness { get; set; } = 6f;
@@ -163,6 +187,11 @@ internal sealed class RynthAiSettings
     // RynthAi NavResumeNearest: macro start, route loads and resuming after a pause that moved
     // the character head for the closest waypoint. On by default; an older plugin ignores it.
     public bool NavResumeNearest { get; set; } = true;
+    // RynthAi NavOverlay.TrackBreadcrumbs / ShowRouteMarkers: the Nav panel's Breadcrumbs and Route
+    // overlay switches, also on Settings > Navigation. Null = a RynthAi that doesn't send them: the
+    // rows hide, and a save sends null back, which RynthAi reads as unchanged.
+    public bool? TrackBreadcrumbs { get; set; }
+    public bool? ShowRouteOverlay { get; set; }
     // RynthAi dungeon patrol (/ra dunnav-patrol; RynthAi DungeonPatrolOptions). The defaults are
     // the patrol as it was before these settings; an older plugin ignores them.
     public int DunPatrolCoverage { get; set; }               // 0 whole dungeon, 1 loops only, 2 everything, 3 sweep
@@ -324,7 +353,37 @@ internal static unsafe class SettingsCommands
             try { _setSettingsJson(ansi); }
             finally { Marshal.FreeHGlobal(ansi); }
             UiSources.Settings.RequestRefresh();
+            UiSources.Nav.RequestRefresh();   // the Nav panel's Breadcrumbs / Route overlay switches
         });
+    }
+}
+
+/// <summary>
+/// The optimized loot timer defaults, in ms: the same values as RynthSuite's LootBaseline.cs
+/// (RynthAi), measured from live corpse looting on ACE (226 corpses, 39 pickups; from
+/// Silentkelpie's PR 6). Keep the two in step. The "Use optimized defaults" button on Settings
+/// writes them; the properties of <see cref="RynthAiSettings"/> keep their own initial values.
+/// </summary>
+internal static class LootTimerDefaults
+{
+    public const int ContentSettleMs = 100;
+    public const int EmptyCorpseMs = 300;
+    /// <summary>Above the 256 ms 95th percentile of the measured appraisal replies.</summary>
+    public const int AssessWindowMs = 300;
+    /// <summary>No pickup needed a retry at 1000 ms (it counts from when the character is still).</summary>
+    public const int RetryTimeoutMs = 1000;
+    public const int OpenRetryMs = 1500;
+    public const int CorpseTimeoutMs = 12000;
+
+    /// <summary>Writes the six optimized defaults into <paramref name="s"/>.</summary>
+    public static void Apply(RynthAiSettings s)
+    {
+        s.LootContentSettleMs = ContentSettleMs;
+        s.LootEmptyCorpseMs = EmptyCorpseMs;
+        s.LootAssessWindowMs = AssessWindowMs;
+        s.LootRetryTimeoutMs = RetryTimeoutMs;
+        s.LootOpenRetryMs = OpenRetryMs;
+        s.LootCorpseTimeoutMs = CorpseTimeoutMs;
     }
 }
 
@@ -419,7 +478,10 @@ internal sealed record SettingRow(
     Func<RynthAiSettings, string>? GetText = null,
     Action<RynthAiSettings, string>? SetText = null,
     // Text rows: greyed hint shown while the box is empty.
-    string? Hint = null)
+    string? Hint = null,
+    // Button rows that change settings: applied to the panel's copy, which is then saved like
+    // any other edit (Click, when also set, runs after).
+    Action<RynthAiSettings>? Edit = null)
 {
     public bool IsVisible(RynthAiSettings s) => VisibleWhen == null || VisibleWhen(s);
 }
@@ -430,11 +492,22 @@ internal static class SettingsSchema
 {
     // Also drawn on the Nav panel (ImGui/Panels/NavFace.cs).
     public const string NavPointReachLabel = "Nav point reach (yd)";
+    /// <summary>The Navigation row of RynthAi's Vaulted Dungeons master switch (<see cref="RynthAiSettings.EnableVaultedDungeons"/>).</summary>
+    public const string VaultedDungeonsLabel = "Vaulted Dungeons";
     public const string NavPointReachTip =
         "How close to get to each nav point before moving on to the next, in yards. VTank calls it " +
         "Follow/Nav Min Distance (metas: FollowNavMin, or VTank's NavCloseStopRange). Follow stops this " +
         "close to its leader, and the nav marker ring shows it. Dungeon doorways use at most 1 yd. Up to 2 yd, " +
         "nav walks right up to each point before turning (tight dungeons); bigger values round corners.";
+
+    // The Nav panel's two overlay switches (ImGui/Panels/NavFace.cs), also on Settings > Navigation.
+    public const string BreadcrumbsTip =
+        "Record the trail you walk and draw it on the ground (/ra navtrail on|off).\n" +
+        "Turning it off hides the trail; /ra navtrail clear wipes it.";
+    public const string RouteOverlayTip =
+        "Draw the route in the world: waypoint rings and lines, waypoint labels and the guide line\n" +
+        "to the active waypoint (/ra navoverlay on|off). The waypoint HUD window is separate.";
+    private const string SameAsNavPanel = "\nThe same switch as on the Nav panel.";
 
     // Also shown by the dashboard's Ranges slide-out (ImGui/Panels/RangesSlideOut.cs), which
     // edits these same rows (found by label with Find).
@@ -460,6 +533,12 @@ internal static class SettingsSchema
     }
 
     public static readonly string[] AttackHeights = { "Low", "Medium", "High" };
+    // RynthAi's EnvironmentResponse, in its order (0 Off .. 3).
+    public static readonly string[] EnvironmentResponses = { "Off", "Move closer", "New target", "Move closer, then new target" };
+    // The rows below show only once RynthAi has sent the value (an older RynthAi omits them).
+    private static bool HasVariablePower(RynthAiSettings s) => s.VariablePowerMin.HasValue;
+    private static bool HasEnvironmentThrottle(RynthAiSettings s) => s.EnvironmentImpactLimit.HasValue;
+    private static bool HasKite(RynthAiSettings s) => s.KitePullMeters.HasValue;
     public static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
     public static readonly string[] NavLabelModes = { "Off", "Numbers", "Numbers and names" };
     public static readonly string[] DunPatrolCoverages = { "Whole dungeon", "Loops only", "Everything", "Sweep (by sight)" };
@@ -498,8 +577,8 @@ internal static class SettingsSchema
         new(SettingKind.Double, label, tip, get, set, min, max, step);
 
     private static SettingRow Combo(string label, string[] items, Func<RynthAiSettings, int> get, Action<RynthAiSettings, int> set,
-        string? tip = null) =>
-        new(SettingKind.Combo, label, tip, s => get(s), (s, v) => set(s, (int)v), 0, items.Length - 1, 1, items);
+        string? tip = null, Func<RynthAiSettings, bool>? when = null) =>
+        new(SettingKind.Combo, label, tip, s => get(s), (s, v) => set(s, (int)v), 0, items.Length - 1, 1, items, VisibleWhen: when);
 
     // Text size rows are stored by the engine (PanelTextScale), not in the
     // RynthAi profile, so the settings object is ignored here.
@@ -524,6 +603,10 @@ internal static class SettingsSchema
 
     private static SettingRow Button(string label, string buttonText, Action click, string? tip = null) =>
         new(SettingKind.Button, label, tip, ButtonText: buttonText, Click: click);
+
+    // A button that edits the settings (the panel saves the result like a typed value).
+    private static SettingRow EditButton(string label, string buttonText, Action<RynthAiSettings> edit, string? tip = null) =>
+        new(SettingKind.Button, label, tip, ButtonText: buttonText, Edit: edit);
 
     private static SettingRow Text(string label, Func<RynthAiSettings, string> get, Action<RynthAiSettings, string> set,
         string? tip = null, string? hint = null) =>
@@ -604,6 +687,27 @@ internal static class SettingsSchema
             Bool("Insert Key Releases the UI", _ => Plugins.EngineSettings.InsertReleasesUi,
                 (_, v) => { Plugins.EngineSettings.InsertReleasesUi = v; if (!v) ImGuiBackend.Win32Backend.ReclaimUi(); },
                 "On: Insert switches between UI and GAME (shown on the RynthCore bar). In GAME, clicks pass through\nRynth windows to the game and Rynth text boxes can't be typed in. Press Insert again to get the UI back.\nOff (default): Insert does nothing. Applies to all your clients; others pick it up when they start."),
+            Bool("Borderless Windowed", _ => Plugins.EngineSettings.BorderlessWindowed,
+                (_, v) =>
+                {
+                    Plugins.EngineSettings.BorderlessWindowed = v;
+                    AcWindowChrome.RequestApply();   // applied from the game thread, not inside this frame
+                },
+                "On: hide the Asheron's Call window title bar and borders while staying windowed (exclusive fullscreen is left alone).\nOff (default): normal window chrome. Turning it off only gives back the chrome this setting removed.\nApplies to all your clients; others pick it up when they start."),
+            Spacer(),
+            Section("Window and HUD Layout"),
+            Bool("Remember Open Windows and Positions", _ => Plugins.EngineSettings.RememberWindowLayout,
+                (_, v) => Plugins.EngineSettings.RememberWindowLayout = v,
+                "On (default): reopen Rynth panels where you left them.\nOff: do not overwrite the saved panel layout or reopen panels from the last session. Applies to all your clients."),
+            Bool("Remember Game Window Position", _ => Plugins.EngineSettings.RememberAcWindowPosition,
+                (_, v) =>
+                {
+                    Plugins.EngineSettings.RememberAcWindowPosition = v;
+                    AcWindowChrome.RequestApply();
+                },
+                "On: save the Asheron's Call window's position and size for each character and put it back after you log in.\nOff (default): the game window is never moved. A saved spot that is off-screen (a monitor that is gone) is ignored."),
+            Button("Save Layout Now", "Save", () => AcWindowChrome.SaveLayoutNow(),
+                "Write the open panels, the game window position (when Remember Game Window Position is on),\nthe Vision HUD and the ImGui window positions to disk now."),
             Spacer(),
             // The colour theme is stored by the engine (theme.txt, ImGuiBackend.RynthTheme), not in the RynthAi profile.
             Section("Colour Theme"),
@@ -719,6 +823,19 @@ internal static class SettingsSchema
                 "items after 30 s, at most 5 a second. Unselected monsters' nameplates show no level.\n" +
                 "Off: nothing in the background.\n" +
                 "RynthAi's own identifies (loot, monster weaknesses) are never limited. Applies to all your clients. Also: /rc autoid."),
+            // Stored in engine.json for every client (EngineSettings.HoldReloadInWorld, ReloadInWorldGate); opt-in.
+            Bool("Hold reloads while in the world", _ => Plugins.EngineSettings.HoldReloadInWorld,
+                (_, v) => Plugins.EngineSettings.HoldReloadInWorld = v,
+                "On: when a new RynthCore build is deployed (the automatic engine reload), the reload waits until you\n" +
+                "log out or reach character select instead of reloading mid-session. A workaround for client crashes\n" +
+                "when reloads stack up while you are in the world (SilentKelpie's).\n" +
+                "It never waits forever: after the time below it reloads anyway. A reload you ask for yourself\n" +
+                "(the RL button, ERl, /rc rl, the hotkey) is never held.\n" +
+                "Off (default): the engine reloads as soon as the new build is there. Applies to all your clients.", gates: true),
+            Int("   Give up holding after (min)", _ => Plugins.EngineSettings.HoldReloadInWorldMaxMinutes,
+                (_, v) => Plugins.EngineSettings.HoldReloadInWorldMaxMinutes = v, 1, 240, 1,
+                "How long a held reload waits for you to leave the world before it reloads anyway (default 10).",
+                when: _ => Plugins.EngineSettings.HoldReloadInWorld),
             Spacer(),
             Bool("Auto Cram", s => s.EnableAutocram, (s, v) => s.EnableAutocram = v,
                 "Automatically moves items from your main pack into side packs.\nNote: recently used weapons stay in the main pack."),
@@ -863,6 +980,48 @@ internal static class SettingsSchema
             Int("Missile Power %", s => s.MissileAttackPower, (s, v) => s.MissileAttackPower = v, 0, 100, 5, when: s => s.MissileAttackPower >= 0),
             Combo("Missile Attack Height", AttackHeights, s => s.MissileAttackHeight, (s, v) => s.MissileAttackHeight = v),
             Spacer(),
+            Section("Variable Power (monster rules)", HasVariablePower),
+            Int("Variable Min %", s => s.VariablePowerMin ?? 50, (s, v) => s.VariablePowerMin = v, 0, 100, 5,
+                "A monster rule's Power picks per monster (Damage panel, a monster's detail):\n" +
+                "Default (the settings above), High (100%), Reckless (80%, needs Recklessness trained),\n" +
+                "Variable (a new random power each attack, between these two), or Reckless + Variable\n" +
+                "(random, kept inside the Recklessness band 20-80%).",
+                when: HasVariablePower),
+            Int("Variable Max %", s => s.VariablePowerMax ?? 100, (s, v) => s.VariablePowerMax = v, 0, 100, 5,
+                when: HasVariablePower),
+            Spacer(HasVariablePower),
+            Section("Hitting the Environment", HasEnvironmentThrottle),
+            Combo("Missile Response", EnvironmentResponses, s => s.MissileEnvironmentResponse ?? 0, (s, v) => s.MissileEnvironmentResponse = v,
+                "When arrows or bolts keep hitting walls or objects instead of the target\n" +
+                "(\"Your missile attack hit the environment.\"), stop shooting and:\n" +
+                "  Move closer - run toward the target for a clearer shot\n" +
+                "  New target - skip this one for a while and fight another\n" +
+                "  Move closer, then new target - one approach, then switch\n" +
+                "The only monster in reach is never skipped. Off by default. Magic: Spell Combat tab.",
+                when: HasEnvironmentThrottle),
+            Int("Hits to trip", s => s.EnvironmentImpactLimit ?? 2, (s, v) => s.EnvironmentImpactLimit = v, 1, 10, 1,
+                "Environment hits on one target, within the window, before combat reacts (missiles and magic).",
+                when: HasEnvironmentThrottle),
+            Int("Window (s)", s => s.EnvironmentImpactWindowSec ?? 20, (s, v) => s.EnvironmentImpactWindowSec = v, 5, 120, 5,
+                when: HasEnvironmentThrottle),
+            Int("Move closer by (m)", s => s.EnvironmentApproachMeters ?? 6, (s, v) => s.EnvironmentApproachMeters = v, 1, 30, 1,
+                when: HasEnvironmentThrottle),
+            Int("Closest (m)", s => s.EnvironmentMinDistance ?? 3, (s, v) => s.EnvironmentMinDistance = v, 1, 30, 1,
+                "Never moves nearer than this. Already this close, a new target is picked instead.",
+                when: HasEnvironmentThrottle),
+            Int("Skip target (s)", s => s.EnvironmentSkipSec ?? 30, (s, v) => s.EnvironmentSkipSec = v, 5, 300, 5,
+                when: HasEnvironmentThrottle),
+            Spacer(HasEnvironmentThrottle),
+            Section("Pull Away (Kite)", HasKite),
+            Int("Pull Distance (m)", s => s.KitePullMeters ?? 20, (s, v) => s.KitePullMeters = v, 3, 100, 1,
+                "When a monster rule's Kite is PullAway (or Default follows the DEFAULT row set to PullAway),\n" +
+                "tag the mob then run until it has been dragged this many metres from where it stood, then kill it.\n" +
+                "Set per mob on the Damage panel (Kite). Off for every monster until a rule asks for it.",
+                when: HasKite),
+            Bool("Tag Before Fleeing", s => s.KiteTagFirst ?? true, (s, v) => s.KiteTagFirst = v,
+                "Land a hit before running so aggro sticks. Off = flee as soon as locked.",
+                when: HasKite),
+            Spacer(HasKite),
             Bool("Use Native Attack", s => s.UseNativeAttack, (s, v) => s.UseNativeAttack = v,
                 "Uses the client's combat pipeline for attacks.\nThe client handles turn-to-face naturally (no backwards arrows)."),
             Spacer(),
@@ -894,6 +1053,17 @@ internal static class SettingsSchema
             Int("Min Wall Targets", s => s.MinWallTargets, (s, v) => s.MinWallTargets = v, 1, 20, 1,
                 "How many monsters (the target included) must be in the wall's path, within Wall Range."),
             Spacer(),
+            Section("Hitting the Environment", HasEnvironmentThrottle),
+            Combo("Magic Response", EnvironmentResponses, s => s.MagicEnvironmentResponse ?? 0, (s, v) => s.MagicEnvironmentResponse = v,
+                "When bolts, streaks, arcs or blasts keep stopping short of the target\n" +
+                "(a wall, a pillar, the ceiling) with no hit or resist, stop casting and:\n" +
+                "  Move closer - run toward the target for a clearer line\n" +
+                "  New target - skip this one for a while and fight another\n" +
+                "  Move closer, then new target - one approach, then switch\n" +
+                "Rings and walls aren't judged. The only monster in reach is never skipped. Off by default.\n" +
+                "Hits to trip, the window, distances and the skip time: Melee Combat tab.",
+                when: HasEnvironmentThrottle),
+            Spacer(HasEnvironmentThrottle),
             Section("Spell Difficulty (Min Buffed Skill)"),
             Tiers(
                 new Func<RynthAiSettings, int>[] { s => s.MinSkillLevelTier1, s => s.MinSkillLevelTier2, s => s.MinSkillLevelTier3, s => s.MinSkillLevelTier4,
@@ -930,7 +1100,24 @@ internal static class SettingsSchema
             Bool("Boost Nav Priority", s => s.BoostNavPriority, (s, v) => s.BoostNavPriority = v),
             Float(NavPointReachLabel, s => s.FollowNavMin, (s, v) => s.FollowNavMin = v, 0.5f, 20f, 0.1f, NavPointReachTip),
             Spacer(),
+            Section("Infinite Leaftide"),
+            Bool(VaultedDungeonsLabel, s => s.EnableVaultedDungeons ?? false, (s, v) => s.EnableVaultedDungeons = v,
+                "Master switch of the Vaulted Dungeons keeper (Infinite Leaftide / ACECustom only). Off by default.\n" +
+                "While off the keeper does nothing: no recalls, no /rc quit, no Mini Remote tab, and a saved On or\n" +
+                "Auto Start is ignored. Turning it off while it runs stops it at once.\n" +
+                "On: the Mini Remote shows the \"Vaulted Dungeons\" tab on those worlds, where you pick a dungeon and a\n" +
+                "tied Portal Recall Gem and start it yourself (/ilt vaulted on); it never resumes by itself after a\n" +
+                "relog unless Auto Start On Arrival is ticked. Recalls wait while RynthAi is in combat or buffing.\n" +
+                "Kill Client (/rc quit after N minutes without a kill) restarts on luminance, your killing blows and\n" +
+                "pet captures; kills by pets or fellows that pay you no luminance do NOT.\n" +
+                "Needs RynthILT and a RynthAi that has this setting; the other settings are per character in RynthILT.",
+                when: s => s.EnableVaultedDungeons.HasValue),
+            Spacer(),
             Section("Nav Marker Display"),
+            Bool("Breadcrumbs", s => s.TrackBreadcrumbs ?? true, (s, v) => s.TrackBreadcrumbs = v,
+                BreadcrumbsTip + SameAsNavPanel, when: s => s.TrackBreadcrumbs.HasValue),
+            Bool("Route Overlay", s => s.ShowRouteOverlay ?? true, (s, v) => s.ShowRouteOverlay = v,
+                RouteOverlayTip + SameAsNavPanel, when: s => s.ShowRouteOverlay.HasValue),
             Float("Ring Thickness", s => s.NavRingThickness, (s, v) => s.NavRingThickness = v, 1f, 16f, 1f),
             Float("Line Thickness", s => s.NavLineThickness, (s, v) => s.NavLineThickness = v, 1f, 16f, 1f),
             Float("Height Offset", s => s.NavHeightOffset, (s, v) => s.NavHeightOffset = v, -5f, 5f, 0.05f,
@@ -1086,19 +1273,30 @@ internal static class SettingsSchema
             Bool("Combine Bags During Salvage", s => s.CombineBagsDuringSalvage, (s, v) => s.CombineBagsDuringSalvage = v,
                 "When salvaging an item, also add any under-full salvage bag of the same material to the salvage panel."),
             Button("Floating HUDs", "Inventory HUDs...", () => RynthAiCommands.ApplyRemoteCommand("huds", "show"),
-                "Opens the item count HUD / Mini Remote setup window (/ra huds)."),
+                "Opens the floating pack item count HUD / Mini Remote setup (/ra huds).\nThe Item Count panel is separate (/rc itemcount; Inventory's Count button)."),
             Bool("Salvage Without The Panel", s => s.SalvageWithoutPanel, (s, v) => s.SalvageWithoutPanel = v,
                 "Salvage (and combine bags) by sending the salvage request to the server directly:\nAC's salvage panel never opens. When a request changes nothing, that batch is tried once\nthrough the panel. Needs an engine with plugin API v82; otherwise the panel is used."),
             Spacer(),
             Section("Loot Timers (ms)"),
+            EditButton("Optimized defaults", "Use optimized defaults", LootTimerDefaults.Apply,
+                "Set the six loot timers RynthAi's corpse looting reads (everything here except Inter-Item\n" +
+                "Delay and Closing Delay) to the optimized defaults, measured from live looting on ACE\n" +
+                "(226 corpses): Content Settle 100, Empty Corpse Wait 300, Assess Window 300,\n" +
+                "Loot Retry Timeout 1000, Corpse Open Retry 1500, Corpse Timeout 12000."),
             Int("Inter-Item Delay", s => s.LootInterItemDelayMs, (s, v) => s.LootInterItemDelayMs = v, 0, 5000, 25),
-            Int("Content Settle", s => s.LootContentSettleMs, (s, v) => s.LootContentSettleMs = v, 0, 5000, 25),
-            Int("Empty Corpse Wait", s => s.LootEmptyCorpseMs, (s, v) => s.LootEmptyCorpseMs = v, 0, 5000, 25),
+            Int("Content Settle", s => s.LootContentSettleMs, (s, v) => s.LootContentSettleMs = v, 0, 5000, 25,
+                "Wait after an open for the container's items. Only used when the items\naren't already known; on ACE they always were. Optimized default: 100."),
+            Int("Empty Corpse Wait", s => s.LootEmptyCorpseMs, (s, v) => s.LootEmptyCorpseMs = v, 0, 5000, 25,
+                "Wait for a corpse's contents before probing it or calling it empty. Optimized default: 300."),
             Int("Closing Delay", s => s.LootClosingDelayMs, (s, v) => s.LootClosingDelayMs = v, 0, 5000, 25),
-            Int("Assess Window", s => s.LootAssessWindowMs, (s, v) => s.LootAssessWindowMs = v, 0, 5000, 25),
-            Int("Loot Retry Timeout", s => s.LootRetryTimeoutMs, (s, v) => s.LootRetryTimeoutMs = v, 0, 10000, 100),
-            Int("Corpse Open Retry", s => s.LootOpenRetryMs, (s, v) => s.LootOpenRetryMs = v, 0, 10000, 100),
-            Int("Corpse Timeout", s => s.LootCorpseTimeoutMs, (s, v) => s.LootCorpseTimeoutMs = v, 0, 60000, 500),
+            Int("Assess Window", s => s.LootAssessWindowMs, (s, v) => s.LootAssessWindowMs = v, 0, 5000, 25,
+                "Hold items for their appraisal. Measured replies: 127 ms typical,\n256 ms at the 95th percentile, 350 ms at most. Optimized default: 300."),
+            Int("Loot Retry Timeout", s => s.LootRetryTimeoutMs, (s, v) => s.LootRetryTimeoutMs = v, 0, 10000, 100,
+                "Wait, once the character is still, before resending a pickup that hasn't\nlanded. Too short resends pickups the server is still doing. Optimized default: 1000."),
+            Int("Corpse Open Retry", s => s.LootOpenRetryMs, (s, v) => s.LootOpenRetryMs = v, 0, 10000, 100,
+                "Wait before sending another open to a corpse that hasn't opened. Optimized default: 1500."),
+            Int("Corpse Timeout", s => s.LootCorpseTimeoutMs, (s, v) => s.LootCorpseTimeoutMs = v, 0, 60000, 500,
+                "Give up on a claimed corpse after this long. The clock stops during combat\nand buffing. Optimized default: 12000."),
             Spacer(),
             Section("Salvage Timers (ms) - First / Fast"),
             Int("Open (First)", s => s.SalvageOpenDelayFirstMs, (s, v) => s.SalvageOpenDelayFirstMs = v, 0, 5000, 50),

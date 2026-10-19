@@ -21,6 +21,8 @@ internal static partial class Program
         RequestIdNeverMergesIntoAHeldEntry();
 
         ReleasedDataKeptSoRecreateSkips();
+        ReleasedDataStaleOnLongAbsenceIsDroppedAtRecreate();
+        DumpBudgetRules();
         ReleasedDataExpiresAndServerDeleteEvicts();
 
         TeleportMessageStartsTheWindow();
@@ -267,11 +269,82 @@ internal static partial class Program
         // Client release (BeingDeleted): AppraisalHooks.OnClientRelease
         if (!keep.OnRelease(50, t + 60_000)) cache.Remove(50);
         elig.OnClientRelease(50);
-        // Re-created 5 minutes later: AutoIdService.Enqueue (MarkLive, then the decision)
-        keep.Forget(50);
-        var d = elig.OnCreate(50, t + 5 * 60_000, cache.Contains(50));
-        Check(d == AutoIdEligibility.CreateDecision.SkipRecent, $"re-created within 10 min with the data kept: skipped ({d})");
+        // Re-created 30 s later (out of view and back): AutoIdService.Enqueue (MarkLive, then the decision)
+        if (keep.TakeLive(50, t + 90_000)) cache.Remove(50);
+        var d = elig.OnCreate(50, t + 90_000, cache.Contains(50));
+        Check(d == AutoIdEligibility.CreateDecision.SkipRecent, $"re-created soon after the release with the data kept: skipped ({d})");
         Check(elig.SkippedRecentTotal == 1, $"SkippedRecentCount moves (got {elig.SkippedRecentTotal})");
+    }
+
+    /// <summary>
+    /// Review fix 2026-10-18: data kept since a release ReleasedObjectRetention.StaleAfterMs ago or
+    /// more is dropped when the object is re-created (the client sent no updates meanwhile, so a
+    /// stack count could be minutes old), and the re-create is appraised again.
+    /// </summary>
+    private static void ReleasedDataStaleOnLongAbsenceIsDroppedAtRecreate()
+    {
+        _case = "release stale";
+        var cache = new HashSet<uint>();
+        var keep = new ReleasedObjectRetention();
+        var elig = new AutoIdEligibility();
+        long t = 1000;
+        elig.OnCreate(60, t, cache.Contains(60));
+        elig.OnSent(60, t + 100);
+        cache.Add(60);
+        if (!keep.OnRelease(60, t + 1000)) cache.Remove(60);
+        elig.OnClientRelease(60);
+        Check(keep.IsReleased(60), "released: kept");
+
+        // 5 minutes later it comes back.
+        long back = t + 1000 + 5 * 60_000;
+        bool stale = keep.TakeLive(60, back);
+        Check(stale, "re-created 5 min after the release: its kept data is stale");
+        if (stale) cache.Remove(60);   // AppraisalHooks.MarkLive evicts it
+        Check(!keep.IsReleased(60), "and it is current again");
+        var d = elig.OnCreate(60, back, cache.Contains(60));
+        Check(d == AutoIdEligibility.CreateDecision.Appraise, $"the re-create is a candidate again ({d})");
+
+        // Exactly at the bound, and just under it.
+        var k2 = new ReleasedObjectRetention();
+        k2.OnRelease(1, 10_000); k2.OnRelease(2, 10_000);
+        Check(!k2.TakeLive(1, 10_000 + ReleasedObjectRetention.StaleAfterMs - 1), "just under StaleAfterMs: kept");
+        Check(k2.TakeLive(2, 10_000 + ReleasedObjectRetention.StaleAfterMs), "at StaleAfterMs: stale");
+        Check(!k2.TakeLive(3, 99_999), "never released: not stale");
+        Check(!k2.TakeLive(2, 99_999_999), "and a second create finds nothing to expire");
+    }
+
+    /// <summary>DumpBudget: the full OUT OF MEMORY dump needs room on the volume and a cap across clients.</summary>
+    private static void DumpBudgetRules()
+    {
+        _case = "dump budget";
+        const long GB = 1024L * 1024 * 1024, MB = 1024L * 1024;
+        long est = DumpBudget.EstimateFullDumpBytes(3 * GB);
+        Check(est == 3 * GB + DumpBudget.FullDumpOverheadBytes, "the estimate is the private bytes plus the overhead");
+        Check(DumpBudget.EstimateFullDumpBytes(0) == DumpBudget.FallbackProcessBytes + DumpBudget.FullDumpOverheadBytes,
+            "unknown size: the 32-bit maximum");
+
+        Check(DumpBudget.Evaluate(100 * GB, est, 0, 0) == DumpVerdict.Full, "plenty of room, no other dumps: full");
+        Check(DumpBudget.Evaluate(-1, est, 0, 0) == DumpVerdict.LowDisk, "free space unknown: not full");
+        Check(DumpBudget.Evaluate(est + DumpBudget.MinFreeAfterFullDump - 1, est, 0, 0) == DumpVerdict.LowDisk,
+            "one byte short of leaving the margin free: low disk");
+        Check(DumpBudget.Evaluate(est + DumpBudget.MinFreeAfterFullDump, est, 0, 0) == DumpVerdict.Full, "exactly the margin: full");
+        Check(DumpBudget.Evaluate(2 * GB, est, 0, 0) == DumpVerdict.LowDisk, "a nearly full disk: small dump instead");
+
+        // N clients hitting the OOM box together: placeholders count, so only a few get a full dump.
+        int full = 0;
+        int count = 0;
+        long bytes = 0;
+        for (int client = 0; client < 10; client++)
+        {
+            if (DumpBudget.Evaluate(500 * GB, est, count, bytes) == DumpVerdict.Full) { full++; count++; bytes += 0; /* a placeholder is empty */ }
+        }
+        Check(full == DumpBudget.MaxFullDumpsAllPids, $"10 clients at once: {DumpBudget.MaxFullDumpsAllPids} full dumps at most, got {full}");
+        Check(DumpBudget.Evaluate(500 * GB, est, 2, 12 * GB) == DumpVerdict.TooManyBytes, "two dumps already at 12 GB: the bytes cap");
+        Check(DumpBudget.Evaluate(500 * GB, est, DumpBudget.MaxFullDumpsAllPids, 1 * MB) == DumpVerdict.TooManyDumps, "the count cap");
+        Check(DumpBudget.Evaluate(1 * GB, est, DumpBudget.MaxFullDumpsAllPids, 0) == DumpVerdict.LowDisk, "low disk is reported first");
+
+        Check(DumpBudget.SmallDumpAllowed(DumpBudget.SmallDumpMinFree) && !DumpBudget.SmallDumpAllowed(DumpBudget.SmallDumpMinFree - 1)
+              && !DumpBudget.SmallDumpAllowed(-1), "the small dump needs its own margin, and not an unknown disk");
     }
 
     private static void ReleasedDataExpiresAndServerDeleteEvicts()

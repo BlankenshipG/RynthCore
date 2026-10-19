@@ -20,6 +20,7 @@
       AutoIdDrain.cs           the AutoId backlog against a fake world: login sweep, cold snapshot,
                                refused sends kept, bounds
       IdRequester.cs           the engine-send marker that tags every engine 0xC8
+      DumpBudget.cs            the full OOM dump needs free space and a cap on dumps across clients
       PumpGuards.cs            TickAll's own steps are caught (logged once, then counted); the hang
                                report names the plugin call the pump is inside
     Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
@@ -48,6 +49,7 @@
     <Compile Include="..\..\src\RynthCore.Engine\Compatibility\CrashExitRule.cs" Link="Engine\CrashExitRule.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Compatibility\AutoIdPolicy.cs" Link="Engine\AutoIdPolicy.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Compatibility\AutoIdDrain.cs" Link="Engine\AutoIdDrain.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\DumpBudget.cs" Link="Engine\DumpBudget.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Net\IdRequester.cs" Link="Engine\IdRequester.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Plugins\PumpGuards.cs" Link="Engine\PumpGuards.cs" />
   </ItemGroup>

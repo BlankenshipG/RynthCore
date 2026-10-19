@@ -67,9 +67,17 @@ internal static class ImGuiBar
         ScriptWindow? Window = null);
 
     // Engine panels with an ImGui face only (no OverlayHost entry) that get a bar button.
+    // Item Count has no icon of its own since 2026-10-18: Inventory's Count button, /rc itemcount, the Character menu.
+    // Skills moves under RynthOracle (Skills / Attributes / Progress tabs): its icon shows only while Oracle's
+    // tabs can't be reached (SkillsRouting.ShowSkillsBarIcon), so nobody loses the way in. Mini Remote stays.
     private static readonly string[] ImGuiOnlyBarPanels =
-        { Panels.InventoryFace.Title, Panels.SkillsFace.Title, Panels.SenseFace.Title, Panels.ItemCountFace.Title, Panels.MiniRemoteFace.Title,
+        { Panels.InventoryFace.Title, Panels.SkillsFace.Title, Panels.SenseFace.Title, Panels.MiniRemoteFace.Title,
           Panels.CharactersFace.Title };
+
+    /// <summary>An ImGui-only panel's bar button is wanted: it has a face, and Skills only while Oracle can't host it.</summary>
+    private static bool ImGuiOnlyWanted(string title) =>
+        ImGuiPanelHost.HasFace(title)
+        && (title != Panels.SkillsFace.Title || Panels.SkillsRouting.ShowSkillsBarIcon);
 
     // The ILT section: ImGui-only Infinite Leaftide panels (Bounties and Guardian, both RynthILT's).
     // They never get buttons of their own; one ILT button stands for them, shown only on Infinite
@@ -726,12 +734,12 @@ internal static class ImGuiBar
         ImGuiNET.ImGui.PopStyleVar(3);
     }
 
-    /// <summary>Bit i set: ImGuiOnlyBarPanels[i] has a face now.</summary>
+    /// <summary>Bit i set: ImGuiOnlyBarPanels[i] gets a button now (a face, and for Skills no Oracle tabs).</summary>
     private static int ImGuiOnlyMask()
     {
         int mask = 0;
         for (int i = 0; i < ImGuiOnlyBarPanels.Length; i++)
-            if (ImGuiPanelHost.HasFace(ImGuiOnlyBarPanels[i])) mask |= 1 << i;
+            if (ImGuiOnlyWanted(ImGuiOnlyBarPanels[i])) mask |= 1 << i;
         return mask;
     }
 
@@ -755,7 +763,7 @@ internal static class ImGuiBar
                 list.Add(new ButtonInfo(title, "##bar_" + title, icon, letter, title));
             }
         foreach (string title in ImGuiOnlyBarPanels)
-            if (ImGuiPanelHost.HasFace(title) && !LauncherOnly.Contains(title))
+            if (ImGuiOnlyWanted(title) && !LauncherOnly.Contains(title))
             {
                 string icon = IconFor(title, out bool letter);
                 list.Add(new ButtonInfo(title, "##bar_" + title, icon, letter, title));

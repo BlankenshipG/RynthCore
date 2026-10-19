@@ -82,12 +82,23 @@ internal sealed class ItemsFace : IImGuiPanel
             foreach (var (groupName, idx) in groups)
             {
                 if (groups.Count > 1) KindHeading(groupName, idx.Count, bw);
-                foreach (int i in idx)
+                for (int k = 0; k < idx.Count; k++)
                 {
+                    int i = idx[k];
                     ItemsPanel.WeaponEntry wpn = _data.Weapons[i];
                     ImGuiNET.ImGui.PushID("w" + i);
-                    int r = Row(wpn.Name, wpn.Element, shown++, bw, _data.MissingIds.Contains(wpn.Id));
+                    int r = Row(wpn.Name, wpn.Element, shown++, bw, _data.MissingIds.Contains(wpn.Id), k > 0, k < idx.Count - 1);
                     ImGuiNET.ImGui.PopID();
+                    // Up / down inside its group: the order is RynthAi's preference (the buff wand, the
+                    // first weapon of a kind), and it couldn't be changed but by removing and re-adding.
+                    if (r == 3 || r == 4)
+                    {
+                        int j = idx[r == 3 ? k - 1 : k + 1];
+                        (_data.Weapons[i], _data.Weapons[j]) = (_data.Weapons[j], _data.Weapons[i]);
+                        Save();
+                        removed = true;   // the indexes moved: draw the rest next frame
+                        break;
+                    }
                     if (r == 1)
                     {
                         Vector2 at = ImGuiNET.ImGui.GetIO().MousePos;
@@ -121,8 +132,15 @@ internal sealed class ItemsFace : IImGuiPanel
             {
                 ItemsPanel.ConsumableEntry c = _data.Consumables[i];
                 ImGuiNET.ImGui.PushID("c" + i);
-                int r = Row(c.Name, c.Type, i, bw, missing: false);
+                int r = Row(c.Name, c.Type, i, bw, missing: false, canUp: i > 0, canDown: i < _data.Consumables.Count - 1);
                 ImGuiNET.ImGui.PopID();
+                if (r == 3 || r == 4)
+                {
+                    int j = r == 3 ? i - 1 : i + 1;
+                    (_data.Consumables[i], _data.Consumables[j]) = (_data.Consumables[j], _data.Consumables[i]);
+                    Save();
+                    break;
+                }
                 if (r == 1)
                 {
                     Vector2 at = ImGuiNET.ImGui.GetIO().MousePos;
@@ -248,18 +266,21 @@ internal sealed class ItemsFace : IImGuiPanel
     }
 
     private const string MissingSuffix = " (missing)";
+    // The up / down buttons' width in a row (two 20 px buttons and their gaps).
+    private const float MoveW = 46;
 
     /// <summary>
-    /// Name | [value picker] | Del. Returns 1 when the picker was clicked, 2 for Del, else 0.
+    /// Name | up | down | [value picker] | Del. Returns 1 when the picker was clicked, 2 for Del,
+    /// 3 for up, 4 for down, else 0. Up / down are drawn dim and do nothing at the ends.
     /// <paramref name="missing"/>: the item isn't carried any more (amber, a warning icon,
     /// "(missing)" and a tooltip saying what to do).
     /// </summary>
-    private static int Row(string name, string value, int index, float w, bool missing)
+    private static int Row(string name, string value, int index, float w, bool missing, bool canUp = false, bool canDown = false)
     {
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         dl.AddRectFilled(p, p + new Vector2(w, 24), index % 2 == 0 ? RowAlt : PanelBg);
-        float nameW = w - 146;
+        float nameW = w - 146 - MoveW;
         float ty = p.Y + (24 - ImGuiNET.ImGui.GetFontSize()) * 0.5f;
         dl.PushClipRect(p, p + new Vector2(nameW, 24), true);
         if (missing)
@@ -280,8 +301,14 @@ internal sealed class ItemsFace : IImGuiPanel
             ImGuiNET.ImGui.SetTooltip("Not in your pack any more - select the item in your inventory and click\n"
                 + "Add Selected Weapon again, or remove this entry.");
         int result = 0;
-        if (Button("##pick", value, new Vector2(p.X + nameW + 2, p.Y + 2), new Vector2(96, 20), Text, BtnFill)) result = 1;
-        if (IconButton("##del", PhosphorIcons.Trash, new Vector2(p.X + nameW + 102, p.Y + 2), new Vector2(42, 20), Red, BtnFill)) result = 2;
+        float bx = p.X + nameW + 2;
+        if (IconButton("##up", PhosphorIcons.CaretUp, new Vector2(bx, p.Y + 2), new Vector2(20, 20), canUp ? Teal : Mute, BtnFill) && canUp) result = 3;
+        ImGuiNET.ImGui.SetItemTooltip("Move up");
+        if (IconButton("##down", PhosphorIcons.CaretDown, new Vector2(bx + 22, p.Y + 2), new Vector2(20, 20), canDown ? Teal : Mute, BtnFill) && canDown) result = 4;
+        ImGuiNET.ImGui.SetItemTooltip("Move down");
+        bx += MoveW;
+        if (Button("##pick", value, new Vector2(bx, p.Y + 2), new Vector2(96, 20), Text, BtnFill)) result = 1;
+        if (IconButton("##del", PhosphorIcons.Trash, new Vector2(bx + 100, p.Y + 2), new Vector2(42, 20), Red, BtnFill)) result = 2;
         ImGuiNET.ImGui.SetItemTooltip("Remove");
         NextLine(p, 24);
         return result;

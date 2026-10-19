@@ -398,24 +398,47 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
-        // /rc skills [show|hide|toggle] : the ImGui Skills panel; /rc progression opens it on its
-        // Progression tab (ILT worlds; the tab shows once RynthILT reports ILT features).
-        if (IsVerb(sub, "skills", out string skillsArgs))
+        // /rc oracle-skills <skills|attrs|progress|off> : RynthOracle says which SkillsFace body to embed
+        // in its window (engine bridge; Silentkelpie's design). Any valid form also tells the engine that
+        // Oracle has the tabs, which hides the standalone Skills bar icon and routes /rc skills there.
+        if (IsVerb(sub, "oracle-skills", out string oracleSkillsArgs))
         {
-            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SkillsFace.Title))
-                Reply("The Skills panel isn't available (the ImGui layer is off?).");
-            else if (!TryPanelMode(skillsArgs, out bool? show))
-                Reply("Usage: /rc skills [show|hide|toggle]");
+            string a = oracleSkillsArgs.Trim().ToLowerInvariant();
+            int tab = a switch
+            {
+                "off" or "clear" or "none" or "-1" => -1,
+                "0" or "skills" or "skill" => 0,
+                "1" or "attrs" or "attributes" or "vitals" => 1,
+                "2" or "progress" or "progression" => 2,
+                _ => -2,
+            };
+            if (tab == -2)
+                Reply("Usage: /rc oracle-skills <skills|attrs|progress|off>");
             else
-                SetPanelOpen(ImGuiBackend.Panels.SkillsFace.Title, show);
+            {
+                ImGuiBackend.Panels.OracleSkillsEmbed.Announce();
+                if (tab < 0) ImGuiBackend.Panels.OracleSkillsEmbed.Clear();
+                else ImGuiBackend.Panels.OracleSkillsEmbed.SetActiveTab(tab);
+            }
             return true;
         }
-        if (sub.Equals("progression", StringComparison.OrdinalIgnoreCase))
+
+        // /rc skills [show|hide|toggle] : RynthOracle's Skills tab when Oracle provides it (see
+        // SkillsRouting), else the standalone ImGui Skills panel. /rc progression (or progress) opens the
+        // Progress tab / the panel's Progression tab (ILT worlds; it shows once RynthILT reports ILT features).
+        if (IsVerb(sub, "skills", out string skillsArgs))
         {
-            if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SkillsFace.Title))
+            if (!TryPanelMode(skillsArgs, out bool? show))
+                Reply("Usage: /rc skills [show|hide|toggle]");
+            else if (!ImGuiBackend.Panels.SkillsRouting.SetOpen(show))
                 Reply("The Skills panel isn't available (the ImGui layer is off?).");
-            else
-                ImGuiBackend.Panels.SkillsFace.ShowProgression();
+            return true;
+        }
+        if (sub.Equals("progression", StringComparison.OrdinalIgnoreCase)
+            || sub.Equals("progress", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!ImGuiBackend.Panels.SkillsRouting.Open(2))
+                Reply("The Skills panel isn't available (the ImGui layer is off?).");
             return true;
         }
 

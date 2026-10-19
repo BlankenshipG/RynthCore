@@ -27,6 +27,13 @@
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatFilterPresets.cs" Link="Engine\ChatFilterPresets.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatSettingsDto.cs" Link="Engine\ChatSettingsDto.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatLineColors.cs" Link="Engine\ChatLineColors.cs" />
+    <!-- 2026-10-19: the retail-chat verdict (a hidden line also stays out of AC's own chat window):
+         the real router, standard filters and verdict, with EngineStubs.cs standing in for the engine. -->
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatRouting.cs" Link="Engine\ChatRouting.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatRetailVerdict.cs" Link="Engine\ChatRetailVerdict.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Panels\RynthChatPresets.cs" Link="Engine\RynthChatPresets.cs" />
+    <!-- 2026-10-19: re-reading the shared rynthchat_settings.json when another client saved it. -->
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Data\SharedFileWatch.cs" Link="Engine\SharedFileWatch.cs" />
   </ItemGroup>
 
 </Project>

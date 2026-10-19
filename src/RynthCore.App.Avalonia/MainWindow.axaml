@@ -110,7 +110,11 @@
     <Grid Grid.Row="1" ColumnDefinitions="3*,Auto,2*">
       <TabControl x:Name="MainTabs" Grid.Column="0" Margin="14,0,0,0" Padding="0">
         <TabItem Header="Launcher">
-          <ScrollViewer>
+          <!-- Named so we can reset Offset on tab select; * rows inside this scroll
+               must not be used (they claim infinite height and clip Updates/Launch Targets). -->
+          <ScrollViewer x:Name="LauncherScroll"
+                        VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled">
             <StackPanel Spacing="12" Margin="6">
               <!-- Updates: the card is built by UpdateCardModel (MainWindow.RefreshUpdateCard). -->
               <Border x:Name="UpdateCardBorder" Background="#132028" CornerRadius="16" Padding="18"
@@ -177,9 +181,11 @@
                 </StackPanel>
               </Border>
 
+              <!-- All-Auto rows: a * row under an outer ScrollViewer expands wrongly and
+                   pushes Updates + Launch Targets above the clip (unreachable by scroll). -->
               <Grid ColumnDefinitions="*,Auto,*">
                 <Border Grid.Column="0" Background="#132028" CornerRadius="16" Padding="18" MinWidth="260">
-                  <Grid RowDefinitions="Auto,Auto,*,Auto">
+                  <Grid RowDefinitions="Auto,Auto,Auto,Auto">
                     <TextBlock Text="Server Profiles" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
                     <TextBlock Grid.Row="1"
                                Text="Create and edit emulator/server definitions here."
@@ -189,6 +195,7 @@
                     <ListBox Grid.Row="2"
                              x:Name="ServerProfilesList"
                              MinHeight="200"
+                             MaxHeight="280"
                              Background="#0F161D"
                              BorderBrush="#243742"
                              Foreground="#EAF0F4"
@@ -207,7 +214,7 @@
                               Background="Transparent" />
 
                 <Border Grid.Column="2" Background="#132028" CornerRadius="16" Padding="18" MinWidth="260">
-                  <Grid RowDefinitions="Auto,Auto,*,Auto">
+                  <Grid RowDefinitions="Auto,Auto,Auto,Auto">
                     <TextBlock Text="Account Profiles" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
                     <TextBlock Grid.Row="1"
                                Text="Passwords are saved encrypted for this Windows user."

@@ -165,16 +165,98 @@ public static class EntryPoint
     private const long ManualReloadWindowMs = 10_000;
     internal static void NoteManualReload() => Interlocked.Exchange(ref _manualReloadAtMs, Environment.TickCount64);
 
+    /// <summary>True when ERl / the bar RL / /rc rl / the hotkey marked a hand reload within the window
+    /// (does not clear the mark).</summary>
+    private static bool IsRecentManualReload()
+    {
+        long manualAt = Volatile.Read(ref _manualReloadAtMs);
+        return manualAt != 0 && Environment.TickCount64 - manualAt < ManualReloadWindowMs;
+    }
+
+    /// <summary>
+    /// In the world after a successful login, and not yet logged out: with
+    /// engine.json HoldReloadInWorld on, an automatic reload waits. Character select /
+    /// disconnected / never logged in are safe to reload. (From SilentKelpie's PR 6.)
+    /// </summary>
+    private static bool IsInWorldForAutoReloadDeferral()
+    {
+        try
+        {
+            if (!Compatibility.LoginLifecycleHooks.HasObservedLoginComplete) return false;
+            if (Compatibility.LogoutLifecycleHooks.HasObservedLogout) return false;
+            int mode = Compatibility.UiFlowHooks.CurrentMode;
+            // Explicit non-world screens: safe for an automatic reload.
+            if (mode == Compatibility.UiFlowHooks.ModeCharacterManagement
+                || mode == Compatibility.UiFlowHooks.ModeDisconnected
+                || mode == Compatibility.UiFlowHooks.ModeIntro
+                || mode == Compatibility.UiFlowHooks.ModeCharGen
+                || mode == Compatibility.UiFlowHooks.ModeCredits
+                || mode == Compatibility.UiFlowHooks.ModeDataPatch
+                || mode == Compatibility.UiFlowHooks.ModeEpilogue)
+                return false;
+            // ModeGamePlay, or ModeNone before the first mode sample after login: hold.
+            return true;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// The opt-in in-world hold (engine.json HoldReloadInWorld, default off; ReloadInWorldGate). Only
+    /// called with the setting on. Waits, with the game running on this engine, while the player is in
+    /// the world and the reload is an automatic one, for at most HoldReloadInWorldMaxMinutes; a hand
+    /// reload that arrives meanwhile (ERl, RL, /rc rl, hotkey) or switching the setting off ends the
+    /// wait. Returns true when a hand reload ended it, so the caller skips the plugin deferral too.
+    /// Never throws; any failure fails open to "reload now".
+    /// </summary>
+    private static bool HoldReloadWhileInWorld()
+    {
+        try
+        {
+            var maxWait = TimeSpan.FromMinutes(ReloadInWorldGate.ClampMaxMinutes(EngineSettings.HoldReloadInWorldMaxMinutes));
+            ReloadInWorldGate.Outcome outcome = ReloadInWorldGate.Run(
+                // Re-read each poll: a hand reload or the setting turned off in the meantime ends the hold.
+                stillHold: () => ReloadInWorldGate.ShouldHold(IsRecentManualReload(), EngineSettings.HoldReloadInWorld, IsInWorldForAutoReloadDeferral()),
+                log: msg => RynthLog.Info(msg),
+                notify: why => Compatibility.AcMainThreadQueue.EnqueueWriteToChat(
+                    $"[RynthCore] A new RynthCore build is ready. It loads when you leave the world ({why}; at most {maxWait.TotalMinutes:0.#} minutes).", 1),
+                maxWait: maxWait,
+                waited: out TimeSpan waited);
+            if (outcome != ReloadInWorldGate.Outcome.Clear)
+                RynthLog.Info($"engine reload: in-world hold {outcome} after {waited.TotalSeconds:0.0} s.");
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Warn($"engine reload: in-world hold failed ({ex.GetType().Name}: {ex.Message}); reloading now.");
+        }
+        // A hand reload that came in during the wait set the mark again: it counts as by hand.
+        return IsRecentManualReload();
+    }
+
     /// <summary>
     /// Reload deferral (2026-10-05, see ReloadDeferral.cs): asks the plugins
     /// (RynthPluginReloadBlocker) and waits up to ReloadDeferral.DefaultCap while one objects,
     /// e.g. "engine reload waiting: RynthAi in combat (a monster engaged, ...)". Says so in chat
     /// once. Never throws; a query that fails counts as "nothing objects".
+    /// With engine.json HoldReloadInWorld on (default off), an automatic reload first waits until
+    /// the player leaves the world (HoldReloadWhileInWorld); a hand reload is never held.
     /// </summary>
     private static void DeferReloadWhilePluginsObject()
     {
         long manualAt = Interlocked.Exchange(ref _manualReloadAtMs, 0);
-        if (manualAt != 0 && Environment.TickCount64 - manualAt < ManualReloadWindowMs)
+        bool byHand = manualAt != 0 && Environment.TickCount64 - manualAt < ManualReloadWindowMs;
+
+        bool hold = false;
+        try { hold = EngineSettings.HoldReloadInWorld; } catch { }   // opt-in, default off: any failure = no hold
+        if (hold && ReloadInWorldGate.ShouldHold(byHand, hold, IsInWorldForAutoReloadDeferral()))
+        {
+            if (HoldReloadWhileInWorld())
+            {
+                Interlocked.Exchange(ref _manualReloadAtMs, 0);
+                byHand = true;
+            }
+        }
+
+        if (byHand)
         {
             RynthLog.Info("engine reload: asked for by hand (ERl), so it isn't deferred for the plugins.");
             return;
@@ -702,7 +784,12 @@ public static class EntryPoint
                 // a module-resolved stack sweep for the AV (0xC0000005) / fail-fast
                 // (0xC0000602) classes that bypass managed handlers, into a dedicated
                 // native-crash.log so the next crash self-reports instead of going dark.
-                SehTrampoline.InstallCrashLogger(System.IO.Path.Combine(LogPaths.LogDirectory, "native-crash.log"));
+                // The shared file has one fixed name, so no per-PID rotation covers it: move a big one
+                // aside on the first generation, before the native side opens it. (Later generations
+                // keep the handle the first one opened, so rotating then would only be ignored.)
+                if (_initCount <= 1 && LogPaths.RotateNativeCrashLogAtStartup())
+                    RynthLog.Compat("native-crash.log was over 1 MB at startup: moved to native-crash.log.old");
+                SehTrampoline.InstallCrashLogger(System.IO.Path.Combine(LogPaths.LogDirectory, LogPaths.NativeCrashLogName));
             }
 
             if (!ConfigureImGuiNativeLibrary(engineDir))
