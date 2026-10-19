@@ -40,10 +40,11 @@ internal static partial class PluginManager
     private readonly record struct PendingEnchantmentAdded(uint SpellId, double DurationSeconds);
     private readonly record struct PendingEnchantmentRemoved(uint EnchantmentId);
 
-    // A /myquests reply is one line per quest flag (hundreds on a played character) and arrives
-    // in one burst; a slow pump tick (a busy plugin window) must not drop its head. Lines are short
-    // strings, so a deep queue costs little. Drops are counted and logged (DispatchQueuedChatWindowText).
-    private const int MaxPendingIncomingChats = 4096;
+    // A /myquests or /qb list reply is one line per quest flag (15,000-25,000+ on an ACECustom
+    // character) and arrives in one burst; a slow pump tick (a busy plugin window) must not drop
+    // its head. Lines are short strings (~100 bytes), so even a full queue is a few MB. Drops are
+    // counted and logged (DispatchQueuedChatWindowText).
+    private const int MaxPendingIncomingChats = 65_536;
     private static long _droppedIncomingChats;          // lines dropped unheard since the last log
     private static long _droppedIncomingChatsLoggedMs;  // when that was last logged
     private const int MaxPendingBusyCountEvents = 128;
