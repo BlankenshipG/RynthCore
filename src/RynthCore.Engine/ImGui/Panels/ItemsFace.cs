@@ -103,9 +103,11 @@ internal sealed class ItemsFace : IImGuiPanel
                     if (r == 1)
                     {
                         Vector2 at = ImGuiNET.ImGui.GetIO().MousePos;
-                        _picker.Open(at, ItemsCommands.Elements, Array.IndexOf(ItemsCommands.Elements, wpn.Element), e =>
+                        // Missile weapons and ammo can also be Prismatic: universal damage, the target's weakest element.
+                        string[] choices = ItemsCommands.ElementsFor(wpn.Kind);
+                        _picker.Open(at, choices, Array.IndexOf(choices, wpn.Element), e =>
                         {
-                            wpn.Element = ItemsCommands.Elements[e];
+                            wpn.Element = choices[e];
                             Save();
                         }, 160);
                     }

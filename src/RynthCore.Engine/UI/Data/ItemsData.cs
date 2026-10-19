@@ -74,6 +74,20 @@ internal static unsafe class ItemsCommands
     }
 
     public static readonly string[] Elements = { "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether" };
+
+    /// <summary>
+    /// Universal damage (2026-10-19): prismatic ammo deals every damage type, so RynthAi treats a
+    /// missile weapon or ammo set to it as whatever the target is weakest to (MissileAmmo.Universal).
+    /// </summary>
+    public const string Prismatic = "Prismatic";
+
+    /// <summary>The elements plus <see cref="Prismatic"/>: what a missile weapon or ammo can be set to.</summary>
+    public static readonly string[] MissileElements = { "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether", Prismatic };
+
+    /// <summary>The element choices for a weapon of <paramref name="kind"/> (RynthAi's WeaponEntry.Kind): Prismatic only for missile weapons and ammo.</summary>
+    public static string[] ElementsFor(string? kind) =>
+        string.Equals(kind, "Missile", StringComparison.OrdinalIgnoreCase) || string.Equals(kind, "Ammo", StringComparison.OrdinalIgnoreCase)
+            ? MissileElements : Elements;
     public static readonly string[] ConsumableTypes = { "General", "Lockpick", "HealthKit", "HealthPotion", "ManaPotion", "StaminaPotion", "ManaStone", "Stamina", "Pet" };
 
     private static IntPtr Export(string name) => PluginExportBinder.Resolve("RynthAi", name);

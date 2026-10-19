@@ -14,7 +14,9 @@ internal static class DamageTypeColors
 
     public static readonly uint Slash = C(0xFFFFB478), Pierce = C(0xFFF0C88C), Bludgeon = C(0xFFDCBE8C),
         Cold = C(0xFFA0D2FF), Fire = C(0xFFFF8246), Acid = C(0xFFA0FF8C), Lightning = C(0xFFFFF078),
-        Nether = C(0xFFC8A0FF);
+        Nether = C(0xFFC8A0FF),
+        // Prismatic (universal damage, missile weapons and ammo): a light rose that reads apart from the eight elements.
+        Prismatic = C(0xFFFFA0DC);
 
     /// <summary>Colour for an element name as the panels write it; <paramref name="fallback"/> for anything else (Shield, Auto, None).</summary>
     public static uint For(string? element, uint fallback) => element switch
@@ -27,6 +29,7 @@ internal static class DamageTypeColors
         "Acid"                               => Acid,
         "Lightning" or "Electric" or "Storm" => Lightning,
         "Nether"                             => Nether,
+        "Prismatic"                          => Prismatic,
         _                                    => fallback,
     };
 }
