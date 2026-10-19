@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Engine.UI;
@@ -428,6 +429,19 @@ internal sealed partial class SkillsFace
                     ImGuiNET.ImGui.TableNextColumn(); Label(a.TotalLum, Amber);
                     ImGuiNET.ImGui.TableNextColumn(); Label(a.TotalCoins.ToString("N0", CultureInfo.InvariantCulture), Amber);
                 }
+                // What is still to find: the plan's luminance less banked + character, and the coins short.
+                if (a.StillLum.Length > 0 && a.StillLum != "-")
+                {
+                    bool done = a.StillLum == "0" && a.StillCoins == 0;
+                    uint c = done ? Green : Amber;
+                    ImGuiNET.ImGui.TableNextRow();
+                    ImGuiNET.ImGui.TableNextColumn(); Label("STILL NEEDED", c);
+                    ImGuiNET.ImGui.TableNextColumn();
+                    ImGuiNET.ImGui.TableNextColumn(); Label("after banked lum", Dim);
+                    ImGuiNET.ImGui.TableNextColumn();
+                    ImGuiNET.ImGui.TableNextColumn(); Label(a.StillLum, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(a.StillCoins > 0 ? a.StillCoins.ToString("N0", CultureInfo.InvariantCulture) : "0", c);
+                }
                 ImGuiNET.ImGui.EndTable();
             }
 
@@ -458,6 +472,7 @@ internal sealed partial class SkillsFace
                 if (a.Short.Length > 0) Label(a.Short, Text);
             }
             Label(a.Banked, Dim);
+            if (a.StillLine.Length > 0) Label(a.StillLine, Amber);
             if (a.Config != null) DrawAugCostSettings(a.Config, w);
         }
         finally
@@ -716,13 +731,15 @@ internal sealed partial class SkillsFace
         {
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
             Label("Still need / have", Text);
-            if (ImGuiNET.ImGui.BeginTable("##enl_mats", 3,
+            bool matHow = e.Materials.Any(m => m.How.Length > 0);
+            if (ImGuiNET.ImGui.BeginTable("##enl_mats", matHow ? 4 : 3,
                 ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp,
                 new Vector2(w - 16, 0)))
             {
-                ImGuiNET.ImGui.TableSetupColumn("Material");
+                ImGuiNET.ImGui.TableSetupColumn("Material", ImGuiTableColumnFlags.WidthFixed, 140);
                 ImGuiNET.ImGui.TableSetupColumn("Still need", ImGuiTableColumnFlags.WidthFixed, 90);
                 ImGuiNET.ImGui.TableSetupColumn("Have", ImGuiTableColumnFlags.WidthFixed, 90);
+                if (matHow) ImGuiNET.ImGui.TableSetupColumn("How to get");
                 ImGuiNET.ImGui.TableHeadersRow();
                 foreach (EnlMaterialRow m in e.Materials)
                 {
@@ -731,6 +748,7 @@ internal sealed partial class SkillsFace
                     ImGuiNET.ImGui.TableNextColumn(); Label(m.Label, c);
                     ImGuiNET.ImGui.TableNextColumn(); Label(m.Need, c);
                     ImGuiNET.ImGui.TableNextColumn(); Label(m.Have, c);
+                    if (matHow) { ImGuiNET.ImGui.TableNextColumn(); HowLabel(m.How); }
                 }
                 ImGuiNET.ImGui.EndTable();
             }
@@ -741,14 +759,17 @@ internal sealed partial class SkillsFace
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
             Label("Sigil craft chain (301–325)", Text);
             if (e.ChainNote.Length > 0) Label(e.ChainNote, Dim);
+            // RynthILT 0.2.23+ says how to get each item (recipe or vendor trade); older ones only mark "craft".
+            bool chainHow = e.Chain.Any(r => r.How.Length > 0);
             if (ImGuiNET.ImGui.BeginTable("##enl_chain", 4,
                 ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp,
                 new Vector2(w - 16, 0)))
             {
-                ImGuiNET.ImGui.TableSetupColumn("Item");
+                ImGuiNET.ImGui.TableSetupColumn("Item", chainHow ? ImGuiTableColumnFlags.WidthFixed : ImGuiTableColumnFlags.None, chainHow ? 160 : 0);
                 ImGuiNET.ImGui.TableSetupColumn("Need", ImGuiTableColumnFlags.WidthFixed, 70);
                 ImGuiNET.ImGui.TableSetupColumn("Have", ImGuiTableColumnFlags.WidthFixed, 70);
-                ImGuiNET.ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 56);
+                if (chainHow) ImGuiNET.ImGui.TableSetupColumn("How to get");
+                else ImGuiNET.ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 56);
                 ImGuiNET.ImGui.TableHeadersRow();
                 foreach (EnlChainRow r in e.Chain)
                 {
@@ -757,11 +778,48 @@ internal sealed partial class SkillsFace
                     ImGuiNET.ImGui.TableNextColumn(); Label(r.Label, c);
                     ImGuiNET.ImGui.TableNextColumn(); Label(r.Need.ToString("N0", CultureInfo.InvariantCulture), c);
                     ImGuiNET.ImGui.TableNextColumn(); Label(r.Have.ToString("N0", CultureInfo.InvariantCulture), c);
-                    ImGuiNET.ImGui.TableNextColumn(); Label(r.Craft ? "craft" : "", Dim);
+                    ImGuiNET.ImGui.TableNextColumn();
+                    if (chainHow) HowLabel(r.How);
+                    else Label(r.Craft ? "craft" : "", Dim);
                 }
                 ImGuiNET.ImGui.EndTable();
             }
+            if (e.ExtractsPerAscension >= 0) DrawChainTrades(e);
         }
+    }
+
+    /// <summary>A "How to get" cell: dim text that wraps inside its column.</summary>
+    private static void HowLabel(string how)
+    {
+        if (how.Length == 0) return;
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Dim);
+        ImGuiNET.ImGui.PushTextWrapPos(0f);
+        ImGuiNET.ImGui.TextUnformatted(how);
+        ImGuiNET.ImGui.PopTextWrapPos();
+        ImGuiNET.ImGui.PopStyleColor();
+    }
+
+    /// <summary>
+    /// The sigil chain's vendor rates (RynthILT 0.2.23+): Necrolytic Extracts per Ascension Coin,
+    /// and the extracts-for-Trophies trade. 0 hides a trade.
+    /// </summary>
+    private void DrawChainTrades(EnlPlanner e)
+    {
+        int perAsc = e.ExtractsPerAscension;
+        ImGuiNET.ImGui.SetNextItemWidth(100);
+        if (ImGuiNET.ImGui.InputInt("Extracts per Ascension Coin (vendor)##prog_epa", ref perAsc))
+            SendProg("extractsperasc " + Math.Max(0, perAsc).ToString(CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.SetItemTooltip("Necrolytic Extracts a vendor takes for one Ascension Coin. 0 = no such vendor.");
+        int trEx = e.TrophyExtracts, trCount = e.TrophyCount;
+        ImGuiNET.ImGui.SetNextItemWidth(100);
+        if (ImGuiNET.ImGui.InputInt("extracts##prog_tre", ref trEx))
+            SendProg("trophyextracts " + Math.Max(0, trEx).ToString(CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.SetItemTooltip("Necrolytic Extracts the vendor takes for one Trophy trade. 0 = don't show the trade.");
+        ImGuiNET.ImGui.SameLine();
+        ImGuiNET.ImGui.SetNextItemWidth(100);
+        if (ImGuiNET.ImGui.InputInt("Trophies (vendor trade)##prog_trc", ref trCount))
+            SendProg("trophycount " + Math.Max(0, trCount).ToString(CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.SetItemTooltip("Trophies that trade gives you.");
     }
 
     // ── Confirm ─────────────────────────────────────────────────────────
