@@ -1354,7 +1354,10 @@ internal static partial class PluginManager
             surfaceUtf8[..nameLen].CopyTo(popOut);
             PopOutSurfaceSuffix.CopyTo(popOut[nameLen..]);
             popOut[^1] = 0;
-            return RenderEmbedCore(pluginName, popOut, size, out want);
+            // A plugin on a second cimgui copy must see the pop-out's context there too (StrayImGuiContext).
+            StrayImGuiContext.Scope stray = StrayImGuiContext.Enter(current);
+            try { return RenderEmbedCore(pluginName, popOut, size, out want); }
+            finally { StrayImGuiContext.Restore(stray); }
         }
         return RenderEmbedCore(pluginName, surfaceUtf8, size, out want);
     }
