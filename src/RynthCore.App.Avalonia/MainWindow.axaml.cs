@@ -4320,8 +4320,10 @@ internal partial class MainWindow : Window
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetWindowTextW(IntPtr hWnd, string lpString);
+    private static extern IntPtr SendMessageTimeoutW(IntPtr hWnd, uint msg, IntPtr wParam, string lParam, uint flags, uint timeoutMs, out IntPtr result);
+
+    private const uint WM_SETTEXT = 0x000C;
+    private const uint SMTO_ABORTIFHUNG = 0x0002;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct WinRect { public int Left, Top, Right, Bottom; }
@@ -4347,6 +4349,11 @@ internal partial class MainWindow : Window
 
     private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_NOACTIVATE = 0x0010;
+    // Posts the move to the client's thread instead of waiting for it: a plain
+    // SetWindowPos on a frozen client's window never returns, and this runs on
+    // the launcher's UI thread (2026-10-22: a frozen +Buffy kept the launcher
+    // from ever showing its window).
+    private const uint SWP_ASYNCWINDOWPOS = 0x4000;
     private const int GWL_EXSTYLE = -20;
     private const int WS_EX_LAYERED = 0x00080000;
 
@@ -4466,7 +4473,7 @@ internal partial class MainWindow : Window
                     profile.WindowY!.Value,
                     profile.WindowWidth!.Value,
                     profile.WindowHeight!.Value,
-                    SWP_NOZORDER | SWP_NOACTIVATE);
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
                 LauncherDiag.Info($"WindowPos PID {process.Id} ({accountName}@{serverName}): restored to ({profile.WindowX},{profile.WindowY},{profile.WindowWidth}x{profile.WindowHeight}).");
                 return;
             }
@@ -4593,7 +4600,17 @@ internal partial class MainWindow : Window
         if (hwnd == IntPtr.Zero)
             return;
 
-        SetWindowTextW(hwnd, desired);
+        // SetWindowText waits for the client's thread to take WM_SETTEXT, with no
+        // time limit, and this runs on the launcher's UI thread every tick: one
+        // frozen client froze the launcher (2026-10-22, +Buffy). Reading the title
+        // never waits on another process, so skip the send when it already reads
+        // right; otherwise give up on a hung or busy window and try next tick.
+        string current;
+        try { current = process.MainWindowTitle; } catch { current = string.Empty; }
+        if (string.Equals(current, desired, StringComparison.Ordinal))
+            return;
+
+        SendMessageTimeoutW(hwnd, WM_SETTEXT, IntPtr.Zero, desired, SMTO_ABORTIFHUNG, 250, out _);
     }
 
     private static string ComputeDesiredWindowTitle(

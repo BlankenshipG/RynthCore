@@ -9,7 +9,9 @@
          if either repo has uncommitted changes, or if -Version isn't newer than the live feed;
          with -SkipNavData, also if the last published RynthNav map can't be found or isn't on
          the server as signed (a feed without it gives new RynthNav players no map).
-      2. Builds the installer (Build-Installer.ps1 -Version; it includes the Decal bridge, so the
+      2. Runs every offline test program in RynthCore, RynthSuite and RynthServers
+         (scripts\Run-AllTests.ps1) and stops if any fails: nothing is built or uploaded.
+         Then builds the installer (Build-Installer.ps1 -Version; it includes the Decal bridge, so the
          build machine needs Decal installed) and the RynthSuite plugins into
          installer\Releases\<release>\ — never into the live C:\Games folders.
       3. Writes the manifest (sizes + SHA-256 of every file), signs it with the DPAPI key
@@ -35,6 +37,9 @@ param(
     [string]$Notes = "",
     [switch]$DryRun,        # build + sign + verify, upload nothing
     [switch]$AllowDirty,    # publish with uncommitted changes (don't)
+    # Publish without running the test programs first (step 2). For an emergency hotfix only; the
+    # release log says the tests were skipped.
+    [switch]$SkipTests,
     [string]$SshHost = "aelrynth-vps",
     [string]$RemoteDir = "/var/www/site/downloads/rynth",
     [string]$BaseUrl = "https://aelrynth.com/downloads/rynth",
@@ -274,6 +279,20 @@ if ($SkipNavData) {
 $rel = Join-Path $ScriptDir "Releases\$release"
 if (Test-Path $rel) { Remove-Item $rel -Recurse -Force }
 New-Item -ItemType Directory -Force "$rel\plugins", "$rel\build" | Out-Null
+
+# Every offline test program in the three repos, before anything is built (2026-10-22: tests only ran
+# when someone remembered to). One failure stops the release; the logs stay in Releases\<release>\tests.
+if ($SkipTests) {
+    Step "Tests SKIPPED (-SkipTests)"
+    Write-Warning "Publishing $Version without running the tests."
+} else {
+    Step "Running the tests (scripts\Run-AllTests.ps1)"
+    & (Join-Path $RepoRoot "scripts\Run-AllTests.ps1") -RynthCoreRoot $RepoRoot -RynthSuiteRoot $RynthSuiteRoot `
+        -RynthServersRoot $RynthServersRoot -LogDir "$rel\tests"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Tests failed (summary above, logs in $rel\tests) - not publishing. Fix them, or pass -SkipTests for an emergency hotfix."
+    }
+}
 
 # Plugins: built MANAGED by default (collectible: a reload frees them; NativeAOT plugins can never be
 # unloaded, so every reload kept a copy of each one - 220-450 MB of address space per reload,

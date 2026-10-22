@@ -14,7 +14,11 @@ internal static class Program
 
     private static int Main(string[] args)
     {
-        string exe = FindExe(args.Length > 0 ? args[0] : @"C:\Turbine\Asheron's Call-ryn");
+        // Without an argument (scripts\Run-AllTests.ps1): the launcher's own client, or the old
+        // C:\Turbine\Asheron's Call-ryn, which the build PC no longer has (2026-10-22).
+        string exe = FindExe(args.Length > 0 ? args[0]
+            : new[] { @"C:\Games\RynthCore\AcClient", @"C:\Turbine\Asheron's Call-ryn" }
+                .FirstOrDefault(d => File.Exists(Path.Combine(d, "acclient.exe"))) ?? @"C:\Games\RynthCore\AcClient");
         RealClient(exe);
         SyntheticPatterns();
         PaddingArithmetic();

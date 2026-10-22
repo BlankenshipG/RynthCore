@@ -89,7 +89,8 @@ internal static class Program
         catch (ArgumentException ex) { error = ex.Message; return null; }
     }
 
-    private static Regex? Now(ChatMatchMode mode, string pattern) => ChatRuleMatching.Compile(mode, pattern, 15, out _);
+    // A long timeout: these check what a mode matches, not the engine's 15 ms limit (see SameAsBefore).
+    private static Regex? Now(ChatMatchMode mode, string pattern) => ChatRuleMatching.Compile(mode, pattern, 5000, out _);
 
     private static void SameAsBefore(string pattern, string why)
     {
@@ -99,9 +100,14 @@ internal static class Program
         Check(errBefore == errNow, $"{why}: same error ('{pattern}')");
         if (before == null || now == null) return;
         Check(before.ToString() == now.ToString() && before.Options == now.Options, $"{why}: same regex and options ('{pattern}')");
+        Check(before.MatchTimeout == now.MatchTimeout, $"{why}: same match timeout ('{pattern}')");
+        // The comparison matches get time to spare: the 15 ms limit itself is checked just above, and
+        // on a busy PC (game clients, a release build) a first match can take longer (2026-10-22).
+        Regex beforeSlow = new(before.ToString(), before.Options, TimeSpan.FromSeconds(5));
+        Regex nowSlow = new(now.ToString(), now.Options, TimeSpan.FromSeconds(5));
         foreach (string line in Lines)
         {
-            Match a = before.Match(line), b = now.Match(line);
+            Match a = beforeSlow.Match(line), b = nowSlow.Match(line);
             Check(a.Success == b.Success && a.Index == b.Index && a.Length == b.Length, $"{why}: same match on '{line}' ('{pattern}')");
         }
     }

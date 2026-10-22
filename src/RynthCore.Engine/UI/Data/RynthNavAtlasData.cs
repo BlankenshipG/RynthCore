@@ -6,8 +6,10 @@
 //  (RynthNav itself owns favorites, recent, the arrow and routing). The file's
 //  path comes from RynthNav's status, so both read the same file.
 //
-//    RynthNavAtlas         the loaded places (a background load, UiBackgroundWriter),
-//                          and the player's map position from the pose snapshot.
+//    RynthNavAtlas         the loaded places (a background load, UiBackgroundWriter):
+//                          the locations, then the recall spells' landing spots as
+//                          places of type Recall (RynthNavAtlasRecalls.cs), and the
+//                          player's map position from the pose snapshot.
 //    RynthNavAtlasSource   the rows the face shows for its query (search by name
 //                          and type, typed coordinates as the first row, Nearby,
 //                          Favorites, Recent; Saved = favorites then recent, the Go
@@ -27,21 +29,6 @@ using System.Text.Json;
 using RynthCore.Engine.Compatibility;
 
 namespace RynthCore.Engine.UI.Data;
-
-/// <summary>One place from locations.json, with its display strings.</summary>
-internal sealed class NavPlace
-{
-    public int Id;
-    public string Name = "", Type = "", Desc = "", Place = "", Lb = "", Cell = "";
-    public bool OnMap;
-    public double Ns, Ew;
-    public bool HasDest, DestOnMap;
-    public double DestNs, DestEw;
-    public string DestName = "";
-    public int MinLevel, MaxLevel;
-    public bool Quest, Closed;
-    public string CoordText = "", DestText = "", LevelText = "";
-}
 
 /// <summary>Saved: favorites, then recent places (the Go tab's list while its box is empty).</summary>
 internal enum AtlasMode { Search, Nearby, Favorites, Recent, Saved }
@@ -72,7 +59,7 @@ internal sealed class AtlasView
 internal static class RynthNavAtlas
 {
     public static readonly string[] Types =
-        { "All", "Town", "Dungeon", "Portal", "Lifestone", "Bindstone", "Vendor", "NPC", "Landmark" };
+        { "All", "Town", "Dungeon", "Portal", "Lifestone", "Bindstone", "Vendor", "NPC", "Landmark", RynthNavAtlasRecalls.Type };
 
     private static readonly object Sync = new();
     private static string _requested = "";
@@ -139,6 +126,13 @@ internal static class RynthNavAtlas
                         dungeons.TryAdd(dlb, p.Name);
                     list.Add(p);
                 }
+            }
+            // The recall spells' landing spots, as places of type Recall (RynthNavAtlasRecalls).
+            foreach (NavPlace p in RynthNavAtlasRecalls.Read(doc.RootElement, RynthNavStatus.Coord))
+            {
+                if (p.OnMap && p.Cell.Length == 8 && uint.TryParse(p.Cell.AsSpan(0, 4), NumberStyles.HexNumber, null, out uint lb))
+                    lbs.Add(lb);
+                list.Add(p);
             }
             _places = list.ToArray();
             _mapLandblocks = lbs;
@@ -238,7 +232,7 @@ internal static class RynthNavAtlas
 
     public static int TypeRank(string type) => type switch
     {
-        "Town" => 0, "Dungeon" => 1, "Landmark" => 2, "Lifestone" => 3, "Bindstone" => 4,
+        "Town" => 0, "Dungeon" => 1, "Landmark" => 2, RynthNavAtlasRecalls.Type => 2, "Lifestone" => 3, "Bindstone" => 4,
         "Portal" => 5, "Vendor" => 6, "NPC" => 7, _ => 8,
     };
 
