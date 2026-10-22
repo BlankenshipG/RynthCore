@@ -6,7 +6,9 @@
 .DESCRIPTION
     One command per release:
       1. Refuses if the signing key isn't set up or isn't trusted by the launcher being shipped,
-         if either repo has uncommitted changes, or if -Version isn't newer than the live feed.
+         if either repo has uncommitted changes, or if -Version isn't newer than the live feed;
+         with -SkipNavData, also if the last published RynthNav map can't be found or isn't on
+         the server as signed (a feed without it gives new RynthNav players no map).
       2. Builds the installer (Build-Installer.ps1 -Version; it includes the Decal bridge, so the
          build machine needs Decal installed) and the RynthSuite plugins into
          installer\Releases\<release>\ — never into the live C:\Games folders.
@@ -46,7 +48,12 @@ param(
     # portals.tsv and locations.json from this folder. Only re-uploaded when the set changes
     # (its id is a hash of every file); otherwise the live feed's entry is carried over.
     [string]$NavDataDir = "C:\Games\RynthCore\NavData",
-    [switch]$SkipNavData,      # leave navdata out of this feed (launchers then keep what they have)
+    # Build and upload no new RynthNav archive: the feed carries the last published navdata entry
+    # instead (see "RynthNav's map with -SkipNavData" below). It never ships a feed without the map.
+    [switch]$SkipNavData,
+    # With -SkipNavData: an earlier update.json (signed) or update.payload.json whose navdata entry to
+    # carry, for when neither the live feed nor any kept release manifest has one.
+    [string]$NavDataFrom = "",
     [switch]$NativeAotPlugins, # the old NativeAOT plugin builds (each reload keeps a copy of every one)
     # The World Map's optional sizes (RynthNav.Baker --map-world): worldmap-hd.rmap, worldmap-ultra.rmap and worldmap-p32.rmap from this
     # folder are offered by the launcher as separate downloads ("mappacks" in the feed). Each is uploaded once under
@@ -120,6 +127,23 @@ if (-not $AllowDirty) {
     Write-Host "  RynthCore $(git -C $RepoRoot rev-parse --short HEAD), RynthSuite $(git -C $RynthSuiteRoot rev-parse --short HEAD), RynthServers $(git -C $RynthServersRoot rev-parse --short HEAD)"
 }
 
+# The plugins build against the RynthCore beside RynthSuite (its SDK and build targets), not
+# necessarily this checkout. Those targets must derive minEngineApi for release builds
+# (RynthPluginSharedSdk, see the plugin build below): with older ones every managed plugin's
+# manifest would keep its csproj's stale minimum (66), and launchers would offer it to cores that
+# can't even load managed plugins.
+$managedPluginApi = 0
+if (-not $NativeAotPlugins) {
+    $sdkTargets = Join-Path (Split-Path $RynthSuiteRoot -Parent) "RynthCore\src\RynthCore.PluginSdk\build\RynthCore.PluginSdk.targets"
+    $targetsText = if (Test-Path $sdkTargets) { Get-Content $sdkTargets -Raw } else { "" }
+    $floor = [regex]::Match($targetsText, '<RynthCoreManagedPluginApi>(\d+)</RynthCoreManagedPluginApi>')
+    if (-not $floor.Success -or $targetsText -notmatch "'\`$\(RynthPluginSharedSdk\)' == 'true'") {
+        throw "The plugins' SDK build targets ($sdkTargets) don't derive minEngineApi for release builds (RynthPluginSharedSdk). Update the RynthCore checkout beside RynthSuite to one with this script's SDK."
+    }
+    $managedPluginApi = [int]$floor.Groups[1].Value
+    Write-Host "  plugin SDK targets: minEngineApi derived per plugin (managed plugins need API $managedPluginApi+)"
+}
+
 $liveManifest = $null
 try {
     $live = Invoke-RestMethod "$BaseUrl/update.json" -TimeoutSec 20
@@ -131,6 +155,121 @@ try {
     Write-Host "  no live feed yet — this is the first release"
 }
 
+# ── RynthNav's map with -SkipNavData ─────────────────────────────────────────
+# -SkipNavData means "build and upload no new archive", never "ship without the map": the feed
+# carries the last published "navdata" entry, the way map packs are carried. It used to drop the
+# entry, so every feed from 2026.10.18.1 on had none and a player who added RynthNav got no tiles,
+# route graph or World Map (structural audit 2026-10-21, #6). The entry comes from, in order:
+# -NavDataFrom, the live feed, then each earlier release's own signed manifest
+# (releases/<n>/update.json, kept from 2026.10.19.1 on; releases.json names them, newest first).
+# The first one found is used once its archive is checked on the server (size and SHA-256, the
+# same ssh + sha256sum check as the uploads); a missing or changed archive, or no entry anywhere,
+# stops the release here, before anything is built.
+
+# A manifest's navdata object as the feed writes it (ConvertFrom-Json: whole numbers forced back to
+# integers, see the [long] note at the navdata step), or $null when it isn't a usable entry. The
+# URL must be inside the feed folder, as the launcher requires (RynthUpdater.CheckUrl).
+function ConvertTo-NavDataEntry($nd) {
+    if (-not $nd) { return $null }
+    try {
+        $e = [ordered]@{
+            id      = ([string]$nd.id).ToLowerInvariant()
+            release = [long]$nd.release
+            url     = [string]$nd.url
+            size    = [long]$nd.size
+            sha256  = ([string]$nd.sha256).ToLowerInvariant()
+            files   = [long]$nd.files
+            bytes   = [long]$nd.bytes
+        }
+    } catch { return $null }
+    if ($e.id -notmatch '^[0-9a-f]{16,64}$' -or $e.sha256 -notmatch '^[0-9a-f]{64}$' -or $e.size -le 0 -or $e.files -le 0 -or
+        -not $e.url.StartsWith("$BaseUrl/", [StringComparison]::Ordinal) -or $e.url.Contains("..")) { return $null }
+    return $e
+}
+
+# The manifest in a signed update.json (only when a key the launcher trusts signed it) or in a plain
+# update.payload.json (a local release folder's); $null when it can't be read.
+function Read-ManifestFile([string]$path) {
+    try {
+        $doc = Get-Content $path -Raw | ConvertFrom-Json
+        if ($doc.payload -and $doc.signatures) {
+            if (-not (Test-Envelope $path $trusted)) { Write-Warning "$path is not signed by a key the launcher trusts - ignored."; return $null }
+            return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($doc.payload)) | ConvertFrom-Json
+        }
+        return $doc
+    } catch { Write-Warning "Can't read ${path}: $($_.Exception.Message)"; return $null }
+}
+
+# @{ Entry; From } for the last published navdata entry (see above), or $null.
+function Find-PublishedNavData {
+    if ($NavDataFrom) {
+        if (-not (Test-Path $NavDataFrom)) { throw "-NavDataFrom: no file at $NavDataFrom" }
+        $m = Read-ManifestFile $NavDataFrom
+        $e = if ($m) { ConvertTo-NavDataEntry $m.navdata } else { $null }
+        if ($null -eq $e) { throw "-NavDataFrom: $NavDataFrom has no usable navdata entry (or isn't signed by a trusted key)." }
+        return @{ Entry = $e; From = $NavDataFrom }
+    }
+    if ($liveManifest) {
+        $e = ConvertTo-NavDataEntry $liveManifest.navdata
+        if ($null -ne $e) { return @{ Entry = $e; From = "the live feed (release $($liveManifest.release))" } }
+    }
+    $history = @()
+    try { $history = @((Invoke-RestMethod "$BaseUrl/releases.json" -TimeoutSec 20).releases) }
+    catch { Write-Warning "releases.json: $($_.Exception.Message)" }
+    $looked = 0
+    foreach ($h in $history) {
+        $v = ([string]$h.version).Split('.')
+        if ($v.Count -ne 4 -or ($v | Where-Object { $_ -notmatch '^\d+$' })) { continue }
+        $n = [int]$v[0] * 1000000 + [int]$v[1] * 10000 + [int]$v[2] * 100 + [int]$v[3]
+        if ($n -ge $release -or $n -lt 2026101901) { continue }   # 2026101901: the first release whose manifest is kept
+        if (++$looked -gt 20) { break }
+        $tmp = New-TemporaryFile
+        try {
+            try { Invoke-WebRequest "$BaseUrl/releases/$n/update.json" -OutFile $tmp -UseBasicParsing -TimeoutSec 20 | Out-Null }
+            catch { continue }
+            $m = Read-ManifestFile $tmp
+            if ($m -and [long]$m.release -eq $n) {
+                $e = ConvertTo-NavDataEntry $m.navdata
+                if ($null -ne $e) { return @{ Entry = $e; From = "release $n's signed manifest" } }
+            }
+        } finally { Remove-Item $tmp -ErrorAction SilentlyContinue }
+    }
+    return $null
+}
+
+# The archive an entry names must be on the server exactly as signed: the launcher refuses a download
+# whose size or SHA-256 differs, so a feed pointing at a gone or changed file gives players no map.
+function Assert-RemoteNavData($e, [string]$from) {
+    $relPath = $e.url.Substring($BaseUrl.Length + 1)
+    if ($relPath -notmatch '^[A-Za-z0-9._/-]+$') { throw "RynthNav's map entry from $from has an unexpected URL: $($e.url)" }
+    $remoteFile = "$RemoteDir/$relPath"
+    $out = @(ssh $SshHost "stat -c %s '$remoteFile' && sha256sum '$remoteFile'")
+    if ($LASTEXITCODE -ne 0 -or $out.Count -lt 2) {
+        throw "RynthNav's map from $from ($remoteFile) is not on the server (or ssh failed) - not publishing a feed without the map. " +
+              "Leave out -SkipNavData and pass -NavDataDir a complete, finished NavData folder to publish a new archive."
+    }
+    $size = [long]("$($out[0])".Trim())
+    $sum = ("$($out[1])".Trim() -split '\s+')[0].ToLowerInvariant()
+    if ($size -ne $e.size -or $sum -ne $e.sha256) {
+        throw "RynthNav's map on the server ($remoteFile) is not the one $from signed (size $size vs $($e.size), sha256 $sum vs $($e.sha256)) - not publishing."
+    }
+    Write-Host ("  RynthNav map: release {0}'s archive ({1:N0} MB, id {2}) is on the server as signed; from {3}" -f $e.release, ($e.size / 1MB), $e.id, $from)
+}
+
+if ($NavDataFrom -and -not $SkipNavData) { throw "-NavDataFrom goes with -SkipNavData (without it the archive is built from -NavDataDir)." }
+$carriedNavData = $null
+if ($SkipNavData) {
+    $found = Find-PublishedNavData
+    if (-not $found) {
+        throw "-SkipNavData, but neither the live feed nor any kept release manifest has RynthNav's map (navdata), and a feed without it " +
+              "gives players who add RynthNav no tiles, route graph or World Map - not publishing. Either leave out -SkipNavData and pass " +
+              "-NavDataDir a complete, finished NavData folder (not one being re-baked) to publish a new archive, or pass -NavDataFrom an " +
+              "earlier update.json / update.payload.json that has the entry."
+    }
+    Assert-RemoteNavData $found.Entry $found.From
+    $carriedNavData = $found.Entry
+}
+
 # ── 2. Build ─────────────────────────────────────────────────────────────────
 $rel = Join-Path $ScriptDir "Releases\$release"
 if (Test-Path $rel) { Remove-Item $rel -Recurse -Force }
@@ -140,8 +279,15 @@ New-Item -ItemType Directory -Force "$rel\plugins", "$rel\build" | Out-Null
 # unloaded, so every reload kept a copy of each one - 220-450 MB of address space per reload,
 # 2026-10-19). Each managed plugin still ships as one DLL in the feed: their common dependencies
 # (RynthCore.PluginSdk, PluginCore, ImGui.NET, MoonSharp, ...) go into the installer's
-# Runtime\PluginShared, where the engine (API 88) finds them. The plugins declare minEngineApi 88,
-# so an older engine refuses them instead of failing to load them. -NativeAotPlugins: the old builds.
+# Runtime\PluginShared, where the engine (API 88) finds them. -NativeAotPlugins: the old builds.
+# minEngineApi: -p:RynthPluginSharedSdk=true tells the SDK's build targets that these plugins bind
+# the PluginShared SDK, which reaches players only with this release's core. Each plugin's manifest
+# then says its own declared minimum when that is 88 or more (a checked claim), else this SDK's API
+# (_RynthPluginEffectiveMinEngineApi in RynthCore.PluginSdk.targets explains why). The feed copies
+# each plugin's minEngineApi from the manifest embedded in its DLL (below), which is also what the
+# engine checks at load and what the launcher's EngineBlocker holds updates by. This used to force
+# -p:RynthPluginMinEngineApi=88 on every plugin, a constant that offered plugins calling v89 SDK
+# members to API-88 cores (structural audit 2026-10-21, F5 / #7).
 $suitePlugins = "RynthChat", "RynthTracker", "RynthNav", "RynthVision", "RynthLua", "RynthOracle", "RynthInventory", "RynthSort", "RynthNet"
 # Server plugins (the RynthServers repository since 2026-10-21; ServerPack is SilentKelpie's): one per
 # game server, each loaded by the engine only for its own server. They go in the feed only, so the
@@ -152,7 +298,7 @@ $serverPlugins = "RynthAChard", "RynthAelrynth", "RynthColdeve", "RynthConquest"
                  "RynthReefcull", "RynthSundering", "RynthThistlecrown", "RynthThreads"
 $managedArgs = if ($NativeAotPlugins) { @() } else {
     @("-p:PublishAot=false", "-p:NativeLib=", "-p:SelfContained=false", "-p:RuntimeIdentifier=win-x86",
-      "-p:GenerateRuntimeConfigurationFiles=false", "-p:RynthPluginMinEngineApi=88")
+      "-p:GenerateRuntimeConfigurationFiles=false", "-p:RynthPluginSharedSdk=true")
 }
 function Build-Plugin([string]$name, [string]$label, [string]$root = $RynthSuiteRoot, [string[]]$extra = @()) {
     Step "Building $name$label"
@@ -266,13 +412,14 @@ Compress-Archive -Path "$zipRoot\*" -DestinationPath "$rel\RynthSuite-Plugins.zi
 # RynthNav's data for the launchers (RynthUpdater.NavData.cs): one archive, flat, only the file
 # names RynthNav reads. Its id is a hash over every file's name and SHA-256, so an unchanged
 # set reuses the live entry (and the archive already on the server) instead of re-uploading.
-$navData = $null
+# -SkipNavData: the entry found and checked in step 1 (never none).
+$navData = $carriedNavData
 $navZip = $null
 if (-not $SkipNavData) {
     Step "RynthNav data (tiles, route graph, portals, Atlas, Town Network, World Map) from $NavDataDir"
     $navFiles = @(Get-ChildItem $NavDataDir -File | Where-Object { $_.Name -match '^(nav_[0-9A-Fa-f]{4}\.tile|portals\.tsv|locations\.json|navgraph\.bin|townnet\.json|worldmap\.rmap|worldmap\.vec)$' } | Sort-Object Name)
     $tileCount = @($navFiles | Where-Object { $_.Extension -eq ".tile" }).Count
-    if ($tileCount -eq 0) { throw "$NavDataDir has no tiles. Pass -NavDataDir, or -SkipNavData to publish without them." }
+    if ($tileCount -eq 0) { throw "$NavDataDir has no tiles. Pass -NavDataDir, or -SkipNavData to carry the last published map." }
     # The long-range route graph (RynthNav.Baker --graph) must come from these very tiles: the
     # plugin ignores a graph whose tiles don't match (long gotos then walk the straight line).
     # The World Map's picture (RynthNav.Baker --map --map-tiles from the dats; the terrain doesn't change between releases).
@@ -304,6 +451,7 @@ if (-not $SkipNavData) {
             bytes   = [long]$navData.bytes
         }
         Write-Host "  unchanged ($($navFiles.Count) files, id $navId): the live archive from release $($navData.release) stays"
+        Assert-RemoteNavData $navData "the live feed"
     } else {
         $navZip = "$rel\RynthNav-NavData.zip"
         Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
@@ -408,8 +556,12 @@ $plugins = foreach ($dll in Get-ChildItem "$rel\plugins\*.dll" | Sort-Object Nam
     if ($pm) {
         if ($pm.name -ne $pluginName) { throw "$($dll.Name): its manifest says '$($pm.name)', the feed would say '$pluginName'." }
         if ($pm.version -and $pm.version -ne $Version) { throw "$($dll.Name): its manifest is version $($pm.version), not $Version (stale build?)." }
+        # The plugin's own minimum, as its build wrote it into the DLL (see the plugin build above).
         $min = [int]$pm.minEngineApi
         if ($min -gt $engineApi) { throw "$($dll.Name) needs engine API $min but this release's engine is $engineApi - it would never load." }
+        if ($managedPluginApi -gt 0 -and $min -lt $managedPluginApi) {
+            throw "$($dll.Name): its manifest says engine API $min, but a managed plugin needs $managedPluginApi just to load - launchers would offer it to cores that can't run it (stale SDK targets beside RynthSuite?)."
+        }
         if ($min -gt 0) { $entry.minEngineApi = $min }
         Write-Host "  $pluginName $($pm.version): engine API $min+"
     } else {
@@ -437,7 +589,9 @@ $manifest = [ordered]@{
     }
     plugins   = @($plugins)
 }
-if ($navData) { $manifest.navdata = $navData }
+# Every feed carries RynthNav's map (built above, unchanged from the live feed, or carried by -SkipNavData).
+if (-not $navData) { throw "No RynthNav map (navdata) for this feed - not publishing a feed without it." }
+$manifest.navdata = $navData
 if ($mapPacks.Count -gt 0) { $manifest.mappacks = @($mapPacks) }
 Set-Content "$rel\update.payload.json" ($manifest | ConvertTo-Json -Depth 5) -Encoding utf8NoBOM
 & (Join-Path $ScriptDir "Sign-Update.ps1") -PayloadPath "$rel\update.payload.json" -OutPath "$rel\update.json" -KeyDir $KeyDir
@@ -467,6 +621,10 @@ scp -q "$rel\RynthCore-Setup.exe" "${SshHost}:$remoteRel/RynthCore-Setup.exe"
 if ($LASTEXITCODE -ne 0) { throw "scp of the installer failed" }
 scp -q (Get-ChildItem "$rel\plugins\*.dll").FullName "${SshHost}:$remoteRel/plugins/"
 if ($LASTEXITCODE -ne 0) { throw "scp of the plugins failed" }
+# The release's own signed manifest stays beside its files: the launcher's Roll back
+# (RynthUpdater.Rollback.cs) verifies it to go back to this release later.
+scp -q "$rel\update.json" "${SshHost}:$remoteRel/update.json"
+if ($LASTEXITCODE -ne 0) { throw "scp of the release's update.json failed" }
 $navSum = ""
 if ($navZip) {
     scp -q $navZip "${SshHost}:$remoteRel/RynthNav-NavData.zip"
@@ -491,8 +649,9 @@ foreach ($up in $mapPackUploads) {
     Write-Host "  $($up.Remote): uploaded and hash-checked"
 }
 
-$remoteSums = ssh $SshHost "cd '$remoteRel' && sha256sum RynthCore-Setup.exe plugins/*.dll$navSum"
-$expect = @{ "RynthCore-Setup.exe" = $manifest.core.sha256 }
+$remoteSums = ssh $SshHost "cd '$remoteRel' && sha256sum RynthCore-Setup.exe update.json plugins/*.dll$navSum"
+$expect = @{ "RynthCore-Setup.exe" = $manifest.core.sha256
+             "update.json" = (Get-FileHash "$rel\update.json" -Algorithm SHA256).Hash.ToLowerInvariant() }
 if ($navZip) { $expect["RynthNav-NavData.zip"] = $navData.sha256 }
 foreach ($pl in $plugins) { $expect["plugins/$($pl.file)"] = $pl.sha256 }
 foreach ($line in $remoteSums) {
@@ -500,6 +659,9 @@ foreach ($line in $remoteSums) {
     if ($expect[$name.TrimStart('*')] -ne $sum) { throw "Hash mismatch on the server for $name — feed NOT published" }
 }
 Write-Host "  $($expect.Count) files uploaded and hash-checked"
+# A carried RynthNav archive (not uploaded by this release) is checked once more just before the
+# feed that points at it goes live.
+if (-not $navZip) { Assert-RemoteNavData $navData "this feed" }
 
 Step "Replacing the website downloads"
 scp -q "$rel\RynthCore-Setup.exe" "${SshHost}:$RemoteDir/.RynthCore-Setup.exe.new"

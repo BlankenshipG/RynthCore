@@ -128,6 +128,59 @@ internal sealed class AcLaunchArgumentBuilder
         return null;
     }
 
+    /// <summary>
+    /// The switches the launcher writes itself from the account and its server profile (ACE and
+    /// GDLE lines above). Extra Launch Arguments may not repeat them.
+    /// </summary>
+    public static readonly IReadOnlyList<string> LoginSwitches = ["-a", "-v", "-h", "-p", "-rodat"];
+
+    /// <summary>
+    /// Checks the Runtime tab's "Extra Launch Arguments" and gives them as one line
+    /// (<paramref name="normalized"/>) to put after each account's own arguments with
+    /// <see cref="WithExtraArguments"/>. Null = fine (an empty box is fine); else why the launch
+    /// can't go ahead, and <paramref name="normalized"/> is empty.
+    ///
+    /// The box used to replace the whole command line, account, password and host included (and
+    /// only for one manual launch at a time), though it was labelled "appended". It now appends,
+    /// for every launch. So it may not carry the login switches (<see cref="LoginSwitches"/>): a
+    /// saved old override would otherwise ride along on every account and could log each of them
+    /// in as the override's account, or send their passwords to the override's host. Line breaks
+    /// and tabs become spaces (the client splits on spaces only), and a quote left open is refused
+    /// (the client would then drop the whole line, login included).
+    /// </summary>
+    public static string? ExtraArgumentsProblem(string? extra, out string normalized)
+    {
+        normalized = string.Empty;
+        string line = (extra ?? string.Empty).Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ').Trim();
+        if (line.Length == 0)
+            return null;
+
+        List<string>? args = AcClientCommandLine.Split(line);
+        if (args == null)
+            return "Extra Launch Arguments have a quote mark left open; the client would ignore its whole command line, login included. Close or remove the quote.";
+
+        foreach (string arg in args)
+        {
+            foreach (string loginSwitch in LoginSwitches)
+            {
+                if (string.Equals(arg, loginSwitch, StringComparison.OrdinalIgnoreCase))
+                    return $"Extra Launch Arguments can't contain {loginSwitch}: the account and its server profile set " +
+                           $"{string.Join(", ", LoginSwitches)} themselves. Remove it (an old whole-line override goes in the account and server profiles now).";
+            }
+        }
+
+        normalized = line;
+        return null;
+    }
+
+    /// <summary>
+    /// <paramref name="accountArguments"/> (from <see cref="BuildArguments"/> or
+    /// <see cref="BuildMaskedArguments"/>) followed by extra arguments already checked by
+    /// <see cref="ExtraArgumentsProblem"/>.
+    /// </summary>
+    public static string WithExtraArguments(string accountArguments, string normalizedExtra) =>
+        string.IsNullOrWhiteSpace(normalizedExtra) ? accountArguments : accountArguments + " " + normalizedExtra;
+
     /// <summary>One argument by acclient's own rules (AcClientCommandLine), not the C runtime's.</summary>
     private static string Quote(string value) => AcClientCommandLine.Token(value);
 }

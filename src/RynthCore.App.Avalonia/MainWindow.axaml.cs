@@ -106,6 +106,8 @@ internal partial class MainWindow : Window
     private readonly Dictionary<string, DateTime> _autoLaunchAttemptTimesUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> _autoLaunchServerDownNoticeTimesUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> _autoLaunchNeedsPasswordNoticeTimesUtc = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTime> _autoLaunchNoServerNoticeTimesUtc = new(StringComparer.OrdinalIgnoreCase);
+    private DateTime _extraArgumentsNoticeUtc = DateTime.MinValue;
     private readonly Dictionary<string, ServerAvailabilityState> _serverStatuses = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<PluginDefinition> _plugins =
     [
@@ -165,36 +167,80 @@ internal partial class MainWindow : Window
         _updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync();
         _updateTimer.Start();
         _ = CheckForUpdatesAsync();
-        // Keep Updates + Launch Targets reachable: a bad * row under this scroll used to
-        // leave Offset stuck with those cards clipped above the viewport.
-        MainTabs.SelectionChanged += (_, _) =>
-        {
-            if (MainTabs.SelectedIndex == 0)
-                ResetLauncherScrollToTop();
-        };
+        WireLauncherScroll();
         Opened += async (_, _) =>
         {
-            ResetLauncherScrollToTop();
             await AskAboutUsageStatsOnceAsync();
             await CleanUpDecalBridgeIfUnusedAsync(atStartup: true);
             await CheckFolderAccessAtStartupAsync();   // MainWindow.FolderAccess.cs: can the game client save?
         };
     }
 
-    /// <summary>
-    /// Scroll the Launcher tab back to the top so Updates and Launch Targets stay reachable.
-    /// </summary>
-    private void ResetLauncherScrollToTop()
+    // ── The Launcher tab keeps the player's scroll position ───────────────────
+    // Player report R-20261021-183803-97c0: scrolled down, the tab jumped back to the top. It was
+    // reset on every SelectionChanged that reached the tab control, and that event bubbles: every
+    // ComboBox and ListBox inside the tabs raised it there too, and the launch targets' character
+    // dropdowns are refilled every 2 s (RefreshLaunchTargetCharacterSelections), the server list
+    // every 15 s, the lists whenever a profile changes. Now only the tab control's own selection
+    // counts, and selecting the tab puts the player back where they were.
+    // The reset worked around an earlier layout bug (a * row in the profile cards under this
+    // scroll left Updates and Launch Targets clipped above the viewport). That is fixed in the
+    // layout itself (all-Auto rows, MaxHeight on the lists, MainWindow.axaml), the ScrollViewer
+    // clamps a restored offset to the content's current height, and the Plugins tab's update
+    // button still opens this tab at the top, where the update card is.
+    private global::Avalonia.Vector _launcherScrollOffset;
+    private bool _launcherScrollRestorePending;
+
+    private void WireLauncherScroll()
     {
-        try { LauncherScroll.Offset = new global::Avalonia.Vector(0, 0); }
-        catch { /* designer / pre-init */ }
+        // ScrollChanged bubbles too (the Launch Targets list and the profile lists scroll inside).
+        LauncherScroll.ScrollChanged += (_, e) =>
+        {
+            if (ReferenceEquals(e.Source, LauncherScroll) && MainTabs.SelectedIndex == 0 && !_launcherScrollRestorePending)
+                _launcherScrollOffset = LauncherScroll.Offset;
+        };
+        MainTabs.SelectionChanged += (_, e) =>
+        {
+            if (ReferenceEquals(e.Source, MainTabs) && MainTabs.SelectedIndex == 0)
+                KeepLauncherScroll();
+        };
+    }
+
+    /// <summary>
+    /// Puts the Launcher tab back where the player had it once layout has run: called when the tab
+    /// is selected again and before its content is refilled (lists, launch targets, update card).
+    /// Runs before input, so it never undoes the player's own scrolling.
+    /// </summary>
+    private void KeepLauncherScroll()
+    {
+        if (_launcherScrollRestorePending)
+            return;
+        _launcherScrollRestorePending = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            _launcherScrollRestorePending = false;
+            try
+            {
+                if (MainTabs.SelectedIndex == 0 && LauncherScroll.Offset != _launcherScrollOffset)
+                    LauncherScroll.Offset = _launcherScrollOffset;   // clamped to the content by the ScrollViewer
+            }
+            catch { /* window closing */ }
+        }, DispatcherPriority.Loaded);
+    }
+
+    /// <summary>The Plugins tab's "show the update card": the Launcher tab, at the top.</summary>
+    private void ShowLauncherTabAtTop()
+    {
+        _launcherScrollOffset = default;
+        MainTabs.SelectedIndex = 0;
+        KeepLauncherScroll();   // also when the tab was already showing
     }
 
     private void WireEvents()
     {
         AddServerButton.Click += async (_, _) => await AddServerAsync();
         EditServerButton.Click += async (_, _) => await EditServerAsync();
-        DeleteServerButton.Click += (_, _) => DeleteServer();
+        DeleteServerButton.Click += async (_, _) => await DeleteServerAsync();
 
         AddAccountButton.Click += async (_, _) => await AddAccountAsync();
         EditAccountButton.Click += async (_, _) => await EditAccountAsync();
@@ -217,10 +263,11 @@ internal partial class MainWindow : Window
         FixFolderPermissionsButton.Click += async (_, _) => await FixFolderPermissionsAsync();
         AddPluginDllButton.Click += async (_, _) => await AddPluginDllAsync();
         CheckUpdatesButton.Click += async (_, _) => await CheckForUpdatesAsync();
+        RollbackButton.Click += async (_, _) => await RollBackAsync();
         UpdateCardActionButton.Click += async (_, _) => await OnUpdateCardActionAsync();
         CancelDownloadButton.Click += (_, _) => CancelDownload();
         UpdateCardNewPluginsButton.Click += (_, _) => ShowAvailablePlugins();
-        ShowUpdateCardButton.Click += (_, _) => MainTabs.SelectedIndex = 0;
+        ShowUpdateCardButton.Click += (_, _) => ShowLauncherTabAtTop();
         AutoUpdatePluginsCheckBox.IsChecked = _settings.AutoUpdatePlugins;
         AutoUpdatePluginsCheckBox.IsCheckedChanged += (_, _) =>
         {
@@ -336,6 +383,12 @@ internal partial class MainWindow : Window
             ? _settings.EnginePath
             : _injector.TryResolveEnginePath(null) ?? string.Empty;
         LaunchArgumentsTextBox.Text = _settings.LaunchArguments;
+        // A whole-line override saved by an older launcher (with -a/-v/-h) would now ride along
+        // on every account: launches refuse it, so say so up front.
+        if (AcLaunchArgumentBuilder.ExtraArgumentsProblem(_settings.LaunchArguments, out _) is string extraProblem)
+        {
+            try { AppendActivity($"Runtime > Extra Launch Arguments: {extraProblem} Launches are blocked until it is fixed."); } catch { }
+        }
 
         AllowMultipleClientsCheckBox.IsChecked = _settings.AllowMultipleClients;
         SkipIntroVideosCheckBox.IsChecked = _settings.SkipIntroVideos;
@@ -355,8 +408,9 @@ internal partial class MainWindow : Window
         // Engine flags live in %APPDATA%\RynthCore\engine.json, not the
         // launcher's own settings. The engine reads them on init; the launcher
         // just provides a UI window into the same file.
-        EnableDcompOverlayCheckBox.IsChecked = EngineJsonStore.GetBool("EnableDcompOverlay") ?? false;
-        EnableDcompOverlayCheckBox.IsCheckedChanged += OnEnableDcompOverlayChanged;
+        // (No "Use DComp overlay" box any more: the DComp overlay is an Avalonia app, and the
+        // shipped CoreCLR engine runs without Avalonia (EngineSettings.EnableAvaloniaOverlay is
+        // always false there), so EnableDcompOverlay changed nothing. A saved key is left alone.)
         // The engine treats a missing key as true.
         EnableImGuiBackendCheckBox.IsChecked = EngineJsonStore.GetBool("EnableImGuiBackend") ?? true;
         EnableImGuiBackendCheckBox.IsCheckedChanged += OnEnableImGuiBackendChanged;
@@ -373,20 +427,6 @@ internal partial class MainWindow : Window
         catch (Exception ex)
         {
             AppendActivity($"Failed to save EnableImGuiBackend to engine.json: {ex.Message}");
-        }
-    }
-
-    private void OnEnableDcompOverlayChanged(object? sender, global::Avalonia.Interactivity.RoutedEventArgs e)
-    {
-        bool value = EnableDcompOverlayCheckBox.IsChecked == true;
-        try
-        {
-            EngineJsonStore.SetBool("EnableDcompOverlay", value);
-            AppendActivity($"Engine setting saved: EnableDcompOverlay={value}. Takes effect on next AC client launch.");
-        }
-        catch (Exception ex)
-        {
-            AppendActivity($"Failed to save EnableDcompOverlay to engine.json: {ex.Message}");
         }
     }
 
@@ -674,6 +714,7 @@ internal partial class MainWindow : Window
 
     private void RefreshLists()
     {
+        KeepLauncherScroll();
         _suppressPrimarySelectionChanged = true;
         try
         {
@@ -693,9 +734,19 @@ internal partial class MainWindow : Window
 
     private void RefreshSummary()
     {
-        LaunchServerProfile? server = GetSelectedServer();
         LaunchAccountProfile? account = GetSelectedAccount();
+        // The preview shows what a launch does: the account on its own server, not on the one
+        // selected in the server list (the launch never uses that one for it).
+        LaunchServerProfile? server = account != null ? ResolveServerForAccount(account) : null;
         int checkedTargets = _settings.CheckedLaunchAccountProfileIds?.Count ?? 0;
+        if (account != null && server == null)
+        {
+            string noServer = $"{account.DisplayName}: {AccountServerRules.NoServerMessage(account, _settings.ServerProfiles.Count > 0)}";
+            SummaryText.Text = noServer;
+            LaunchProfileStatusText.Text = noServer;
+            LaunchPreviewText.Text = noServer;
+            return;
+        }
         if (server == null || account == null)
         {
             SummaryText.Text = checkedTargets == 0
@@ -774,13 +825,24 @@ internal partial class MainWindow : Window
         await RefreshServerStatusesAsync();
     }
 
-    private void DeleteServer()
+    private async Task DeleteServerAsync()
     {
         int index = ServerProfilesList.SelectedIndex;
         if (index < 0 || index >= _settings.ServerProfiles.Count)
             return;
 
-        string removedServerId = _settings.ServerProfiles[index].Id;
+        // Refused while accounts log on to it: they are never moved to another server (their
+        // passwords belong to this one). AccountServerRules says why refusing beats clearing.
+        LaunchServerProfile toRemove = _settings.ServerProfiles[index];
+        if (AccountServerRules.DeleteBlocker(toRemove, _settings.AccountProfiles) is string blocker)
+        {
+            AppendActivity($"Server not deleted: {toRemove.DisplayName} still has " +
+                $"{AccountServerRules.AccountsOn(toRemove, _settings.AccountProfiles).Count} account(s). Move or delete them first.");
+            await DecalBridgeDialog.InfoAsync(this, "Server still in use", blocker);
+            return;
+        }
+
+        string removedServerId = toRemove.Id;
         bool removedSelected = string.Equals(removedServerId, _settings.SelectedServerProfileId, StringComparison.OrdinalIgnoreCase);
         _settings.ServerProfiles.RemoveAt(index);
         if (removedSelected)
@@ -790,7 +852,7 @@ internal partial class MainWindow : Window
         RefreshLists();
         ServerProfilesList.SelectedIndex = Math.Min(index, _settings.ServerProfiles.Count - 1);
         RefreshSummary();
-        AppendActivity($"Server removed: {index + 1}");
+        AppendActivity($"Server removed: {toRemove.DisplayName}");
     }
 
     private async System.Threading.Tasks.Task AddAccountAsync()
@@ -973,6 +1035,7 @@ internal partial class MainWindow : Window
 
     private void RefreshLaunchTargets()
     {
+        KeepLauncherScroll();
         LaunchTargetsPanel.Children.Clear();
         _launchTargetStatusTexts.Clear();
         _launchTargetChecks.Clear();
@@ -986,13 +1049,10 @@ internal partial class MainWindow : Window
         {
             LaunchAccountProfile account = _settings.AccountProfiles[accountIndex];
 
-            // Try to find the associated server, or fallback to the first one if not set or invalid
-            LaunchServerProfile? server = _settings.ServerProfiles.FirstOrDefault(s => s.Id == account.ServerId);
-            if (server == null && _settings.ServerProfiles.Count > 0)
-            {
-                server = _settings.ServerProfiles.FirstOrDefault();
-                account.ServerId = server?.Id ?? string.Empty;
-            }
+            // The account's own server only. An account whose server is missing used to be bound
+            // to the first server here (and saved), which sent its password to that server on
+            // the next launch; now it shows "No Server" and can't launch (AccountServerRules).
+            LaunchServerProfile? server = ResolveServerForAccount(account);
 
             var container = new Grid
             {
@@ -1118,7 +1178,7 @@ internal partial class MainWindow : Window
 
         button.Click += async (_, _) =>
         {
-            LaunchServerProfile? server = _settings.ServerProfiles.FirstOrDefault(s => s.Id == account.ServerId);
+            LaunchServerProfile? server = ResolveServerForAccount(account);
             var dialog = new LoginCommandsDialog(account, server);
             await dialog.ShowDialog(this);
             if (dialog.ChangesSaved)
@@ -1524,11 +1584,15 @@ internal partial class MainWindow : Window
             return;
         }
 
-        // Ensure the account is associated with the currently selected server if it doesn't have one
+        // An account that never had a server (added before any server existed) takes the one
+        // selected beside it, at the player's click and said in Activity. An account that names
+        // a server, even a deleted one, is never changed here (AccountServerRules).
         LaunchServerProfile? selectedServer = GetSelectedServer();
-        if (selectedServer != null && string.IsNullOrEmpty(account.ServerId))
+        if (selectedServer != null && string.IsNullOrWhiteSpace(account.ServerId))
         {
             account.ServerId = selectedServer.Id;
+            SaveSettings();
+            AppendActivity($"{account.DisplayName} had no server; it now logs on to {selectedServer.DisplayName}.");
         }
 
         _settings.CheckedLaunchAccountProfileIds ??= [];
@@ -1553,7 +1617,11 @@ internal partial class MainWindow : Window
         SaveSettings();
         RefreshSummary();
         if (appendActivity)
+        {
             AppendActivity("Runtime paths saved.");
+            if (AcLaunchArgumentBuilder.ExtraArgumentsProblem(_settings.LaunchArguments, out _) is string extraProblem)
+                AppendActivity($"Launches are blocked until this is fixed: {extraProblem}");
+        }
     }
 
     private void SaveLaunchBehavior(bool appendActivity = true)
@@ -1661,10 +1729,17 @@ internal partial class MainWindow : Window
             return;
         }
 
-        string overrideArguments = isAutomaticLaunch ? string.Empty : LaunchArgumentsTextBox.Text?.Trim() ?? string.Empty;
-        if (!string.IsNullOrWhiteSpace(overrideArguments) && accountsToLaunch.Count > 1)
+        // Extra Launch Arguments go after each account's own arguments, for manual and automatic
+        // launches alike. They used to replace the whole line instead (and only manually, one
+        // account at a time); ExtraArgumentsProblem refuses what an old override would carry.
+        if (AcLaunchArgumentBuilder.ExtraArgumentsProblem(LaunchArgumentsTextBox.Text, out string extraArguments) is string extraProblem)
         {
-            AppendActivity("Launch blocked: manual launch arguments can only be used with one account at a time.");
+            DateTime nowUtc = DateTime.UtcNow;
+            if (!isAutomaticLaunch || nowUtc - _extraArgumentsNoticeUtc >= AutoLaunchNeedsPasswordLogCooldown)
+            {
+                _extraArgumentsNoticeUtc = nowUtc;
+                AppendActivity($"Launch blocked: {extraProblem}");
+            }
             return;
         }
 
@@ -1710,25 +1785,22 @@ internal partial class MainWindow : Window
         // No usable password: the client would refuse to start ("You can only run the game from
         // the launcher program") and exit within seconds. A manual launch asks for it (and the
         // account) in the First Login dialog; an automatic one skips the account.
-        if (string.IsNullOrWhiteSpace(overrideArguments))
+        var ready = new List<LaunchAccountProfile>(accountsToLaunch.Count);
+        foreach (LaunchAccountProfile account in accountsToLaunch)
         {
-            var ready = new List<LaunchAccountProfile>(accountsToLaunch.Count);
-            foreach (LaunchAccountProfile account in accountsToLaunch)
-            {
-                if (!AcLaunchArgumentBuilder.NeedsPassword(account))
-                    ready.Add(account);
-                else if (isAutomaticLaunch)
-                    AppendActivity($"Auto launch skipped for {account.DisplayName}: {AcLaunchArgumentBuilder.MissingPasswordMessage(account.AccountName)}");
-                else if (await PromptFirstLoginAsync(account))
-                    ready.Add(account);
-                else
-                    AppendActivity($"Launch cancelled for {account.DisplayName}: no password entered.");
-            }
-
-            if (ready.Count == 0)
-                return;
-            accountsToLaunch = ready;
+            if (!AcLaunchArgumentBuilder.NeedsPassword(account))
+                ready.Add(account);
+            else if (isAutomaticLaunch)
+                AppendActivity($"Auto launch skipped for {account.DisplayName}: {AcLaunchArgumentBuilder.MissingPasswordMessage(account.AccountName)}");
+            else if (await PromptFirstLoginAsync(account))
+                ready.Add(account);
+            else
+                AppendActivity($"Launch cancelled for {account.DisplayName}: no password entered.");
         }
+
+        if (ready.Count == 0)
+            return;
+        accountsToLaunch = ready;
 
         SaveRuntimePaths(appendActivity: !isAutomaticLaunch);
         SaveLaunchBehavior(appendActivity: !isAutomaticLaunch);
@@ -1771,7 +1843,7 @@ internal partial class MainWindow : Window
             {
                 if (!TryGetLaunchArgumentsForAccount(
                     account,
-                    allowArgumentOverride: !isAutomaticLaunch,
+                    extraArguments,
                     out string launchArguments,
                     out string launchSummary,
                     out string error))
@@ -2100,7 +2172,7 @@ internal partial class MainWindow : Window
         LaunchServerProfile? server = ResolveServerForAccount(account);
         if (server == null)
         {
-            AppendActivity($"Launch blocked for {account.DisplayName}: add a server profile first.");
+            AppendActivity($"Launch blocked for {account.DisplayName}: {AccountServerRules.NoServerMessage(account, _settings.ServerProfiles.Count > 0)}");
             return false;
         }
 
@@ -2163,38 +2235,27 @@ internal partial class MainWindow : Window
         SessionStateStore.WriteForProcess(processId, record);
     }
 
+    /// <param name="extraArguments">Extra Launch Arguments, already checked by
+    /// <see cref="AcLaunchArgumentBuilder.ExtraArgumentsProblem"/>; appended after the account's own.</param>
     private bool TryGetLaunchArgumentsForAccount(
         LaunchAccountProfile account,
-        bool allowArgumentOverride,
+        string extraArguments,
         out string arguments,
         out string launchSummary,
         out string error)
     {
-        string overrideArguments = allowArgumentOverride
-            ? LaunchArgumentsTextBox.Text?.Trim() ?? string.Empty
-            : string.Empty;
-        if (!string.IsNullOrWhiteSpace(overrideArguments))
-        {
-            arguments = overrideArguments;
-            launchSummary = string.IsNullOrWhiteSpace(account.DisplayName)
-                ? "Manual argument override"
-                : $"Manual argument override / {account.DisplayName}";
-            error = string.Empty;
-            return true;
-        }
-
         LaunchServerProfile? server = ResolveServerForAccount(account);
         if (server == null)
         {
             arguments = string.Empty;
             launchSummary = string.Empty;
-            error = "Select a server profile, or enter manual launch arguments.";
+            error = AccountServerRules.NoServerMessage(account, _settings.ServerProfiles.Count > 0);
             return false;
         }
 
         try
         {
-            arguments = _launchArgumentBuilder.BuildArguments(server, account);
+            arguments = AcLaunchArgumentBuilder.WithExtraArguments(_launchArgumentBuilder.BuildArguments(server, account), extraArguments);
             launchSummary = _launchArgumentBuilder.Describe(server, account);
             error = string.Empty;
             return true;
@@ -2208,18 +2269,12 @@ internal partial class MainWindow : Window
         }
     }
 
-    private LaunchServerProfile? ResolveServerForAccount(LaunchAccountProfile account)
-    {
-        if (!string.IsNullOrWhiteSpace(account.ServerId))
-        {
-            LaunchServerProfile? savedServer = _settings.ServerProfiles.FirstOrDefault(server =>
-                string.Equals(server.Id, account.ServerId, StringComparison.OrdinalIgnoreCase));
-            if (savedServer != null)
-                return savedServer;
-        }
-
-        return GetSelectedServer() ?? _settings.ServerProfiles.FirstOrDefault();
-    }
+    /// <summary>
+    /// The server profile the account names, or null. No fallback to the selected or first
+    /// server: that would send this account's password to a server it doesn't belong to.
+    /// </summary>
+    private LaunchServerProfile? ResolveServerForAccount(LaunchAccountProfile account) =>
+        AccountServerRules.ServerFor(account, _settings.ServerProfiles);
 
     private List<LaunchAccountProfile> GetCheckedLaunchAccounts()
     {
@@ -2514,7 +2569,10 @@ internal partial class MainWindow : Window
             _updateChecking = false;
             AnnounceNewPlugins(_updateCheck);
             BuildAvailablePlugins();
-            if (_settings.AutoUpdatePlugins && (_updateCheck.PluginsToUpdate.Any() || _updateCheck.Companions.Count > 0
+            if (_updateCheck.HoldEnded)
+                EndRollbackHold($"RynthCore {_updateCheck.Manifest.Version} is out: updates are back on after the rollback.");
+            // After Roll back, the release the player left isn't installed again by itself (RynthUpdater.Rollback.cs).
+            if (_settings.AutoUpdatePlugins && !_updateCheck.Held && (_updateCheck.PluginsToUpdate.Any() || _updateCheck.Companions.Count > 0
                                                 || (_updateCheck.NavDataUpdateAvailable && !_navDataCancelledThisSession)))
                 await ApplyPluginUpdatesAsync(automatic: true);
             SendUsageReportIfDue();   // opt-in only, at most once a day, never awaited
@@ -2686,7 +2744,7 @@ internal partial class MainWindow : Window
     {
         switch (_updateCard?.Kind)
         {
-            case UpdateCardKind.CoreUpdate: await InstallCoreUpdateAsync(); break;
+            case UpdateCardKind.CoreUpdate or UpdateCardKind.Held: await InstallCoreUpdateAsync(); break;
             case UpdateCardKind.PluginUpdates: await UpdatePluginsAsync(); break;
         }
     }
@@ -2704,6 +2762,7 @@ internal partial class MainWindow : Window
     /// <summary>Redraws the front page's update card, the Plugins tab's status line and the header.</summary>
     private void RefreshUpdateCard()
     {
+        KeepLauncherScroll();
         RefreshMapPacksCard();
         RynthUpdater.CheckResult? c = _updateCheck;
         bool coreUpdate = c?.CoreUpdateAvailable == true;
@@ -2725,23 +2784,26 @@ internal partial class MainWindow : Window
             ClientsRunning = coreUpdate && _download == null ? RynthCoreClientsRunning() : 0,
             Download = _download,
             CanCancel = _downloadCts is { IsCancellationRequested: false },
+            HeldFromVersion = c is { Held: true } ? FormatRelease(c.HoldThrough) : "",
         });
         _updateCard = card;
 
         UpdateCardTitle.Text = card.Title;
         UpdateCardTitle.Foreground = Brush.Parse(card.Kind switch
         {
-            UpdateCardKind.CoreUpdate or UpdateCardKind.PluginUpdates => "#F2C14E",
+            UpdateCardKind.CoreUpdate or UpdateCardKind.PluginUpdates or UpdateCardKind.Held => "#F2C14E",
             UpdateCardKind.Error => "#E57373",
             _ => "#26C1A6",
         });
-        UpdateCardBorder.BorderBrush = Brush.Parse(card.Kind is UpdateCardKind.CoreUpdate or UpdateCardKind.PluginUpdates ? "#F2C14E" : "#243742");
+        UpdateCardBorder.BorderBrush = Brush.Parse(card.Kind is UpdateCardKind.CoreUpdate or UpdateCardKind.PluginUpdates or UpdateCardKind.Held ? "#F2C14E" : "#243742");
         UpdateCardDetail.Text = card.Detail;
         UpdateCardDetail.IsVisible = card.Detail.Length > 0;
         UpdateCardActionButton.IsVisible = card.ActionButton != null;
         UpdateCardActionButton.Content = card.ActionButton ?? "";
         UpdateCardActionButton.IsEnabled = !_updateBusy;
         CheckUpdatesButton.IsVisible = card.ShowCheckButton;
+        RollbackButton.IsVisible = card.ShowCheckButton && _updater.IsConfigured && _updater.InstalledCoreRelease > 0;
+        RollbackButton.IsEnabled = !_updateBusy;
 
         UpdateCardWhatsNewPanel.Children.Clear();
         if (card.WhatsNew.Count > 0)
@@ -2874,6 +2936,7 @@ internal partial class MainWindow : Window
         RefreshUpdateCard();
         try
         {
+            if (_updateCheck.HoldThrough > 0) EndRollbackHold(null);   // updating by hand ends a rollback's hold
             await ApplyPluginUpdatesAsync(automatic: false);
         }
         catch (Exception ex)
@@ -2950,6 +3013,88 @@ internal partial class MainWindow : Window
         BuildPluginLoadout();
     }
 
+    /// <summary>
+    /// Roll back (RynthUpdater.Rollback.cs): with every game client closed, picks an earlier release,
+    /// downloads and verifies it, puts its plugins in place, holds updates, then runs its installer (the
+    /// launcher restarts as that release).
+    /// </summary>
+    private async Task RollBackAsync()
+    {
+        if (_updateBusy) return;
+        int running = RynthCoreClientsRunning();
+        if (running > 0)
+        {
+            AppendActivity($"Close your {running} game client(s) running RynthCore or its Decal bridge first: going back replaces files they have open.");
+            return;
+        }
+
+        _updateBusy = true;
+        RefreshUpdateCard();
+        try
+        {
+            IReadOnlyList<RynthUpdater.RollbackTarget> targets = await _updater.ListRollbackTargetsAsync();
+            if (targets.Count == 0)
+            {
+                AppendActivity($"There's no earlier release to go back to (going back works to releases from {FormatRelease(RynthUpdater.FirstRollbackRelease)} on).");
+                return;
+            }
+            var dialog = new RollbackDialog(targets, FormatRelease(_updater.InstalledCoreRelease));
+            RynthUpdater.RollbackTarget? chosen = await dialog.ShowDialog<RynthUpdater.RollbackTarget?>(this);
+            if (chosen == null) return;
+
+            RynthUpdater.RollbackPlan plan = await RunDownloadAsync((progress, ct) =>
+                _updater.PrepareRollbackAsync(chosen, _pluginDllPaths.ToList(), progress, ct));
+            if (RynthCoreClientsRunning() > 0)
+            {
+                AppendActivity("A RynthCore client started meanwhile. Close it, then press Roll back again. Nothing was changed.");
+                return;
+            }
+
+            List<string> plugins = _updater.ApplyRollbackPlugins(plan);
+            // The rolled-back launcher may be older than the hold: it would update the plugins straight back.
+            bool turnOff = _settings.AutoUpdatePlugins;
+            _updater.StartHold(plan.LeavingRelease, turnOff);
+            if (turnOff)
+            {
+                _settings.AutoUpdatePlugins = false;
+                AutoUpdatePluginsCheckBox.IsChecked = false;
+                SaveSettings();
+            }
+            AppendActivity($"Going back to RynthCore {plan.Manifest.Version}" +
+                           (plugins.Count > 0 ? $" (plugins: {string.Join(", ", plugins)})" : "") +
+                           $"; the launcher restarts when it's done. Updates are on hold until a release newer than {FormatRelease(plan.LeavingRelease)} comes out.");
+            RynthUpdater.RunInstaller(plan.InstallerPath);
+            (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown();
+        }
+        catch (OperationCanceledException)
+        {
+            AppendActivity("Going back cancelled. Nothing was changed.");
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"Going back failed: {ex.Message}");
+        }
+        finally
+        {
+            _updateBusy = false;
+            RefreshUpdateCard();
+        }
+    }
+
+    /// <summary>Ends a rollback's hold and turns automatic plugin updates back on if the rollback turned them off.</summary>
+    private void EndRollbackHold(string? message)
+    {
+        bool restore = _updater.HoldTurnedOffAutoUpdate;
+        _updater.EndHold();
+        if (restore && !_settings.AutoUpdatePlugins)
+        {
+            _settings.AutoUpdatePlugins = true;
+            AutoUpdatePluginsCheckBox.IsChecked = true;
+            SaveSettings();
+        }
+        if (message != null) AppendActivity(message);
+    }
+
     private async Task InstallCoreUpdateAsync()
     {
         if (_updateBusy || _updateCheck is not { CoreUpdateAvailable: true } c) return;
@@ -2971,6 +3116,7 @@ internal partial class MainWindow : Window
                 AppendActivity("A RynthCore client started meanwhile. Close it, then press Update RynthCore again.");
                 return;
             }
+            if (c.HoldThrough > 0) EndRollbackHold(null);   // going forward by hand ends a rollback's hold
             AppendActivity($"Installing RynthCore {c.Manifest.Core.Version}; the launcher restarts when it's done.");
             RynthUpdater.RunInstaller(installer);
             (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown();
@@ -3918,8 +4064,14 @@ internal partial class MainWindow : Window
     {
         try
         {
-            // Never decrypts: a saved password shows as the mask.
-            return _launchArgumentBuilder.BuildMaskedArguments(server, account);
+            // Never decrypts: a saved password shows as the mask. Extra Launch Arguments follow,
+            // as they do at launch.
+            string masked = _launchArgumentBuilder.BuildMaskedArguments(server, account);
+            if (AcLaunchArgumentBuilder.NeedsPassword(account))
+                return masked;   // the message saying why, not a command line
+            return AcLaunchArgumentBuilder.ExtraArgumentsProblem(LaunchArgumentsTextBox.Text, out string extra) is string problem
+                ? problem
+                : AcLaunchArgumentBuilder.WithExtraArguments(masked, extra);
         }
         catch (Exception ex)
         {
@@ -4710,6 +4862,13 @@ internal partial class MainWindow : Window
             if (HasTrackedPresence(account, server, activeContexts, activeSessions))
                 continue;
 
+            // No server profile (deleted, or never picked): never launched on another server.
+            if (server == null)
+            {
+                MaybeLogAutoLaunchNoServer(account, nowUtc);
+                continue;
+            }
+
             if (IsServerKnownDown(server))
             {
                 MaybeLogAutoLaunchServerDown(account, server, nowUtc);
@@ -4785,6 +4944,18 @@ internal partial class MainWindow : Window
 
         _autoLaunchNeedsPasswordNoticeTimesUtc[account.Id] = nowUtc;
         AppendActivity($"Auto launch waiting for {account.DisplayName}: {AcLaunchArgumentBuilder.MissingPasswordMessage(account.AccountName)}");
+    }
+
+    private void MaybeLogAutoLaunchNoServer(LaunchAccountProfile account, DateTime nowUtc)
+    {
+        if (_autoLaunchNoServerNoticeTimesUtc.TryGetValue(account.Id, out DateTime lastNoticeUtc) &&
+            nowUtc - lastNoticeUtc < AutoLaunchNeedsPasswordLogCooldown)
+        {
+            return;
+        }
+
+        _autoLaunchNoServerNoticeTimesUtc[account.Id] = nowUtc;
+        AppendActivity($"Auto launch skipped for {account.DisplayName}: {AccountServerRules.NoServerMessage(account, _settings.ServerProfiles.Count > 0)}");
     }
 
     private bool IsServerKnownDown(LaunchServerProfile? server)
@@ -4960,16 +5131,23 @@ internal partial class MainWindow : Window
             // "(None)" at the top — selecting it opts out of auto-login for this account
             detectedCharacters.Insert(0, LaunchAccountProfile.NoneOption);
 
+            string? wanted = account.CharacterName == LaunchAccountProfile.NoneOption
+                ? LaunchAccountProfile.NoneOption
+                : !string.IsNullOrWhiteSpace(account.CharacterName) && detectedCharacters.Contains(account.CharacterName)
+                    ? account.CharacterName
+                    : null;
+            // This runs every 2 s: refill a dropdown only when its list or choice changed, so the
+            // Launcher tab isn't refilled (and its selection events raised) for nothing.
+            if (dropdown.ItemsSource is IEnumerable<string> shown && shown.SequenceEqual(detectedCharacters)
+                && Equals(dropdown.SelectedItem as string, wanted))
+                continue;
+
+            KeepLauncherScroll();
             _suppressLaunchTargetCharacterSelectionChanged = true;
             try
             {
                 dropdown.ItemsSource = detectedCharacters;
-                if (account.CharacterName == LaunchAccountProfile.NoneOption)
-                    dropdown.SelectedItem = LaunchAccountProfile.NoneOption;
-                else
-                    dropdown.SelectedItem = !string.IsNullOrWhiteSpace(account.CharacterName) && detectedCharacters.Contains(account.CharacterName)
-                        ? account.CharacterName
-                        : null;
+                dropdown.SelectedItem = wanted;
             }
             finally
             {
@@ -5078,6 +5256,7 @@ internal partial class MainWindow : Window
 
     private void RefreshServerProfileDisplay()
     {
+        KeepLauncherScroll();
         int selectedIndex = ServerProfilesList.SelectedIndex;
         _suppressPrimarySelectionChanged = true;
         try

@@ -50,6 +50,7 @@ internal static partial class Program
         RunAutoIdDrainTests();
 
         RunPumpGuardTests();
+        RunShutdownOrderTests();
 
         Console.WriteLine($"{_checks} check(s), {_failed} failed.");
         return _failed == 0 ? 0 : 1;

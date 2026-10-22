@@ -110,8 +110,9 @@
     <Grid Grid.Row="1" ColumnDefinitions="3*,Auto,2*">
       <TabControl x:Name="MainTabs" Grid.Column="0" Margin="14,0,0,0" Padding="0">
         <TabItem Header="Launcher">
-          <!-- Named so we can reset Offset on tab select; * rows inside this scroll
-               must not be used (they claim infinite height and clip Updates/Launch Targets). -->
+          <!-- Named so the tab keeps the player's scroll position (MainWindow.KeepLauncherScroll);
+               * rows inside this scroll must not be used (they claim infinite height and clip
+               Updates/Launch Targets). -->
           <ScrollViewer x:Name="LauncherScroll"
                         VerticalScrollBarVisibility="Auto"
                         HorizontalScrollBarVisibility="Disabled">
@@ -130,6 +131,8 @@
                       <Button x:Name="UpdateCardActionButton" IsVisible="False" Margin="0,0,8,6"
                               Background="#26C1A6" Foreground="#0B1218" FontWeight="SemiBold" />
                       <Button x:Name="CheckUpdatesButton" Content="Check for updates" Margin="0,0,0,6" />
+                      <Button x:Name="RollbackButton" Content="Roll back…" Margin="8,0,0,6" IsVisible="False"
+                              ToolTip.Tip="Go back to an earlier RynthCore release if this one broke something. Updates then wait for a newer release." />
                     </WrapPanel>
                   </Grid>
                   <StackPanel x:Name="UpdateCardWhatsNewPanel" Spacing="2" IsVisible="False" />
@@ -383,9 +386,9 @@
                     <TextBox x:Name="EnginePathTextBox" Watermark="C:\Games\RynthCore\Runtime\RynthCore.Engine.dll" />
                     <TextBlock Text="Extra Launch Arguments" Foreground="#EAF0F4" />
                     <TextBox x:Name="LaunchArgumentsTextBox"
-                             Watermark="Optional arguments appended by the host"
-                             AcceptsReturn="True"
-                             MinHeight="64"
+                             Watermark="Optional arguments added after each account's login"
+                             ToolTip.Tip="Added to the end of every launch's command line, after the account, password and server the profiles set. It can't contain -a, -v, -h, -p or -rodat: set those in the account and server profiles. One line."
+                             AcceptsReturn="False"
                              TextWrapping="Wrap" />
                     <Button x:Name="SavePathsButton"
                             Content="Save Runtime Paths"
@@ -458,9 +461,6 @@
                   <TextBlock Text="These flags are read by RynthCore.Engine on each AC client launch. They write to %APPDATA%\RynthCore\engine.json — other engine flags in that file are preserved untouched."
                              TextWrapping="Wrap"
                              Foreground="#9AA8B3" />
-                  <CheckBox x:Name="EnableDcompOverlayCheckBox"
-                            Content="Use DComp overlay (experimental, GPU-rendered)"
-                            ToolTip.Tip="When ON, the engine starts the new DirectComposition overlay instead of the production AvaloniaOverlay. Mutually exclusive — Avalonia is single-app-per-process. Toggle takes effect on next AC client launch (a hot reload won't switch overlays)." />
                   <CheckBox x:Name="EnableImGuiBackendCheckBox"
                             Content="ImGui panels (preview)"
                             ToolTip.Tip="When ON, the engine runs its in-client ImGui layer, which docked panels move to as their ImGui versions are finished (choose per panel with /rc ui). Popped-out panels stay Avalonia windows. Costs nothing while no ImGui panel is open. Takes effect on next AC client launch or engine reload (RL)." />

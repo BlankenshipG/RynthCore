@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Platform.Storage;
 using RynthCore.App;
@@ -13,6 +14,8 @@ internal partial class AccountProfileDialog : Window
     private readonly LaunchAccountProfile _profile;
     private readonly List<LaunchServerProfile> _servers;
     private readonly Func<string, string, List<string>> _knownCharactersFor;
+    // The eye beside the password box; it keeps no copy of the password.
+    private readonly SavedPasswordReveal _passwordReveal;
 
     private List<string> _knownCharacters = [];
     // Set once the player picks in "Log in as"; until then the saved choice is kept as it is
@@ -27,6 +30,7 @@ internal partial class AccountProfileDialog : Window
         _profile = profile;
         _servers = servers;
         _knownCharactersFor = knownCharactersFor;
+        _passwordReveal = SavedPasswordReveal.For(profile);
         InitializeComponent();
 
         ServerComboBox.ItemsSource = _servers.Select(s => s.DisplayName).ToList();
@@ -41,7 +45,7 @@ internal partial class AccountProfileDialog : Window
             ? "Password needs re-entering: the saved one can't be read on this Windows user (settings copied from another user or PC?). Type it again to launch this account."
             : !profile.HasSavedPassword
                 ? "No password is saved for this profile yet. The game client won't start without one; you'll be asked for it on the first launch."
-                : "A password is saved for this profile, encrypted for this Windows user. It stays hidden unless you replace or clear it.";
+                : "A password is saved for this profile, encrypted for this Windows user. The eye shows it; type a new one to replace it.";
 
         ServerComboBox.SelectionChanged += (_, _) => RefreshLoginAs();
         AccountBox.TextChanged += (_, _) => RefreshLoginAs();
@@ -52,10 +56,32 @@ internal partial class AccountProfileDialog : Window
         };
         RefreshLoginAs();
 
+        ShowPasswordToggle.IsCheckedChanged += (_, _) => OnShowPasswordChanged();
+        // The plain text lives only in the box, and only while the dialog is open.
+        Closed += (_, _) =>
+        {
+            PasswordBox.Text = string.Empty;
+            _passwordReveal.Reset();
+        };
+
         SaveButton.Click += (_, _) => SaveAndClose();
         CancelButton.Click += (_, _) => Close(false);
         BrowseUserPrefsButton.Click += async (_, _) => await BrowseUserPrefsAsync();
         SnapshotUserPrefsButton.Click += (_, _) => SnapshotLiveUserPrefs();
+    }
+
+    /// <summary>
+    /// The eye: on shows what's typed, or the saved password (decrypted now) when the box is empty;
+    /// off hides it and empties the box again if it still holds the saved password unchanged.
+    /// </summary>
+    private void OnShowPasswordChanged()
+    {
+        bool show = ShowPasswordToggle.IsChecked == true;
+        PasswordBox.Text = show ? _passwordReveal.EyeOn(PasswordBox.Text) : _passwordReveal.EyeOff(PasswordBox.Text);
+        PasswordBox.RevealPassword = show;
+        string tip = show ? SavedPasswordReveal.HideTip : SavedPasswordReveal.ShowTip;
+        ToolTip.SetTip(ShowPasswordToggle, tip);
+        AutomationProperties.SetName(ShowPasswordToggle, tip);
     }
 
     /// <summary>Lists the characters known for the account on the chosen server in "Log in as".</summary>
@@ -181,12 +207,14 @@ internal partial class AccountProfileDialog : Window
         {
             _profile.ClearPassword();
         }
-        else if (!string.IsNullOrEmpty(PasswordBox.Text))
+        else if (_passwordReveal.PasswordToSave(PasswordBox.Text) is string newPassword)
         {
             // Encrypted at once (DPAPI, this Windows user); the plain text isn't kept on the profile.
-            _profile.SetPassword(PasswordBox.Text);
+            // A blank box, or the saved password the eye showed left unchanged, keeps the saved one.
+            _profile.SetPassword(newPassword);
         }
         PasswordBox.Text = string.Empty;
+        _passwordReveal.Reset();
 
         _profile.Alias = AliasBox.Text?.Trim() ?? string.Empty;
         _profile.UserPrefsPath = UserPrefsPathBox.Text?.Trim() ?? string.Empty;

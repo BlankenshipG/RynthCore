@@ -8,7 +8,7 @@ using RynthCore.App.Avalonia;
 // Tests for the launcher's Available plugins list, plugin installs (verified, with progress and
 // Cancel), Remove, old feeds without descriptions, the download meter, and the front page's
 // update card. A throwaway signing key signs feeds served by a local HttpListener.
-internal static class Program
+internal static partial class Program
 {
     private static int _fails, _asserts;
     private static void Check(bool cond, string msg)
@@ -61,6 +61,7 @@ internal static class Program
             await Run(nameof(TooNewUpdateIsHeldBack), TooNewUpdateIsHeldBack);
             await Run(nameof(TooNewCompanionWaits), TooNewCompanionWaits);
             await Run(nameof(MinEngineApiAtOrBelowInstalledIsFine), MinEngineApiAtOrBelowInstalledIsFine);
+            await RollbackTests();
         }
         finally
         {
@@ -275,7 +276,7 @@ internal static class Program
         var f = Setup("olddesc", descriptions: false, extraPlugins: new[] { "RynthSomethingElse" });
         var c = await f.Upd.CheckAsync(new[] { f.RynthAiPath });
         Check(c.Manifest.Plugins.All(p => p.Description == ""), "an old feed parses with no descriptions");
-        Check(c.Available.Single(a => a.Entry.Name == "RynthOracle").Description == "Quests, character, titles and leaderboards.",
+        Check(c.Available.Single(a => a.Entry.Name == "RynthOracle").Description == "Quests, character and titles.",
             "a missing description falls back to the launcher's table");
         Check(c.Available.Single(a => a.Entry.Name == "RynthNav").Description.Contains("540 MB"), "RynthNav's says how big its map is");
         Check(c.Available.Single(a => a.Entry.Name == "RynthSomethingElse").Description == "", "a plugin the table doesn't know: no description, still listed");

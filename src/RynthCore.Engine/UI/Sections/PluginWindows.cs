@@ -9,12 +9,20 @@
 //  registers a dynamic panel for each window the manifests ask for (a window
 //  with "server" only while that server is active) and unregisters the rest.
 //  The panel key is the window's title, so its saved place, hotkeys and /rc
-//  commands use the name players see; a title an engine panel has is refused.
+//  commands use the name players see. A title an engine panel has is refused,
+//  unless the window declares "takeOver": then it takes that panel's place
+//  (ImGuiPanelHost.TakeOver: same key, so the saved place and size, open state,
+//  hotkeys and commands carry over) and the engine's face steps aside, not drawn
+//  and without its bar button (TakesOver), until the window goes (the plugin
+//  unloads or stops declaring it): then the engine's face comes back where the
+//  window was, open if it was open. So a screen can move out of the engine with
+//  the plugin shipping first and the engine face deleted a release later.
 //  A window seen for the first time this session opens if it was open when the
 //  game last closed (Remember Open Windows); one that went with a plugin reload
 //  opens again when the plugin comes back.
 //
-//  WindowPlan.cs is the pure part (which windows, which are refused and why).
+//  WindowPlan.cs is the pure part (which windows, which are refused and why,
+//  which take over an engine panel).
 // ============================================================================
 
 using System;
@@ -27,13 +35,14 @@ namespace RynthCore.Engine.UI.Sections;
 
 internal static class PluginWindows
 {
-    private sealed record Hosted(SectionWindowDecl Decl, string Signature);
+    private sealed record Hosted(SectionWindowDecl Decl, string Signature, bool TakesOver);
 
     private static readonly Dictionary<string, Hosted> Live = new(StringComparer.OrdinalIgnoreCase);   // render thread
     private static readonly HashSet<string> SeenThisSession = new(StringComparer.OrdinalIgnoreCase);    // render thread
     private static readonly HashSet<string> ReopenWhenBack = new(StringComparer.OrdinalIgnoreCase);     // render thread
     private static readonly HashSet<string> RefusalsLogged = new(StringComparer.Ordinal);               // render thread
     private static volatile SectionWindowDecl[] _barWindows = Array.Empty<SectionWindowDecl>();
+    private static volatile string[] _takenOver = Array.Empty<string>();
     private static int _version;
 
     /// <summary>Hosted windows that asked for a bar button, in manifest order. Any thread.</summary>
@@ -45,12 +54,23 @@ internal static class PluginWindows
     /// <summary>True when <paramref name="title"/> is a plugin window hosted now. Render thread.</summary>
     public static bool IsHosted(string title) => Live.ContainsKey(title);
 
+    /// <summary>
+    /// True while a plugin window has taken the place of the engine panel <paramref name="title"/>:
+    /// the engine's own bar button for it is left out (the window has its own when it asks). Any thread.
+    /// </summary>
+    public static bool TakesOver(string title)
+    {
+        foreach (string t in _takenOver)
+            if (t.Equals(title, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
     /// <summary>After a SectionRegistry rebuild: register, update and drop the windows' panels. Render thread.</summary>
     public static void Sync(IReadOnlyList<SectionManifest> manifests, IReadOnlyList<ServerState> servers)
     {
         var refused = new List<string>();
-        Dictionary<string, SectionWindowDecl> want = WindowPlan.Build(manifests, servers,
-            title => ImGuiPanelHost.HasFace(title) && !Live.ContainsKey(title), refused);
+        var takeOvers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, SectionWindowDecl> want = WindowPlan.Build(manifests, servers, Use, refused, takeOvers);
         foreach (string r in refused)
             if (RefusalsLogged.Add(r)) RynthLog.UI("PluginWindows: " + r + " - not shown.");
 
@@ -60,8 +80,18 @@ internal static class PluginWindows
             if (!want.ContainsKey(title)) gone.Add(title);
         foreach (string title in gone)
         {
-            if (ImGuiPanelHost.IsOpen(title)) ReopenWhenBack.Add(title);
-            ImGuiPanelHost.Unregister(title);
+            Hosted was = Live[title];
+            if (was.TakesOver)
+            {
+                // The engine's face comes back in the window's place (open if it was open).
+                ImGuiPanelHost.ReleaseTakeOver(title);
+                RynthLog.UI($"PluginWindows: {was.Decl.Plugin}'s window '{title}' went - the engine's panel is back.");
+            }
+            else
+            {
+                if (ImGuiPanelHost.IsOpen(title)) ReopenWhenBack.Add(title);
+                ImGuiPanelHost.Unregister(title);
+            }
             Live.Remove(title);
             changed = true;
         }
@@ -71,9 +101,19 @@ internal static class PluginWindows
             string sig = WindowPlan.Signature(w);
             if (Live.TryGetValue(title, out Hosted? h) && h.Signature == sig) continue;
             SectionWindowDecl decl = w;
-            ImGuiPanelHost.RegisterDynamic(title, title, Spec(decl), () => new PluginWindowFace(decl.Plugin, decl.Surface, decl.Title));
+            Func<IImGuiPanel> face = () => new PluginWindowFace(decl.Plugin, decl.Surface, decl.Title);
+            if (takeOvers.Contains(title))
+            {
+                // An engine panel's place: its key, saved place and open state stay; nothing to reopen.
+                if (!ImGuiPanelHost.TakeOver(title, title, Spec(decl), face)) continue;
+                if (h == null) RynthLog.UI($"PluginWindows: {decl.Plugin}'s window '{title}' takes the engine panel's place.");
+                Live[title] = new Hosted(decl, sig, TakesOver: true);
+                changed = true;
+                continue;
+            }
+            ImGuiPanelHost.RegisterDynamic(title, title, Spec(decl), face);
             bool first = h == null;
-            Live[title] = new Hosted(decl, sig);
+            Live[title] = new Hosted(decl, sig, TakesOver: false);
             changed = true;
             if (!first) continue;
             bool reopen = ReopenWhenBack.Remove(title);
@@ -86,11 +126,25 @@ internal static class PluginWindows
 
         if (!changed) return;
         var bar = new List<SectionWindowDecl>();
+        var taken = new List<string>();
         foreach (Hosted h in Live.Values)
+        {
             if (h.Decl.Bar) bar.Add(h.Decl);
+            if (h.TakesOver) taken.Add(h.Decl.Title);
+        }
         _barWindows = bar.ToArray();
+        _takenOver = taken.ToArray();
         System.Threading.Interlocked.Increment(ref _version);
     }
+
+    /// <summary>
+    /// What already uses <paramref name="title"/>: an engine panel (taken over by a window here or
+    /// not), this sync's own hosted window (free), or another panel such as a script window.
+    /// </summary>
+    private static TitleUse Use(string title) =>
+        ImGuiPanelHost.IsEnginePanel(title) ? TitleUse.EnginePanel
+        : ImGuiPanelHost.HasFace(title) && !Live.ContainsKey(title) ? TitleUse.Other
+        : TitleUse.Free;
 
     private static PanelSpec Spec(SectionWindowDecl w) => new(
         new Vector2(w.Width, w.Height), new Vector2(w.MinWidth, w.MinHeight),

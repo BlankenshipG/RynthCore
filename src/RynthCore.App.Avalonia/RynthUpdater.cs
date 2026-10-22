@@ -95,6 +95,15 @@ internal sealed partial class RynthUpdater
         public bool NavDataUpdateAvailable => NavData is { State: NavDataState.NeedsUpdate };
         /// <summary>The optional World Map sizes: what the feed offers and what is installed. Not part of "Update plugins": the player chooses.</summary>
         public IReadOnlyList<MapPackStatus> MapPacks { get; init; } = Array.Empty<MapPackStatus>();
+        /// <summary>
+        /// The release the player went back from with Roll back (0: none; RynthUpdater.Rollback.cs). While
+        /// the feed offers nothing newer and the player hasn't updated past it, updates are held.
+        /// </summary>
+        public int HoldThrough { get; init; }
+        /// <summary>Held after a rollback: no automatic plugin updates; the card says so.</summary>
+        public bool Held => HoldThrough > 0 && Manifest.Release <= HoldThrough && InstalledCoreRelease < HoldThrough;
+        /// <summary>A rollback's hold is over: a newer release is out, or the player updated past it by hand.</summary>
+        public bool HoldEnded => HoldThrough > 0 && !Held;
     }
 
     /// <summary>
@@ -152,6 +161,10 @@ internal sealed partial class RynthUpdater
         bool coreBringsIt = core.EngineApi >= e.MinEngineApi && core.Release > InstalledCoreRelease && core.Version.Length > 0;
         return coreBringsIt ? $"needs RynthCore {core.Version}" : $"needs a newer RynthCore (API {e.MinEngineApi})";
     }
+
+    /// <summary>Where installers (and a rollback's plugins) are downloaded: %LOCALAPPDATA%\RynthCore\updates. Tests set it.</summary>
+    internal string UpdatesDir { get; set; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RynthCore", "updates");
 
     /// <summary>False until the signing keys exist: with no trusted key nothing can verify.</summary>
     public bool IsConfigured => _trustedKeys.Count > 0;
@@ -220,6 +233,7 @@ internal sealed partial class RynthUpdater
             MapPacks = CheckMapPacks(manifest),
             Available = available,
             NewlyAnnounced = available.Where(a => fresh.Contains(a.Entry.Name)).ToList(),
+            HoldThrough = HeldThroughRelease,
         };
     }
 
@@ -317,11 +331,13 @@ internal sealed partial class RynthUpdater
     // ── Core ──────────────────────────────────────────────────────────────────
 
     /// <summary>Downloads (or reuses) the release installer, verified, and returns its path.</summary>
-    public async Task<string> DownloadInstallerAsync(CheckResult check, IProgress<DownloadProgress>? progress = null, CancellationToken ct = default)
+    public Task<string> DownloadInstallerAsync(CheckResult check, IProgress<DownloadProgress>? progress = null, CancellationToken ct = default) =>
+        DownloadInstallerAsync(check.Manifest.Core, progress, ct);
+
+    /// <summary>Downloads (or reuses) <paramref name="core"/>'s installer, verified, and returns its path.</summary>
+    public async Task<string> DownloadInstallerAsync(InstallerEntry core, IProgress<DownloadProgress>? progress = null, CancellationToken ct = default)
     {
-        InstallerEntry core = check.Manifest.Core;
-        string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                                  "RynthCore", "updates", core.Release.ToString());
+        string dir = Path.Combine(UpdatesDir, core.Release.ToString());
         Directory.CreateDirectory(dir);
         string path = Path.Combine(dir, "RynthCore-Setup.exe");
         if (File.Exists(path) && new FileInfo(path).Length == core.Size &&
@@ -522,24 +538,45 @@ internal sealed partial class RynthUpdater
         catch { }
     }
 
-    private int ReadHighestRelease()
+    private int ReadHighestRelease() => ReadStateInt("highestRelease");
+
+    private void WriteHighestRelease(int release) => WriteState(s => s["highestRelease"] = release);
+
+    // update-state.json holds several values (the replay guard's highest release, a rollback's hold):
+    // each write changes its own keys and keeps the rest.
+
+    private System.Text.Json.Nodes.JsonObject ReadState()
     {
         try
         {
-            if (!File.Exists(StatePath)) return 0;
-            using var doc = JsonDocument.Parse(File.ReadAllText(StatePath));
-            return doc.RootElement.TryGetProperty("highestRelease", out JsonElement v) ? v.GetInt32() : 0;
+            if (File.Exists(StatePath) && System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(StatePath)) is System.Text.Json.Nodes.JsonObject o)
+                return o;
         }
+        catch { }
+        return new System.Text.Json.Nodes.JsonObject();
+    }
+
+    private int ReadStateInt(string key)
+    {
+        try { return ReadState()[key]?.GetValue<int>() ?? 0; }
         catch { return 0; }
     }
 
-    private void WriteHighestRelease(int release)
+    private bool ReadStateBool(string key)
+    {
+        try { return ReadState()[key]?.GetValue<bool>() ?? false; }
+        catch { return false; }
+    }
+
+    private void WriteState(Action<System.Text.Json.Nodes.JsonObject> change)
     {
         try
         {
+            System.Text.Json.Nodes.JsonObject state = ReadState();
+            change(state);
             Directory.CreateDirectory(_stateDir);
             string tmp = StatePath + ".tmp";
-            File.WriteAllText(tmp, $"{{\"highestRelease\": {release}}}", Encoding.UTF8);
+            File.WriteAllText(tmp, state.ToJsonString(), Encoding.UTF8);
             File.Move(tmp, StatePath, overwrite: true);
         }
         catch { }

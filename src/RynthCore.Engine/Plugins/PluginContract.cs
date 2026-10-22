@@ -21,7 +21,12 @@
 //                                              "miniremote") into the engine's current ImGui
 //                                              window on AC's render thread, inside a
 //                                              width x height child; reports the size it wants.
-//                                              1 = drawn, 0 = not ready / unknown surface.
+//                                              1 = drawn, 0 = not ready / unknown surface,
+//                                              -2 = failed (it caught its own exception): its
+//                                              surfaces go off for the session, as for a throw
+//                                              (engines before 2026-10-21 read -2 as 0). Leave
+//                                              ImGui's stacks as found; the engine puts back
+//                                              what a plugin window leaves open, and logs it.
 //    void        RynthPluginOnServerMessage(uint opcode, byte* data, int length)
 //                                            — v78, reassembled server messages the plugin
 //                                              asked for with SetServerMessageInterestFn

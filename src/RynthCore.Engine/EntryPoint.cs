@@ -1312,7 +1312,11 @@ public static class EntryPoint
         {
             try
             {
-                if (!EngineThreads.Sleep(DecalCoexistencePluginInitDelay))
+                // In short steps that watch the pump's stop flag: a teardown in these seconds
+                // (a reload right after login) then finds this thread gone at once rather than
+                // after the delay, and plugins are never initialised for a dying generation
+                // (StopTickPumpAndJoin, PluginShutdownGate).
+                if (!SleepUnlessPumpStopRequested(DecalCoexistencePluginInitDelay))
                     return;
 
                 // Reseed the qualities pointer from the live player object
@@ -1601,10 +1605,13 @@ public static class EntryPoint
     internal static bool StopTickPumpAndJoin(int timeoutMs = 2000)
     {
         Compatibility.GameTickHooks.HeadlessPrefetch = false;   // no more prefetch work once teardown starts
+        // Before the null check: a pump that starts after this (a login bootstrap racing the
+        // teardown) leaves its loop at once instead of ticking a generation being torn down.
+        Interlocked.Exchange(ref _tickPumpStopRequested, 1);
         if (_tickPumpThread == null)
             return true;
-
-        Interlocked.Exchange(ref _tickPumpStopRequested, 1);
+        if (_tickPumpThread == Thread.CurrentThread)
+            return Volatile.Read(ref _tickPumpExited) != 0;   // never wait for itself
 
         long deadline = Environment.TickCount64 + timeoutMs;
         while (Volatile.Read(ref _tickPumpExited) == 0 && Environment.TickCount64 < deadline)
@@ -1612,8 +1619,29 @@ public static class EntryPoint
 
         bool exited = Volatile.Read(ref _tickPumpExited) != 0;
         if (!exited)
-            RynthLog.Plugin($"DecalCoexistence: tick pump did NOT exit within {timeoutMs}ms.");
+            RynthLog.Plugin($"Plugin tick pump did NOT exit within {timeoutMs}ms{DescribePumpInside()}.");
         return exited;
+    }
+
+    private static string DescribePumpInside()
+    {
+        try { string? inside = Plugins.PluginManager.DescribePumpDispatch(); return inside != null ? " (" + inside + ")" : ""; }
+        catch { return ""; }
+    }
+
+    /// <summary>
+    /// For PluginManager.ShutdownAll: stops the plugin pump if it is still running, waits up
+    /// to <paramref name="timeoutMs"/> for its frame in flight, and says whether the plugins
+    /// may be shut down now (PluginShutdownGate). At once when the pump already stopped (every
+    /// EngineLifecycle.Shutdown stops it first) or never started.
+    /// </summary>
+    internal static Plugins.PluginShutdownGate.Verdict StopTickPumpForPluginShutdown(int timeoutMs)
+    {
+        Thread? pump = _tickPumpThread;
+        bool onPump = pump != null && pump == Thread.CurrentThread;
+        if (pump != null && !onPump && Volatile.Read(ref _tickPumpExited) == 0)
+            StopTickPumpAndJoin(timeoutMs);
+        return Plugins.PluginShutdownGate.Decide(pump != null, Volatile.Read(ref _tickPumpExited) != 0, onPump);
     }
 
     /// <summary>
@@ -1628,6 +1656,22 @@ public static class EntryPoint
     internal static void RequestTickPumpStop()
     {
         Interlocked.Exchange(ref _tickPumpStopRequested, 1);
+    }
+
+    /// <summary>
+    /// Sleeps <paramref name="total"/> in steps of at most 100 ms. False (stop now) as soon as
+    /// the pump's stop is requested or the engine's threads are stopped.
+    /// </summary>
+    private static bool SleepUnlessPumpStopRequested(TimeSpan total)
+    {
+        long end = Environment.TickCount64 + (long)total.TotalMilliseconds;
+        while (Volatile.Read(ref _tickPumpStopRequested) == 0)
+        {
+            long left = end - Environment.TickCount64;
+            if (left <= 0) return true;
+            if (!EngineThreads.Sleep((int)Math.Min(left, 100))) return false;
+        }
+        return false;
     }
 
     private static Thread? _initThread;

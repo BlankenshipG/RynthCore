@@ -22,6 +22,7 @@ internal static class Program
         StepMaxPerRow();
         PickerIndexes();
         ParseAndFormat();
+        OpenState();
         Console.WriteLine();
         Console.WriteLine(_fails == 0 ? $"PASS ({_asserts} checks)" : $"FAIL ({_fails} of {_asserts} checks failed)");
         return _fails == 0 ? 0 : 1;
@@ -110,5 +111,44 @@ internal static class Program
         Check(!BarLayout.TryParse("2", out r, out m) && r == 1 && m == 0, "one value: defaults");
         Check(!BarLayout.TryParse("two,8", out r, out m) && r == 1 && m == 0, "not a number: defaults");
         Check(!BarLayout.TryParse("2,8,1", out r, out m) && r == 1 && m == 0, "three values: defaults");
+    }
+
+    private static void OpenState()
+    {
+        Console.WriteLine("OpenState");
+        // What ImGuiPanelHost would say: these panels open (case-insensitive, like its set).
+        // A popped-out panel is in the set too (pop out never closes it).
+        var openSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Chat", "Mini Remote", "script:rynthsort", "Guardian" };
+        Func<string, bool> isOpen = openSet.Contains;
+
+        // Which window a one-window button stands for.
+        Eq(BarOpenState.KeyFor("Chat", null), "Chat", "an engine panel: its title");
+        Eq(BarOpenState.KeyFor("Mini Remote", ""), "Mini Remote", "an empty panel key reads as none");
+        Eq(BarOpenState.KeyFor("RynthSort", "script:rynthsort"), "script:rynthsort", "a script window: its panel key, not its title");
+
+        // One-window buttons.
+        Check(BarOpenState.IsOpen(BarOpenState.KeyFor("Chat", null), isOpen), "an open panel's button is lit");
+        Check(BarOpenState.IsOpen(BarOpenState.KeyFor("Mini Remote", null), isOpen), "the remote open: its button is lit");
+        Check(!BarOpenState.IsOpen(BarOpenState.KeyFor("Radar", null), isOpen), "a closed panel's button is not");
+        Check(BarOpenState.IsOpen(BarOpenState.KeyFor("RynthSort", "script:rynthsort"), isOpen), "an open script window's button is lit");
+        Check(!BarOpenState.IsOpen(BarOpenState.KeyFor("Oracle", "script:oracle"), isOpen), "a closed script window's button is not");
+        Check(!BarOpenState.IsOpen("", isOpen), "an empty key is never open");
+        Check(BarOpenState.IsOpen("chat", isOpen), "the open check's case rules apply (the host's set ignores case)");
+
+        // Menu buttons: lit while any window they list is open.
+        Check(BarOpenState.AnyOpen(new[] { "Bounties", "Guardian" }, isOpen), "ILT: Guardian open lights the ILT button");
+        Check(!BarOpenState.AnyOpen(new[] { "Bounties" }, isOpen), "ILT: only Bounties, closed");
+        Check(BarOpenState.AnyOpen(new[] { "script:lua/a", "script:rynthsort" }, isOpen), "Scripts: one window open is enough");
+        Check(!BarOpenState.AnyOpen(new[] { "script:lua/a", "script:lua/b" }, isOpen), "Scripts: none open");
+        Check(!BarOpenState.AnyOpen(Array.Empty<string>(), isOpen), "a menu with nothing listed is not lit");
+
+        // The open check is asked once a key, and the search stops at the first open one.
+        int asked = 0;
+        Func<string, bool> counting = k => { asked++; return openSet.Contains(k); };
+        BarOpenState.AnyOpen(new[] { "Guardian", "Bounties", "Radar" }, counting);
+        Eq(asked, 1, "stops at the first open window");
+        asked = 0;
+        BarOpenState.AnyOpen(new[] { "Radar", "", "Bounties" }, counting);
+        Eq(asked, 2, "every key asked once when none is open; an empty key not at all");
     }
 }

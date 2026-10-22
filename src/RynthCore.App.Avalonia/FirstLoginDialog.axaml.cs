@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using Avalonia.Automation;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using RynthCore.App;
 
 namespace RynthCore.App.Avalonia;
@@ -53,10 +55,29 @@ internal partial class FirstLoginDialog : Window
         AccountBox.TextChanged += (_, _) => OnAccountChanged();
         ReuseSavedPasswordCheckBox.IsCheckedChanged += (_, _) => UpdatePasswordPanel();
 
+        ShowPasswordToggle.IsCheckedChanged += (_, _) => Reveal(PasswordBox, ShowPasswordToggle);
+        ShowConfirmToggle.IsCheckedChanged += (_, _) => Reveal(ConfirmBox, ShowConfirmToggle);
+        // The plain text lives only in the boxes, and only while the dialog is open.
+        Closed += (_, _) =>
+        {
+            PasswordBox.Text = string.Empty;
+            ConfirmBox.Text = string.Empty;
+        };
+
         LoginButton.Click += (_, _) => LogInAndClose();
         CancelButton.Click += (_, _) => Close(false);
 
         OnAccountChanged();
+    }
+
+    /// <summary>An eye: shows or hides what's typed in its box (nothing saved to fill in here).</summary>
+    private static void Reveal(TextBox box, ToggleButton eye)
+    {
+        bool show = eye.IsChecked == true;
+        box.RevealPassword = show;
+        string tip = show ? SavedPasswordReveal.HideTip : SavedPasswordReveal.ShowTip;
+        ToolTip.SetTip(eye, tip);
+        AutomationProperties.SetName(eye, tip);
     }
 
     /// <summary>Re-reads the account's characters and whether another profile's password can be reused.</summary>

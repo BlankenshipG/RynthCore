@@ -1336,8 +1336,8 @@ internal static partial class PluginManager
     /// Render thread only. Returns <see cref="EmbedDrawn"/>, <see cref="EmbedNotReady"/> (the
     /// plugin isn't ready: before login, no ImGui context, or too old to draw in a pop-out),
     /// <see cref="EmbedNoPlugin"/> (not loaded, or too old to have the export) or
-    /// <see cref="EmbedFailed"/> (it threw: the export is switched off for this session; the
-    /// plugin keeps running).
+    /// <see cref="EmbedFailed"/> (it threw, or returned -2 to say it caught its own exception:
+    /// the export is switched off for this session; the plugin keeps running).
     /// </summary>
     internal static unsafe int RenderEmbed(string pluginName, ReadOnlySpan<byte> surfaceUtf8, System.Numerics.Vector2 size, out System.Numerics.Vector2 want)
     {
@@ -1380,6 +1380,15 @@ internal static partial class PluginManager
             fixed (byte* s = surfaceUtf8)
                 r = ((delegate* unmanaged[Cdecl]<byte*, float, float, float*, float*, int>)fn)(s, size.X, size.Y, &w, &h);
             want = new System.Numerics.Vector2(float.IsFinite(w) ? MathF.Max(0, w) : 0, float.IsFinite(h) ? MathF.Max(0, h) : 0);
+            if (r == EmbedFailed)
+            {
+                // The plugin caught its own exception and says so (an exception can't leave a
+                // managed plugin's [UnmanagedCallersOnly] export, so plugins catch everything; with
+                // 0 the window would say "Waiting..." for ever): the same as a throw.
+                p.RenderEmbedPtr = IntPtr.Zero;
+                RynthLog.Error($"PluginManager: {p.DisplayName} RenderEmbed reported a failure (-2) - embedded surfaces off for this session (plugin keeps running).");
+                return EmbedFailed;
+            }
             return r == 1 ? EmbedDrawn : EmbedNotReady;
         }
         catch (Exception ex)
@@ -1436,6 +1445,17 @@ internal static partial class PluginManager
 
     public static void ShutdownAll()
     {
+        // A plugin's Shutdown never runs alongside its Tick on the pump thread (audit
+        // 2026-10-21, 01 #1). EngineLifecycle.Shutdown stops the pump before anything reaches
+        // here, so this returns at once; a frame still running gets ShutdownWaitMs more, and
+        // if it outlasts that the plugins are left alone. Nothing below changes then: the
+        // teardown's defensive ShutdownAll asks again after its other steps.
+        PluginShutdownGate.Verdict gate = EntryPoint.StopTickPumpForPluginShutdown(PluginShutdownGate.ShutdownWaitMs);
+        if (!PluginShutdownGate.MayShutDownPlugins(gate))
+        {
+            RynthLog.Error(PluginShutdownGate.DescribeRefusal(_plugins.Count, DescribePumpDispatch()));
+            return;
+        }
         RynthLog.Plugin($"PluginManager: Shutting down {_plugins.Count} plugin(s)...");
         UiLifecycleHooks.UiInitialized -= OnUIInitializedObserved;
         LoginLifecycleHooks.LoginComplete -= OnLoginCompleteObserved;

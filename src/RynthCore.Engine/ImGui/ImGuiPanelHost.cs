@@ -9,12 +9,16 @@
 //  and close; 16 px resize grip, all Phosphor icons), placement restore/persistence shared
 //  with the Avalonia face through PanelStateStore, and per-panel error isolation.
 //
+//  A plugin window can take an engine panel's place (TakeOver, the manifest's
+//  "takeOver"): same key, so the saved place, open state and commands carry
+//  over; the engine's face is kept and comes back on ReleaseTakeOver.
+//
 //  Threads:
 //    Register        engine init.
-//    RegisterDynamic / Unregister / RequestSize / RequestPos
+//    RegisterDynamic / Unregister / RequestSize / RequestPos / TakeOver / ReleaseTakeOver
 //                    any thread (script windows, from the plugin pump thread);
 //                    DrawOrder is copy-on-write, removal finishes in DrawAll;
-//                    requests are applied in DrawPanel.
+//                    requests are applied in DrawPanel, face swaps in DrawAll.
 //    Open / Close    any thread (router: game thread / Avalonia UI thread).
 //                    Applied on AC's render thread at the next DrawAll.
 //    DrawAll         AC's render thread, inside the ImGui frame.
@@ -146,7 +150,16 @@ internal static class ImGuiPanelHost
         public volatile bool HasRequest;      // RequestedSize or RequestedPos is set
         public int Failures;
         public string? Error;
+        /// <summary>True while a plugin window has this engine panel's place (TakeOver).</summary>
+        public bool TakenOver;
+        /// <summary>The engine's own face, kept from the first TakeOver for ReleaseTakeOver.</summary>
+        public FaceSet? EngineOwn;
+        /// <summary>A face change waiting for the render thread (ApplyFaceChanges).</summary>
+        public FaceSet? NextFace;
     }
+
+    /// <summary>What draws a panel: its spec, its face's factory and its header text.</summary>
+    private sealed record FaceSet(PanelSpec Spec, Func<IImGuiPanel> Factory, string DisplayTitle);
 
     private static readonly object Sync = new();
     private static readonly Dictionary<string, Entry> Entries = new(StringComparer.OrdinalIgnoreCase);
@@ -262,6 +275,109 @@ internal static class ImGuiPanelHost
     public static bool HasFace(string title)
     {
         lock (Sync) return Entries.ContainsKey(title);
+    }
+
+    // ── Plugin windows taking over an engine panel (docs/PLUGIN_WINDOWS.md, "takeOver") ──
+
+    /// <summary>True when <paramref name="key"/> is an engine panel (Register), taken over or not. Any thread.</summary>
+    public static bool IsEnginePanel(string key)
+    {
+        lock (Sync) return Entries.TryGetValue(key, out Entry? e) && !e.Dynamic;
+    }
+
+    /// <summary>True while a plugin window draws in the engine panel <paramref name="key"/>'s place. Any thread.</summary>
+    public static bool IsTakenOver(string key)
+    {
+        lock (Sync) return Entries.TryGetValue(key, out Entry? e) && e.TakenOver;
+    }
+
+    /// <summary>
+    /// A plugin window takes the engine panel <paramref name="key"/>'s place: the panel keeps its
+    /// key (its saved place and size, open state, hotkeys, /rc command and router entry) and is
+    /// drawn with <paramref name="spec"/> and <paramref name="factory"/>'s face from the next
+    /// frame; one open now closes and opens again as the new face, where it was (popped out
+    /// stays popped out). The engine's own face is kept for <see cref="ReleaseTakeOver"/>. Also
+    /// updates a window already in place. False when <paramref name="key"/> isn't an engine
+    /// panel. Any thread; applied on AC's render thread.
+    /// </summary>
+    public static bool TakeOver(string key, string displayTitle, PanelSpec spec, Func<IImGuiPanel> factory)
+    {
+        lock (Sync)
+        {
+            if (!Entries.TryGetValue(key, out Entry? e) || e.Dynamic) return false;
+            // The first takeover finds the engine's face in place; later ones may find a plugin's.
+            e.EngineOwn ??= new FaceSet(e.Spec, e.Factory, e.DisplayTitle);
+            e.TakenOver = true;
+            e.NextFace = new FaceSet(spec, factory, displayTitle);
+        }
+        _faceChangePending = true;
+        return true;
+    }
+
+    /// <summary>
+    /// The plugin window that took over <paramref name="key"/> went (plugin unloaded, window
+    /// dropped): the engine's own face comes back in its place, open if the window was open.
+    /// Any thread; applied on AC's render thread.
+    /// </summary>
+    public static void ReleaseTakeOver(string key)
+    {
+        lock (Sync)
+        {
+            if (!Entries.TryGetValue(key, out Entry? e) || !e.TakenOver || e.EngineOwn == null) return;
+            e.TakenOver = false;
+            e.NextFace = e.EngineOwn;
+        }
+        _faceChangePending = true;
+    }
+
+    private static volatile bool _faceChangePending;
+
+    /// <summary>
+    /// Swaps in the faces TakeOver / ReleaseTakeOver asked for. A panel shown now closes as its
+    /// old face and opens as the new one (placement saved and read back as usual), and embedded
+    /// copies of it are dropped so their hosts draw the new face. AC thread, before the requests.
+    /// </summary>
+    private static void ApplyFaceChanges(float placeScale)
+    {
+        if (!_faceChangePending) return;
+        _faceChangePending = false;
+        List<Entry>? changed = null;
+        lock (Sync)
+            foreach (Entry e in DrawOrder)
+            {
+                if (e.NextFace is not FaceSet next) continue;
+                e.NextFace = null;
+                bool sameFace = e.Factory == next.Factory;
+                e.Spec = next.Spec;
+                e.Factory = next.Factory;
+                e.DisplayTitle = next.DisplayTitle;
+                if (!sameFace) (changed ??= new List<Entry>()).Add(e);
+            }
+        if (changed == null) return;
+        foreach (Entry e in changed)
+        {
+            RynthLog.UI($"ImGuiPanelHost: {e.Title} is drawn by {(e.TakenOver ? "a plugin's window" : "the engine's face again")}.");
+            DropEmbeddedCopies(e.Title);
+            if (!e.Shown) continue;   // the next open uses the new face
+            Apply(e.Title, RequestKind.Close, placeScale);
+            Apply(e.Title, RequestKind.Open, placeScale);
+        }
+    }
+
+    /// <summary>Hides and drops the embedded copies of <paramref name="title"/> (another face takes its place). AC thread.</summary>
+    private static void DropEmbeddedCopies(string title)
+    {
+        List<string>? gone = null;
+        foreach (var kv in EmbeddedFaces)
+            if (kv.Value.Title.Equals(title, StringComparison.OrdinalIgnoreCase)) (gone ??= new List<string>()).Add(kv.Key);
+        if (gone == null) return;
+        foreach (string key in gone)
+        {
+            EmbeddedFace face = EmbeddedFaces[key];
+            EmbeddedFaces.Remove(key);
+            try { face.Instance.OnHidden(); }
+            catch (Exception ex) { RynthLog.UI($"ImGuiPanelHost: embedded {face.Title}.OnHidden threw {ex.GetType().Name}: {ex.Message}"); }
+        }
     }
 
     public static PanelFace CodeDefault(string title)
@@ -455,6 +571,7 @@ internal static class ImGuiPanelHost
     {
         _frameScale = uiScale;
         float placeScale = PlacementScale();
+        ApplyFaceChanges(placeScale);   // plugin windows taking over (or giving back) engine panels
         while (Requests.TryDequeue(out var req))
             Apply(req.Title, req.Kind, placeScale);
         RemoveUnregistered();

@@ -1,7 +1,7 @@
 // ============================================================================
 //  RynthCore.Engine - Plugins/PumpGuards.cs
 //
-//  Two small pieces for PluginManager.TickAll and the plugin pump thread.
+//  Small pieces for PluginManager.TickAll, the plugin pump thread and plugin shutdown.
 //
 //  StepFaultLog: TickAll's own steps (the main-thread freeze check, the delayed
 //  self-identify, the Nav3D frame clear/commit, dropping failed plugins' script
@@ -16,6 +16,9 @@
 //  "TickAll" in the event log; the process then sits ~12 s while createdump writes
 //  the dump, the hang watchdog reports, and this line names the plugin
 //  (2026-10-13 06:00: RynthAi's tick jumped to address 0).
+//
+//  PluginShutdownGate: plugins are shut down only once the pump has stopped (or
+//  never ran), so no plugin's Shutdown runs alongside its Tick (audit 2026-10-21).
 //
 //  Pure: no engine state. Compiled into tools\EngineRobustnessTests.
 // ============================================================================
@@ -81,4 +84,48 @@ internal static class PumpDispatchInfo
             return null;
         return $"inside {plugin} {export ?? "call"} for {ms} ms";
     }
+}
+
+/// <summary>
+/// Whether PluginManager.ShutdownAll may call the plugins' Shutdown now: never while the
+/// plugin pump may still be inside a frame on its own thread, or a plugin's Tick and events
+/// would run alongside its Shutdown, which frees their threads, textures and handles (a
+/// native fault there can't be caught: audit 2026-10-21, 01 #1). EngineLifecycle.Shutdown
+/// stops the pump before anything shuts a plugin down; this checks that the stop finished.
+/// </summary>
+internal static class PluginShutdownGate
+{
+    /// <summary>How long ShutdownAll waits for the pump on top of EngineLifecycle's own join.</summary>
+    public const int ShutdownWaitMs = 5000;
+
+    internal enum Verdict
+    {
+        /// <summary>No pump was started in this generation (plugins off, or before login).</summary>
+        NoPump,
+        /// <summary>The pump has left its loop: nothing ticks the plugins any more.</summary>
+        PumpStopped,
+        /// <summary>Called on the pump thread itself: no frame of it can run alongside.</summary>
+        OnPumpThread,
+        /// <summary>The pump is still running (a frame outlasted the wait): leave the plugins alone.</summary>
+        PumpStillRunning,
+    }
+
+    /// <summary>
+    /// <paramref name="pumpStarted"/>: a pump thread was started; <paramref name="pumpExited"/>:
+    /// it has left its loop (after the stop and the wait); <paramref name="onPumpThread"/>: the
+    /// caller is that thread.
+    /// </summary>
+    public static Verdict Decide(bool pumpStarted, bool pumpExited, bool onPumpThread) =>
+        !pumpStarted ? Verdict.NoPump
+        : pumpExited ? Verdict.PumpStopped
+        : onPumpThread ? Verdict.OnPumpThread
+        : Verdict.PumpStillRunning;
+
+    public static bool MayShutDownPlugins(Verdict verdict) => verdict != Verdict.PumpStillRunning;
+
+    /// <summary>The log line when ShutdownAll leaves the plugins alone.</summary>
+    public static string DescribeRefusal(int plugins, string? pumpInside) =>
+        $"PluginManager: the plugin pump is still running ({pumpInside ?? "no plugin call named"}) - " +
+        $"{plugins} plugin(s) NOT shut down now, so no Shutdown runs alongside a Tick. " +
+        "The engine's teardown tries once more after its other steps.";
 }

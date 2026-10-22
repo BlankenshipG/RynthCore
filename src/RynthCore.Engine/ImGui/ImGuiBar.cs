@@ -9,7 +9,11 @@
 //  asked for a button (WindowFlags.BarButton: RynthSort, Oracle, ...; tooltip =
 //  its title; the set is rebuilt as plugins come and go), one per window a plugin
 //  draws that asked for one (its manifest's "windows" with "bar", UI/Sections/
-//  PluginWindows.cs), reload (RL) and pop out.
+//  PluginWindows.cs; an engine panel such a window has taken over loses its own
+//  button), reload (RL) and pop out.
+//  A button whose window is open, docked or popped out, draws highlighted in the
+//  theme's accent (RynthTheme.BarButtonOpen*); the ILT and Scripts buttons while
+//  any window in their menu is (UI/BarOpenState.cs; one IsOpen lookup a key).
 //  Dragging the grip moves the bar; the position is the shared bar= row in
 //  panel_state.txt. Right-click the grip for the bar's menu: its size, its rows
 //  and "Report a problem" (panel buttons have no menu). Pop out moves the ImGui
@@ -65,8 +69,12 @@ internal static class ImGuiBar
 
     // Window: a plugin's script window with a bar button of its own (WindowFlags.BarButton);
     // the button toggles it through ScriptWindowRegistry, like the Scripts menu does.
+    // OpenKey: the panel whose open state lights the button (BarOpenState.KeyFor).
     private sealed record ButtonInfo(string Title, string Id, string Icon, bool Letter, string Tooltip,
-        ScriptWindow? Window = null);
+        string OpenKey, ScriptWindow? Window = null);
+
+    // The open check every highlight uses (one set lookup a key), as one delegate: no allocation a frame.
+    private static readonly Func<string, bool> IsOpenCheck = ImGuiPanelHost.IsOpen;
 
     // Engine panels with an ImGui face only (no OverlayHost entry) that get a bar button.
     // Item Count has no icon of its own since 2026-10-18: Inventory's Count button, /rc itemcount, the Character menu.
@@ -147,6 +155,9 @@ internal static class ImGuiBar
     private static ScriptBarItem[]? _builtScriptButtons;
     private static int _builtImGuiOnlyMask;
     private static int _builtPluginWindows = -1;
+    // The Scripts menu's panel keys (its button lights while any is open), rebuilt with the snapshot.
+    private static ScriptBarItem[]? _scriptKeysFor;
+    private static string[] _scriptKeys = Array.Empty<string>();
     private static string _tooltip = "";
     private static bool _placed;
     private static Vector2 _pos, _persistedPos;
@@ -457,12 +468,15 @@ internal static class ImGuiBar
 
         PushBarButtonStyle(s);
         ImFontPtr letterFont = ImGuiFonts.Get(UiFont.UiBold11);
+        // A button whose window is open (docked or popped out) draws in the theme's accent
+        // (BarOpenState); a menu button (ILT, Scripts) while any window it lists is open.
         foreach (ButtonInfo b in _buttons!)
         {
             NextSlot(ref slot, perRow, iconsX, s, iconFont, popped);
-            if (IconButton(b.Id, b.Letter ? letterFont : iconFont, b.Icon, square, RynthTheme.BarText))
+            bool open = BarOpenState.IsOpen(b.OpenKey, IsOpenCheck);
+            if (IconButton(b.Id, b.Letter ? letterFont : iconFont, b.Icon, square, RynthTheme.BarText, open))
             {
-                if (b.Window != null) ScriptWindowRegistry.PlayerSetVisible(b.Window, !ImGuiPanelHost.IsOpen(b.Window.PanelKey));
+                if (b.Window != null) ScriptWindowRegistry.PlayerSetVisible(b.Window, !open);
                 else PanelRouter.Toggle(b.Title);
             }
             SafeImGui.SetItemTooltip(b.Tooltip);
@@ -474,7 +488,8 @@ internal static class ImGuiBar
         {
             NextSlot(ref slot, perRow, iconsX, s, iconFont, popped);
             string? only = iltCount == 1 ? FirstIltPanel() : null;
-            if (IconButton("##ilt", iconFont, PhosphorIcons.Leaf, square, RynthTheme.BarText))
+            bool open = BarOpenState.AnyOpen(IltPanels, IsOpenCheck);
+            if (IconButton("##ilt", iconFont, PhosphorIcons.Leaf, square, RynthTheme.BarText, open))
             {
                 if (only != null) PanelRouter.Toggle(only);
                 else ImGuiNET.ImGui.OpenPopup("##ilt_menu");
@@ -488,7 +503,8 @@ internal static class ImGuiBar
         if (scripts.Length > 0)
         {
             NextSlot(ref slot, perRow, iconsX, s, iconFont, popped);
-            if (IconButton("##scripts", iconFont, PhosphorIcons.AppWindow, square, RynthTheme.BarText))
+            bool open = BarOpenState.AnyOpen(ScriptKeys(scripts), IsOpenCheck);
+            if (IconButton("##scripts", iconFont, PhosphorIcons.AppWindow, square, RynthTheme.BarText, open))
                 ImGuiNET.ImGui.OpenPopup("##scripts_menu");
             ImGuiNET.ImGui.SetItemTooltip("Script windows");
         }
@@ -610,11 +626,32 @@ internal static class ImGuiBar
         }
     }
 
-    /// <summary>A square bar button (the bar's button style) with an icon, or a letter, centred on it.</summary>
-    private static bool IconButton(string id, ImFontPtr font, string icon, Vector2 size, uint color)
+    /// <summary>The Scripts menu's panel keys, rebuilt only when its snapshot changes (a new array then). AC thread.</summary>
+    private static string[] ScriptKeys(ScriptBarItem[] items)
+    {
+        if (ReferenceEquals(items, _scriptKeysFor)) return _scriptKeys;
+        var keys = new string[items.Length];
+        for (int i = 0; i < items.Length; i++) keys[i] = items[i].PanelKey;
+        _scriptKeys = keys;
+        _scriptKeysFor = items;
+        return keys;
+    }
+
+    /// <summary>
+    /// A square bar button (the bar's button style) with an icon, or a letter, centred on it.
+    /// <paramref name="open"/>: its window is open, so it draws in the theme's accent.
+    /// </summary>
+    private static bool IconButton(string id, ImFontPtr font, string icon, Vector2 size, uint color, bool open = false)
     {
         Vector2 at = ImGuiNET.ImGui.GetCursorScreenPos();
+        if (open)
+        {
+            ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Button, RynthTheme.BarButtonOpen);
+            ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ButtonHovered, RynthTheme.BarButtonOpenHover);
+            ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Border, RynthTheme.BarButtonOpenBorder);
+        }
         bool clicked = ImGuiNET.ImGui.Button(id, size);
+        if (open) ImGuiNET.ImGui.PopStyleColor(3);
         PhosphorIcons.DrawCentered(ImGuiNET.ImGui.GetWindowDrawList(), font, icon, at, size, color);
         return clicked;
     }
@@ -761,17 +798,19 @@ internal static class ImGuiBar
         _builtImGuiOnlyMask = mask;
         _builtPluginWindows = pluginWindows;
         var list = new List<ButtonInfo>();
+        // An engine panel a plugin window has taken over ("takeOver") has no engine button: the
+        // window's own (below) stands in when it asks for one.
         foreach (var (title, _) in OverlayHost.GetPanels())
-            if (!LauncherOnly.Contains(title))
+            if (!LauncherOnly.Contains(title) && !UI.Sections.PluginWindows.TakesOver(title))
             {
                 string icon = IconFor(title, out bool letter);
-                list.Add(new ButtonInfo(title, "##bar_" + title, icon, letter, title));
+                list.Add(new ButtonInfo(title, "##bar_" + title, icon, letter, title, BarOpenState.KeyFor(title, null)));
             }
         foreach (string title in ImGuiOnlyBarPanels)
-            if (ImGuiOnlyWanted(title) && !LauncherOnly.Contains(title))
+            if (ImGuiOnlyWanted(title) && !LauncherOnly.Contains(title) && !UI.Sections.PluginWindows.TakesOver(title))
             {
                 string icon = IconFor(title, out bool letter);
-                list.Add(new ButtonInfo(title, "##bar_" + title, icon, letter, title));
+                list.Add(new ButtonInfo(title, "##bar_" + title, icon, letter, title, BarOpenState.KeyFor(title, null)));
             }
         // Windows plugins draw (their manifests' "windows" with "bar", docs/PLUGIN_WINDOWS.md): the
         // icon they name (a Phosphor glyph), else the title's letter; the button toggles the panel.
@@ -779,7 +818,8 @@ internal static class ImGuiBar
         {
             bool letter = false;
             string icon = w.Icon.Length > 0 ? w.Icon : IconFor(w.Title, out letter);
-            list.Add(new ButtonInfo(w.Title, "##bar_pw_" + w.Plugin + "_" + w.Id, icon, letter, w.Title));
+            list.Add(new ButtonInfo(w.Title, "##bar_pw_" + w.Plugin + "_" + w.Id, icon, letter, w.Title,
+                BarOpenState.KeyFor(w.Title, null)));
         }
         // Plugin script windows that asked for a button (RynthSort, Oracle, ...): after the
         // engine's own. Only while the plugin is loaded and has submitted the window.
@@ -789,7 +829,7 @@ internal static class ImGuiBar
             string title = w.Title.Length > 0 ? w.Title : w.Key;
             string icon = IconFor(title, out bool letter);
             string id = "##bar_sw" + w.Hash.ToString("X8");
-            list.Add(new ButtonInfo(title, id, icon, letter, title, Window: w));
+            list.Add(new ButtonInfo(title, id, icon, letter, title, BarOpenState.KeyFor(title, w.PanelKey), Window: w));
         }
         _buttons = list.ToArray();
         _tooltip = $"RynthCore {EntryPoint.BuildStamp}\nDrag here to move the bar. Right-click: bar size and rows. Ctrl+wheel over the bar: size.";

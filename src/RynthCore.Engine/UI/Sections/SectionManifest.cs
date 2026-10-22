@@ -20,7 +20,7 @@
 //    "windows": [
 //      { "id": "characters", "title": "Characters", "surface": "window:characters",
 //        "icon": "\uE68E", "width": 420, "height": 260, "minWidth": 280, "minHeight": 140,
-//        "bar": true, "edgeToEdge": true, "server": "" } ]
+//        "bar": true, "edgeToEdge": true, "server": "", "takeOver": false } ]
 //  }
 //  servers       servers the plugin knows. A built-in id (ilt, aelrynth) keeps the
 //                engine's own detection; a new id is detected from its lists.
@@ -34,7 +34,11 @@
 //                hosts as panels: header, pop-out, resize, remembered place, a bar
 //                button when "bar" (the icon: a Phosphor glyph, else the title's
 //                letter); the body is "surface" through RynthPluginRenderEmbed.
-//                "title" is the panel key (unique; an engine panel's is refused).
+//                "title" is the panel key (unique). An engine panel's title is refused,
+//                unless "takeOver": true (2026-10-21): the window then draws in that
+//                panel's place (same key: its saved place, open state and commands)
+//                and the engine's face comes back when the plugin goes. Engines
+//                before that ignore the key and keep their face (the title refused).
 //                "server" set: only while that server is active. docs/PLUGIN_WINDOWS.md.
 //
 //  Everything from a plugin is checked here: ids are short lower-case words,
@@ -93,7 +97,9 @@ internal sealed record SectionWindowDecl(
     float MinHeight,
     bool Bar,
     bool EdgeToEdge,
-    string Server)
+    string Server,
+    // Takes the place of the engine panel with this title while hosted ("takeOver": true).
+    bool TakeOver = false)
 {
     /// <summary>For every world, not one server.</summary>
     public bool IsUniversal => Server.Length == 0;
@@ -210,7 +216,8 @@ internal static class SectionManifestParser
                 float minWidth = Math.Min(WindowSize(Size(e, "minWidth"), MinWindowSize), width);
                 float minHeight = Math.Min(WindowSize(Size(e, "minHeight"), MinWindowSize), height);
                 windows.Add(new SectionWindowDecl(plugin, id, title, surface, Icon(Str(e, "icon")),
-                    width, height, minWidth, minHeight, Bool(e, "bar", false), Bool(e, "edgeToEdge", false), server));
+                    width, height, minWidth, minHeight, Bool(e, "bar", false), Bool(e, "edgeToEdge", false), server,
+                    Bool(e, "takeOver", false)));
             }
 
             return new SectionManifest(plugin, servers.ToArray(), sections.ToArray(), contributions.ToArray())

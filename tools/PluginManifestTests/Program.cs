@@ -576,6 +576,16 @@ internal static class Program
         Match match = Regex.Match(File.ReadAllText(targets), @"<RynthCoreSdkApiVersion>(\d+)</RynthCoreSdkApiVersion>");
         Check(match.Success, "targets declare RynthCoreSdkApiVersion");
         Eq(match.Success ? uint.Parse(match.Groups[1].Value) : 0u, PluginContractVersion.Current, "RynthCoreSdkApiVersion in RynthCore.PluginSdk.targets");
+
+        // Release (shared-SDK) builds raise a minimum below the managed-plugin API to the SDK's API
+        // (Publish-Update.ps1 checks for this rule before building).
+        string targetsText = File.ReadAllText(targets);
+        Match managed = Regex.Match(targetsText, @"<RynthCoreManagedPluginApi>(\d+)</RynthCoreManagedPluginApi>");
+        Check(managed.Success && uint.Parse(managed.Groups[1].Value) == 88u, "targets: managed plugins need API 88 (RynthCoreManagedPluginApi)");
+        Check(targetsText.Contains("'$(RynthPluginSharedSdk)' == 'true'") &&
+              targetsText.Contains("MinEngineApi=\"$(_RynthPluginEffectiveMinEngineApi)\"") &&
+              targetsText.Contains("<_Parameter1>$(_RynthPluginEffectiveMinEngineApi)</_Parameter1>"),
+            "targets: the manifest and the runtime attribute both use the derived minimum");
     }
 
     // v79: the SDK's copies of the training structs must be the engine's, byte for byte.

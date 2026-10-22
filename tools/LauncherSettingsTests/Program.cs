@@ -373,6 +373,48 @@ internal static class Program
                 Check(FirstLoginRules.Problem("", "pw", "pw", false, AcEmulatorKind.Ace) != null, "a name is required");
             });
 
+            // Deleting a server profile re-pointed its accounts at the first remaining server, so the
+            // next launch sent one server's password to another (audit 2026-10-21 F2).
+            Scenario("server profiles: an account logs on only to its own server", root, () =>
+            {
+                var conquest = new LaunchServerProfile { Id = "conq", Name = "Conquest", Host = "conquest.example", Port = 9000 };
+                var ilt = new LaunchServerProfile { Id = "ilt", Name = "Infinite Leaftide", Host = "ilt.example", Port = 9000 };
+                var servers = new List<LaunchServerProfile> { conquest, ilt };
+                var onConquest = new LaunchAccountProfile { Id = "a", AccountName = "SK", ServerId = "conq" };
+                var onConquest2 = new LaunchAccountProfile { Id = "b", AccountName = "Buffi", Alias = "Buffer", ServerId = "CONQ" };
+                var onIlt = new LaunchAccountProfile { Id = "c", AccountName = "SK", ServerId = "ilt" };
+                var never = new LaunchAccountProfile { Id = "d", AccountName = "New" };
+                var dangling = new LaunchAccountProfile { Id = "e", AccountName = "Old", ServerId = "deleted-elsewhere" };
+                var accounts = new List<LaunchAccountProfile> { onConquest, onConquest2, onIlt, never, dangling };
+
+                Check(AccountServerRules.ServerFor(onConquest, servers) == conquest, "its own server");
+                Check(AccountServerRules.ServerFor(onConquest2, servers) == conquest, "the id is matched ignoring case");
+                Check(AccountServerRules.ServerFor(onIlt, servers) == ilt, "the same name on another server: that server");
+                Check(AccountServerRules.ServerFor(never, servers) == null, "no server set: none (not the first or the selected one)");
+                Check(AccountServerRules.ServerFor(dangling, servers) == null, "a server that is gone: none, never another server");
+                Check(AccountServerRules.ServerFor(dangling, new List<LaunchServerProfile> { ilt }) == null, "not even when only one server is left");
+                Check(AccountServerRules.ServerFor(onConquest, new List<LaunchServerProfile>()) == null, "no servers at all: none");
+
+                Check(AccountServerRules.AccountsOn(conquest, accounts).Select(a => a.Id).SequenceEqual(new[] { "a", "b" }), "Conquest's accounts: a and b");
+                string? blocker = AccountServerRules.DeleteBlocker(conquest, accounts);
+                Check(blocker != null && blocker.Contains("2 account(s)") && blocker.Contains("SK") && blocker.Contains("Buffer (Buffi)"),
+                    "deleting a server with accounts is refused, naming them: " + blocker);
+                Check(blocker != null && !blocker.Contains("Old") && !blocker.Contains("New"), "only that server's accounts are named");
+                var unused = new LaunchServerProfile { Id = "spare", Name = "Spare", Host = "h", Port = 1 };
+                Check(AccountServerRules.DeleteBlocker(unused, accounts) == null, "a server no account uses can be deleted");
+
+                // The refusal leaves every account as it was (nothing re-pointed).
+                Check(accounts.Select(a => a.ServerId).SequenceEqual(new[] { "conq", "CONQ", "ilt", "", "deleted-elsewhere" }), "no account was changed");
+
+                var many = Enumerable.Range(1, 12).Select(i => new LaunchAccountProfile { AccountName = "Acc" + i, ServerId = "ilt" }).ToList();
+                string? manyBlocker = AccountServerRules.DeleteBlocker(ilt, many);
+                Check(manyBlocker != null && manyBlocker.Contains("12 account(s)") && manyBlocker.Contains("4 more") && !manyBlocker.Contains("Acc9"),
+                    "a long list names 8 and counts the rest");
+
+                Check(AccountServerRules.NoServerMessage(dangling, anyServerProfiles: true).Contains("pick the server"), "no-server launch message says what to do");
+                Check(AccountServerRules.NoServerMessage(never, anyServerProfiles: false).Contains("Add a server profile"), "with no servers at all: add one");
+            });
+
             // A saved UserPreferences.ini whose display mode the PC can't use made every launch
             // fail with "Could not initialize Direct3D"; a quick exit must undo that swap.
             Scenario("prefs swap: did the swap change the live file", root, () =>
@@ -464,6 +506,8 @@ internal static class Program
         }
 
         ClientCommandLineChecks();
+        ExtraLaunchArgumentChecks();
+        PasswordEyeChecks();
 
         Console.WriteLine(_failed == 0
             ? $"PASS: {_checks} checks"
@@ -492,6 +536,10 @@ internal static class Program
         // exactly as ThwargLauncher writes it.
         string special = "Aa1!@#$%^&*()_+-=[]{}|\\:;'<>,.?/~`" + "Zz9\\\\end\\";
         Check(AcClientCommandLine.Token(special) == special, "no space, no quote: the password as it is");
+        // The saved form (DPAPI over UTF-8, base64) gives every one of these characters back.
+        foreach (string pw in new[] { special, "Aa1!@#$%^&*(_+-=[]{}|\\:;'<>,.?/~`*Zz9" + new string('(', 3) + "**", "€£§°´¨ü x" })
+            Check(AccountPasswordProtection.TryUnprotect(AccountPasswordProtection.Protect(pw), out string back) && back == pw,
+                "saved and read back unchanged: " + pw.Length + " characters");
         Check(ReadsBack(special, special), "and the client reads it back");
 
         // Quote marks: the client drops them whatever the launcher does; with them left out the rest
@@ -529,6 +577,117 @@ internal static class Program
             }
         }
         Check(ours > 3500 && thwargSame > 100, $"random passwords: {ours} read back, {thwargSame} the same as ThwargLauncher's");
+    }
+
+    // ── Extra Launch Arguments ───────────────────────────────────────────────
+    // Labelled "appended", the box replaced the whole command line (account, password and host);
+    // it now appends to every launch, so it may not carry the login switches (audit 2026-10-21 F10).
+    private static void ExtraLaunchArgumentChecks()
+    {
+        Console.WriteLine("-- extra launch arguments");
+
+        var account = new LaunchAccountProfile { AccountName = "SK" };
+        account.SetPassword("pw x");
+        string built = new AcLaunchArgumentBuilder().BuildArguments(Server(AcEmulatorKind.Ace), account);
+
+        Check(AcLaunchArgumentBuilder.ExtraArgumentsProblem(null, out string none) == null && none == "", "none: fine, nothing added");
+        Check(AcLaunchArgumentBuilder.ExtraArgumentsProblem("  \r\n\t ", out string blank) == null && blank == "", "only blanks: fine, nothing added");
+        Check(AcLaunchArgumentBuilder.WithExtraArguments(built, "") == built, "nothing added: the account's line unchanged");
+
+        Check(AcLaunchArgumentBuilder.ExtraArgumentsProblem("-nointro\r\n-w \"My Window\"", out string extra) == null && extra == "-nointro -w \"My Window\"",
+            "line breaks become spaces: " + extra);
+        string line = AcLaunchArgumentBuilder.WithExtraArguments(built, extra);
+        List<string>? args = AcClientCommandLine.Split(line);
+        Check(line.StartsWith(built + " ", StringComparison.Ordinal), "appended after the account's own arguments, not instead of them");
+        Check(args != null && ArgAfter(args, "-a") == "SK" && ArgAfter(args, "-v") == "pw x" && ArgAfter(args, "-h") == "127.0.0.1:9000",
+            "the client still reads this account, its password and its server");
+        Check(args != null && args.Contains("-nointro") && ArgAfter(args, "-w") == "My Window", "and the extra arguments");
+
+        // An old whole-line override saved in the box: refused rather than appended to every account.
+        foreach (string sw in new[] { "-a", "-v", "-h", "-p", "-rodat", "-A", "-RODAT" })
+        {
+            string? problem = AcLaunchArgumentBuilder.ExtraArgumentsProblem($"-nointro {sw} other", out string n);
+            Check(problem != null && n == "" && problem.Contains(sw, StringComparison.OrdinalIgnoreCase), $"{sw} refused: {problem}");
+        }
+        Check(AcLaunchArgumentBuilder.ExtraArgumentsProblem("-a acct -v secret -h other.example:9000", out _) is string old && !old.Contains("secret"),
+            "a saved old override is refused, and the message doesn't repeat its password");
+        Check(AcLaunchArgumentBuilder.ExtraArgumentsProblem("-host -apple \"-a b\"", out string lookalike) == null && lookalike.Length > 0,
+            "switches that only start like a login switch, or a quoted value with one inside, are fine");
+        Check(AcLaunchArgumentBuilder.ExtraArgumentsProblem("-w \"open", out _)?.Contains("quote") == true,
+            "a quote left open is refused (the client would drop the whole line, login included)");
+    }
+
+    // ── The "show password" eye ──────────────────────────────────────────────
+    // Player request (2026-10-21): the account editor's box starts empty ("leave blank to keep the
+    // saved password") and the saved password was never shown. SavedPasswordReveal: the eye fills an
+    // empty box with the saved password and empties it again if unchanged; saving it unchanged keeps
+    // the saved one as it is.
+    private static void PasswordEyeChecks()
+    {
+        Console.WriteLine("-- the show-password eye");
+        const string Saved = "s3cret pw ü\\\"";
+
+        var account = new LaunchAccountProfile { AccountName = "A" };
+        account.SetPassword(Saved);
+        string blob = account.PasswordProtected;
+        var eye = SavedPasswordReveal.For(account);
+
+        Check(eye.EyeOn("") == Saved && eye.FilledFromSaved, "eye on, box empty: the saved password, decrypted now");
+        Check(eye.PasswordToSave(Saved) == null, "saved while shown and unchanged: the saved password is kept");
+        Check(eye.EyeOff(Saved) == "" && !eye.FilledFromSaved, "eye off, unchanged: the box is empty again (blank = keep)");
+        Check(eye.PasswordToSave("") == null && eye.PasswordToSave(null) == null, "blank box: kept");
+        ApplySave(account, eye, "");
+        Check(account.PasswordProtected == blob, "Save with a blank box: the blob is the same");
+        Check(eye.EyeOn("") == Saved, "fill, then Save while it's shown");
+        ApplySave(account, eye, Saved);
+        Check(account.PasswordProtected == blob, "Save with the shown password unchanged: nothing re-encrypted, the blob is the same");
+        Check(account.TryGetPasswordForLaunch(out string still, out _) && still == Saved, "and it still decrypts to the saved password");
+
+        Check(eye.EyeOn("") == Saved, "fill again");
+        Check(eye.EyeOff(Saved + "x") == Saved + "x" && eye.PasswordToSave(Saved + "x") == Saved + "x", "edited: stays in the box and is saved as the new password");
+        Check(eye.EyeOn("") == Saved && eye.EyeOff("") == "", "filled, then emptied by the player: stays empty");
+        Check(eye.EyeOn("") == Saved && eye.PasswordToSave("other") == "other", "filled, replaced while shown: the new one is saved");
+        eye.EyeOff("other");
+
+        Check(eye.EyeOn("typed") == "typed" && !eye.FilledFromSaved, "eye on with something typed: only reveals it");
+        Check(eye.EyeOff("typed") == "typed" && eye.PasswordToSave("typed") == "typed", "eye off: what was typed stays and is saved");
+        Check(eye.EyeOn(Saved) == Saved && eye.EyeOff(Saved) == Saved, "the saved password typed by hand is not taken for the eye's fill");
+
+        eye.EyeOn("");
+        eye.Reset();
+        Check(!eye.FilledFromSaved && eye.PasswordToSave(Saved) == Saved, "after Reset the fill is forgotten (at most re-encrypts the same text)");
+
+        ApplySave(account, eye, "new pw");
+        Check(account.TryGetPasswordForLaunch(out string got, out _) && got == "new pw", "a new password typed: saved");
+
+        var none = new LaunchAccountProfile { AccountName = "B" };
+        var noneEye = SavedPasswordReveal.For(none);
+        Check(noneEye.EyeOn("") == "" && !noneEye.FilledFromSaved, "no saved password: nothing to fill");
+        Check(noneEye.EyeOn("x") == "x", "no saved password: reveals what's typed");
+
+        // Settings copied from another Windows user or PC: the blob doesn't decrypt here.
+        var copied = new LaunchAccountProfile { AccountName = "C", PasswordProtected = Convert.ToBase64String(new byte[64]) };
+        var copiedEye = SavedPasswordReveal.For(copied);
+        Check(copiedEye.EyeOn("") == "" && !copiedEye.FilledFromSaved, "unreadable saved password: nothing filled in");
+        Check(copied.PasswordNeedsReentry, "and the profile says it needs re-entering");
+        Check(copiedEye.EyeOn("") == "" && copiedEye.EyeOn("retyped") == "retyped", "needs re-entering: the eye only reveals what's typed");
+        Check(copiedEye.PasswordToSave("retyped") == "retyped", "the retyped password is saved");
+
+        var legacy = new LaunchAccountProfile { AccountName = "D", LegacyPlainPassword = "legacy pw" };
+        Check(SavedPasswordReveal.For(legacy).EyeOn("") == "legacy pw", "a not-yet-migrated plain password is shown too");
+
+        // The eye keeps no copy of the password: no string field, only the "filled" flag.
+        Check(typeof(SavedPasswordReveal).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public)
+                .All(f => f.FieldType != typeof(string)), "SavedPasswordReveal holds no string");
+        Check(SavedPasswordReveal.ShowTip.Length < 20 && SavedPasswordReveal.HideTip.Length < 20, "short tooltips");
+    }
+
+    /// <summary>The account editor's Save for the password box (AccountProfileDialog.SaveAndClose).</summary>
+    private static void ApplySave(LaunchAccountProfile profile, SavedPasswordReveal eye, string? boxText)
+    {
+        if (eye.PasswordToSave(boxText) is string newPassword)
+            profile.SetPassword(newPassword);
+        eye.Reset();
     }
 
     /// <summary>The launcher's ACE line for <paramref name="password"/>, read back by acclient's rules.</summary>

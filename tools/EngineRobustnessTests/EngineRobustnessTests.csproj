@@ -22,7 +22,9 @@
       IdRequester.cs           the engine-send marker that tags every engine 0xC8
       DumpBudget.cs            the full OOM dump needs free space and a cap on dumps across clients
       PumpGuards.cs            TickAll's own steps are caught (logged once, then counted); the hang
-                               report names the plugin call the pump is inside
+                               report names the plugin call the pump is inside; PluginShutdownGate:
+                               plugins are shut down only once the pump stopped (plus source scans
+                               of EngineLifecycle's step order and ShutdownAll's gate)
     Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
   -->
   <PropertyGroup>

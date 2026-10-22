@@ -1,4 +1,5 @@
 using RynthCore.Engine.Compatibility;
+using RynthCore.Engine.ImGuiBackend;
 using RynthCore.Engine.UI.Sections;
 
 namespace SectionsTests;
@@ -30,6 +31,8 @@ internal static class Program
         StateJson();
         ManifestWindows();
         WindowPlanChoices();
+        WindowTakeOver();
+        StackCheckAfterPluginDraw();
 
         Console.WriteLine();
         Console.WriteLine($"{_checks - _failed}/{_checks} checks passed.");
@@ -488,15 +491,128 @@ internal static class Program
         var offIlt = new[] { new ServerState("ilt", "Infinite Leaftide", false, false, ServerForce.Auto, true, "") };
         var onIlt = new[] { new ServerState("ilt", "Infinite Leaftide", true, true, ServerForce.Auto, true, "") };
         var refused = new List<string>();
-        var plan = WindowPlan.Build(new[] { net, other }, offIlt, t => t == "Inventory", refused);
+        var takeOvers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var plan = WindowPlan.Build(new[] { net, other }, offIlt, t => t == "Inventory" ? TitleUse.EnginePanel : TitleUse.Free, refused, takeOvers);
         Check(plan.ContainsKey("Characters") && plan["Characters"].Plugin == "RynthNet", "the first plugin keeps a title");
         Check(!plan.ContainsKey("Bank"), "a server's window waits for its server");
-        Check(!plan.ContainsKey("Inventory"), "an engine panel's title is refused");
+        Check(!plan.ContainsKey("Inventory"), "an engine panel's title is refused without takeOver");
         Check(refused.Count == 2 && refused.Exists(r => r.Contains("Other") && r.Contains("RynthNet")) && refused.Exists(r => r.Contains("engine panel")),
             "both refusals say why: " + string.Join(" | ", refused));
-        var on = WindowPlan.Build(new[] { net }, onIlt, _ => false, new List<string>());
+        Check(takeOvers.Count == 0, "nothing taken over");
+        var on = WindowPlan.Build(new[] { net }, onIlt, _ => TitleUse.Free, new List<string>(), new HashSet<string>());
         Check(on.ContainsKey("Bank"), "and shows while its server is active");
         Check(WindowPlan.Signature(net.Windows[0]) != WindowPlan.Signature(net.Windows[1]), "signatures differ per window");
+    }
+
+    // A plugin window that declares "takeOver" draws in an engine panel's place (same title, same key).
+    private const string TakeOverManifest = """
+    { "windows": [
+        { "id": "inv", "title": "Inventory", "surface": "window:inv", "bar": true, "takeOver": true },
+        { "id": "chat", "title": "Chat", "surface": "window:chat", "takeOver": true },
+        { "id": "lua", "title": "Lua", "surface": "window:lua", "takeOver": "yes" },
+        { "id": "notes", "title": "Notes", "surface": "window:notes", "takeOver": true },
+        { "id": "sort", "title": "RynthSort", "surface": "window:sort", "takeOver": true }
+      ] }
+    """;
+
+    private static void WindowTakeOver()
+    {
+        Case("plugin windows: taking over an engine panel");
+        SectionManifest m = SectionManifestParser.Parse("RynthAi", TakeOverManifest, out string err);
+        Check(err.Length == 0 && m.Windows.Length == 5, "parses: " + err);
+        Check(m.Windows[0].TakeOver && m.Windows[1].TakeOver && m.Windows[3].TakeOver, "\"takeOver\": true read");
+        Check(!m.Windows[2].TakeOver, "not a boolean: off");
+        Check(!SectionManifestParser.Parse("RynthNet", WindowsManifest, out _).Windows[0].TakeOver, "absent: off (as before)");
+        Check(WindowPlan.Signature(m.Windows[0]) != WindowPlan.Signature(m.Windows[0] with { TakeOver = false }),
+            "takeOver is in the signature (a change re-registers)");
+
+        // Inventory, Chat and Lua are engine panels; RynthSort is a script window's key; Notes is free.
+        TitleUse Use(string t) => t switch
+        {
+            "Inventory" or "Chat" or "Lua" => TitleUse.EnginePanel,
+            "RynthSort" => TitleUse.Other,
+            _ => TitleUse.Free,
+        };
+        var refused = new List<string>();
+        var takeOvers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var none = Array.Empty<ServerState>();
+        var plan = WindowPlan.Build(new[] { m }, none, Use, refused, takeOvers);
+        Check(plan.ContainsKey("Inventory") && plan.ContainsKey("Chat") && takeOvers.SetEquals(new[] { "Inventory", "Chat" }),
+            "declared takeovers of engine panels are hosted and marked: " + string.Join(", ", takeOvers));
+        Check(!plan.ContainsKey("Lua") && refused.Exists(r => r.Contains("'Lua'") && r.Contains("takeOver")),
+            "an engine panel's title without takeOver is still refused, and the line says how");
+        Check(plan.ContainsKey("Notes") && !takeOvers.Contains("Notes"), "takeOver on a free title: an ordinary window (the engine face is gone)");
+        Check(!plan.ContainsKey("RynthSort") && refused.Exists(r => r.Contains("RynthSort") && r.Contains("another panel")),
+            "never another panel's (a script window's) title, takeOver or not");
+
+        // Two plugins taking over the same panel: the first keeps it.
+        SectionManifest second = SectionManifestParser.Parse("RynthInventory",
+            "{\"windows\":[{\"id\":\"inv\",\"title\":\"inventory\",\"surface\":\"window:i\",\"takeOver\":true}]}", out _);
+        var refused2 = new List<string>();
+        var taken2 = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var plan2 = WindowPlan.Build(new[] { m, second }, none, Use, refused2, taken2);
+        Check(plan2["Inventory"].Plugin == "RynthAi" && refused2.Exists(r => r.Contains("RynthInventory") && r.Contains("RynthAi")),
+            "the first plugin to take a panel over keeps it (titles match without case)");
+
+        // The plugin goes: its manifest is gone, so the panel isn't in the plan (the engine's face comes back).
+        var after = WindowPlan.Build(Array.Empty<SectionManifest>(), none, Use, new List<string>(), taken2 = new HashSet<string>());
+        Check(after.Count == 0 && taken2.Count == 0, "no manifest: nothing hosted, nothing taken over");
+    }
+
+    // ImGui 1.91.6's ImGuiErrorRecoveryState, in field order: windows, IDs, tree nodes, colours,
+    // style vars, fonts, focus scopes, groups, item flags, popups, disabled. The base values are
+    // the ones a 32-bit probe of our cimgui.dll read inside a panel's body child (2026-10-21).
+    private static short[] Rec(params short[] f) => f;
+
+    private static void StackCheckAfterPluginDraw()
+    {
+        Case("plugin windows: ImGui stacks after a plugin's draw");
+        short[] given = Rec(3, 2, 0, 0, 0, 1, 3, 0, 1, 0, 0);
+        Check(ImGuiStackState.Fields == 11 && ImGuiStackState.RecordBytes == 22 && ImGuiStackState.Names.Length == 11,
+            "11 shorts, 22 bytes, a name each");
+        Check(ImGuiStackState.Compare(given, (short[])given.Clone()) == StackCheck.Balanced, "as found: balanced");
+        Check(ImGuiStackState.IdsAtBase(Rec(3, 1, 0, 0, 0, 0, 3, 0, 1, 0, 0)), "the body's start (one ID) is a base to recover to");
+        Check(!ImGuiStackState.IdsAtBase(given), "inside the face's PushID it isn't (the recovery would pop the caller's IDs)");
+
+        // Probe frame 1: two colours, a style var, two IDs, a font, a group, a disabled block, a tree node.
+        short[] leaked = Rec(3, 4, 1, 2, 1, 2, 3, 1, 1, 0, 1);
+        Check(ImGuiStackState.Compare(given, leaked) == StackCheck.LeftOpen, "pushes left open: ImGui unwinds them");
+        string what = ImGuiStackState.Describe(given, leaked);
+        Check(what == "IDs +2, tree nodes +1, colours +2, style vars +1, fonts +1, groups +1, disabled +1",
+            "the log says what was left: " + what);
+        Check(ImGuiStackState.CanRecover(given, leaked), "same window depth: recoverable");
+
+        // A child window left open (with a table inside): deeper, still recoverable.
+        short[] child = Rec(4, 1, 0, 1, 0, 1, 5, 0, 1, 0, 0);
+        Check(ImGuiStackState.Compare(given, child) == StackCheck.LeftOpen,
+            "a child window left open (its own IDs aren't compared with the body's)");
+        Check(ImGuiStackState.Describe(given, child) == "windows +1, colours +1, focus scopes +2",
+            "the log leaves out the other window's IDs: " + ImGuiStackState.Describe(given, child));
+        Check(ImGuiStackState.CanRecover(given, child), "a deeper window stack is recoverable");
+        short[] childPopped = Rec(4, 1, 0, -1, 0, 1, 5, 0, 1, 0, 0);
+        Check(ImGuiStackState.Compare(given, childPopped) == StackCheck.ClosedTooMuch, "a context stack below, even in a deeper window");
+
+        // The plugin ended the host's body child (one End too many) and left a colour and a font.
+        short[] ended = Rec(2, 1, 0, 1, 0, 2, 2, 0, 1, 0, 0);
+        Check(ImGuiStackState.Compare(given, ended) == StackCheck.ClosedTooMuch, "ended a window it didn't begin");
+        Check(!ImGuiStackState.CanRecover(given, ended), "ImGui's recovery can't go back up to the host's window");
+        Check(ImGuiStackState.GlobalPops(given, ended) == (1, 0, 1), "only the context's colours and fonts are popped by hand");
+        Check(ImGuiStackState.Describe(given, ended) == "windows -1, colours +1, fonts +1, focus scopes -1",
+            "negative changes are shown with their sign: " + ImGuiStackState.Describe(given, ended));
+
+        // Popped the host's colours: below the record, nothing to pop.
+        short[] overPopped = Rec(3, 2, 0, -2, 0, 1, 3, 0, 1, 0, 0);
+        Check(ImGuiStackState.Compare(given, overPopped) == StackCheck.ClosedTooMuch, "popped what it didn't push");
+        Check(ImGuiStackState.GlobalPops(given, overPopped) == (0, 0, 0), "never pops below the record");
+        Check(ImGuiStackState.Describe(given, given) == "nothing", "no change: nothing");
+
+        // The first-use size check (the record filled with 0xCC, then written by ImGui).
+        byte[] rec = Enumerable.Repeat((byte)0xCC, 64).ToArray();
+        for (int i = 0; i < 22; i++) rec[i] = (byte)(i % 2 == 0 ? 1 : 0);
+        Check(ImGuiStackState.WroteExpectedSize(rec, 0xCC), "22 bytes written: the layout expected");
+        rec[30] = 0;
+        Check(!ImGuiStackState.WroteExpectedSize(rec, 0xCC), "more written: a different layout, the guard stays off");
+        Check(!ImGuiStackState.WroteExpectedSize(Enumerable.Repeat((byte)0xCC, 64).ToArray(), 0xCC), "nothing written: off");
     }
 
     // ── Harness ────────────────────────────────────────────────────────

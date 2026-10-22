@@ -211,6 +211,11 @@ internal static class RynthTheme
     public static uint BarBackground => WithAlpha(_t.BarBg, 0xE6);
     public const float BarRounding = 4f;
     public static uint BarButton => _t.FrameBg;
+    // A button whose window is open (docked or popped out, BarOpenState): the accent fill
+    // (Chat's active tab), halfway to the accent under the mouse, and an accent border.
+    public static uint BarButtonOpen => _t.AccentFill;
+    public static uint BarButtonOpenHover => _t.WindowBorder;
+    public static uint BarButtonOpenBorder => _t.Accent;
     public static readonly uint BarText = Argb(0xFFFFFFFF);
     public static readonly uint RcLabel = Argb(0xFF90EE90);      // LightGreen
     public static readonly uint ReloadLabel = Argb(0xFFF0E68C);  // Khaki
