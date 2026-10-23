@@ -201,12 +201,7 @@ internal sealed class ClassicDashboard
         ImGuiPanelHost.DragWindowWithLastItem();
         SafeImGui.SetItemTooltip("Drag to move.  Right-click: size.  Ctrl+wheel: bigger or smaller.");
         if (ImGuiNET.ImGui.IsItemClicked(ImGuiMouseButton.Right)) ImGuiNET.ImGui.OpenPopup(SizePopupId);
-        if (ImGuiNET.ImGui.IsItemHovered())
-        {
-            ImGuiIOPtr io = ImGuiNET.ImGui.GetIO();
-            if (io.KeyCtrl && io.MouseWheel != 0f)
-                PanelTextScale.SetForWindow(RynthAiFace.Title, PanelTextScale.Get(RynthAiFace.Title) + (io.MouseWheel > 0f ? 1 : -1));
-        }
+        // Ctrl+wheel: the panel host steps its size (over any panel).
 
         // "RynthAi" in gold, then the profile and what the bot is doing.
         float tx = o.X + Px(10);

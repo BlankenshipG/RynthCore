@@ -150,6 +150,17 @@ public readonly unsafe struct RynthCoreHost
     public bool HasUiTheme => _api.Version >= 89 && _api.GetUiColorFn != IntPtr.Zero && _api.GetUiFontFn != IntPtr.Zero;
     /// <summary>v89: <see cref="SetPanelOpen"/> (open, close or toggle a panel by its key, a plugin window's title included).</summary>
     public bool HasSetPanelOpen => _api.Version >= 89 && _api.SetPanelOpenFn != IntPtr.Zero;
+    /// <summary>v90: windows that draw their own frame: the manifest's "chrome": "none" and "fitHeight",
+    /// <see cref="PanelDragWithLastItem"/>, <see cref="SetPanelPopOut"/>, <see cref="PanelTextSize"/>, and the
+    /// v90 colours (Muted, KeyFace, Hairline, Inset, Faint) and fonts (Dash*, Narrow*).</summary>
+    public bool HasFramelessWindows => _api.Version >= 90 && _api.PanelDragWithLastItemFn != IntPtr.Zero
+        && _api.SetPanelPopOutFn != IntPtr.Zero && _api.PanelTextSizeFn != IntPtr.Zero;
+    /// <summary>v90: <see cref="RenderSettingsDrawer"/> (the dashboard drawers that show Settings rows).</summary>
+    public bool HasSettingsDrawers => _api.Version >= 90 && _api.RenderSettingsDrawerFn != IntPtr.Zero;
+    /// <summary>v90: the player's AC shortcut slots (<see cref="GetShortcuts"/>, <see cref="ShortcutAction"/>),
+    /// AC's key bindings (<see cref="GetActionKeys"/>) and item pictures (<see cref="GetIconTexture"/>).</summary>
+    public bool HasShortcuts => _api.Version >= 90 && _api.GetShortcutsFn != IntPtr.Zero && _api.ShortcutActionFn != IntPtr.Zero
+        && _api.GetActionKeysFn != IntPtr.Zero && _api.GetIconTextureFn != IntPtr.Zero;
     /// <summary>v76: <see cref="CloseContainer"/> (close a corpse or chest like the client's window close).</summary>
     public bool HasCloseContainer => _api.Version >= 76 && _api.CloseContainerFn != IntPtr.Zero;
     /// <summary>v77: <see cref="GetScreenMode"/>, <see cref="GetUiHookFlags"/> and the UI callbacks
@@ -1541,6 +1552,258 @@ public readonly unsafe struct RynthCoreHost
         utf8[n] = 0;
         fixed (byte* p = utf8)
             return ((delegate* unmanaged[Cdecl]<byte*, int, int>)_api.SetPanelOpenFn)(p, (int)mode);
+    }
+
+    /// <summary>
+    /// v90: while ImGui's last item is held and dragged, the panel being drawn follows the mouse (a
+    /// frameless window's own title row: call it right after that row's InvisibleButton). Docked, the
+    /// window moves within the game view; popped out, its OS window. Only from RynthPluginRenderEmbed
+    /// on AC's render thread; does nothing elsewhere or on an older engine.
+    /// </summary>
+    public void PanelDragWithLastItem()
+    {
+        if (!HasFramelessWindows) return;
+        ((delegate* unmanaged[Cdecl]<void>)_api.PanelDragWithLastItemFn)();
+    }
+
+    /// <summary>
+    /// v90: pops the open panel <paramref name="key"/> out into its own window, docks it back, toggles,
+    /// or asks. Returns 1 popped out / 0 docked afterwards (the change lands on the next frame), -1 for
+    /// no such open panel or an older engine. Any thread.
+    /// </summary>
+    public int SetPanelPopOut(string key, RynthPanelPopOut mode) => CallWithKey(_api.SetPanelPopOutFn, key, (int)mode);
+
+    /// <summary>
+    /// v90: steps the panel <paramref name="key"/>'s text size by <paramref name="delta"/> (0 = just ask)
+    /// and returns it as a percentage of normal (100 to 250); -1 for no such panel or an older engine.
+    /// The fonts re-bake a moment later. Any thread.
+    /// </summary>
+    public int PanelTextSize(string key, int delta) => CallWithKey(_api.PanelTextSizeFn, key, delta);
+
+    /// <summary>
+    /// v90: how big the frameless window <paramref name="key"/> draws itself, in percent of normal
+    /// (30-250; Settings > UI > Toolbar sets it too): <paramref name="percent"/> 0 asks, -1 goes back to
+    /// following the text size, 30-250 sets it. Returns it now: 0 = follow the text size (draw at the
+    /// fonts' size), -1 on an older engine. Any thread; cheap to ask every frame.
+    /// </summary>
+    public int PanelScale(string key, int percent = 0) =>
+        _api.Version >= 90 && _api.PanelScaleFn != IntPtr.Zero ? CallWithKey(_api.PanelScaleFn, key, percent) : -1;
+
+    /// <summary>
+    /// v90: draws the body of one of the dashboard drawers that show Settings rows, which are still
+    /// RynthCore's (the Settings panel hasn't moved to RynthAi): "ranges" (the selected monster and the
+    /// key ranges), "patrol" (the Dungeon Patrol settings, hazards and routes) or "pinned" (My settings;
+    /// <paramref name="openPinList"/> opens its list of settings to pin). At ImGui's cursor in the window
+    /// being drawn, <paramref name="width"/> pixels wide and at most <paramref name="room"/> tall (0 = its
+    /// own height). Returns the height it wants (pixels), or -1 for another key, an older engine, or a
+    /// call outside a docked window's RynthPluginRenderEmbed on AC's render thread.
+    /// </summary>
+    public float RenderSettingsDrawer(string key, float width, float room, bool openPinList = false)
+    {
+        if (!HasSettingsDrawers || string.IsNullOrEmpty(key) || key.Length > 64) return -1f;
+        Span<byte> utf8 = stackalloc byte[260];
+        int n = System.Text.Encoding.UTF8.GetBytes(key, utf8[..^1]);
+        utf8[n] = 0;
+        fixed (byte* p = utf8)
+            return ((delegate* unmanaged[Cdecl]<byte*, float, float, int, float>)_api.RenderSettingsDrawerFn)(p, width, room, openPinList ? 1 : 0);
+    }
+
+    /// <summary>
+    /// v90: the player's 18 shortcut slots (AC's own: what the retail toolbar shows and its keys
+    /// use): each slot's object id (0 = empty) and spell id. Returns 18, or 0 out of the world or on
+    /// an older engine. Any thread.
+    /// </summary>
+    public int GetShortcuts(Span<uint> objectIds, Span<uint> spellIds)
+    {
+        if (!HasShortcuts) return 0;
+        int max = Math.Min(objectIds.Length, spellIds.Length);
+        fixed (uint* o = objectIds)
+        fixed (uint* s = spellIds)
+            return ((delegate* unmanaged[Cdecl]<uint*, uint*, int, int>)_api.GetShortcutsFn)(o, s, max);
+    }
+
+    /// <summary>
+    /// v90: uses shortcut slot <paramref name="slot"/> (0-17) as its key would, puts
+    /// <paramref name="objectId"/> in it, or empties it: through the retail toolbar's own functions
+    /// on AC's game thread, so the server, the retail toolbar and the keys all follow. True when
+    /// queued. Any thread.
+    /// </summary>
+    public bool ShortcutAction(RynthShortcutOp op, int slot, uint objectId = 0)
+    {
+        if (!HasShortcuts) return false;
+        return ((delegate* unmanaged[Cdecl]<int, int, uint, int>)_api.ShortcutActionFn)((int)op, slot, objectId) == 1;
+    }
+
+    /// <summary>
+    /// v90: AC's keys for keymap action <paramref name="action"/> (e.g. "UseQuickSlot_1") as the player
+    /// reads them, "1, Ctrl+1", or the engine hotkeys running a chat command ("/rdef use 2"); "" when
+    /// unbound, unknown, or on an older engine. Any thread.
+    /// </summary>
+    public string GetActionKeys(string action)
+    {
+        if (!HasShortcuts || string.IsNullOrEmpty(action) || action.Length > 64) return string.Empty;
+        Span<byte> name = stackalloc byte[260];
+        int n = System.Text.Encoding.UTF8.GetBytes(action, name[..^1]);
+        name[n] = 0;
+        Span<byte> text = stackalloc byte[256];
+        int len;
+        fixed (byte* a = name)
+        fixed (byte* t = text)
+            len = ((delegate* unmanaged[Cdecl]<byte*, byte*, int, int>)_api.GetActionKeysFn)(a, t, text.Length);
+        if (len <= 0) return string.Empty;
+        return System.Text.Encoding.UTF8.GetString(text[..Math.Min(len, text.Length - 1)]);
+    }
+
+    /// <summary>
+    /// v90: an item's (kind Object: its icon with underlay and overlay), a spell's or an icon id's
+    /// picture as an ImGui texture id for ImGui.Image; IntPtr.Zero while it is being made (ask again
+    /// next frame). AC's render thread, inside a docked window's draw.
+    /// </summary>
+    public IntPtr GetIconTexture(RynthIconKind kind, uint id)
+    {
+        if (!HasShortcuts || id == 0) return IntPtr.Zero;
+        return ((delegate* unmanaged[Cdecl]<int, uint, IntPtr>)_api.GetIconTextureFn)((int)kind, id);
+    }
+
+    /// <summary>v90: changing keys: <see cref="BeginKeyCapture"/> ("press a key") and <see cref="BindActionKey"/>.</summary>
+    public bool HasKeyBinding => _api.Version >= 90 && _api.KeyCaptureFn != IntPtr.Zero && _api.SetActionKeyFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v90: waits for the next key the player presses (with Ctrl/Alt/Shift held); it never reaches AC, and
+    /// Esc cancels. Ask with <see cref="PollKeyCapture"/> each frame. AC's main thread (a window's draw).
+    /// </summary>
+    public void BeginKeyCapture()
+    {
+        if (HasKeyBinding) ((delegate* unmanaged[Cdecl]<int, byte*, int, int>)_api.KeyCaptureFn)(0, null, 0);
+    }
+
+    /// <summary>v90: stops waiting for a key.</summary>
+    public void CancelKeyCapture()
+    {
+        if (HasKeyBinding) ((delegate* unmanaged[Cdecl]<int, byte*, int, int>)_api.KeyCaptureFn)(2, null, 0);
+    }
+
+    /// <summary>
+    /// v90: the key capture: still waiting (<paramref name="text"/>: why the last key couldn't be taken, or
+    /// ""), pressed (<paramref name="text"/>: its name, "Ctrl+F5") or cancelled. AC's main thread.
+    /// </summary>
+    public RynthKeyCapture PollKeyCapture(out string text)
+    {
+        text = string.Empty;
+        if (!HasKeyBinding) return RynthKeyCapture.Cancelled;
+        Span<byte> buf = stackalloc byte[128];
+        int r;
+        fixed (byte* b = buf)
+            r = ((delegate* unmanaged[Cdecl]<int, byte*, int, int>)_api.KeyCaptureFn)(1, b, buf.Length);
+        int n = buf.IndexOf((byte)0);
+        text = System.Text.Encoding.UTF8.GetString(buf[..(n < 0 ? buf.Length : n)]);
+        return r switch { 1 => RynthKeyCapture.Pressed, 0 => RynthKeyCapture.Waiting, _ => RynthKeyCapture.Cancelled };
+    }
+
+    /// <summary>
+    /// v90: what binding <paramref name="key"/> ("Ctrl+F5") to <paramref name="action"/> would take from
+    /// others. The action is AC's keymap action ("UseQuickSlot_5": AC's own keys, the retail toolbar's) or a
+    /// chat command for an engine hotkey ("/rdef use 2"). <paramref name="message"/> names what has the key
+    /// now, or why it can't be bound. Any thread.
+    /// </summary>
+    public RynthKeyCheck CheckActionKey(string action, string key, out string message) =>
+        (RynthKeyCheck)Math.Clamp(CallSetActionKey(action, key, 0, out message), -1, 1);
+
+    /// <summary>
+    /// v90: binds <paramref name="key"/> to <paramref name="action"/> (see <see cref="CheckActionKey"/>): it
+    /// comes off everything else that had it, in AC's keymap and RynthCore's hotkeys, and every running
+    /// client follows within a second. Done on AC's game thread; the result goes to chat. False (why in
+    /// <paramref name="message"/>) when it can't be. Any thread.
+    /// </summary>
+    public bool BindActionKey(string action, string key, out string message) => CallSetActionKey(action, key, 1, out message) == 1;
+
+    /// <summary>
+    /// v90: removes <paramref name="key"/> from <paramref name="action"/>; the key may be one of the names
+    /// <see cref="GetActionKeys"/> gave ("Ctrl+1", "Mouse4"). Queued like <see cref="BindActionKey"/>.
+    /// </summary>
+    public bool UnbindActionKey(string action, string key, out string message) => CallSetActionKey(action, key, 2, out message) == 1;
+
+    /// <summary>v90: items dragged out of AC's UI can be dropped on a plugin window (<see cref="DropTarget"/>).</summary>
+    public bool HasDropTargets => _api.Version >= 90 && _api.DropTargetFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v90: the plugin window <paramref name="window"/> (its panel title) takes items dragged out of AC's
+    /// UI (a pack, the inventory) and let go over <paramref name="min"/>-<paramref name="max"/> (ImGui
+    /// screen coordinates). Call it every frame the window draws; <paramref name="accepting"/> false =
+    /// drawn but a drop isn't wanted now (it goes to AC as usual). A drop taken never reaches AC: the item
+    /// stays where it was. Returns the object dropped since the last call (0 = none);
+    /// <paramref name="dragging"/>: an item is being dragged now. AC's main thread, in the window's draw.
+    /// </summary>
+    public uint DropTarget(string window, System.Numerics.Vector2 min, System.Numerics.Vector2 max, bool accepting, out bool dragging)
+    {
+        dragging = false;
+        if (!HasDropTargets || string.IsNullOrEmpty(window) || window.Length > 64) return 0;
+        Span<byte> utf8 = stackalloc byte[260];
+        int n = System.Text.Encoding.UTF8.GetBytes(window, utf8[..^1]);
+        utf8[n] = 0;
+        int drag = 0;
+        uint item;
+        fixed (byte* p = utf8)
+            item = ((delegate* unmanaged[Cdecl]<byte*, float, float, float, float, int, int*, uint>)_api.DropTargetFn)(
+                p, min.X, min.Y, max.X, max.Y, accepting ? 1 : 0, &drag);
+        dragging = drag != 0;
+        return item;
+    }
+
+    /// <summary>v90: AC's own panels (<see cref="IsAcPanelOpen"/>, <see cref="AcPanel"/>).</summary>
+    public bool HasAcPanels => _api.Version >= 90 && _api.AcPanelFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v90: whether AC's panel is open: true, false, or null when this client has no such panel or the
+    /// engine can't tell. AC's main thread (a window's draw); cheap to ask every frame.
+    /// </summary>
+    public bool? IsAcPanelOpen(RynthAcPanel panel)
+    {
+        if (!HasAcPanels) return null;
+        int r = ((delegate* unmanaged[Cdecl]<int, int, int>)_api.AcPanelFn)((int)panel, 0);
+        return r < 0 ? null : r == 1;
+    }
+
+    /// <summary>
+    /// v90: opens, closes or toggles AC's own panel, the way AC's toolbar buttons and keys do (one main
+    /// panel shows at a time, as in AC). Done on AC's game thread; true when queued. Any thread.
+    /// </summary>
+    public bool AcPanel(RynthAcPanel panel, RynthAcPanelOp op = RynthAcPanelOp.Toggle)
+    {
+        if (!HasAcPanels) return false;
+        return ((delegate* unmanaged[Cdecl]<int, int, int>)_api.AcPanelFn)((int)panel, (int)op) == 1;
+    }
+
+    private int CallSetActionKey(string action, string key, int op, out string message)
+    {
+        message = string.Empty;
+        if (!HasKeyBinding) { message = "This RynthCore can't change keys."; return -1; }
+        if (string.IsNullOrEmpty(action) || action.Length > 64 || string.IsNullOrEmpty(key) || key.Length > 40) { message = "No action or key."; return -1; }
+        Span<byte> a = stackalloc byte[260];
+        Span<byte> k = stackalloc byte[164];
+        Span<byte> msg = stackalloc byte[512];
+        int an = System.Text.Encoding.UTF8.GetBytes(action, a[..^1]);
+        a[an] = 0;
+        int kn = System.Text.Encoding.UTF8.GetBytes(key, k[..^1]);
+        k[kn] = 0;
+        int r;
+        fixed (byte* ap = a)
+        fixed (byte* kp = k)
+        fixed (byte* mp = msg)
+            r = ((delegate* unmanaged[Cdecl]<byte*, byte*, int, byte*, int, int>)_api.SetActionKeyFn)(ap, kp, op, mp, msg.Length);
+        int n = msg.IndexOf((byte)0);
+        message = System.Text.Encoding.UTF8.GetString(msg[..(n < 0 ? msg.Length : n)]);
+        return r;
+    }
+
+    private int CallWithKey(IntPtr fn, string key, int arg)
+    {
+        if (!HasFramelessWindows || fn == IntPtr.Zero || string.IsNullOrEmpty(key) || key.Length > 64) return -1;
+        Span<byte> utf8 = stackalloc byte[260];
+        int n = System.Text.Encoding.UTF8.GetBytes(key, utf8[..^1]);
+        utf8[n] = 0;
+        fixed (byte* p = utf8)
+            return ((delegate* unmanaged[Cdecl]<byte*, int, int>)fn)(p, arg);
     }
 
     public bool InvokeChatParser(string text)

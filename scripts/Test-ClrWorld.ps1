@@ -51,6 +51,10 @@ $env:RYNTHCORE_TEST_CLIENT = "Test-ClrWorld"   # the loader logs "TestClient: ..
 # clients: a test client gets its own so it never moves the player's bar or panels.
 $env:LOCALAPPDATA = "C:\Games\RynthCore\Test\localappdata"
 New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+# The engine finds %LOCALAPPDATA% through the known-folder API, which ignores the variable above:
+# the hotkeys (shared by every client, and changed by the item bar's keys) get their own file here.
+New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\RynthCore" | Out-Null
+$env:RYNTHCORE_HOTKEYS_FILE = "$env:LOCALAPPDATA\RynthCore\hotkeys.txt"
 $dispatch = "C:\Games\RynthCore\Test\dispatch.txt"
 $env:RYNTHCORE_DISPATCH_FILE = $dispatch
 Set-Content $dispatch "# test dispatch file"

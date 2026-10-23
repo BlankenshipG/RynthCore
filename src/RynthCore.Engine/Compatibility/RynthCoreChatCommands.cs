@@ -27,6 +27,9 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item><c>/rc ui retailvitals [on|off|status]</c> — hide AC's own
 ///         health/stamina/mana bars (<see cref="RetailVitalsHooks"/>; saved for the
 ///         PC, also in Settings &gt; UI). Alone it reports the state.</item>
+///   <item><c>/rc ui retailtoolbar [on|off|status]</c> — hide AC's toolbar panel and
+///         its shortcut slots (<see cref="RetailToolbarHooks"/>; the shortcut keys keep
+///         working; saved for the PC, also in Settings &gt; UI).</item>
 ///   <item><c>/rc ui barsize [0-10|+|-|status]</c> - the RynthCore bar's size (its own text
 ///         size step, <see cref="UI.PanelTextScale"/>; saved for the PC, also in Settings &gt;
 ///         Display). Alone it reports the size.</item>
@@ -493,6 +496,111 @@ internal static class RynthCoreChatCommands
             }
             return true;
         }
+        // /rc settings [tab] : the Settings panel (toggled), or opened on a tab ("/rc settings buffing").
+        // A plugin's own window links to a tab this way (RynthAi's dashboard: the Buffing key's
+        // right-click), as it can't reach the engine's panel otherwise. 2026-10-21.
+        // /rc shortcuts [use N]: the player's 18 AC shortcut slots and their keys (AcShortcuts,
+        // AcKeymap), or use slot N the way its key does. 2026-10-22, for checking the item bar's base.
+        if (IsVerb(sub, "shortcuts", out string shortcutArgs))
+        {
+            string[] sa = shortcutArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (sa.Length >= 2 && sa[0].Equals("use", StringComparison.OrdinalIgnoreCase) && int.TryParse(sa[1], out int useSlot))
+            {
+                Reply(AcShortcuts.Enqueue(AcShortcuts.Op.Use, useSlot - 1, 0)
+                    ? $"Using shortcut {useSlot}." : $"Shortcut {useSlot} can't be used ({AcShortcuts.Status})");
+                return true;
+            }
+            // /rc shortcuts set N: the selected item into slot N; clear N: empty it (the retail toolbar's way).
+            if (sa.Length >= 2 && sa[0].Equals("set", StringComparison.OrdinalIgnoreCase) && int.TryParse(sa[1], out int setSlot))
+            {
+                uint sel = sa.Length >= 3 && uint.TryParse(sa[2].Replace("0x", "", StringComparison.OrdinalIgnoreCase),
+                    System.Globalization.NumberStyles.HexNumber, null, out uint given) ? given : ClientHelperHooks.GetSelectedItemId();
+                Reply(sel == 0 ? "Select the item first."
+                    : AcShortcuts.Enqueue(AcShortcuts.Op.Set, setSlot - 1, sel) ? $"Shortcut {setSlot}: 0x{sel:X8}." : $"Shortcut {setSlot} can't be set ({AcShortcuts.Status})");
+                return true;
+            }
+            if (sa.Length >= 2 && sa[0].Equals("clear", StringComparison.OrdinalIgnoreCase) && int.TryParse(sa[1], out int clearSlot))
+            {
+                Reply(AcShortcuts.Enqueue(AcShortcuts.Op.Clear, clearSlot - 1, 0)
+                    ? $"Shortcut {clearSlot} emptied." : $"Shortcut {clearSlot} can't be emptied ({AcShortcuts.Status})");
+                return true;
+            }
+            AcShortcuts.Slot[] slots = AcShortcuts.Slots;
+            if (slots.Length == 0) { Reply("No shortcut slots read yet (in the world? " + AcShortcuts.Status + ")"); return true; }
+            Reply($"Shortcuts (keymap {System.IO.Path.GetFileName(AcKeymap.FilePath)}):");
+            for (int i = 0; i < slots.Length; i++)
+            {
+                uint id = slots[i].ObjectId;
+                string what = id == 0 ? "-" : ClientObjectHooks.TryGetSnapshotName(id, out string n) && n.Length > 0 ? n : $"0x{id:X8}";
+                string keys = AcKeymap.KeysText($"UseQuickSlot_{i + 1}");
+                Reply($"  {i + 1,2}: {what}{(keys.Length > 0 ? "  [" + keys + "]" : "")}");
+            }
+            return true;
+        }
+
+        // /rc keymap [check|bind|unbind <action> <key> | reload]: AC's keys, changed so every client follows
+        // (AcKeymapLive). <action> is a keymap action (UseQuickSlot_5) or a quoted-free /command. 2026-10-22.
+        if (IsVerb(sub, "keymap", out string keymapArgs))
+        {
+            string[] ka = keymapArgs.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
+            string verb = ka.Length > 0 ? ka[0].ToLowerInvariant() : "";
+            if (verb is "check" or "bind" or "unbind" && ka.Length == 3)
+            {
+                // The key is the last word; the action is everything between (a command has spaces).
+                int last = ka[2].LastIndexOf(' ');
+                string action = last < 0 ? ka[1] : ka[1] + " " + ka[2][..last];
+                string key = last < 0 ? ka[2] : ka[2][(last + 1)..];
+                if (verb == "check")
+                {
+                    int r = AcKeymapLive.Check(action, key, out string msg);
+                    Reply(r == 0 ? $"{key} is free for {action}." : msg);
+                }
+                else if (!AcKeymapLive.Enqueue(action, key, verb == "bind" ? AcKeymapLive.Op.Bind : AcKeymapLive.Op.Unbind, out string why))
+                    Reply(why);
+                return true;
+            }
+            if (verb == "dump")
+            {
+                AcKeymapLive.RequestDump(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "rynthcore-keymap-memory.keymap"));
+                return true;
+            }
+            Reply($"Keymap {AcKeymap.FilePath} - {AcKeymapLive.Status} Usage: /rc keymap check|bind|unbind <action> <key> | dump, e.g. /rc keymap bind UseQuickSlot_10 F11");
+            return true;
+        }
+
+        // /rc panels [open|close|toggle <id>]: AC's own panels (AcPanels): their ids, classes and which are open.
+        if (IsVerb(sub, "panels", out string acPanelArgs))
+        {
+            string[] pa = acPanelArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (pa.Length == 2 && uint.TryParse(pa[1].Replace("0x", "", StringComparison.OrdinalIgnoreCase),
+                    pa[1].StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? System.Globalization.NumberStyles.HexNumber : System.Globalization.NumberStyles.Integer,
+                    null, out uint panelId))
+            {
+                AcPanels.Op op = pa[0].ToLowerInvariant() switch { "open" => AcPanels.Op.Open, "close" => AcPanels.Op.Close, _ => AcPanels.Op.Toggle };
+                if (!AcPanels.Enqueue(panelId, op)) Reply("Can't: " + AcPanels.Status);
+                return true;
+            }
+            var panels = AcPanels.List(names: true);
+            Reply($"AC panels ({panels.Count}; {AcPanels.Status}):");
+            foreach (var p in panels)
+                Reply($"  {p.Id,3} {p.Class}{(p.Open ? " - open" : "")}");
+            return true;
+        }
+
+        if (IsVerb(sub, "settings", out string settingsArgs))
+        {
+            string settingsTitle = ImGuiBackend.Panels.SettingsFace.Title;
+            if (!ImGuiBackend.ImGuiPanelHost.HasFace(settingsTitle))
+                Reply("The Settings panel isn't available (the ImGui layer is off?).");
+            else if (settingsArgs.Length == 0)
+                UI.PanelRouter.Toggle(settingsTitle);
+            else
+            {
+                ImGuiBackend.Panels.SettingsFace.RequestTab(settingsArgs);
+                if (!ImGuiBackend.ImGuiPanelHost.IsOpen(settingsTitle)) UI.PanelRouter.Toggle(settingsTitle);
+            }
+            return true;
+        }
         if (IsVerb(sub, "hotkey", out hotkeyArgs) || IsVerb(sub, "hotkeys", out hotkeyArgs))
         {
             try
@@ -627,6 +735,22 @@ internal static class RynthCoreChatCommands
             return;
         }
 
+        // /rc ui retailtoolbar [on|off]: hide AC's toolbar panel and its shortcut slots
+        // (RetailToolbarHooks). Alone it reports; anything but on/off toggles.
+        if (parts[0].Equals("retailtoolbar", StringComparison.OrdinalIgnoreCase))
+        {
+            if (parts.Length >= 2 && parts[1].Equals("status", StringComparison.OrdinalIgnoreCase))
+            {
+                try { RetailToolbarHooks.LogStructure(); } catch { }
+                Reply(RetailToolbarHooks.Describe());
+                return;
+            }
+            if (parts.Length >= 2)
+                RetailToolbarHooks.HideRetailToolbar = Flag(parts[1], RetailToolbarHooks.HideRetailToolbar);
+            Reply(RetailToolbarHooks.Describe());
+            return;
+        }
+
         // /rc ui barsize [0-10|+|-|status]: the bar's size. Alone it reports it.
         if (parts[0].Equals("barsize", StringComparison.OrdinalIgnoreCase))
         {
@@ -696,6 +820,13 @@ internal static class RynthCoreChatCommands
             return;
         }
 
+        // /rc ui channels: the chat's channels drawer opens or closes, as its button does (tests, keys).
+        if (parts[0].Equals("channels", StringComparison.OrdinalIgnoreCase))
+        {
+            ImGuiBackend.Panels.ChatFace.ToggleChannelsRequested = true;
+            return;
+        }
+
         // /rc ui open|close|popout|redock|snap <Panel>: drive a panel by name (tests,
         // dispatch.txt). Names may have spaces ("Monster Detail").
         string verb = parts[0].ToLowerInvariant();
@@ -733,7 +864,7 @@ internal static class RynthCoreChatCommands
             return;
         }
 
-        Reply("Usage: /rc ui list  |  /rc ui open|close|popout|redock|snap <Panel>  |  /rc ui retailvitals [on|off]  |  /rc ui barsize [0-10|+|-|status]  |  /rc ui barrows [1-6|+|-]  |  /rc ui baricons [2-30|none|+|-]");
+        Reply("Usage: /rc ui list  |  /rc ui open|close|popout|redock|snap <Panel>  |  /rc ui retailvitals [on|off]  |  /rc ui retailtoolbar [on|off]  |  /rc ui barsize [0-10|+|-|status]  |  /rc ui barrows [1-6|+|-]  |  /rc ui baricons [2-30|none|+|-]");
     }
 
     /// <summary>

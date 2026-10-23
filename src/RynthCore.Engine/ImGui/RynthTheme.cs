@@ -7,7 +7,8 @@
 //
 //  Colour themes (Tom 2026-10-14): the structural colours come from a palette
 //  the player can change in Settings > Display: a preset (RynthCore, Ember,
-//  Verdant, Amethyst, Crimson, Slate) or their own eight colours (accent,
+//  Verdant, Amethyst, Crimson, Slate, and since 2026-10-21 Brass, Volt and
+//  Ivory, the instrument dashboard's three) or their own eight colours (accent,
 //  highlight, background, title bars, buttons, borders, text, muted text).
 //  The other shades (selected rows, fields, hover, the dashboard's border...)
 //  are worked out from those eight; the RynthCore preset keeps every original
@@ -15,8 +16,9 @@
 //  toggles, radar gold) don't follow the theme. The faces read the tokens
 //  (properties) every frame, so a change shows at once; the base ImGui style
 //  is re-coloured before the next frame (RefreshStyle, each ImGui context).
-//  Saved to %AppData%\RynthCore\theme.txt (preset=, then name=AARRGGBB for a
-//  custom palette's eight colours).
+//  Saved to %AppData%\RynthCore\theme.txt (preset=, then name=AARRGGBB for the
+//  player's own eight colours, kept whichever theme is in use since 2026-10-22);
+//  the schemes a player saved are in ThemeSchemes.cs.
 //
 //  Apply() sets the base style once at context creation; per-window colours
 //  (bar, RynthAi, Radar) are pushed around Begin by the panel host.
@@ -45,6 +47,10 @@ internal sealed class ThemePalette
     public uint AccentFill, AccentAlt, BoxBg, Field, Selected, WindowBorder, DashBorder, PanelGlass, BarBg, FrameBg,
         FrameHover, FrameActive, BarButtonBorder, RowAlt, MuteAlt, StyleText, PopupBg, FrameBgHover, FrameBgActive, SliderGrab;
 
+    // The instrument look's shades (2026-10-21, plugin windows: UiColorToken KeyFace..Faint), worked
+    // out from the eight for every palette, Default included (DeriveInstrument).
+    public uint KeyFace, Hairline, Inset, Faint;
+
     /// <summary>A copy (its own array of the eight).</summary>
     public ThemePalette Clone()
     {
@@ -55,6 +61,7 @@ internal sealed class ThemePalette
             FrameHover = FrameHover, FrameActive = FrameActive, BarButtonBorder = BarButtonBorder, RowAlt = RowAlt,
             MuteAlt = MuteAlt, StyleText = StyleText, PopupBg = PopupBg, FrameBgHover = FrameBgHover,
             FrameBgActive = FrameBgActive, SliderGrab = SliderGrab,
+            KeyFace = KeyFace, Hairline = Hairline, Inset = Inset, Faint = Faint,
         };
         Array.Copy(P, c.P, Primaries);
         return c;
@@ -71,6 +78,7 @@ internal sealed class ThemePalette
         t.BarBg = 0xFF0A0A14; t.FrameBg = 0xFF1A2230; t.FrameHover = 0xFF2A3850; t.FrameActive = 0xFF34466A;
         t.BarButtonBorder = 0xFF3A4A5A; t.RowAlt = 0xFF101822; t.MuteAlt = 0xFFC8D6E4; t.StyleText = 0xFFE6E6E6;
         t.PopupBg = 0xFF14141E; t.FrameBgHover = 0xFF243044; t.FrameBgActive = 0xFF2C3A52; t.SliderGrab = 0xFF26A18C;
+        t.DeriveInstrument();
         return t;
     }
 
@@ -107,6 +115,20 @@ internal sealed class ThemePalette
         FrameBgHover = Mix(FrameBg, FrameHover, 0.50f);
         FrameBgActive = Mix(FrameHover, FrameActive, 0.50f);
         SliderGrab = Mix(AccentAlt, bg, 0.17f);
+        DeriveInstrument();
+    }
+
+    /// <summary>
+    /// The instrument look's shades from the eight: a key's face (a step up from the background),
+    /// the hairlines, the inset wells (the activity line, bar tracks) and the faint text.
+    /// </summary>
+    public void DeriveInstrument()
+    {
+        uint bg = P[2], button = P[4], border = P[5], muted = P[7];
+        KeyFace = Mix(bg, button, 0.60f);
+        Hairline = Mix(bg, border, 0.45f);
+        Inset = Mix(bg, 0xFF000000, 0.45f);
+        Faint = Mix(muted, bg, 0.28f);
     }
 
     /// <summary>#AARRGGBB mix: <paramref name="t"/> of the way from <paramref name="a"/> to <paramref name="b"/>, opaque.</summary>
@@ -120,7 +142,10 @@ internal sealed class ThemePalette
     }
 
     // ── Presets ─────────────────────────────────────────────────────────
-    public static readonly string[] PresetNames = { "RynthCore", "Ember", "Verdant", "Amethyst", "Crimson", "Slate" };
+    // Brass, Volt and Ivory (2026-10-21): the instrument dashboard's three, from its Claude Design
+    // canvas. Their Buttons and Borders are chosen so DeriveInstrument lands on the canvas's key
+    // face and hairline; appended, so the older presets keep their places in the picker.
+    public static readonly string[] PresetNames = { "RynthCore", "Ember", "Verdant", "Amethyst", "Crimson", "Slate", "Brass", "Volt", "Ivory" };
 
     public static ThemePalette Preset(int index) => index switch
     {
@@ -129,6 +154,9 @@ internal sealed class ThemePalette
         3 => From(0xB98CFF, 0xFFC857, 0x0F0A16, 0x1C1428, 0x2A1C40, 0x5A4A8A, 0xF6F2FC, 0xCBBEDC),
         4 => From(0xFF5C6C, 0xFFC857, 0x140A0C, 0x241216, 0x3A161E, 0x7A3442, 0xFCF2F3, 0xD8B8BE),
         5 => From(0xD0D8E0, 0xF0C060, 0x0E0F11, 0x1A1C20, 0x24282E, 0x4A5260, 0xF4F5F7, 0xB4BAC2),
+        6 => From(0xE3B662, 0x85C7B2, 0x12100D, 0x1C1915, 0x26221E, 0x595349, 0xEEE9DC, 0xB0A89B),
+        7 => From(0xCBF559, 0xF7B245, 0x0E1115, 0x161A1F, 0x1F2329, 0x4C5661, 0xEDF0F4, 0xA7ADB5),
+        8 => From(0xFCF7E7, 0xF7B245, 0x100F0E, 0x191918, 0x222322, 0x535451, 0xF1EEE6, 0xABA9A5),
         _ => Default(),
     };
 
@@ -157,7 +185,8 @@ internal static class RynthTheme
     {
         public uint Accent, Highlight, Background, TitleBar, Button, Border, Text, TextMuted,
             AccentFill, AccentAlt, BoxBg, Field, Selected, WindowBorder, DashBorder, PanelGlass, BarBg, FrameBg,
-            FrameHover, FrameActive, BarButtonBorder, RowAlt, MuteAlt, StyleText, PopupBg, FrameBgHover, FrameBgActive, SliderGrab;
+            FrameHover, FrameActive, BarButtonBorder, RowAlt, MuteAlt, StyleText, PopupBg, FrameBgHover, FrameBgActive, SliderGrab,
+            KeyFace, Hairline, Inset, Faint;
 
         public Tokens(ThemePalette p)
         {
@@ -169,6 +198,7 @@ internal static class RynthTheme
             FrameActive = Argb(p.FrameActive); BarButtonBorder = Argb(p.BarButtonBorder); RowAlt = Argb(p.RowAlt);
             MuteAlt = Argb(p.MuteAlt); StyleText = Argb(p.StyleText); PopupBg = Argb(p.PopupBg);
             FrameBgHover = Argb(p.FrameBgHover); FrameBgActive = Argb(p.FrameBgActive); SliderGrab = Argb(p.SliderGrab);
+            KeyFace = Argb(p.KeyFace); Hairline = Argb(p.Hairline); Inset = Argb(p.Inset); Faint = Argb(p.Faint);
         }
     }
 
@@ -206,6 +236,11 @@ internal static class RynthTheme
     public static uint BarButtonBorder => _t.BarButtonBorder;
     public static uint RowAlt => _t.RowAlt;
     public static uint MuteAlt => _t.MuteAlt;
+    // ...and the instrument look's (plugin windows, UiColorToken KeyFace..Faint):
+    public static uint KeyFace => _t.KeyFace;
+    public static uint Hairline => _t.Hairline;
+    public static uint Inset => _t.Inset;
+    public static uint Faint => _t.Faint;
 
     // ── Bar (AvaloniaOverlay.cs BuildRoot) ─────────────────────────────
     public static uint BarBackground => WithAlpha(_t.BarBg, 0xE6);
@@ -243,30 +278,74 @@ internal static class RynthTheme
     public static readonly uint RadarGripHover = Argb(0xA00A121A);
 
     // ── Choosing a theme (Settings > Display) ───────────────────────────
+    //
+    // Three kinds of theme (Tom 2026-10-22: a new preset must never cost a player the colours they
+    // made, and players can keep their own schemes):
+    //   a preset         RynthCore, Ember ... Brass, Volt, Ivory (ThemePalette.PresetNames)
+    //   a saved scheme   a named set of the eight the player saved (ThemeSchemes, themes\*.theme)
+    //   Custom           the player's own eight colours. Kept whichever theme is in use and always
+    //                    written to theme.txt, so picking Custom again brings them back.
+    // Changing a colour makes the theme Custom with that change; when the player's own colours would
+    // be replaced that way (the change was made on a preset or a scheme) and aren't kept anywhere
+    // else, they are saved as a scheme first ("My colours"), so no click loses them.
 
-    /// <summary>The preset in use (ThemePalette.PresetNames index), or Custom.</summary>
+    public const int Scheme = -2;
+    private static ThemePalette _custom = ThemePalette.Default();   // the player's own eight (Custom)
+    private static bool _customSet;                                 // theme.txt had them, or the player made them
+    private static string _scheme = string.Empty;                   // the saved scheme in use (Scheme)
+
+    /// <summary>The preset in use (ThemePalette.PresetNames index), Scheme, or Custom.</summary>
     public static int Preset { get { EnsureLoaded(); return _preset; } }
 
-    /// <summary>Settings' Theme picker: the presets, then "Custom" while the player's own colours are in use.</summary>
-    public static readonly string[] PickerNames = BuildPickerNames();
-    public static int PickerIndex => Preset == Custom ? PickerNames.Length - 1 : Preset;
+    /// <summary>The saved scheme in use ("" unless <see cref="Preset"/> is Scheme).</summary>
+    public static string SchemeName { get { EnsureLoaded(); lock (Sync) return _preset == Scheme ? _scheme : string.Empty; } }
 
-    private static string[] BuildPickerNames()
+    public static bool SchemeInUse => Preset == Scheme;
+
+    /// <summary>Settings' Theme picker now: the presets, the saved schemes, then Custom.</summary>
+    public static string[] PickerNames()
     {
-        var names = new string[ThemePalette.PresetNames.Length + 1];
+        string[] schemes = ThemeSchemes.Names;
+        var names = new string[ThemePalette.PresetNames.Length + schemes.Length + 1];
         Array.Copy(ThemePalette.PresetNames, names, ThemePalette.PresetNames.Length);
+        Array.Copy(schemes, 0, names, ThemePalette.PresetNames.Length, schemes.Length);
         names[^1] = "Custom";
         return names;
     }
 
-    /// <summary>Uses preset <paramref name="index"/> (the picker's last item, Custom, keeps the colours as they are).</summary>
+    public static int PickerIndex
+    {
+        get
+        {
+            int p = Preset;
+            string[] schemes = ThemeSchemes.Names;
+            if (p >= 0) return p;
+            if (p == Scheme)
+            {
+                int i = Array.FindIndex(schemes, n => n.Equals(SchemeName, StringComparison.OrdinalIgnoreCase));
+                if (i >= 0) return ThemePalette.PresetNames.Length + i;
+            }
+            return ThemePalette.PresetNames.Length + schemes.Length;
+        }
+    }
+
+    /// <summary>The picker's item <paramref name="index"/>: a preset, a saved scheme, or Custom (the player's own colours).</summary>
+    public static void SetPicker(int index)
+    {
+        if (index >= 0 && index < ThemePalette.PresetNames.Length) { SetPreset(index); return; }
+        string[] schemes = ThemeSchemes.Names;
+        int s = index - ThemePalette.PresetNames.Length;
+        if (s >= 0 && s < schemes.Length) { UseScheme(schemes[s]); return; }
+        UseCustom();
+    }
+
+    /// <summary>Uses preset <paramref name="index"/>; out of range means Custom (the player's own colours).</summary>
     public static void SetPreset(int index)
     {
         EnsureLoaded();
         if (index < 0 || index >= ThemePalette.PresetNames.Length)
         {
-            lock (Sync) _preset = Custom;
-            Changed();
+            UseCustom();
             return;
         }
         lock (Sync)
@@ -277,6 +356,72 @@ internal static class RynthTheme
         Changed();
     }
 
+    /// <summary>The player's own colours (Custom), as they last left them.</summary>
+    public static void UseCustom()
+    {
+        EnsureLoaded();
+        lock (Sync)
+        {
+            _preset = Custom;
+            _palette = _custom.Clone();
+        }
+        Changed();
+    }
+
+    /// <summary>A saved scheme by name; false when there is none by that name (or it can't be read).</summary>
+    public static bool UseScheme(string name)
+    {
+        EnsureLoaded();
+        ThemePalette? p = ThemeSchemes.Load(name);
+        if (p == null) return false;
+        lock (Sync)
+        {
+            _preset = Scheme;
+            _scheme = ThemeSchemes.DisplayName(name);
+            _palette = p;
+        }
+        Changed();
+        return true;
+    }
+
+    /// <summary>
+    /// Saves the colours in use as scheme <paramref name="name"/> (replacing one of that name) and
+    /// switches to it. Returns the name saved, or "" for an empty or unusable name.
+    /// </summary>
+    public static string SaveScheme(string name)
+    {
+        EnsureLoaded();
+        name = ThemeSchemes.CleanName(name);
+        if (name.Length == 0) return string.Empty;
+        ThemePalette p;
+        lock (Sync) p = _palette.Clone();
+        if (!ThemeSchemes.Save(name, p)) return string.Empty;
+        lock (Sync)
+        {
+            _preset = Scheme;
+            _scheme = name;
+        }
+        Changed();
+        return name;
+    }
+
+    /// <summary>Deletes the scheme in use; its colours stay on screen as the player's own (Custom).</summary>
+    public static bool DeleteCurrentScheme()
+    {
+        EnsureLoaded();
+        string name = SchemeName;
+        if (name.Length == 0 || !ThemeSchemes.Delete(name)) return false;
+        lock (Sync)
+        {
+            _custom = _palette.Clone();
+            _customSet = true;
+            _preset = Custom;
+            _scheme = string.Empty;
+        }
+        Changed();
+        return true;
+    }
+
     /// <summary>One of the eight colours (#AARRGGBB).</summary>
     public static uint GetPrimary(int i)
     {
@@ -284,20 +429,33 @@ internal static class RynthTheme
         lock (Sync) return _palette.P[Math.Clamp(i, 0, ThemePalette.Primaries - 1)];
     }
 
-    /// <summary>Changes one of the eight colours (#RRGGBB, opaque): the theme becomes Custom and its shades follow.</summary>
+    /// <summary>
+    /// Changes one of the eight colours (#RRGGBB, opaque): the theme becomes Custom with the change and
+    /// its shades follow. Made on a preset or a scheme, it replaces the player's own colours, which are
+    /// saved as a scheme first when they aren't kept anywhere yet.
+    /// </summary>
     public static void SetPrimary(int i, uint argb)
     {
         EnsureLoaded();
         if (i < 0 || i >= ThemePalette.Primaries) return;
         argb |= 0xFF000000;
+        ThemePalette? keep = null;
         lock (Sync)
         {
             if (_palette.P[i] == argb) return;
+            if (_preset != Custom && _customSet) keep = _custom.Clone();
+        }
+        if (keep != null) ThemeSchemes.KeepIfNew("My colours", keep);
+        lock (Sync)
+        {
             var p = _palette.Clone();
             p.P[i] = argb;
             p.Derive();
             _palette = p;
+            _custom = p.Clone();
+            _customSet = true;
             _preset = Custom;
+            _scheme = string.Empty;
         }
         Changed();
     }
@@ -321,7 +479,12 @@ internal static class RynthTheme
         ApplyColors(ImGuiNET.ImGui.GetStyle());
     }
 
-    /// <summary>Reads theme.txt if it hasn't been read yet. Engine init calls this so AC's thread never does.</summary>
+    /// <summary>
+    /// Reads theme.txt if it hasn't been read yet. Engine init calls this so AC's thread never does.
+    /// "preset=" names a preset, "scheme:Name" a saved scheme, or Custom; the eight colour lines are the
+    /// player's own colours whatever the preset (before 2026-10-22 they were written only for Custom).
+    /// A scheme that is gone falls back to the player's own colours.
+    /// </summary>
     public static void EnsureLoaded()
     {
         if (_loaded) return;
@@ -333,7 +496,9 @@ internal static class RynthTheme
                 if (File.Exists(FilePath))
                 {
                     int preset = 0;
+                    string scheme = string.Empty;
                     var custom = ThemePalette.Default();
+                    bool anyColour = false;
                     foreach (string raw in File.ReadAllLines(FilePath))
                     {
                         string line = raw.Trim();
@@ -342,6 +507,12 @@ internal static class RynthTheme
                         string key = line[..eq].Trim(), value = line[(eq + 1)..].Trim();
                         if (key.Equals("preset", StringComparison.OrdinalIgnoreCase))
                         {
+                            if (value.StartsWith("scheme:", StringComparison.OrdinalIgnoreCase))
+                            {
+                                scheme = value["scheme:".Length..].Trim();
+                                preset = Scheme;
+                                continue;
+                            }
                             int idx = Array.FindIndex(ThemePalette.PresetNames, n => n.Equals(value, StringComparison.OrdinalIgnoreCase));
                             preset = idx >= 0 ? idx : Custom;
                             continue;
@@ -349,11 +520,19 @@ internal static class RynthTheme
                         for (int i = 0; i < ThemePalette.Primaries; i++)
                             if (key.Equals(ThemePalette.Key(i), StringComparison.OrdinalIgnoreCase)
                                 && uint.TryParse(value, System.Globalization.NumberStyles.HexNumber, null, out uint c))
+                            {
                                 custom.P[i] = 0xFF000000 | c;
+                                anyColour = true;
+                            }
                     }
+                    custom.Derive();
+                    _custom = custom;
+                    _customSet = anyColour;
+                    ThemePalette? fromScheme = preset == Scheme ? ThemeSchemes.Load(scheme) : null;
+                    if (preset == Scheme && fromScheme == null) preset = Custom;
                     _preset = preset;
-                    if (preset == Custom) { custom.Derive(); _palette = custom; }
-                    else _palette = ThemePalette.Preset(preset);
+                    _scheme = preset == Scheme ? ThemeSchemes.DisplayName(scheme) : string.Empty;
+                    _palette = preset == Custom ? custom.Clone() : preset == Scheme ? fromScheme! : ThemePalette.Preset(preset);
                     _t = new Tokens(_palette);
                     _version++;
                 }
@@ -363,8 +542,13 @@ internal static class RynthTheme
         }
     }
 
-    private static string FilePath =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore", "theme.txt");
+    /// <summary>%AppData%\RynthCore, or RYNTHCORE_THEME_DIR when set (tools\ThemeTests' temp folder).</summary>
+    internal static string Folder =>
+        Environment.GetEnvironmentVariable("RYNTHCORE_THEME_DIR") is { Length: > 0 } dir
+            ? dir
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore");
+
+    private static string FilePath => Path.Combine(Folder, "theme.txt");
 
     private static void Save()
     {
@@ -373,10 +557,13 @@ internal static class RynthTheme
             var sb = new System.Text.StringBuilder();
             lock (Sync)
             {
-                sb.Append("preset=").Append(_preset == Custom ? "Custom" : ThemePalette.PresetNames[_preset]).Append('\n');
-                if (_preset == Custom)
+                sb.Append("preset=")
+                  .Append(_preset == Custom ? "Custom" : _preset == Scheme ? "scheme:" + _scheme : ThemePalette.PresetNames[_preset])
+                  .Append('\n');
+                // The player's own colours, whatever is in use (an older engine reads them only for Custom).
+                if (_customSet || _preset == Custom)
                     for (int i = 0; i < ThemePalette.Primaries; i++)
-                        sb.Append(ThemePalette.Key(i)).Append('=').Append((_palette.P[i] & 0xFFFFFF).ToString("X6")).Append('\n');
+                        sb.Append(ThemePalette.Key(i)).Append('=').Append((_custom.P[i] & 0xFFFFFF).ToString("X6")).Append('\n');
             }
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
             File.WriteAllText(FilePath, sb.ToString());

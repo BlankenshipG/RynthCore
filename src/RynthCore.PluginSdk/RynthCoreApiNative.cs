@@ -185,6 +185,20 @@ public struct RynthCoreApiNative
     public IntPtr GetUiColorFn;              // uint GetUiColor(int token) -> ABGR, 0 unknown
     public IntPtr GetUiFontFn;               // void* GetUiFont(int font) -> ImFont*, null unknown / off AC's thread
     public IntPtr SetPanelOpenFn;            // int SetPanelOpen(const char* key, int mode) -> 1 open, 0 closed, -1 no such panel
+    // v90: plugin windows that draw their own frame ("chrome": "none")
+    public IntPtr PanelDragWithLastItemFn;   // void PanelDragWithLastItem(void): the panel being drawn follows a drag of ImGui's last item
+    public IntPtr SetPanelPopOutFn;          // int SetPanelPopOut(const char* key, int mode) -> 1 popped out, 0 docked, -1 no such open panel
+    public IntPtr PanelTextSizeFn;           // int PanelTextSize(const char* key, int delta) -> text size in % (100..250), -1 no such panel
+    public IntPtr RenderSettingsDrawerFn;    // float RenderSettingsDrawer(const char* key, float width, float room, int flags) -> wanted height, -1 unknown
+    public IntPtr GetShortcutsFn;            // int GetShortcuts(uint* objectIds, uint* spellIds, int max) -> 18, or 0 out of the world
+    public IntPtr ShortcutActionFn;          // int ShortcutAction(int op, int slot, uint objectId) -> 1 queued, 0 refused
+    public IntPtr GetActionKeysFn;           // int GetActionKeys(const char* action, char* buffer, int length) -> bytes needed, -1 bad call
+    public IntPtr GetIconTextureFn;          // void* GetIconTexture(int kind, uint id) -> ImGui texture id, null while it is made
+    public IntPtr KeyCaptureFn;              // int KeyCapture(int op, char* buffer, int length) -> 0 waiting, 1 key (name in buffer), 2 cancelled
+    public IntPtr SetActionKeyFn;            // int SetActionKey(const char* action, const char* key, int op, char* message, int length)
+    public IntPtr AcPanelFn;                 // int AcPanel(int id, int op) -> op 0: 1 open, 0 closed, -1 none; else 1 queued, -1 refused
+    public IntPtr PanelScaleFn;              // int PanelScale(const char* key, int percent) -> percent now, 0 = follows the text size
+    public IntPtr DropTargetFn;              // uint DropTarget(const char* window, float x0, y0, x1, y1, int flags, int* dragging) -> dropped object, 0 none
 }
 
 /// <summary>

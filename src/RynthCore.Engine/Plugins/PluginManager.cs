@@ -288,6 +288,19 @@ internal static partial class PluginManager
     private static GetUiColorCallbackDelegate? _getUiColorCallback;                       // v89
     private static GetUiFontCallbackDelegate? _getUiFontCallback;                         // v89
     private static SetPanelOpenCallbackDelegate? _setPanelOpenCallback;                   // v89
+    private static PanelDragWithLastItemCallbackDelegate? _panelDragWithLastItemCallback; // v90
+    private static SetPanelPopOutCallbackDelegate? _setPanelPopOutCallback;               // v90
+    private static PanelTextSizeCallbackDelegate? _panelTextSizeCallback;                 // v90
+    private static RenderSettingsDrawerCallbackDelegate? _renderSettingsDrawerCallback;   // v90
+    private static GetShortcutsCallbackDelegate? _getShortcutsCallback;                   // v90
+    private static ShortcutActionCallbackDelegate? _shortcutActionCallback;               // v90
+    private static GetActionKeysCallbackDelegate? _getActionKeysCallback;                 // v90
+    private static GetIconTextureCallbackDelegate? _getIconTextureCallback;               // v90
+    private static KeyCaptureCallbackDelegate? _keyCaptureCallback;                       // v90
+    private static SetActionKeyCallbackDelegate? _setActionKeyCallback;                   // v90
+    private static AcPanelCallbackDelegate? _acPanelCallback;                             // v90
+    private static PanelScaleCallbackDelegate? _panelScaleCallback;                       // v90
+    private static DropTargetCallbackDelegate? _dropTargetCallback;                       // v90
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -1663,6 +1676,10 @@ internal static partial class PluginManager
         Compatibility.RadarHooks.ResetCachedInstance();
         Compatibility.PowerbarHooks.ResetCachedInstance();
         Compatibility.RetailVitalsHooks.ResetCachedInstance();
+        Compatibility.RetailToolbarHooks.ResetCachedInstance();
+        Compatibility.AcShortcuts.Reset();
+        Compatibility.AcKeymapLive.Reset();
+        Compatibility.AcPanels.Reset();
         Compatibility.ChatCallbackHooks.ResetOutgoingTarget();
 
         // Drop the cached PlayerDesc/CACQualities pointer so the next call into the
@@ -3194,6 +3211,19 @@ internal static partial class PluginManager
         _getUiColorCallback ??= UiKit.GetUiColor;
         _getUiFontCallback ??= UiKit.GetUiFont;
         unsafe { _setPanelOpenCallback ??= UiKit.SetPanelOpen; }
+        _panelDragWithLastItemCallback ??= UiKit.PanelDragWithLastItem;   // v90
+        unsafe { _setPanelPopOutCallback ??= UiKit.SetPanelPopOut; }
+        unsafe { _panelTextSizeCallback ??= UiKit.PanelTextSize; }
+        unsafe { _renderSettingsDrawerCallback ??= UiKit.RenderSettingsDrawer; }
+        unsafe { _getShortcutsCallback ??= ShortcutApi.GetShortcuts; }
+        _shortcutActionCallback ??= ShortcutApi.ShortcutAction;
+        unsafe { _getActionKeysCallback ??= ShortcutApi.GetActionKeys; }
+        _getIconTextureCallback ??= ShortcutApi.GetIconTexture;
+        unsafe { _keyCaptureCallback ??= ShortcutApi.KeyCapture; }
+        unsafe { _setActionKeyCallback ??= ShortcutApi.SetActionKey; }
+        _acPanelCallback ??= ShortcutApi.AcPanel;
+        unsafe { _panelScaleCallback ??= UiKit.PanelScale; }
+        unsafe { _dropTargetCallback ??= ShortcutApi.DropTarget; }
 
         _api.Version = PluginContractVersion.Current;
         _api.LogFn = Marshal.GetFunctionPointerForDelegate(_logCallback);
@@ -3351,6 +3381,19 @@ internal static partial class PluginManager
         _api.GetUiColorFn = Marshal.GetFunctionPointerForDelegate(_getUiColorCallback);
         _api.GetUiFontFn = Marshal.GetFunctionPointerForDelegate(_getUiFontCallback);
         _api.SetPanelOpenFn = Marshal.GetFunctionPointerForDelegate(_setPanelOpenCallback);
+        _api.PanelDragWithLastItemFn = Marshal.GetFunctionPointerForDelegate(_panelDragWithLastItemCallback);
+        _api.SetPanelPopOutFn = Marshal.GetFunctionPointerForDelegate(_setPanelPopOutCallback);
+        _api.PanelTextSizeFn = Marshal.GetFunctionPointerForDelegate(_panelTextSizeCallback);
+        _api.RenderSettingsDrawerFn = Marshal.GetFunctionPointerForDelegate(_renderSettingsDrawerCallback);
+        _api.GetShortcutsFn = Marshal.GetFunctionPointerForDelegate(_getShortcutsCallback);
+        _api.ShortcutActionFn = Marshal.GetFunctionPointerForDelegate(_shortcutActionCallback);
+        _api.GetActionKeysFn = Marshal.GetFunctionPointerForDelegate(_getActionKeysCallback);
+        _api.GetIconTextureFn = Marshal.GetFunctionPointerForDelegate(_getIconTextureCallback);
+        _api.KeyCaptureFn = Marshal.GetFunctionPointerForDelegate(_keyCaptureCallback);
+        _api.SetActionKeyFn = Marshal.GetFunctionPointerForDelegate(_setActionKeyCallback);
+        _api.AcPanelFn = Marshal.GetFunctionPointerForDelegate(_acPanelCallback);
+        _api.PanelScaleFn = Marshal.GetFunctionPointerForDelegate(_panelScaleCallback);
+        _api.DropTargetFn = Marshal.GetFunctionPointerForDelegate(_dropTargetCallback);
         RouteApiThroughLoader();
     }
 

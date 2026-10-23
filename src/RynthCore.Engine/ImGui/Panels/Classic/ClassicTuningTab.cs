@@ -204,7 +204,7 @@ internal sealed class ClassicTuningTab : IClassicTab
                 case SettingKind.Int:
                 case SettingKind.Float:
                 case SettingKind.Double: return NumberRow(row, w);
-                case SettingKind.Combo when row.Items is { Length: > 0 }: ComboRow(ctx, row, w); return false;
+                case SettingKind.Combo when row.CurrentItems.Length > 0: ComboRow(ctx, row, w); return false;
                 default:
                     // The special rows (buttons, hotkeys, colours, server picker, status): the Settings panel's drawing.
                     _rows.DrawRow(row, w);
@@ -296,7 +296,7 @@ internal sealed class ClassicTuningTab : IClassicTab
     private void ComboRow(ClassicContext ctx, SettingRow row, float w)
     {
         RynthAiSettings data = _rows.Data;
-        string[] items = row.Items!;
+        string[] items = row.CurrentItems;
         int cur = row.Get != null ? Math.Clamp((int)Math.Round(row.Get(data)), 0, items.Length - 1) : 0;
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
         float rh = Px(22), ddW = Math.Min(Px(170), w * 0.55f);

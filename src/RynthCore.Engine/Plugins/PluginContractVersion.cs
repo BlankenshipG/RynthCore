@@ -30,5 +30,8 @@ internal static class PluginContractVersion
     //      plugins managed (collectible: a reload frees them) and they declare minEngineApi 88.
     // v89: plugin windows: GetUiColor, GetUiFont and SetPanelOpen (the engine hosts the windows
     //      a plugin's sections manifest declares; the plugin draws them; docs/PLUGIN_WINDOWS.md).
-    public const uint Current = 89;
+    // v90: windows that draw their own frame (manifest "chrome": "none", "fitHeight"):
+    //      PanelDragWithLastItem, SetPanelPopOut, PanelTextSize; GetUiColor's Muted and instrument
+    //      shades (KeyFace, Hairline, Inset, Faint), GetUiFont's Dash and Narrow fonts (2026-10-21).
+    public const uint Current = 90;
 }

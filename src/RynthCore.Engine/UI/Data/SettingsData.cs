@@ -490,9 +490,15 @@ internal sealed record SettingRow(
     string? Hint = null,
     // Button rows that change settings: applied to the panel's copy, which is then saved like
     // any other edit (Click, when also set, runs after).
-    Action<RynthAiSettings>? Edit = null)
+    Action<RynthAiSettings>? Edit = null,
+    // Combo rows whose list changes while the game runs (the Theme picker's saved schemes):
+    // asked each time the row draws, in place of Items.
+    Func<string[]>? ItemsNow = null)
 {
     public bool IsVisible(RynthAiSettings s) => VisibleWhen == null || VisibleWhen(s);
+
+    /// <summary>A Combo row's list now: ItemsNow's when it has one, else Items.</summary>
+    public string[] CurrentItems => ItemsNow?.Invoke() ?? Items ?? Array.Empty<string>();
 }
 
 internal sealed record SettingsTab(string Name, SettingRow[] Rows);
@@ -592,9 +598,25 @@ internal static class SettingsSchema
 
     // Text size rows are stored by the engine (PanelTextScale), not in the
     // RynthAi profile, so the settings object is ignored here.
+    // RynthDefective's window titles (its sections manifest).
+    private const string ShortcutsWindow = "Shortcuts", GamePanelsWindow = "Game Panels", SelectionWindow = "Selection";
+
+    // A plugin window shown or not; the row shows only while a plugin hosts it.
+    private static SettingRow WindowShown(string label, string title, string tip) =>
+        Bool(label, _ => ImGuiBackend.ImGuiPanelHost.IsOpen(title),
+            (_, v) => { if (v) ImGuiBackend.ImGuiPanelHost.Open(title); else ImGuiBackend.ImGuiPanelHost.Close(title); },
+            tip, when: _ => ImGuiBackend.ImGuiPanelHost.HasFace(title));
+
+    // Its size: how big it draws itself, 30% to 250% of normal, or with its text size (PanelDrawScale).
+    private static SettingRow WindowSize(string label, string title) =>
+        Combo("   " + label, PanelDrawScale.Names, _ => PanelDrawScale.ToIndex(PanelDrawScale.Get(title)),
+            (_, v) => PanelDrawScale.Set(title, PanelDrawScale.FromIndex(v)),
+            "How big it is: 30% to 250% of normal. \"Text size\" = as big as the panels' text (Text Size above).\nAlso: Ctrl+wheel over it.",
+            when: _ => ImGuiBackend.ImGuiPanelHost.HasFace(title));
+
     private static SettingRow TextSize(string label, string panelTitle) =>
         Combo("   " + label, PanelTextScale.SizeNames, _ => PanelTextScale.GetOwn(panelTitle), (_, v) => PanelTextScale.Set(panelTitle, v),
-            "Text size for this panel in the game: 0 = normal, each step 10% bigger, yourjokin = 2.5x.")
+            "This panel's size: 100% = normal, 10% a step. Also: Ctrl+wheel over the panel.")
         with { VisibleWhen = _ => PanelTextScale.PerPanel };
 
     // One of the theme's eight colours (ImGuiBackend.RynthTheme); the settings object is ignored.
@@ -725,8 +747,20 @@ internal static class SettingsSchema
             Spacer(),
             // The colour theme is stored by the engine (theme.txt, ImGuiBackend.RynthTheme), not in the RynthAi profile.
             Section("Colour Theme"),
-            Combo("Theme", ImGuiBackend.RynthTheme.PickerNames, _ => ImGuiBackend.RynthTheme.PickerIndex, (_, v) => ImGuiBackend.RynthTheme.SetPreset(v),
-                "The colours of every RynthCore window: RynthCore's own, a preset, or Custom (your own colours below).\nChanging any colour below makes the theme Custom. Applies to all your clients as they start."),
+            // The picker's list changes while the game runs (saved schemes), so it is asked each draw.
+            new SettingRow(SettingKind.Combo, "Theme",
+                "The colours of every RynthCore window: RynthCore's own, a preset, a scheme you saved, or Custom (your own colours).\n" +
+                "Changing any colour below makes the theme Custom. Your own colours are kept whichever theme you pick: Custom brings them back.\n" +
+                "Applies to all your clients as they start.",
+                _ => ImGuiBackend.RynthTheme.PickerIndex, (_, v) => ImGuiBackend.RynthTheme.SetPicker((int)v), 0, 1000, 1,
+                ItemsNow: ImGuiBackend.RynthTheme.PickerNames),
+            Text("Save colours as", _ => string.Empty, (_, name) => ImGuiBackend.RynthTheme.SaveScheme(name),
+                "Saves the colours in use under a name, as a scheme in the Theme list (the same name replaces it).\n" +
+                "Saved for this PC (%AppData%\\RynthCore\\themes), so every character and client can pick it.",
+                hint: "A name for these colours, then Enter"),
+            Button("Saved scheme", "Delete it", () => ImGuiBackend.RynthTheme.DeleteCurrentScheme(),
+                "Deletes the saved scheme in use. Its colours stay on screen as your own (Custom).")
+                with { VisibleWhen = _ => ImGuiBackend.RynthTheme.SchemeInUse },
             Colour(0, "The main highlight: outlines, selected tabs and buttons, toggles that are on, the dashboard's accent line."),
             Colour(1, "Values, section headings and the bot's busy states (amber in RynthCore's colours)."),
             Colour(2, "Window and drawer backgrounds. The fields, rows and popups are shades of it."),
@@ -740,7 +774,7 @@ internal static class SettingsSchema
             Spacer(),
             Section("Text Size (in-game panels)"),
             Combo("All Panels", PanelTextScale.SizeNames, _ => PanelTextScale.GetAll(), (_, v) => PanelTextScale.SetAll(v),
-                "Text size for every in-game panel: 0 = normal, each step 10% bigger, yourjokin = 2.5x."),
+                "The size of every in-game panel: 100% = normal, 10% a step.\nOne panel on its own: Ctrl+wheel over it (it then keeps its own size)."),
             Combo("Toolbar", PanelTextScale.SizeNames, _ => PanelTextScale.GetChrome(), (_, v) => PanelTextScale.SetChrome(v),
                 "Size of the RynthCore icon bar (its icons and tooltips), separate from the panels: 0 = normal, each step 10% bigger.\nAlso: right-click the bar's grip, Ctrl+wheel over the bar, or /rc ui barsize."),
             // The bar's rows are stored by the engine (panel_state.txt, ImGuiBar), not in the RynthAi profile.
@@ -798,6 +832,24 @@ internal static class SettingsSchema
             Bool("Hide retail vitals bar", _ => Compatibility.RetailVitalsHooks.HideRetailVitals,
                 (_, v) => Compatibility.RetailVitalsHooks.HideRetailVitals = v,
                 "Hide the game's own health/stamina/mana bars; the RynthVision player plate and the RynthAi dashboard show them.\nSaved for this PC. Also: /rc ui retailvitals on|off."),
+            Spacer(),
+            Section("Toolbar"),
+            // Stored by the engine (RetailToolbarHooks, retail_ui.txt beside the vitals), not in the profile.
+            Bool("Hide retail toolbar", _ => Compatibility.RetailToolbarHooks.HideRetailToolbar,
+                (_, v) => Compatibility.RetailToolbarHooks.HideRetailToolbar = v,
+                "Hide the game's toolbar panel: the combat button, the panel buttons, the selection's health, examine, the backpack and the shortcut slots.\nThe shortcut keys keep working while it's hidden. Saved for this PC. Also: /rc ui retailtoolbar on|off."),
+            // RynthDefective's windows in its place (plugin windows the engine hosts, API v90): shown or
+            // not (the panel's open state, remembered with the layout) and their size (the window's own
+            // text size, as Ctrl+wheel over it sets). Only while a plugin hosts them.
+            WindowShown("Shortcut bar", ShortcutsWindow,
+                "RynthDefective's bar of your shortcut slots, in place of the retail toolbar's: the game's 18 with their keys, then RynthCore's.\nAlso: /rdef."),
+            WindowSize("Shortcut bar size", ShortcutsWindow),
+            WindowShown("Game panel buttons", GamePanelsWindow,
+                "Small buttons for the game's panels (pack, attributes, spellbook, fellowship, map...), in place of the retail toolbar's.\nAlso: /rdef panels."),
+            WindowSize("Game panel buttons size", GamePanelsWindow),
+            WindowShown("Selection", SelectionWindow,
+                "What you have selected, as the retail toolbar showed it: its name, how far and which way it is, a creature's health, and Use.\nAlso: /rdef selection."),
+            WindowSize("Selection size", SelectionWindow),
         }),
 
         // The user hotkeys: stored by the engine for the PC (Hotkeys/HotkeyService.cs, hotkeys.txt),

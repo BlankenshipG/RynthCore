@@ -119,6 +119,18 @@ internal static class PowerbarHooks
         // not edited for it); it resolves and hooks on its own and never throws.
         try { RetailVitalsHooks.Initialize(); }
         catch (Exception ex) { RynthLog.Compat($"PowerbarHooks: RetailVitalsHooks.Initialize threw {ex.GetType().Name}: {ex.Message}"); }
+        // "Hide retail toolbar" likewise (2026-10-22).
+        try { RetailToolbarHooks.Initialize(); }
+        catch (Exception ex) { RynthLog.Compat($"PowerbarHooks: RetailToolbarHooks.Initialize threw {ex.GetType().Name}: {ex.Message}"); }
+        // The shortcut slots' functions (AcShortcuts, plugin API v90).
+        try { AcShortcuts.Initialize(); }
+        catch (Exception ex) { RynthLog.Compat($"PowerbarHooks: AcShortcuts.Initialize threw {ex.GetType().Name}: {ex.Message}"); }
+        // Changing keys so every client follows (AcKeymapLive, plugin API v90).
+        try { AcKeymapLive.Initialize(); }
+        catch (Exception ex) { RynthLog.Compat($"PowerbarHooks: AcKeymapLive.Initialize threw {ex.GetType().Name}: {ex.Message}"); }
+        // AC's own panels, opened and closed as AC does (AcPanels, plugin API v90).
+        try { AcPanels.Initialize(); }
+        catch (Exception ex) { RynthLog.Compat($"PowerbarHooks: AcPanels.Initialize threw {ex.GetType().Name}: {ex.Message}"); }
 
         if (_hookInstalled)
             return;

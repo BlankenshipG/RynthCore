@@ -16,6 +16,11 @@
 //  of the atlas's input data for three glyphs (2026-10-15). DX9Backend frees the
 //  input data once the texture is uploaded (ClearInputData).
 //
+//  Narrow labels (2026-10-21): Barlow Semi Condensed SemiBold and Bold (OFL,
+//  Assets/Fonts, embedded like Phosphor) at 9/10/11 and bold 11/13, for plugin
+//  windows (GetUiFont Narrow*: the instrument dashboard's caps labels). They
+//  get the icons but never Segoe UI Symbol (nothing draws those three with them).
+//
 //  Icons: the Phosphor icon font (MIT, Assets/Fonts/Phosphor.ttf, embedded in
 //  this assembly) is merged into every baked font, the scaled sets included,
 //  at the web font's code points (U+E000 up), so an icon is text
@@ -54,6 +59,8 @@ internal enum UiFont
     // Scaled-up nameplate text and big combat numbers: picked by Sharp() so text is
     // shrunk from a bigger bake, never stretched from a smaller one.
     Ui18, NumBold48,
+    // Narrow labels for plugin windows (Barlow Semi Condensed SemiBold, then Bold).
+    Narrow9, Narrow10, Narrow11, NarrowBold11, NarrowBold13,
     Count,
 }
 
@@ -75,9 +82,11 @@ internal static unsafe class ImGuiFonts
         0x25CF,                   // ● (Meta source: unapplied edits)
     };
 
-    private static byte[]? _segoe, _segoeBold, _consolas, _cascadia, _symbol, _phosphor;
+    private static byte[]? _segoe, _segoeBold, _consolas, _cascadia, _symbol, _phosphor, _narrow, _narrowBold;
 
     private const string PhosphorResource = "RynthCore.Engine.Assets.Fonts.Phosphor.ttf";
+    private const string NarrowResource = "RynthCore.Engine.Assets.Fonts.BarlowSemiCondensed-SemiBold.ttf";
+    private const string NarrowBoldResource = "RynthCore.Engine.Assets.Fonts.BarlowSemiCondensed-Bold.ttf";
     // Icon size relative to the text's em, capped at the line height (x0.95) for
     // fonts whose em fills the line (Consolas): bigger icons climb out of the line.
     private const float IconScale = 1.2f, IconMaxOfLine = 0.95f;
@@ -140,7 +149,7 @@ internal static unsafe class ImGuiFonts
     }
 
     // Native copies of the font files and glyph ranges, made once: rebuilds reuse them.
-    private static IntPtr _nSegoe, _nSegoeBold, _nMono, _nCode, _nSymbol, _nPhosphor;
+    private static IntPtr _nSegoe, _nSegoeBold, _nMono, _nCode, _nSymbol, _nPhosphor, _nNarrow, _nNarrowBold;
     private static ushort* _mainRanges, _symbolRanges, _iconRanges;
 
     /// <summary>Reads the font files. Engine init worker thread; safe to skip (Build reads them itself).</summary>
@@ -152,7 +161,9 @@ internal static unsafe class ImGuiFonts
         _consolas = TryRead("consola.ttf");
         _cascadia = TryRead("CascadiaMono.ttf");
         _symbol = TryRead("seguisym.ttf");
-        _phosphor = TryReadResource(PhosphorResource);
+        _phosphor = TryReadResource(PhosphorResource, "icons will not draw");
+        _narrow = TryReadResource(NarrowResource, "plugin windows' narrow labels use their fallback");
+        _narrowBold = TryReadResource(NarrowBoldResource, "plugin windows' narrow labels use their fallback");
         _preloaded = true;
     }
 
@@ -217,7 +228,9 @@ internal static unsafe class ImGuiFonts
 
         double ms = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
         RynthLog.UI($"ImGuiFonts: {CountBaked()} fonts queued at scale {scale:0.##} in {ms:0.0} ms " +
-                        $"(Cascadia Mono {(_cascadia != null ? "found" : "missing, using Consolas")}, symbols from the main fonts{(_symbolMerges > 0 ? $" (Segoe UI Symbol merged into {_symbolMerges})" : "")}, " +
+                        $"(Cascadia Mono {(_cascadia != null ? "found" : "missing, using Consolas")}, " +
+                        $"Barlow {(_narrow != null && _narrowBold != null ? "embedded" : "missing")}, " +
+                        $"symbols from the main fonts{(_symbolMerges > 0 ? $" (Segoe UI Symbol merged into {_symbolMerges})" : "")}, " +
                         $"icons {(_phosphor != null ? $"{IconCount()} merged" : "missing")}).");
         Compatibility.MemoryUse.Mark("ImGui fonts queued");
     }
@@ -234,6 +247,7 @@ internal static unsafe class ImGuiFonts
         _iconRanges = PinRanges(IconRanges());
         _nSegoe = ToNative(_segoe); _nSegoeBold = ToNative(_segoeBold); _nMono = ToNative(mono);
         _nCode = ToNative(code); _nSymbol = ToNative(_symbol); _nPhosphor = ToNative(_phosphor);
+        _nNarrow = ToNative(_narrow); _nNarrowBold = ToNative(_narrowBold);
     }
 
     /// <summary>
@@ -251,11 +265,12 @@ internal static unsafe class ImGuiFonts
         ushort* symbolRanges = _symbolRanges;
         ushort* iconRanges = _iconRanges;
         IntPtr segoe = _nSegoe, segoeBold = _nSegoeBold, consolas = _nMono, codeFont = _nCode, symbol = _nSymbol,
-            phosphor = _nPhosphor;
+            phosphor = _nPhosphor, narrow = _nNarrow, narrowBold = _nNarrowBold;
 
         // Each base font's em and cap height, to size and place the icons merged into it.
         FaceMetrics mSegoe = FaceMetrics.Read(_segoe), mSegoeBold = FaceMetrics.Read(_segoeBold),
-            mMono = FaceMetrics.Read(mono), mCode = FaceMetrics.Read(code);
+            mMono = FaceMetrics.Read(mono), mCode = FaceMetrics.Read(code),
+            mNarrow = FaceMetrics.Read(_narrow), mNarrowBold = FaceMetrics.Read(_narrowBold);
 
         ImFontPtr[] target = baseSet;
         float factor = 1f;
@@ -270,7 +285,8 @@ internal static unsafe class ImGuiFonts
             return need;
         }
 
-        void Add(UiFont id, IntPtr data, byte[]? bytes, FaceMetrics metrics, float px)
+        // symbols: false for the narrow label faces (no ≤ ≥ ● drawn with them; Segoe UI Symbol is 2.4 MB per merge).
+        void Add(UiFont id, IntPtr data, byte[]? bytes, FaceMetrics metrics, float px, bool symbols = true)
         {
             if (data == IntPtr.Zero || bytes == null) return;
             float size = MathF.Round(px * scale * factor);
@@ -279,7 +295,7 @@ internal static unsafe class ImGuiFonts
             {
                 cfg.FontDataOwnedByAtlas = false;
                 target[(int)id] = atlas.AddFontFromMemoryTTF(data, bytes.Length, size, cfg, (IntPtr)mainRanges);
-                if (symbol != IntPtr.Zero && _symbol != null && NeedsSymbol(bytes))
+                if (symbols && symbol != IntPtr.Zero && _symbol != null && NeedsSymbol(bytes))
                 {
                     _symbolMerges++;
                     cfg.MergeMode = true;
@@ -327,6 +343,17 @@ internal static unsafe class ImGuiFonts
         Add(UiFont.NumBold48, segoeBold, _segoeBold, mSegoeBold, 48);
         for (int i = 0; i < 6; i++)
             Add(UiFont.Chat8 + i, consolas, mono, mMono, 8 + i * 2);
+        AddNarrow();
+
+        // The narrow label faces (plugin windows), in the base set and in each scaled one.
+        void AddNarrow()
+        {
+            Add(UiFont.Narrow9, narrow, _narrow, mNarrow, 9, symbols: false);
+            Add(UiFont.Narrow10, narrow, _narrow, mNarrow, 10, symbols: false);
+            Add(UiFont.Narrow11, narrow, _narrow, mNarrow, 11, symbols: false);
+            Add(UiFont.NarrowBold11, narrowBold, _narrowBold, mNarrowBold, 11, symbols: false);
+            Add(UiFont.NarrowBold13, narrowBold, _narrowBold, mNarrowBold, 13, symbols: false);
+        }
 
         // Bigger copies for each panel text size in use (chat keeps its own size setting).
         foreach (int step in steps)
@@ -347,6 +374,10 @@ internal static unsafe class ImGuiFonts
             Add(UiFont.Dash10, codeFont, code, mCode, 10);
             Add(UiFont.Dash11, codeFont, code, mCode, 11);
             Add(UiFont.Dash14, codeFont, code, mCode, 14);
+            // Plugin windows draw their icons from Ui18's (GetUiFont Ui18: about 16 px icons at
+            // normal size), so it grows with the panel's text size too, and stays sharp.
+            Add(UiFont.Ui18, segoe, _segoe, mSegoe, 18);
+            AddNarrow();
             scaled[step] = target;
         }
     }
@@ -514,7 +545,7 @@ internal static unsafe class ImGuiFonts
         Array.Clear(Fonts);
         ScaledFonts.Clear();
         _mainRanges = _symbolRanges = _iconRanges = null;
-        _nSegoe = _nSegoeBold = _nMono = _nCode = _nSymbol = _nPhosphor = IntPtr.Zero;
+        _nSegoe = _nSegoeBold = _nMono = _nCode = _nSymbol = _nPhosphor = _nNarrow = _nNarrowBold = IntPtr.Zero;
     }
 
     private static int CountBaked()
@@ -668,15 +699,15 @@ internal static unsafe class ImGuiFonts
         return (IntPtr)p;
     }
 
-    /// <summary>A font embedded in this assembly (the Phosphor icons); null when missing.</summary>
-    private static byte[]? TryReadResource(string name)
+    /// <summary>A font embedded in this assembly (the Phosphor icons, the narrow labels); null when missing.</summary>
+    private static byte[]? TryReadResource(string name, string whenMissing)
     {
         try
         {
             using Stream? stream = typeof(ImGuiFonts).Assembly.GetManifestResourceStream(name);
             if (stream == null)
             {
-                RynthLog.UI($"ImGuiFonts: embedded font {name} missing; icons will not draw.");
+                RynthLog.UI($"ImGuiFonts: embedded font {name} missing; {whenMissing}.");
                 return null;
             }
             var bytes = new byte[stream.Length];

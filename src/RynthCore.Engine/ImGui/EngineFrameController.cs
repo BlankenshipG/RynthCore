@@ -789,6 +789,8 @@ internal static class EngineFrameController
                 if (ImGuiBar.Visible)
                     ImGuiBar.Draw(_uiScale);
                 ImGuiPanelHost.DrawAll(_uiScale);
+                // Settings drawer bodies RynthAi's window didn't draw this frame let their sources go.
+                Panels.SettingsDrawerBodies.EndFrame();
                 ImGuiBar.SyncPopOut(_uiScale);
             }
             if (ImGuiFontTest.Enabled)

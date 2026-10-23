@@ -416,7 +416,8 @@ internal sealed class SettingsRows
     private void ComboRow(SettingRow row, float w)
     {
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
-        string[] items = row.Items!;
+        string[] items = row.CurrentItems;
+        if (items.Length == 0) return;
         int current = Math.Clamp((int)row.Get!(_data), 0, items.Length - 1);
         ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();

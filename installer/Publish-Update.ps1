@@ -307,7 +307,7 @@ if ($SkipTests) {
 # engine checks at load and what the launcher's EngineBlocker holds updates by. This used to force
 # -p:RynthPluginMinEngineApi=88 on every plugin, a constant that offered plugins calling v89 SDK
 # members to API-88 cores (structural audit 2026-10-21, F5 / #7).
-$suitePlugins = "RynthChat", "RynthTracker", "RynthNav", "RynthVision", "RynthLua", "RynthOracle", "RynthInventory", "RynthSort", "RynthNet"
+$suitePlugins = "RynthChat", "RynthTracker", "RynthNav", "RynthVision", "RynthLua", "RynthOracle", "RynthInventory", "RynthSort", "RynthNet", "RynthDefective"
 # Server plugins (the RynthServers repository since 2026-10-21; ServerPack is SilentKelpie's): one per
 # game server, each loaded by the engine only for its own server. They go in the feed only, so the
 # launcher offers each one on its Server plugins tab for the player to install; not in
@@ -412,6 +412,7 @@ Extract this zip into C:\Games - it creates:
   C:\Games\RynthSuite\RynthInventory\ RynthInventory plugin (search every character's items)
   C:\Games\RynthSuite\RynthSort\     RynthSort plugin (keeps your packs sorted; replaces the RynthSort Lua script)
   C:\Games\RynthSuite\RynthNet\      RynthNet plugin (links your clients on this PC: /ub bc, shared vitals, the Characters panel)
+  C:\Games\RynthSuite\RynthDefective\ RynthDefective plugin (a shortcut bar, AC's panel buttons and the Selection, in place of the retail toolbar)
   C:\Games\RynthCore\NavData\        RynthNav's portals and Atlas
 
 Plugins for one game server (RynthILT for Infinite Leaftide, RynthThreads for
@@ -550,6 +551,7 @@ $pluginDescriptions = @{
     RynthILT       = "Infinite Leaftide only: the ILT Hub (the Mini Remote's banking, gear, charms and games tabs), the Guardian, bounty tracking and progression planning."
     RynthThreads   = "DreamWeave only: records Fragment Press results and works out what each component brings."
     RynthNet       = "Links your characters on this PC: broadcast commands (/ub bc), shared vitals and the Characters panel."
+    RynthDefective = "A shortcut bar with AC's own keys, buttons for AC's panels and the Selection, in place of the retail toolbar."
 }
 # Plugin manifests (embedded in each DLL by the SDK's build targets): each plugin's minEngineApi
 # goes into its feed entry, and the core entry says its engine's API ("engineApi"), so launchers

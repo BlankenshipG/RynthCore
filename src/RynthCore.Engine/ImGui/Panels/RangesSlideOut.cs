@@ -158,10 +158,18 @@ internal sealed class RangesSlideOut : RynthAiDrawer
 
     public override void DrawPanel(Vector2 origin, float panelW, float panelH, float k)
     {
-        var dl = ImGuiNET.ImGui.GetWindowDrawList();
         // Title row: ruler + RANGES (yards) | close.
         float y = PanelFrame(origin, panelW, panelH, k, PhosphorIcons.Ruler, "RANGES", "yards", "Hide the ranges");
-        float x = origin.X + Pad * k, w = panelW - 2 * Pad * k;
+        DrawBody(origin.X + Pad * k, y, panelW - 2 * Pad * k, k);
+    }
+
+    /// <summary>The body's height under the title row (pixels): RynthAi's own dashboard window draws the frame (SettingsDrawerBodies).</summary>
+    public static float BodyHeight(float k) => (3 * LineH + 6 + 3 + Math.Max(1, Rows.Length) * (RowH + RowGap)) * k;
+
+    /// <summary>The selected monster and the range rows at (<paramref name="x"/>, <paramref name="y"/>), <paramref name="w"/> wide.</summary>
+    public void DrawBody(float x, float y, float w, float k)
+    {
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
         ImFontPtr f10 = ImGuiFonts.Get(UiFont.Dash10);
 
         MonsterBlock(dl, x, y, w, k);

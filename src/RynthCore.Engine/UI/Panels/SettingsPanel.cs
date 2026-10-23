@@ -328,7 +328,7 @@ internal static class SettingsPanel
             case SettingKind.Double:
                 return DoubleRow(row.Label, row.Get!(d), row.Min, row.Max, row.Step, v => Changed(v), row.Tooltip);
             case SettingKind.Combo:
-                return ComboRow(row.Label, row.Items!, (int)row.Get!(d), v => Changed(v), picker, row.Tooltip);
+                return ComboRow(row.Label, row.CurrentItems, (int)row.Get!(d), v => Changed(v), picker, row.Tooltip);
             case SettingKind.Section:
                 return SectionHeader(row.Label);
             case SettingKind.Spacer:

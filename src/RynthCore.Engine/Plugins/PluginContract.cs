@@ -972,6 +972,73 @@ internal struct RynthCoreAPI
     /// 1 open / 0 closed (after the change, which lands on the next frame), -1 no such panel. Any
     /// thread. Requires API v89+.</summary>
     public IntPtr SetPanelOpenFn;
+
+    // ── v90: plugin windows that draw their own frame ("chrome": "none"; docs/PLUGIN_WINDOWS.md) ──
+
+    /// <summary>v90: <c>void PanelDragWithLastItem(void)</c>: while ImGui's last item is held and
+    /// dragged, the panel being drawn follows the mouse (a frameless window's own title row; popped
+    /// out, its OS window). AC's render thread, inside a window's RynthPluginRenderEmbed; anywhere
+    /// else it does nothing. Requires API v90+.</summary>
+    public IntPtr PanelDragWithLastItemFn;
+    /// <summary>v90: <c>int SetPanelPopOut(const char* key, int mode)</c>: an open panel into its own
+    /// window or back: mode 1 pop out, 0 dock, 2 toggle, -1 just ask. Returns 1 popped out / 0 docked
+    /// (after the change, which lands on the next frame), -1 no such panel or not open. Any thread.
+    /// Requires API v90+.</summary>
+    public IntPtr SetPanelPopOutFn;
+    /// <summary>v90: <c>int PanelTextSize(const char* key, int delta)</c>: steps a panel's text size
+    /// by <c>delta</c> (0 = just ask; Ctrl+wheel and the size menu of a frameless window) and returns
+    /// it as a percentage of normal (100, 110, ... 250), -1 for no such panel. The fonts re-bake a
+    /// moment later. Any thread. Requires API v90+.</summary>
+    public IntPtr PanelTextSizeFn;
+    /// <summary>v90: <c>float RenderSettingsDrawer(const char* key, float width, float room, int flags)</c>:
+    /// the body of a dashboard drawer that shows Settings rows, which are still RynthCore's (the
+    /// Settings panel hasn't moved to RynthAi): "ranges" (the selected monster and the key ranges),
+    /// "patrol" (the Dungeon Patrol settings, hazards and routes), "pinned" (My settings; flags 1 =
+    /// open its list of settings to pin). Drawn at the cursor of the window being drawn, <c>width</c>
+    /// pixels wide and at most <c>room</c> tall (0 = its own height). Returns the height it wants
+    /// (pixels), -1 for another key. AC's render thread, inside a docked window's
+    /// RynthPluginRenderEmbed. Requires API v90+.</summary>
+    public IntPtr RenderSettingsDrawerFn;
+    /// <summary>v90: <c>int GetShortcuts(uint* objectIds, uint* spellIds, int max)</c>: the player's
+    /// 18 shortcut slots (AC's own, the retail toolbar's), object id 0 = empty. Returns 18, or 0 out
+    /// of the world. Any thread. Requires API v90+.</summary>
+    public IntPtr GetShortcutsFn;
+    /// <summary>v90: <c>int ShortcutAction(int op, int slot, uint objectId)</c>: op 0 use the slot
+    /// (as its key does), 1 put the object in it, 2 empty it; slot 0-17. Done on AC's game thread
+    /// through the retail toolbar's own functions (saved to the server). 1 queued, 0 refused. Any
+    /// thread. Requires API v90+.</summary>
+    public IntPtr ShortcutActionFn;
+    /// <summary>v90: <c>int GetActionKeys(const char* action, char* buffer, int length)</c>: AC's keys
+    /// for a keymap action ("UseQuickSlot_1") as UTF-8 text ("1, Ctrl+1"). Returns the bytes needed
+    /// (0 = unbound), -1 for a bad call. Any thread. Requires API v90+.</summary>
+    public IntPtr GetActionKeysFn;
+    /// <summary>v90: <c>void* GetIconTexture(int kind, uint id)</c>: kind 0 icon id, 1 object, 2
+    /// spell: an ImGui texture id, or null while it is made. AC's render thread, in a docked
+    /// window's draw. Requires API v90+.</summary>
+    public IntPtr GetIconTextureFn;
+    /// <summary>v90: <c>int KeyCapture(int op, char* buffer, int length)</c>: op 0 waits for the next key
+    /// the player presses (it never reaches AC; Esc cancels), 1 asks (0 waiting, 1 pressed: its name
+    /// "Ctrl+F5" in the buffer, 2 cancelled), 2 stops. AC's main thread. Requires API v90+.</summary>
+    public IntPtr KeyCaptureFn;
+    /// <summary>v90: <c>int SetActionKey(const char* action, const char* key, int op, char* message, int
+    /// length)</c>: a keymap action ("UseQuickSlot_5") or engine command ("/rdef use 2") and a key: op 0
+    /// checks (0 free, 1 taken from what the message names, -1 can't), 1 binds it (off everything else,
+    /// every client follows), 2 removes it (1 queued, -1 refused). Any thread. Requires API v90+.</summary>
+    public IntPtr SetActionKeyFn;
+    /// <summary>v90: <c>int AcPanel(int id, int op)</c>: AC's own panel by the id its panel notice uses (7
+    /// the pack, 12 fellowship/allegiance, 13 spellbook, 16 the map...): op 0 asks (1 open, 0 closed, -1
+    /// none; AC's main thread), 1 toggles, 2 opens, 3 closes (1 queued, -1 refused). Requires API v90+.</summary>
+    public IntPtr AcPanelFn;
+    /// <summary>v90: <c>int PanelScale(const char* key, int percent)</c>: how big a frameless window draws
+    /// itself, 30-250% of normal (0 asks, -1 = follow the text size again); returns it, 0 = follows the
+    /// text size. Settings > UI > Toolbar sets it too. Any thread. Requires API v90+.</summary>
+    public IntPtr PanelScaleFn;
+    /// <summary>v90: <c>uint DropTarget(const char* window, float x0, float y0, float x1, float y1, int flags,
+    /// int* dragging)</c>: the plugin window takes items dragged out of AC's UI and let go over that rect
+    /// (ImGui screen coordinates; flags 1 = accepting; published each frame it draws). Returns the object
+    /// dropped since the last call (0 = none); *dragging = 1 while an item drag is on. A claimed drop never
+    /// reaches AC. AC's main thread, in the window's draw. Requires API v90+.</summary>
+    public IntPtr DropTargetFn;
 }
 
 /// <summary>v89 GetUiColor tokens. Append only: plugins compiled against these numbers keep them.</summary>
@@ -980,6 +1047,9 @@ internal enum UiColorToken
     Text = 0, TextMuted = 1, Accent = 2, Highlight = 3, Button = 4, Border = 5, Field = 6, Selected = 7,
     RowAlt = 8, Background = 9, PanelGlass = 10, AccentFill = 11, BoxBg = 12, FrameBg = 13, FrameHover = 14,
     FrameActive = 15, Green = 16, Red = 17, TitleBar = 18, WindowBorder = 19,
+    // v90: the theme's own muted text (TextMuted is a lighter mix) and the instrument look's shades
+    // worked out from the eight colours (ThemePalette.DeriveInstrument). 0 on a v89 engine.
+    Muted = 20, KeyFace = 21, Hairline = 22, Inset = 23, Faint = 24,
 }
 
 /// <summary>v89 GetUiFont fonts. Append only.</summary>
@@ -987,6 +1057,10 @@ internal enum UiFontToken
 {
     Ui9 = 0, Ui10 = 1, Ui11 = 2, Ui14 = 3, Ui18 = 4, UiBold11 = 5, UiBold14 = 6,
     Mono9 = 7, Mono10 = 8, Mono12 = 9, Chat10 = 10, Chat12 = 11, Chat14 = 12,
+    // v90: Cascadia Mono (Consolas without it), the dashboard's numbers, and the narrow labels
+    // (Barlow Semi Condensed SemiBold 9/10/11, Bold 11/13). Null on a v89 engine.
+    Dash9 = 13, Dash10 = 14, Dash11 = 15, Dash14 = 16,
+    Narrow9 = 17, Narrow10 = 18, Narrow11 = 19, NarrowBold11 = 20, NarrowBold13 = 21,
 }
 
 /// <summary>v79 <see cref="TrainingInfoNative.Flags"/> bits.</summary>
@@ -1777,6 +1851,45 @@ internal delegate IntPtr GetUiFontCallbackDelegate(int font);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int SetPanelOpenCallbackDelegate(byte* key, int mode);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate void PanelDragWithLastItemCallbackDelegate();
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int SetPanelPopOutCallbackDelegate(byte* key, int mode);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int PanelTextSizeCallbackDelegate(byte* key, int delta);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate float RenderSettingsDrawerCallbackDelegate(byte* key, float width, float room, int flags);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetShortcutsCallbackDelegate(uint* objectIds, uint* spellIds, int max);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int ShortcutActionCallbackDelegate(int op, int slot, uint objectId);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetActionKeysCallbackDelegate(byte* action, byte* buffer, int length);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate IntPtr GetIconTextureCallbackDelegate(int kind, uint id);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int KeyCaptureCallbackDelegate(int op, byte* buffer, int length);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int SetActionKeyCallbackDelegate(byte* action, byte* key, int op, byte* message, int length);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int AcPanelCallbackDelegate(int id, int op);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int PanelScaleCallbackDelegate(byte* key, int percent);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate uint DropTargetCallbackDelegate(byte* window, float x0, float y0, float x1, float y1, int flags, int* dragging);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate uint VendorBuyCallbackDelegate(uint vendorId, VendorTradeEntryNative* entries, int count);

@@ -343,6 +343,8 @@ internal static class EndSceneHook
                 try { PowerbarHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
                 // Per-frame retail health/stamina/mana bars visibility ("Hide retail vitals").
                 try { RetailVitalsHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
+                // Per-frame retail toolbar + shortcut bar visibility ("Hide retail toolbar").
+                try { RetailToolbarHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
             }
 
             if (_renderCount == 1 && _offscreenFilterDisabled && _skipCount > 0)

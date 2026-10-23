@@ -58,6 +58,9 @@ internal sealed class ChatFace : IImGuiPanel
     private readonly DashboardDrawers _drawers;
     private bool _openTabsPopup;
 
+    /// <summary>/rc ui channels: the channels drawer opens or closes on the next draw, as its button does.</summary>
+    public static volatile bool ToggleChannelsRequested;
+
     public ChatFace()
     {
         _channels = new ChannelsDrawer(this);
@@ -1101,6 +1104,12 @@ internal sealed class ChatFace : IImGuiPanel
 
     private void DrawPopups()
     {
+        if (ToggleChannelsRequested)
+        {
+            ToggleChannelsRequested = false;
+            if (ImGuiPopOuts.InPopOutFrame) _openTabsPopup = true;
+            else _drawers.Toggle(_channels);
+        }
         if (_openSettings)
         {
             _openSettings = false;

@@ -65,5 +65,6 @@ internal static class WindowPlan
 
     /// <summary>What a hosted window's panel depends on: a change re-registers it.</summary>
     public static string Signature(SectionWindowDecl w) =>
-        string.Join("|", w.Plugin, w.Surface, w.Icon, w.Width, w.Height, w.MinWidth, w.MinHeight, w.Bar, w.EdgeToEdge, w.TakeOver);
+        string.Join("|", w.Plugin, w.Surface, w.Icon, w.Width, w.Height, w.MinWidth, w.MinHeight, w.Bar, w.EdgeToEdge, w.TakeOver,
+            w.Frameless, w.FitHeight);
 }

@@ -71,6 +71,7 @@ internal sealed partial class RynthUpdater
         ["RynthILT"] = "Infinite Leaftide only: the ILT Hub, the Guardian, bounty tracking and progression planning.",
         ["RynthThreads"] = "DreamWeave only: records Fragment Press results and works out what each component brings.",
         ["RynthNet"] = "Links your characters on this PC: broadcast commands, shared vitals and the Characters panel.",
+        ["RynthDefective"] = "A shortcut bar with AC's own keys, buttons for AC's panels and the Selection, in place of the retail toolbar.",
     };
 
     /// <summary>The feed's description, else the launcher's own line, else "".</summary>

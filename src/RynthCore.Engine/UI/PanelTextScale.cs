@@ -21,7 +21,7 @@ namespace RynthCore.Engine.UI;
 internal static class PanelTextScale
 {
     /// <summary>Picker labels, index = size.</summary>
-    public static readonly string[] SizeNames = { "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "yourjokin" };
+    public static readonly string[] SizeNames = { "100%", "110%", "120%", "130%", "140%", "150%", "160%", "170%", "180%", "190%", "250%" };
 
     private static readonly float[] Scales = { 1.0f, 1.1f, 1.2f, 1.3f, 1.4f, 1.5f, 1.6f, 1.7f, 1.8f, 1.9f, 2.5f };
 
@@ -158,7 +158,7 @@ internal static class PanelTextScale
     {
         step = Math.Clamp(step, 0, SizeNames.Length - 1);
         int pct = (int)MathF.Round(Factor(step) * 100f);
-        return step == 0 ? "normal (100%)" : $"{SizeNames[step]} ({pct.ToString(CultureInfo.InvariantCulture)}%)";
+        return step == 0 ? "normal (100%)" : pct.ToString(CultureInfo.InvariantCulture) + "%";
     }
 
     /// <summary>Font size factor for a size step.</summary>

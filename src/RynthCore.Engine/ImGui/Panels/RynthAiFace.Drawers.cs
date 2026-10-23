@@ -100,8 +100,14 @@ internal sealed partial class RynthAiFace
         }
     }
 
-    /// <summary>The Dungeon Patrol settings, hazard cells and saved routes (the Patrol launcher's right-click).</summary>
-    private sealed class PatrolDrawer : RynthAiDrawer
+    /// <summary>The size factor the static helpers (Px) draw at, for a drawer body drawn outside the face (SettingsDrawerBodies).</summary>
+    internal static void UseScale(float k) => _k = k;
+
+    /// <summary>
+    /// The Dungeon Patrol settings, hazard cells and saved routes (the Patrol launcher's right-click).
+    /// Internal: RynthAi's own dashboard window shows its body too (SettingsDrawerBodies).
+    /// </summary>
+    internal sealed class PatrolDrawer : RynthAiDrawer
     {
         private bool _sub;
         // Settings > Navigation > Dungeon Patrol, drawn here too (2026-10-14).
@@ -147,13 +153,24 @@ internal sealed partial class RynthAiFace
         {
             float y = PanelFrame(origin, panelW, panelH, k, PhosphorIcons.Footprints, "PATROL & ROUTES", null, "Hide the patrol drawer");
             float x = origin.X + Pad * k;
+            DrawBody(x, y, panelW - 2 * Pad * k, MathF.Max(1, origin.Y + panelH - Pad * k - y), k);
+        }
+
+        /// <summary>
+        /// Start patrol, the settings and the lists in a <paramref name="w"/> x <paramref name="h"/> child at
+        /// (<paramref name="x"/>, <paramref name="y"/>) that scrolls. Returns what they took (pixels), for a
+        /// host that fits its height to them (RynthAi's own dashboard window, SettingsDrawerBodies).
+        /// </summary>
+        public float DrawBody(float x, float y, float w, float h, float k)
+        {
             // A scrolling child for the lists. A child window is clipped to its parent's clip rect,
             // so the host's slide clip covers it too.
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, y));
-            Vector2 size = new(panelW - 2 * Pad * k, MathF.Max(1, origin.Y + panelH - Pad * k - y));
+            Vector2 size = new(w, MathF.Max(1, h));
             ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
             bool open = ImGuiNET.ImGui.BeginChild("##patrol_body", size, ImGuiChildFlags.None, ImGuiWindowFlags.NoBackground);
             ImGuiNET.ImGui.PopStyleVar();
+            float contentH = 200 * k;
             try
             {
                 if (open)
@@ -165,7 +182,7 @@ internal sealed partial class RynthAiFace
                     // The settings, with the Settings panel's rows (right-click one to pin it to My settings).
                     Section("SETTINGS");
                     _rows.Sync();
-                    float w = ImGuiNET.ImGui.GetContentRegionAvail().X - 2 * k;
+                    float rw = ImGuiNET.ImGui.GetContentRegionAvail().X - 2 * k;
                     ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
                     ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 0));
                     SettingRow[] rows = SettingRows;
@@ -173,7 +190,7 @@ internal sealed partial class RynthAiFace
                     {
                         if (!rows[i].IsVisible(_rows.Data)) continue;
                         ImGuiNET.ImGui.PushID(i);
-                        _rows.DrawRow(rows[i], w);
+                        _rows.DrawRow(rows[i], rw);
                         ImGuiNET.ImGui.PopID();
                     }
                     ImGuiNET.ImGui.PopStyleVar();
@@ -181,9 +198,11 @@ internal sealed partial class RynthAiFace
 
                     PatrolInfo info = UiSources.Patrol.Current?.Value ?? new PatrolInfo();
                     PatrolBody(info, withTitle: false);
+                    contentH = ImGuiNET.ImGui.GetCursorPosY() + 2 * k;   // content space: the scroll is in it
                 }
             }
             finally { ImGuiNET.ImGui.EndChild(); }
+            return contentH;
         }
     }
 

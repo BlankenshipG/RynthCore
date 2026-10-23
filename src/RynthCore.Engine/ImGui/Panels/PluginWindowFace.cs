@@ -11,6 +11,10 @@
 //  (ImGuiStackGuard): whatever the plugin left open (colours, style vars, fonts,
 //  IDs, groups, child windows, tables...) is ended and popped there, so the
 //  panels drawn after it start clean; logged once per window, then counted.
+//  A "fitHeight" window (v90) takes the height the plugin's draw asks for
+//  (wantHeight) as its minimum and is fitted to it whenever it changes and the
+//  mouse is up (a frameless window's empty rows would still catch clicks meant
+//  for the game); a text size change scales its width along with its fonts.
 //  docs/PLUGIN_WINDOWS.md. AC's render thread.
 // ============================================================================
 
@@ -18,6 +22,7 @@ using System;
 using System.Numerics;
 using System.Text;
 using RynthCore.Engine.Plugins;
+using RynthCore.Engine.UI;
 using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
@@ -32,13 +37,29 @@ internal sealed class PluginWindowFace : IImGuiPanel
     private long _failedAtMs = -1;
     private const long RetryMs = 5000;
 
-    public PluginWindowFace(string plugin, string surface, string title)
+    // "fitHeight" (v90): the content height the plugin asked for (logical units; 0 = not known
+    // yet), and the text size factor and width (logical) the window was last fitted at.
+    private readonly bool _fitHeight;
+    private readonly float _minWidth;
+    private float _contentHeight, _fitK, _fitWidth;
+
+    public PluginWindowFace(string plugin, string surface, string title, bool fitHeight = false, float minWidth = 0f)
     {
         _plugin = plugin;
         _title = title;
         _surface = Encoding.UTF8.GetBytes(surface + "\0");
         _idScope = "##pw_" + surface;
+        _fitHeight = fitHeight;
+        _minWidth = minWidth;
     }
+
+    /// <summary>A fitHeight window's minimum: its minimum width at its text size, and the content's height.</summary>
+    public Vector2? MinSize => _fitHeight && _contentHeight > 0f
+        ? new Vector2(_minWidth * TextFactor(), _contentHeight)
+        : null;
+
+    /// <summary>The panel's text size factor at the size its fonts are baked for.</summary>
+    private float TextFactor() => PanelTextScale.Factor(ImGuiFonts.BakedStepNear(PanelTextScale.Get(_title)));
 
     public void Draw()
     {
@@ -46,6 +67,7 @@ internal sealed class PluginWindowFace : IImGuiPanel
         Vector2 avail = ImGuiNET.ImGui.GetContentRegionAvail();
         long now = Environment.TickCount64;
         int result = PluginManager.EmbedFailed;
+        Vector2 want = Vector2.Zero;
         if (_failedAtMs < 0 || now - _failedAtMs >= RetryMs)
         {
             // Two stack records: the body's base (where a recovery goes back to: the panel host
@@ -57,7 +79,7 @@ internal sealed class PluginWindowFace : IImGuiPanel
             ImGuiNET.ImGui.PushID(_idScope);
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
             ImGuiStackGuard.Mark given = guarded ? ImGuiStackGuard.Take() : default;
-            try { result = PluginManager.RenderEmbed(_plugin, _surface, avail, out _); }
+            try { result = PluginManager.RenderEmbed(_plugin, _surface, avail, out want); }
             finally
             {
                 ImGuiStackGuard.Mark after = default;
@@ -78,7 +100,11 @@ internal sealed class PluginWindowFace : IImGuiPanel
             else if (result == PluginManager.EmbedDrawn) _failedAtMs = -1;
             else if (_failedAtMs >= 0) { _failedAtMs = now; result = PluginManager.EmbedFailed; }   // still off since the throw
         }
-        if (result == PluginManager.EmbedDrawn) return;
+        if (result == PluginManager.EmbedDrawn)
+        {
+            if (_fitHeight) Fit(want.Y, avail.X);
+            return;
+        }
 
         ImGuiNET.ImGui.SetCursorScreenPos(start + new Vector2(6, 6));
         Label(result switch
@@ -87,6 +113,39 @@ internal sealed class PluginWindowFace : IImGuiPanel
             PluginManager.EmbedFailed => $"{_plugin} couldn't draw {_title} (see the log). It comes back when the plugin reloads.",
             _ => $"Waiting for {_plugin}…",
         }, Mute);
+    }
+
+    /// <summary>
+    /// fitHeight: keeps the window as tall as the content the plugin drew (<paramref name="wantPx"/>,
+    /// client px) and scales its width with a text size change. Docked only (popped out, the OS window
+    /// is the player's to size); never while the mouse is down, so a drag or a resize isn't fought.
+    /// </summary>
+    private void Fit(float wantPx, float widthPx)
+    {
+        if (wantPx <= 0f || ImGuiPopOuts.InPopOutFrame) return;
+        float place = Math.Max(0.01f, ImGuiPanelHost.PlacementScale());
+        float height = MathF.Ceiling(wantPx / place);
+        float width = widthPx / place;
+        float k = PanelTextScale.Factor(ImGuiFonts.CurrentStep);
+        float shownHeight = ImGuiNET.ImGui.GetWindowHeight() / place;
+        bool mouseUp = !ImGuiNET.ImGui.IsMouseDown(ImGuiNET.ImGuiMouseButton.Left);
+        _contentHeight = height;
+        if (_fitK > 0f && MathF.Abs(k - _fitK) > 0.001f)
+        {
+            // A text size change: the width from the one it had at the old size.
+            width = MathF.Max(_fitWidth * (k / _fitK), _minWidth * k);
+            float screenW = ImGuiNET.ImGui.GetIO().DisplaySize.X / place;
+            if (screenW > 1f) width = MathF.Min(width, screenW);
+            ImGuiPanelHost.RequestSize(_title, new Vector2(width, height));
+            // Clamped to the screen at the new size: near the right or bottom edge it moves in.
+            ImGuiPanelHost.RequestPos(_title, ImGuiNET.ImGui.GetWindowPos() / place);
+        }
+        else if (mouseUp && MathF.Abs(shownHeight - height) > 0.5f)
+        {
+            ImGuiPanelHost.RequestSize(_title, new Vector2(width, height));
+        }
+        _fitK = k;
+        _fitWidth = width;
     }
 
     // Unbalanced draws by plugin + surface: logged the first time, then every RepeatEvery-th.

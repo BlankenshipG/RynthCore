@@ -33,6 +33,19 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Barlow Semi Condensed
+
+- What: the Barlow Semi Condensed font, SemiBold and Bold (`BarlowSemiCondensed-SemiBold.ttf`, `BarlowSemiCondensed-Bold.ttf`), the narrow label face of the instrument dashboard (plugin windows get it through GetUiFont, Narrow*).
+- Where: `src/RynthCore.Engine/Assets/Fonts/`, embedded in `RynthCore.Engine.dll` as resources.
+- Source: https://github.com/google/fonts/tree/main/ofl/barlowsemicondensed (The Barlow Project Authors, https://github.com/jpt/barlow)
+- Licence: SIL Open Font License 1.1, in full in `src/RynthCore.Engine/Assets/Fonts/Barlow.LICENSE`. The fonts are bundled unmodified; the licence allows bundling them with software, not selling them alone.
+
+```
+Copyright 2017 The Barlow Project Authors (https://github.com/jpt/barlow)
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+```
+
 ## Chorizite DatReaderWriter (format reference for the dat readers)
 
 - What: the layout of Asheron's Call .dat files (header, block chains, the directory B-tree) and of the Texture and Palette files, used as the reference when RynthCore's own dat reader and icon decoder were written (2026-10-05). The code is RynthCore's own (MIT); this notice is kept because the library was the format reference.

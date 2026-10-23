@@ -32,6 +32,7 @@ internal static class Program
         ManifestWindows();
         WindowPlanChoices();
         WindowTakeOver();
+        WindowFrameless();
         StackCheckAfterPluginDraw();
 
         Console.WriteLine();
@@ -557,6 +558,31 @@ internal static class Program
         // The plugin goes: its manifest is gone, so the panel isn't in the plan (the engine's face comes back).
         var after = WindowPlan.Build(Array.Empty<SectionManifest>(), none, Use, new List<string>(), taken2 = new HashSet<string>());
         Check(after.Count == 0 && taken2.Count == 0, "no manifest: nothing hosted, nothing taken over");
+    }
+
+    // v90: a window that draws its own frame ("chrome": "none") and fits its height to its content.
+    private const string FramelessManifest = """
+        { "version": 1, "windows": [
+        { "id": "dashboard", "title": "RynthAi", "surface": "window:dashboard", "takeOver": true,
+          "chrome": "none", "fitHeight": true, "width": 296, "height": 240, "minWidth": 280, "minHeight": 54 },
+        { "id": "plain", "title": "Notes", "surface": "window:notes" },
+        { "id": "odd", "title": "Odd", "surface": "window:odd", "chrome": " NONE ", "fitHeight": "yes" },
+        { "id": "framed", "title": "Framed", "surface": "window:framed", "chrome": "standard" } ] }
+        """;
+
+    private static void WindowFrameless()
+    {
+        Case("plugin windows: frameless and fitted (v90)");
+        SectionManifest m = SectionManifestParser.Parse("RynthAi", FramelessManifest, out string err);
+        Check(err.Length == 0 && m.Windows.Length == 4, "parses: " + err);
+        Check(m.Windows[0].Frameless && m.Windows[0].FitHeight && m.Windows[0].TakeOver, "\"chrome\": \"none\" and \"fitHeight\": true read");
+        Check(!m.Windows[1].Frameless && !m.Windows[1].FitHeight, "absent: framed and sized by the player (as before)");
+        Check(m.Windows[2].Frameless && !m.Windows[2].FitHeight, "\"none\" in any case, padded; fitHeight not a boolean: off");
+        Check(!m.Windows[3].Frameless, "any other chrome: the engine's frame");
+        Check(m.Windows[0].Width == 296 && m.Windows[0].MinWidth == 280, "sizes kept (the minimum height has the parser's floor)");
+        Check(WindowPlan.Signature(m.Windows[0]) != WindowPlan.Signature(m.Windows[0] with { Frameless = false })
+              && WindowPlan.Signature(m.Windows[0]) != WindowPlan.Signature(m.Windows[0] with { FitHeight = false }),
+            "chrome and fitHeight are in the signature (a change re-registers)");
     }
 
     // ImGui 1.91.6's ImGuiErrorRecoveryState, in field order: windows, IDs, tree nodes, colours,

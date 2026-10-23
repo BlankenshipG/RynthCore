@@ -140,6 +140,34 @@ if (-not $EngineOnly) {
         }
         else { Write-Warning "createdump.exe is missing from $dotnet and no runtime pack matches coreclr $have; a CoreCLR crash will leave no dump." }
     }
+
+    # Patched CoreCLR (2026-10-23, runtime-patches\coreclr-10.0.12-x86\README.md): the hot-reload
+    # statics crash, dotnet/runtime #135441. Its coreclr.dll, DAC and DBI go over the runtime pack's;
+    # the official CoreLib and JIT stay. Refused for a runtime of another version: a coreclr has to
+    # match its CoreLib. In use by a running client: moved aside, as the loader and shim are.
+    $patch = Join-Path $repo "runtime-patches\coreclr-10.0.12-x86"
+    if (Test-Path "$patch\coreclr.dll") {
+        $lib = (Get-Item "$dotnet\System.Private.CoreLib.dll").VersionInfo
+        $pv = (Get-Item "$patch\coreclr.dll").VersionInfo
+        if ($lib.FileMajorPart -ne $pv.FileMajorPart -or $lib.FileMinorPart -ne $pv.FileMinorPart -or $lib.FileBuildPart -ne $pv.FileBuildPart) {
+            throw "runtime-patches\coreclr-10.0.12-x86 was built for runtime $($pv.FileMajorPart).$($pv.FileMinorPart).$($pv.FileBuildPart), but $dotnet has CoreLib $($lib.FileMajorPart).$($lib.FileMinorPart).$($lib.FileBuildPart): rebuild the patch for it or remove the folder (see its README)."
+        }
+        $dacName = "mscordaccore_x86_x86_{0}.{1}.{2}.{3}.dll" -f $pv.FileMajorPart, $pv.FileMinorPart, $pv.FileBuildPart, $pv.FilePrivatePart
+        $copied = 0
+        foreach ($pair in @(@('coreclr.dll', 'coreclr.dll'), @('mscordaccore.dll', 'mscordaccore.dll'), @('mscordbi.dll', 'mscordbi.dll'), @('mscordaccore.dll', $dacName))) {
+            $src = Join-Path $patch $pair[0]
+            $dest = Join-Path $dotnet $pair[1]
+            if ((Test-Path $dest) -and (Get-FileHash $dest).Hash -eq (Get-FileHash $src).Hash) { continue }
+            try { Copy-Item $src $dest -Force -ErrorAction Stop }
+            catch {
+                Rename-Item $dest ("{0}.old-{1:yyyyMMddHHmmss}" -f $pair[1], (Get-Date)) -ErrorAction Stop
+                Copy-Item $src $dest -Force -ErrorAction Stop
+                Write-Host "$($pair[1]) was in use: moved the old one aside; new launches get the patched one."
+            }
+            $copied++
+        }
+        if ($copied -gt 0) { Write-Host "Patched CoreCLR $($pv.FileVersion) -> $dotnet ($copied file(s); runtime-patches\coreclr-10.0.12-x86)" }
+    }
 }
 
 # Engine + dependencies. The canonical RynthCore.Engine.dll goes last: the loader's file

@@ -101,7 +101,7 @@ internal static class PluginWindows
             string sig = WindowPlan.Signature(w);
             if (Live.TryGetValue(title, out Hosted? h) && h.Signature == sig) continue;
             SectionWindowDecl decl = w;
-            Func<IImGuiPanel> face = () => new PluginWindowFace(decl.Plugin, decl.Surface, decl.Title);
+            Func<IImGuiPanel> face = () => new PluginWindowFace(decl.Plugin, decl.Surface, decl.Title, decl.FitHeight, decl.MinWidth);
             if (takeOvers.Contains(title))
             {
                 // An engine panel's place: its key, saved place and open state stay; nothing to reopen.
@@ -146,7 +146,20 @@ internal static class PluginWindows
         : ImGuiPanelHost.HasFace(title) && !Live.ContainsKey(title) ? TitleUse.Other
         : TitleUse.Free;
 
-    private static PanelSpec Spec(SectionWindowDecl w) => new(
-        new Vector2(w.Width, w.Height), new Vector2(w.MinWidth, w.MinHeight),
-        EdgeToEdge: w.EdgeToEdge, GripInBody: w.EdgeToEdge);
+    // A frameless window ("chrome": "none", v90) has no header, a transparent background and no
+    // border: the plugin paints the whole window and drags it from its own title row. Its resize
+    // grip sits over the body's bottom-right corner, like the engine's chromeless panels, and shows
+    // only while the mouse is near it: that corner is the plugin's own content.
+    private static PanelSpec Spec(SectionWindowDecl w) => w.Frameless
+        ? new(new Vector2(w.Width, w.Height), new Vector2(w.MinWidth, w.MinHeight), PanelChrome.None,
+            Background: 0, Rounding: 0f, EdgeToEdge: true, GripOnHover: true, OpenCorner: Corner(w.Corner), DrawScale: w.DrawScale)
+        : new(new Vector2(w.Width, w.Height), new Vector2(w.MinWidth, w.MinHeight),
+            EdgeToEdge: w.EdgeToEdge, GripInBody: w.EdgeToEdge, OpenCorner: Corner(w.Corner), DrawScale: w.DrawScale);
+
+    private static PanelCorner Corner(string c) => c switch
+    {
+        "topLeft" => PanelCorner.TopLeft, "topRight" => PanelCorner.TopRight,
+        "bottomLeft" => PanelCorner.BottomLeft, "bottomRight" => PanelCorner.BottomRight,
+        "top" => PanelCorner.Top, "bottom" => PanelCorner.Bottom, _ => PanelCorner.None,
+    };
 }

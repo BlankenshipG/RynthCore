@@ -78,16 +78,34 @@ internal sealed class QuickSettingsDrawer : RynthAiDrawer
             ImGuiNET.ImGui.OpenPopup(AddPopupId);
         }
         ImGuiNET.ImGui.SetItemTooltip("Pin or unpin settings");
+        DrawBody(x, y, w, MathF.Max(1, origin.Y + panelH - Pad * k - y), k, openPicker: false);
+    }
+
+    /// <summary>
+    /// The pinned rows at (<paramref name="x"/>, <paramref name="y"/>) in a <paramref name="w"/> x
+    /// <paramref name="h"/> child that scrolls (RynthAi's own dashboard window draws the frame and the
+    /// + button: <paramref name="openPicker"/> opens the pin list at the mouse, SettingsDrawerBodies).
+    /// Returns the rows' height (pixels).
+    /// </summary>
+    public float DrawBody(float x, float y, float w, float h, float k, bool openPicker)
+    {
+        if (openPicker)
+        {
+            _filter = string.Empty;
+            ImGuiNET.ImGui.SetNextWindowPos(ImGuiNET.ImGui.GetMousePos() + new Vector2(0, 8 * k), ImGuiCond.Always, new Vector2(1, 0));
+            ImGuiNET.ImGui.OpenPopup(AddPopupId);
+        }
         AddPopup(k);
 
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, y));
-        Vector2 size = new(w, MathF.Max(1, origin.Y + panelH - Pad * k - y));
+        Vector2 size = new(w, MathF.Max(1, h));
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
         bool open = ImGuiNET.ImGui.BeginChild("##quick_body", size, ImGuiChildFlags.None, ImGuiWindowFlags.NoBackground);
         ImGuiNET.ImGui.PopStyleVar();
+        float contentH = EmptyH * k;
         try
         {
-            if (!open) return;
+            if (!open) return contentH;
             _rows.Sync();
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
             ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 0));
@@ -116,6 +134,8 @@ internal sealed class QuickSettingsDrawer : RynthAiDrawer
                     ImGuiNET.ImGui.PopTextWrapPos();
                     ImGuiNET.ImGui.PopStyleColor();
                 }
+                // What the rows took (unscrolled), for a host that fits its height to them.
+                contentH = ImGuiNET.ImGui.GetCursorPosY() + 2 * k;   // content space: the scroll is in it
             }
             finally
             {
@@ -124,6 +144,7 @@ internal sealed class QuickSettingsDrawer : RynthAiDrawer
             }
         }
         finally { ImGuiNET.ImGui.EndChild(); }
+        return contentH;
     }
 
     /// <summary>A pinned row's right-click, after Remove: Move up / Move down.</summary>

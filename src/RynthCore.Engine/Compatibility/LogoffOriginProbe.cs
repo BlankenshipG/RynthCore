@@ -234,6 +234,7 @@ internal static unsafe class LogoffOriginProbe
         ChatHooks.OnLogoffRequested();
         RadarHooks.OnLogoffRequested();
         RetailVitalsHooks.OnLogoffRequested();
+        RetailToolbarHooks.OnLogoffRequested();
         long now = Environment.TickCount64;
         IntPtr caller = LogoutLifecycleHooks.LogCaller(fn, "LogoffProbe");
         string callerText = DescribeAcclientAddress(caller);

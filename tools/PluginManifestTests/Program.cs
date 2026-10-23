@@ -601,11 +601,12 @@ internal static class Program
             Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.TrainingEntryNative>(f.Name), (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.TrainingEntryNative>(f.Name), "TrainingEntryNative." + f.Name + " offset");
         Eq(RynthCore.PluginSdk.TrainingInfoFlags.Busy, RynthCore.Engine.Plugins.TrainingInfoFlags.Busy, "info flag bits");
         Eq(RynthCore.PluginSdk.TrainingEntryFlags.Trainable, RynthCore.Engine.Plugins.TrainingEntryFlags.Trainable, "entry flag bits");
-        // The three v79 slots follow v78's, then v80's two and v81's GetMergeStackResultFn (v82-v89 follow).
-        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(11).TakeLast(6).ToArray();
+        // The three v79 slots follow v78's, then v80's two and v81's GetMergeStackResultFn (v82-v90 follow:
+        // eleven slots to v89, then v90's thirteen).
+        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(24).TakeLast(6).ToArray();
         Check(names.SequenceEqual(new[] { "GetTrainingInfoFn", "RaiseFn", "TrainSkillFn", "GetContainerOrderFn", "PutItemInContainerFn", "GetMergeStackResultFn" }),
             "v79, v80 then v81 slots last: " + string.Join(",", names));
-        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(11).TakeLast(6).ToArray();
+        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(24).TakeLast(6).ToArray();
         Check(sdkNames.SequenceEqual(names), "SDK v79, v80 and v81 slots in the same order");
     }
 
@@ -614,8 +615,21 @@ internal static class Program
     // order on both sides, and the same size.
     private static void ContainerOrderSlots()
     {
-        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).ToArray();
-        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).ToArray();
+        var all = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).ToArray();
+        var sdkAll = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).ToArray();
+        // v90: the frameless-window slots and the settings drawers end the table; the checks after these
+        // are on the table before them.
+        string[] v90 = { "PanelDragWithLastItemFn", "SetPanelPopOutFn", "PanelTextSizeFn", "RenderSettingsDrawerFn",
+                         "GetShortcutsFn", "ShortcutActionFn", "GetActionKeysFn", "GetIconTextureFn", "KeyCaptureFn", "SetActionKeyFn", "AcPanelFn", "PanelScaleFn", "DropTargetFn" };
+        Check(all.TakeLast(v90.Length).SequenceEqual(v90), "v90 slots last: " + string.Join(",", all.TakeLast(v90.Length)));
+        Check(sdkAll.TakeLast(v90.Length).SequenceEqual(v90), "SDK v90 slots last: " + string.Join(",", sdkAll.TakeLast(v90.Length)));
+        foreach (string slot in v90)
+            Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>(slot),
+               (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>(slot), slot + " offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("PanelDragWithLastItemFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("SetPanelOpenFn") + IntPtr.Size, "PanelDragWithLastItemFn right after SetPanelOpenFn");
+        var names = all.SkipLast(v90.Length).ToArray();
+        var sdkNames = sdkAll.SkipLast(v90.Length).ToArray();
         // v81's GetMergeStackResultFn follows v80's two slots.
         Check(names.SkipLast(12).TakeLast(2).SequenceEqual(new[] { "GetContainerOrderFn", "PutItemInContainerFn" }), "v80 slots before v81's to v85's: " + string.Join(",", names.SkipLast(12).TakeLast(2)));
         Check(sdkNames.SkipLast(12).TakeLast(2).SequenceEqual(names.SkipLast(12).TakeLast(2)), "SDK v80 slots in the same order");
@@ -630,8 +644,8 @@ internal static class Program
         Check(names.SkipLast(4).Last() == "GetServerStateJsonFn", "v86 slot before v87's: " + names.SkipLast(4).Last());
         // v87: GetWieldedItems (what the player wields, from the server's messages), then v89's three.
         Check(names.SkipLast(3).Last() == "GetWieldedItemsFn", "v87 slot before v89's: " + names.SkipLast(3).Last());
-        // v89: plugin windows (the engine's look, panels by key) end the table.
-        Check(names.TakeLast(3).SequenceEqual(new[] { "GetUiColorFn", "GetUiFontFn", "SetPanelOpenFn" }), "v89 slots last: " + string.Join(",", names.TakeLast(3)));
+        // v89: plugin windows (the engine's look, panels by key) end the table before v90's.
+        Check(names.TakeLast(3).SequenceEqual(new[] { "GetUiColorFn", "GetUiFontFn", "SetPanelOpenFn" }), "v89 slots before v90's: " + string.Join(",", names.TakeLast(3)));
         Check(typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SequenceEqual(typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name)), "SDK table has the engine's slots in the same order");
         Eq(Marshal.SizeOf<RynthCore.PluginSdk.RynthCoreApiNative>(), Marshal.SizeOf<RynthCore.Engine.Plugins.RynthCoreAPI>(), "SDK table size = engine table size");
         Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("PutItemInContainerFn"),

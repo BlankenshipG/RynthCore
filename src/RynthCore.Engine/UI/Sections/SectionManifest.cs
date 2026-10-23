@@ -20,7 +20,8 @@
 //    "windows": [
 //      { "id": "characters", "title": "Characters", "surface": "window:characters",
 //        "icon": "\uE68E", "width": 420, "height": 260, "minWidth": 280, "minHeight": 140,
-//        "bar": true, "edgeToEdge": true, "server": "", "takeOver": false } ]
+//        "bar": true, "edgeToEdge": true, "server": "", "takeOver": false,
+//        "chrome": "", "fitHeight": false } ]
 //  }
 //  servers       servers the plugin knows. A built-in id (ilt, aelrynth) keeps the
 //                engine's own detection; a new id is detected from its lists.
@@ -40,6 +41,16 @@
 //                and the engine's face comes back when the plugin goes. Engines
 //                before that ignore the key and keep their face (the title refused).
 //                "server" set: only while that server is active. docs/PLUGIN_WINDOWS.md.
+//                v90 (2026-10-21): "chrome": "none" = no header and no background or
+//                border: the plugin draws the whole window, its own title row included
+//                (PanelDragWithLastItem moves it), edge to edge. "fitHeight": true = the
+//                window's height follows the height the plugin's draw asks for
+//                (RynthPluginRenderEmbed's wantHeight) and its width scales with the
+//                panel's text size. Engines before v90 ignore both. "corner":
+//                "bottomRight" (or topLeft, topRight, bottomLeft, top, bottom: centred) = where it first
+//                opens when nothing is saved for it (v90, 2026-10-22). "scale": "draw" =
+//                the window draws its content at any size (PanelScale): Ctrl+wheel over
+//                it steps that size, 30-250%, not its text size (v90, 2026-10-23).
 //
 //  Everything from a plugin is checked here: ids are short lower-case words,
 //  text is capped, a command must be a single "/..." chat command, and the lists
@@ -99,7 +110,15 @@ internal sealed record SectionWindowDecl(
     bool EdgeToEdge,
     string Server,
     // Takes the place of the engine panel with this title while hosted ("takeOver": true).
-    bool TakeOver = false)
+    bool TakeOver = false,
+    // v90: no header, background or border; the plugin draws the whole window ("chrome": "none").
+    bool Frameless = false,
+    // v90: the height follows the plugin's wantHeight; the width scales with the text size ("fitHeight").
+    bool FitHeight = false,
+    // v90: where it first opens with nothing saved: "", "topLeft", "topRight", "bottomLeft", "bottomRight" ("corner").
+    string Corner = "",
+    // v90: it draws its own content at any size, so Ctrl+wheel steps its draw size (PanelScale), not its text ("scale": "draw").
+    bool DrawScale = false)
 {
     /// <summary>For every world, not one server.</summary>
     public bool IsUniversal => Server.Length == 0;
@@ -217,7 +236,11 @@ internal static class SectionManifestParser
                 float minHeight = Math.Min(WindowSize(Size(e, "minHeight"), MinWindowSize), height);
                 windows.Add(new SectionWindowDecl(plugin, id, title, surface, Icon(Str(e, "icon")),
                     width, height, minWidth, minHeight, Bool(e, "bar", false), Bool(e, "edgeToEdge", false), server,
-                    Bool(e, "takeOver", false)));
+                    Bool(e, "takeOver", false),
+                    Frameless: Str(e, "chrome").Trim().Equals("none", StringComparison.OrdinalIgnoreCase),
+                    FitHeight: Bool(e, "fitHeight", false),
+                    Corner: Str(e, "corner").Trim() is "topLeft" or "topRight" or "bottomLeft" or "bottomRight" or "top" or "bottom" ? Str(e, "corner").Trim() : "",
+                    DrawScale: Str(e, "scale").Trim().Equals("draw", StringComparison.OrdinalIgnoreCase)));
             }
 
             return new SectionManifest(plugin, servers.ToArray(), sections.ToArray(), contributions.ToArray())

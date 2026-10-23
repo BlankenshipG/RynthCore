@@ -924,11 +924,18 @@ internal static unsafe class Program
             fixed (byte* p = d)
             {
                 for (int i = 0; i < 2000; i++) c.OnDatagram(outbound, p, d.Length);   // warm up
-                long before = GC.GetAllocatedBytesForCurrentThread();
-                long t0 = Stopwatch.GetTimestamp();
-                for (int i = 0; i < n; i++) c.OnDatagram(outbound, p, d.Length);
-                long ticks = Stopwatch.GetTimestamp() - t0;
-                long alloc = GC.GetAllocatedBytesForCurrentThread() - before;
+                // Up to three tries, the fewest bytes counted: a one-off allocation on this thread inside
+                // the timed loop (tiered JIT settling: 5296 bytes in one of four runs, 2026-10-23) is not
+                // the hot path's. An allocation per datagram shows in every try (n of them).
+                long alloc = long.MaxValue, ticks = 0;
+                for (int attempt = 0; attempt < 3 && alloc != 0; attempt++)
+                {
+                    long before = GC.GetAllocatedBytesForCurrentThread();
+                    long t0 = Stopwatch.GetTimestamp();
+                    for (int i = 0; i < n; i++) c.OnDatagram(outbound, p, d.Length);
+                    ticks = Stopwatch.GetTimestamp() - t0;
+                    alloc = Math.Min(alloc, GC.GetAllocatedBytesForCurrentThread() - before);
+                }
                 double ns = ticks * 1e9 / Stopwatch.Frequency / n;
                 Console.WriteLine($"  {what,-44} {ns,7:0} ns/datagram, {alloc} bytes allocated over {n}");
                 _case = "cost";

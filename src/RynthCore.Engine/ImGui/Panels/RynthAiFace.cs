@@ -410,9 +410,7 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         if (ImGuiNET.ImGui.IsWindowHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem)
             && ImGuiNET.ImGui.IsMouseHoveringRect(new Vector2(x0, y), new Vector2(x0 + width, y + rowH), false))
         {
-            ImGuiIOPtr io = ImGuiNET.ImGui.GetIO();
-            if (io.KeyCtrl && io.MouseWheel != 0f)
-                PanelTextScale.SetForWindow(Title, PanelTextScale.Get(Title) + (io.MouseWheel > 0f ? 1 : -1));
+            // Ctrl+wheel: the panel host steps its size (over any panel).
             if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Right))
                 ImGuiNET.ImGui.OpenPopup(SizePopupId);
         }

@@ -36,6 +36,9 @@ using RynthCore.Engine.UI;
 
 namespace RynthCore.Engine.ImGuiBackend;
 
+/// <summary>Where a panel first opens when nothing is saved for it (v90 plugin windows' "corner").</summary>
+internal enum PanelCorner { None, TopLeft, TopRight, BottomLeft, BottomRight, Top, Bottom }
+
 internal enum PanelChrome
 {
     /// <summary>DRAG + title + pop-out + close header, resize grip.</summary>
@@ -77,7 +80,15 @@ internal sealed record PanelSpec(
     bool OpenCentered = false,
     // No resize grip, docked or popped out: the face sizes itself (the RynthNav arrow
     // fits its height to what it shows). Chromeless and GripInBody panels only.
-    bool NoResize = false);
+    bool NoResize = false,
+    // The grip over the body's corner shows only while the mouse is near it (or resizing):
+    // a frameless plugin window's corner is its own content (RynthAi's footer clock).
+    bool GripOnHover = false,
+    // With nothing saved: open in this corner of the game view (a plugin window's "corner", v90).
+    PanelCorner OpenCorner = PanelCorner.None,
+    // The panel draws its own content at any size (a plugin window's "scale": "draw", v90): Ctrl+wheel
+    // steps its draw size (PanelDrawScale, 30-250%) instead of its text size.
+    bool DrawScale = false);
 
 /// <summary>An ImGui panel face. One instance per open; dropped on close.</summary>
 internal interface IImGuiPanel
@@ -590,6 +601,51 @@ internal static class ImGuiPanelHost
             }
             DrawPanel(entry, uiScale, placeScale, null);
         }
+        DrawSizeNote();
+    }
+
+    // ── One way to resize every panel (Tom 2026-10-23) ───────────────────
+    //
+    // Ctrl+wheel anywhere over a panel - engine panel, plugin window, framed or frameless, docked
+    // or popped out - makes that panel one step bigger or smaller; each panel keeps its own size.
+    // A panel that draws its own content at any size (a plugin window with "scale": "draw") steps
+    // its draw size 10% (30-250%, PanelDrawScale); the others their text size (100-250%,
+    // PanelTextScale). The wheel is used up, so the panel doesn't also scroll. A face that has its
+    // own Ctrl+wheel inside it (the Mini Remote's boxes) clears the wheel first and keeps it.
+    // A note by the cursor says the new size for a moment.
+
+    private static string _sizeNote = string.Empty;
+    private static long _sizeNoteUntilMs;
+
+    private static void StepSizeWithWheel(Entry entry)
+    {
+        ImGuiIOPtr io = ImGuiNET.ImGui.GetIO();
+        if (!io.KeyCtrl || io.MouseWheel == 0f) return;
+        if (!ImGuiNET.ImGui.IsWindowHovered(ImGuiHoveredFlags.RootAndChildWindows | ImGuiHoveredFlags.AllowWhenBlockedByActiveItem)) return;
+        int dir = io.MouseWheel > 0f ? 1 : -1;
+        io.MouseWheel = 0f;
+        int pct;
+        if (entry.Spec.DrawScale)
+        {
+            int now = PanelDrawScale.Get(entry.Title);
+            if (now == 0) now = (int)MathF.Round(PanelTextScale.Factor(PanelTextScale.Get(entry.Title)) * 10f) * 10;
+            pct = Math.Clamp(now + dir * PanelDrawScale.Step, PanelDrawScale.Min, PanelDrawScale.Max);
+            PanelDrawScale.Set(entry.Title, pct);
+        }
+        else
+        {
+            int step = Math.Clamp(PanelTextScale.Get(entry.Title) + dir, 0, PanelTextScale.SizeNames.Length - 1);
+            PanelTextScale.SetForWindow(entry.Title, step);
+            pct = (int)MathF.Round(PanelTextScale.Factor(step) * 100f);
+        }
+        _sizeNote = $"{entry.Title}: {pct.ToString(System.Globalization.CultureInfo.InvariantCulture)}%";
+        _sizeNoteUntilMs = Environment.TickCount64 + 1200;
+    }
+
+    private static void DrawSizeNote()
+    {
+        if (_sizeNote.Length == 0 || Environment.TickCount64 > _sizeNoteUntilMs) return;
+        ImGuiNET.ImGui.SetTooltip(_sizeNote + "  (Ctrl+wheel)");
     }
 
     private static bool HiddenWhileDocked(Entry entry)
@@ -781,6 +837,10 @@ internal static class ImGuiPanelHost
         {
             pos = defaultPos; // the face's own first spot (a script window's FirstUseEver position)
         }
+        else if (entry.Spec.OpenCorner != PanelCorner.None && CornerLogicalPos(entry.Spec.OpenCorner, size, placeScale) is Vector2 corner)
+        {
+            pos = corner;
+        }
         else if (entry.Spec.OpenCentered && CenteredLogicalPos(size, placeScale) is Vector2 centered)
         {
             pos = centered;
@@ -902,6 +962,19 @@ internal static class ImGuiPanelHost
         Vector2 display = ImGuiNET.ImGui.GetIO().DisplaySize;
         if (display.X <= 1 || display.Y <= 1 || placeScale <= 0) return null;
         return Vector2.Max(Vector2.Zero, (display / placeScale - size) * 0.5f);
+    }
+
+    /// <summary>A corner of the game view, 8 units in from its edges (logical units).</summary>
+    private static Vector2? CornerLogicalPos(PanelCorner corner, Vector2 size, float placeScale)
+    {
+        Vector2 display = ImGuiNET.ImGui.GetIO().DisplaySize;
+        if (display.X <= 1 || display.Y <= 1 || placeScale <= 0) return null;
+        Vector2 view = display / placeScale;
+        const float m = 8f;
+        float x = corner is PanelCorner.TopRight or PanelCorner.BottomRight ? view.X - size.X - m
+                : corner is PanelCorner.Top or PanelCorner.Bottom ? (view.X - size.X) * 0.5f : m;
+        float y = corner is PanelCorner.BottomLeft or PanelCorner.BottomRight or PanelCorner.Bottom ? view.Y - size.Y - m : m;
+        return Vector2.Max(Vector2.Zero, new Vector2(x, y));
     }
 
     private static Vector2 ClampToDisplay(Vector2 pos, Vector2 size)
@@ -1098,7 +1171,8 @@ internal static class ImGuiPanelHost
                 }
                 // Grip painted on top of the face when the body covers the corner
                 // (a GripInBody face's even while it lets clicks through: its slot stays).
-                if ((manualGrip || inlineGrip || (popped && !standard)) && gripRoom == 0f)
+                if ((manualGrip || inlineGrip || (popped && !standard)) && gripRoom == 0f
+                    && (!spec.GripOnHover || gHot || NearGrip(gMin, gSize)))
                     GripPaint(entry, uiScale, gMin, gHot, ImGuiNET.ImGui.GetWindowDrawList());
                 entry.BodyScrolls = ImGuiNET.ImGui.GetScrollMaxY() > 0f;
             }
@@ -1114,6 +1188,8 @@ internal static class ImGuiPanelHost
             else if (standard && !inlineGrip && !clickThrough)
                 DrawGrip(entry, uiScale, minSize);
             if (resizing) _pendingDragDelta = Vector2.Zero;   // the face's window-drag doesn't also move it
+
+            StepSizeWithWheel(entry);
 
             // A drag started from the panel's own surface (DragWindowWithLastItem).
             if (popped) _pendingDragDelta = Vector2.Zero;
@@ -1405,17 +1481,7 @@ internal static class ImGuiPanelHost
         }
         ImGuiNET.ImGui.PopStyleVar();
 
-        // Ctrl+wheel anywhere on the title bar steps this window's size. Only the
-        // header: the body's wheel belongs to the face (lists, chat, radar zoom).
-        // Popped out, the drag band is the window's own caption and never reaches
-        // ImGui, so there it works over the buttons.
-        ImGuiIOPtr io = ImGuiNET.ImGui.GetIO();
-        if (!gone && io.KeyCtrl && io.MouseWheel != 0f
-            && ImGuiNET.ImGui.IsWindowHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem)
-            && ImGuiNET.ImGui.IsMouseHoveringRect(winPos, winPos + new Vector2(width, h), false))
-        {
-            PanelTextScale.SetForWindow(entry.Title, step + (io.MouseWheel > 0f ? 1 : -1));
-        }
+        // Ctrl+wheel anywhere over the panel steps its size (StepSizeWithWheel, for every panel).
 
         // Under the header, right-aligned to the button: never over a pop-out's drag band.
         ImGuiNET.ImGui.SetNextWindowPos(winPos + new Vector2(tsX + btn, h), ImGuiCond.Appearing, new Vector2(1, 0));
@@ -1536,6 +1602,10 @@ internal static class ImGuiPanelHost
 
     /// <summary>The resize grip at the bottom-right (16 px, teal, rounded outer corner).</summary>
     private static float GripSize(Entry entry, float s) => (entry.Spec.GoldGrip ? 14f : 16f) * s;
+
+    /// <summary>The mouse within a grip's width of the grip (PanelSpec.GripOnHover shows it then).</summary>
+    private static bool NearGrip(Vector2 gMin, float gSize) =>
+        ImGuiNET.ImGui.IsMouseHoveringRect(gMin - new Vector2(gSize, gSize), gMin + new Vector2(2 * gSize, 2 * gSize), false);
 
     /// <summary>Top-left of the grip for a corner (bottom-right point).</summary>
     private static Vector2 GripMin(Entry entry, float s, Vector2 corner)

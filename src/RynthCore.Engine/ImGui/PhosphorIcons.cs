@@ -172,7 +172,8 @@ internal static unsafe class PhosphorIcons
         + Binoculars + Crown + Sun
         + CastleTurret + ClockCounterClockwise + GlobeHemisphereWest + Path + Star + Target + User
         + TextAa + Leaf + Keyboard
-        + PushPin + SlidersHorizontal + Wrench;
+        + PushPin + SlidersHorizontal + Wrench
+        + Scroll;
 
     /// <summary>
     /// Draws <paramref name="glyph"/> (one icon) centred in the box at

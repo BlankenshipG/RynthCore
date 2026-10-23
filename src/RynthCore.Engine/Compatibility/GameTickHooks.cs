@@ -148,6 +148,10 @@ internal static class GameTickHooks
         // pending. Must never throw into AC's native frame.
         try { AcMainThreadQueue.DrainCasts(); }
         catch { }
+        // Shortcut slots used or changed from RynthCore (AcShortcuts), the same moment AC's own
+        // keys reach the toolbar: before this tick. Alloc-free when nothing is queued.
+        try { AcShortcuts.Drain(); }
+        catch { }
 
         // Run AC's own game-logic + physics + animation pass.
         int result;
@@ -228,6 +232,12 @@ internal static class GameTickHooks
         // Main-thread snapshots the pump reads instead of AC memory (player id,
         // cast gate, pose, ...). Post-tick, so they reflect this tick's physics.
         try { MainThreadSnapshots.Tick(); }
+        catch { }
+        try { AcShortcuts.ReadTick(); }
+        catch { }
+        try { AcKeymapLive.Tick(); }
+        catch { }
+        try { AcPanels.Drain(); }
         catch { }
         // Decal clients only (no EndScene hook): the prefetches EngineFrameController
         // runs per frame. False for every other client - one flag check.

@@ -373,7 +373,10 @@ internal sealed partial class MiniRemoteFace : IImGuiPanel
         if (ready && io.KeyCtrl && io.MouseWheel != 0
             && ImGuiNET.ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows)
             && ImGuiNET.ImGui.IsMouseHoveringRect(start, start + new Vector2(w, shownH)))
+        {
             ResizeSlots(io.MouseWheel > 0 ? SlotSizeStep : -SlotSizeStep);
+            io.MouseWheel = 0f;   // the boxes took it: not the panel's size too
+        }
 
         if (clicked >= 0 && ready) Click(data, items, clicked);
         else if (clicked >= 0) ShowMessage(ItemHudStore.Loaded ? "Waiting for your character..." : "Loading...", Amber);

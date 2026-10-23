@@ -160,6 +160,9 @@ internal static class HotkeyService
         return true;
     }
 
+    /// <summary>All the bindings at once (AcKeymapLive: a key taken for a shortcut slot comes off the others).</summary>
+    public static void SetAll(List<HotkeyBinding> bindings) => Commit(Current with { Bindings = new List<HotkeyBinding>(bindings) });
+
     public static bool RemoveAt(int index)
     {
         List<HotkeyBinding> list = Copy();
