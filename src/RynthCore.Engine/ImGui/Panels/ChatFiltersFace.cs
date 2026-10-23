@@ -424,7 +424,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
     {
         if (r.Pattern.Trim().Length == 0) return ("Type a pattern: the rule matches nothing until then.", Faded(Mute));
         if (r.Invalid) return ("Regex error: " + (r.Error ?? "doesn't compile"), Red);
-        if (r.Slow) return ("Too slow: matching it took too long (see the RynthCore log), so the rule is skipped. Edit the pattern to try again.", Amber);
+        if (r.Slow) return ("Too slow: matching it took too long twice running (see the RynthCore log), so the rule is skipped for a while. It is tried again on its own; editing the pattern tries it at once.", Amber);
         if (r.Action is ChatRuleAction.Move or ChatRuleAction.Copy && r.Tab.Length == 0)
             return ("Pick a tab: until then it only colours.", Amber);
         if (!r.Enabled) return ("Off.", Faded(Mute));

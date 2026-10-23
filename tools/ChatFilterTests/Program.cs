@@ -58,11 +58,64 @@ internal static class Program
         LineColorDefaultsUnchanged();
         LineColorPrecedence();
         LineColorJson();
+        SlowRuleRetry();
 
         Console.WriteLine();
         Console.WriteLine($"{_checks - _failed}/{_checks} checks passed.");
         Console.WriteLine(_failed == 0 ? "ALL CHAT FILTER TESTS PASSED." : $"{_failed} FAILED.");
         return _failed == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Silentkelpie 2026-10-23, two days into a session: rule after rule was "too slow ... skipped
+    /// until edited", even "^\[RynthNet] Silentstorm connected\.$" - a pause of the thread during an
+    /// easy match. A timed-out match now runs once more before a rule is judged slow, and a slow rule
+    /// is tried again after 10 minutes (doubling per strike, at most 4 hours); an edit still resets it.
+    /// </summary>
+    private static void SlowRuleRetry()
+    {
+        Case("slow rules: a second chance, and tried again later");
+        Check(ChatFilterRule.SlowRetryAfterMs(1) == 10 * 60_000L, "first strike: 10 minutes");
+        Check(ChatFilterRule.SlowRetryAfterMs(2) == 20 * 60_000L, "second: 20 minutes");
+        Check(ChatFilterRule.SlowRetryAfterMs(3) == 40 * 60_000L, "third: 40 minutes");
+        Check(ChatFilterRule.SlowRetryAfterMs(50) == 4 * 3_600_000L, "never more than 4 hours");
+
+        // A normal pattern matches; a pattern that always times out fails both tries.
+        Check(ChatRouter.TryMatch(new Regex(@"^\[RynthNet] Silentstorm connected\.$", RegexOptions.None, TimeSpan.FromMilliseconds(15)),
+            "[RynthNet] Silentstorm connected.", out Match ok) && ok.Success, "an easy rule matches");
+        var hopeless = new Regex("^(a+)+$", RegexOptions.None, TimeSpan.FromMilliseconds(1));
+        Check(!ChatRouter.TryMatch(hopeless, new string('a', 40) + "b", out _), "a truly slow pattern times out twice running");
+
+        // The router: a slow rule is skipped, then tried again once its wait is over.
+        long now = 1_000_000;
+        Func<long> oldClock = ChatFilterRule.Clock;
+        ChatFilterRule.Clock = () => now;
+        try
+        {
+            var rule = new ChatFilterRule { Pattern = "^(a+)+$", Action = ChatRuleAction.Hide };
+            rule.Recompile();
+            var router = new ChatRouter(new[] { rule }, null, "", countHits: false);
+            string evil = new string('a', 40) + "b";
+            router.Evaluate(evil, "Chat", 0, null);
+            Check(rule.Slow && rule.SlowStrikes == 1 && rule.SlowAtMs == now, "a slow rule is marked, strike 1");
+            Check(!rule.RetrySlowIfDue(now + 9 * 60_000L), "9 minutes later: still skipped");
+            now += 10 * 60_000L;
+            router.Evaluate(evil, "Chat", 0, null);
+            Check(rule.Slow && rule.SlowStrikes == 2, "10 minutes later it is tried again, and still slow: strike 2");
+            Check(!rule.RetrySlowIfDue(now + 19 * 60_000L) && rule.RetrySlowIfDue(now + 20 * 60_000L), "the next wait is 20 minutes");
+            rule.Slow = true;
+            rule.Recompile();
+            Check(!rule.Slow && rule.SlowStrikes == 0, "editing the pattern clears it at once");
+
+            var easy = new ChatFilterRule { Pattern = @"^\[RynthNet] Silentstorm connected\.$", Action = ChatRuleAction.Hide };
+            easy.Recompile();
+            easy.Slow = true; easy.SlowAtMs = now; easy.SlowStrikes = 1;
+            var r2 = new ChatRouter(new[] { easy }, null, "", countHits: false);
+            Check(!r2.Evaluate("[RynthNet] Silentstorm connected.", "Chat", 0, null).Hidden, "skipped while its wait runs");
+            now += 10 * 60_000L;
+            Check(r2.Evaluate("[RynthNet] Silentstorm connected.", "Chat", 0, null).Hidden && !easy.Slow, "and hides its line again once tried again");
+        }
+        finally { ChatFilterRule.Clock = oldClock; }
     }
 
     private static void Case(string name)
