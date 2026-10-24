@@ -83,6 +83,12 @@ internal sealed class LootAddDialog
     // What the popup asks for (0 / -1 = RynthAi's default).
     private int _match, _action, _keep = -1;
     private bool _includeT11;
+    // No item (the panel's own filter: every attribute, 2026-10-24).
+    private bool _blank;
+    // Spells and cantrips added from the standard lists, by their row id (LootItemAttributes.ExtraId).
+    private readonly System.Collections.Generic.Dictionary<string, LootEditItemExtraDto> _extras = new();
+    // The spell pickers' current picks.
+    private int _pickSchool, _pickFamily, _pickLevel = 6, _pickTier = 3, _pickCantrip;
     private readonly byte[] _name = new byte[128];
     private int _keepEdit = 1;
 
@@ -131,9 +137,11 @@ internal sealed class LootAddDialog
     /// game, resolved once). <paramref name="toOpenProfile"/>: the rule goes to the
     /// profile open in the Loot Editor, else to the one RynthAi loots with.
     /// </summary>
-    public void Open(uint itemId, string itemName, bool toOpenProfile, LootAddMode mode = LootAddMode.AddRule)
+    public void Open(uint itemId, string itemName, bool toOpenProfile, LootAddMode mode = LootAddMode.AddRule, bool blank = false)
     {
-        _itemId = itemId;
+        _blank = blank && mode != LootAddMode.AddRule;
+        _extras.Clear();
+        _itemId = _blank ? 0 : itemId;
         _itemName = itemName ?? string.Empty;
         _toOpenProfile = toOpenProfile;
         _mode = mode;
@@ -177,6 +185,8 @@ internal sealed class LootAddDialog
                 // Null until the player changes a row: RynthAi's defaults (and its notes about them).
                 Choices = _choices.Count == 0 ? null : new System.Collections.Generic.List<LootEditItemChoiceDto>(_choices.Values),
                 Find = filter,
+                Blank = _blank,
+                Extras = _extras.Count == 0 ? null : new System.Collections.Generic.List<LootEditItemExtraDto>(_extras.Values),
                 Scope = !filter ? string.Empty : global ? LootFindScopes.Global : LootFindScopes.Inventory,
                 Candidates = op == "item_find" && filter && !global ? Candidates?.Invoke() : null,
             },
@@ -317,13 +327,16 @@ internal sealed class LootAddDialog
     {
         bool global = _mode == LootAddMode.FilterGlobal;
         LootEditItemDraftDto? d = _draft;
-        float w = d?.AttributesSupported == true ? 440 : 380;
+        float w = d?.AttributesSupported == true ? 500 : 380;
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Amber);
-        ImGuiNET.ImGui.TextUnformatted(global
-            ? PhosphorIcons.GlobeHemisphereWest + " Find like this in Global Inventory"
-            : PhosphorIcons.Funnel + " Filter inventory like this");
+        ImGuiNET.ImGui.TextUnformatted(_blank
+            ? PhosphorIcons.Funnel + " Filter inventory"
+            : global
+                ? PhosphorIcons.GlobeHemisphereWest + " Find like this in Global Inventory"
+                : PhosphorIcons.Funnel + " Filter inventory like this");
         ImGuiNET.ImGui.PopStyleColor();
-        ImGuiNET.ImGui.TextUnformatted(_itemName.Length > 0 ? _itemName : "the selected item");
+        if (_blank) ImGuiNET.ImGui.TextDisabled("Tick what the items must have; add spells and cantrips from the lists.");
+        else ImGuiNET.ImGui.TextUnformatted(_itemName.Length > 0 ? _itemName : "the selected item");
         ImGuiNET.ImGui.Separator();
 
         bool current = d != null && d.Seq == _seq;
@@ -351,16 +364,19 @@ internal sealed class LootAddDialog
         }
 
         bool changed = false;
-        ImGuiNET.ImGui.TextDisabled("Match:");
-        for (int i = 0; i < MatchLabels.Length; i++)
+        if (!_blank)
         {
-            ImGuiNET.ImGui.SameLine();
-            if (ImGuiNET.ImGui.RadioButton(MatchLabels[i] + "##fm" + i.ToString(CultureInfo.InvariantCulture), d.Match == i) && d.Match != i)
+            ImGuiNET.ImGui.TextDisabled("Match:");
+            for (int i = 0; i < MatchLabels.Length; i++)
             {
-                _match = i;
-                changed = true;
+                ImGuiNET.ImGui.SameLine();
+                if (ImGuiNET.ImGui.RadioButton(MatchLabels[i] + "##fm" + i.ToString(CultureInfo.InvariantCulture), d.Match == i) && d.Match != i)
+                {
+                    _match = i;
+                    changed = true;
+                }
+                if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(MatchTips[i]);
             }
-            if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(MatchTips[i]);
         }
         if (d.AttributesSupported) changed |= DrawAttributes(d, w);
 
@@ -424,7 +440,7 @@ internal sealed class LootAddDialog
     private bool Body()
     {
         // Wider with the checklist (label, comparison, value on one line).
-        float w = _draft?.AttributesSupported == true ? 440 : 380;
+        float w = _draft?.AttributesSupported == true ? 500 : 380;
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Amber);
         ImGuiNET.ImGui.TextUnformatted(PhosphorIcons.Plus + " Add to loot profile");
         ImGuiNET.ImGui.PopStyleColor();
@@ -623,7 +639,7 @@ internal sealed class LootAddDialog
         float h = Math.Min(rows.Count * lineH + groups * lineH + 8, 300);
 
         bool changed = false;
-        const float opX = 230, valueX = 330;
+        const float opX = 250, valueX = 350;
         ImGuiNET.ImGui.BeginChild("##la_attrs", new Vector2(w, h), ImGuiChildFlags.Borders);
         string? group = null;
         foreach (LootEditItemAttributeDto r in rows)
@@ -643,7 +659,9 @@ internal sealed class LootAddDialog
             bool on = r.On;
             if (ImGuiNET.ImGui.Checkbox(r.Label + "##la_on_" + r.Id, ref on))
             {
-                SetChoice(r, on: on);
+                // Unticking a spell added from the lists removes it.
+                if (!on && _extras.Remove(r.Id)) _choices.Remove(r.Id);
+                else SetChoice(r, on: on);
                 changed = true;
             }
             if (ImGuiNET.ImGui.IsItemHovered() && r.Tip.Length > 0) SafeImGui.SetTooltip(r.Tip);
@@ -669,7 +687,25 @@ internal sealed class LootAddDialog
 
             // The value: a box for numbers, the item's value (by name) for the rest.
             ImGuiNET.ImGui.SameLine(valueX);
-            if (r.Editable)
+            if (r.Choices != null && r.Choices.Count > 0)
+            {
+                // A named value: pick another from its list (material, skill, class...).
+                int cur = int.TryParse(r.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int cv) ? cv : int.MinValue;
+                string curName = r.ItemValue;
+                foreach (LootEditNameDto c in r.Choices) if (c.Id == cur) { curName = c.Name; break; }
+                ImGuiNET.ImGui.SetNextItemWidth(w - valueX - 16);
+                if (ImGuiNET.ImGui.BeginCombo("##la_ch_" + r.Id, curName, ImGuiComboFlags.HeightLarge))
+                {
+                    foreach (LootEditNameDto c in r.Choices)
+                        if (ImGuiNET.ImGui.Selectable(c.Name + "##la_chv_" + r.Id + c.Id.ToString(CultureInfo.InvariantCulture), c.Id == cur) && c.Id != cur)
+                        {
+                            SetChoice(r, value: c.Id.ToString(CultureInfo.InvariantCulture), on: true);   // picking a value means "require it"
+                            changed = true;
+                        }
+                    ImGuiNET.ImGui.EndCombo();
+                }
+            }
+            else if (r.Editable)
             {
                 if (!_valueBufs.TryGetValue(r.Id, out byte[]? buf))
                 {
@@ -694,8 +730,104 @@ internal sealed class LootAddDialog
                 SafeImGui.TextDisabled(r.ItemValue);
         }
         ImGuiNET.ImGui.EndChild();
+        changed |= SpellPickers(w);
         return changed;
     }
+
+    /// <summary>
+    /// "Add spell" and "Add cantrip": a spell family from the standard creature / life / item
+    /// lists at a level (I-VIII), or a cantrip at a tier (Minor ... Paragon), from RynthAi's
+    /// spell table (the vocabulary). Adding one ticks a new row ("or better" by default).
+    /// </summary>
+    private bool SpellPickers(float w)
+    {
+        LootEditVocabDto? vocab = UiSources.LootEdit.Current?.Value.Vocab;
+        if (vocab == null || vocab.SpellFamilies.Count == 0)
+        {
+            SafeImGui.TextDisabled("Spell lists: waiting for RynthAi's spell table (an older RynthAi has none).");
+            return false;
+        }
+        bool changed = false;
+        string[] schools = { "Creature", "Life", "Item" };
+        _pickSchool = Math.Clamp(_pickSchool, 0, schools.Length - 1);
+        var fams = vocab.SpellFamilies.FindAll(f => f.School == schools[_pickSchool]);
+
+        ImGuiNET.ImGui.TextDisabled("Add spell:");
+        ImGuiNET.ImGui.SameLine(80);
+        ImGuiNET.ImGui.SetNextItemWidth(80);
+        if (ImGuiNET.ImGui.BeginCombo("##la_psch", schools[_pickSchool]))
+        {
+            for (int i = 0; i < schools.Length; i++)
+                if (ImGuiNET.ImGui.Selectable(schools[i], i == _pickSchool)) { _pickSchool = i; _pickFamily = 0; }
+            ImGuiNET.ImGui.EndCombo();
+        }
+        _pickFamily = fams.Count == 0 ? 0 : Math.Clamp(_pickFamily, 0, fams.Count - 1);
+        LootEditSpellFamilyDto? fam = fams.Count > 0 ? fams[_pickFamily] : null;
+        ImGuiNET.ImGui.SameLine();
+        ImGuiNET.ImGui.SetNextItemWidth(w - 80 - 80 - 70 - 60 - 24);
+        if (ImGuiNET.ImGui.BeginCombo("##la_pfam", fam?.Name ?? "(none)", ImGuiComboFlags.HeightLarge))
+        {
+            for (int i = 0; i < fams.Count; i++)
+                if (ImGuiNET.ImGui.Selectable(fams[i].Name + "##la_pf" + i.ToString(CultureInfo.InvariantCulture), i == _pickFamily)) _pickFamily = i;
+            ImGuiNET.ImGui.EndCombo();
+        }
+        if (fam != null) _pickLevel = Math.Clamp(_pickLevel, Math.Max(1, fam.MinLevel), Math.Min(8, fam.MaxLevel));
+        ImGuiNET.ImGui.SameLine();
+        ImGuiNET.ImGui.SetNextItemWidth(70);
+        if (ImGuiNET.ImGui.BeginCombo("##la_plvl", "Level " + Roman(_pickLevel)))
+        {
+            int lo = fam != null ? Math.Max(1, fam.MinLevel) : 1, hi = fam != null ? Math.Min(8, fam.MaxLevel) : 8;
+            for (int l = lo; l <= hi; l++)
+                if (ImGuiNET.ImGui.Selectable(Roman(l) + "##la_pl" + l.ToString(CultureInfo.InvariantCulture), l == _pickLevel)) _pickLevel = l;
+            ImGuiNET.ImGui.EndCombo();
+        }
+        ImGuiNET.ImGui.SameLine();
+        if (ImGuiNET.ImGui.Button("Add##la_padd", new Vector2(56, 0)) && fam != null)
+            changed |= AddExtra(new LootEditItemExtraDto { Kind = LootEditItemExtraDto.Spell, Name = fam.Name, Level = _pickLevel });
+        if (ImGuiNET.ImGui.IsItemHovered())
+            SafeImGui.SetTooltip("Require this spell (Self or Other) at this level or better; change it to exact or any level in its row.");
+
+        var tiers = vocab.CantripTiers.Count > 0 ? vocab.CantripTiers : new System.Collections.Generic.List<string> { "Minor", "Major", "Epic", "Legendary", "Paragon" };
+        _pickTier = Math.Clamp(_pickTier, 0, tiers.Count - 1);
+        _pickCantrip = vocab.Cantrips.Count == 0 ? 0 : Math.Clamp(_pickCantrip, 0, vocab.Cantrips.Count - 1);
+        ImGuiNET.ImGui.TextDisabled("Add cantrip:");
+        ImGuiNET.ImGui.SameLine(80);
+        ImGuiNET.ImGui.SetNextItemWidth(80);
+        if (ImGuiNET.ImGui.BeginCombo("##la_ptier", tiers[_pickTier]))
+        {
+            for (int i = 0; i < tiers.Count; i++)
+                if (ImGuiNET.ImGui.Selectable(tiers[i], i == _pickTier)) _pickTier = i;
+            ImGuiNET.ImGui.EndCombo();
+        }
+        ImGuiNET.ImGui.SameLine();
+        ImGuiNET.ImGui.SetNextItemWidth(w - 80 - 80 - 60 - 16);
+        string cname = vocab.Cantrips.Count > 0 ? vocab.Cantrips[_pickCantrip] : "(none)";
+        if (ImGuiNET.ImGui.BeginCombo("##la_pcan", cname, ImGuiComboFlags.HeightLarge))
+        {
+            for (int i = 0; i < vocab.Cantrips.Count; i++)
+                if (ImGuiNET.ImGui.Selectable(vocab.Cantrips[i] + "##la_pc" + i.ToString(CultureInfo.InvariantCulture), i == _pickCantrip)) _pickCantrip = i;
+            ImGuiNET.ImGui.EndCombo();
+        }
+        ImGuiNET.ImGui.SameLine();
+        if (ImGuiNET.ImGui.Button("Add##la_cadd", new Vector2(56, 0)) && vocab.Cantrips.Count > 0)
+            changed |= AddExtra(new LootEditItemExtraDto { Kind = LootEditItemExtraDto.Cantrip, Name = cname, Level = _pickTier });
+        if (ImGuiNET.ImGui.IsItemHovered())
+            SafeImGui.SetTooltip("Require this cantrip at this tier or better (Minor < Major < Epic < Legendary < Paragon).");
+        return changed;
+    }
+
+    private bool AddExtra(LootEditItemExtraDto x)
+    {
+        string id = x.Kind == LootEditItemExtraDto.Cantrip
+            ? "x:cantrip:" + x.Level.ToString(CultureInfo.InvariantCulture) + ":" + x.Name.Trim()
+            : "x:spell:" + x.Name.Trim() + ":" + x.Level.ToString(CultureInfo.InvariantCulture);
+        if (_extras.ContainsKey(id)) return false;
+        _extras[id] = x;
+        return true;
+    }
+
+    private static readonly string[] RomanNumerals = { "I", "II", "III", "IV", "V", "VI", "VII", "VIII" };
+    private static string Roman(int level) => RomanNumerals[Math.Clamp(level, 1, 8) - 1];
 
     /// <summary>Ticks or clears every row of <paramref name="group"/>; true when one changed.</summary>
     private bool TickGroup(System.Collections.Generic.List<LootEditItemAttributeDto> rows, string group, bool on)

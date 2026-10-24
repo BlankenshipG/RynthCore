@@ -60,6 +60,14 @@ internal sealed partial class InventoryFace
         _lootAdd.Open(it.Id, it.Name, toOpenProfile: false, global ? LootAddMode.FilterGlobal : LootAddMode.FilterInventory);
     }
 
+    /// <summary>The tools row's filter button: the same popup with every attribute and no item.</summary>
+    private void OpenBlankFilter()
+    {
+        _lootAdd.Candidates = LikeCandidates;
+        _lootAdd.Found = ApplyLike;
+        _lootAdd.Open(0, string.Empty, toOpenProfile: false, LootAddMode.FilterInventory, blank: true);
+    }
+
     /// <summary>Every item the panel knows: the packs' (pack-slot items included) and the worn ones.</summary>
     private static List<uint> LikeCandidates()
     {
