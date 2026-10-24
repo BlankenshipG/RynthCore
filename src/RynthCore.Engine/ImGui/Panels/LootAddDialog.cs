@@ -25,16 +25,36 @@
 //  save; this face only posts item_preview / item_add / item_close through
 //  LootEditCommands and shows LootEditStateDto.ItemDraft. A face owns one of
 //  these and calls Draw once per frame outside any child window.
+//
+//  Filter modes (2026-10-24): the Inventory panel's "Filter inventory like
+//  this" and "Find like this in Global Inventory" open the same popup with the
+//  same match and attribute checklist, but no profile, action or name: the
+//  rule becomes a filter. item_find asks RynthAi to judge the panel's items
+//  (FilterInventory: the result goes to Found) or to encode the rule for
+//  RynthInventory (FilterGlobal: "/ginv like <spec>" runs, which opens Global
+//  Inventory filtered). A filter defaults to "Items like this".
 // ============================================================================
 
 using System;
 using System.Globalization;
 using System.Numerics;
 using ImGuiNET;
+using RynthCore.Engine.UI;
 using RynthCore.Engine.UI.Data;
 using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
+
+/// <summary>What the popup makes of the item: a loot rule, or a filter (2026-10-24).</summary>
+internal enum LootAddMode : byte
+{
+    /// <summary>Add to loot profile.</summary>
+    AddRule,
+    /// <summary>Filter the Inventory panel to items like this.</summary>
+    FilterInventory,
+    /// <summary>Open Global Inventory filtered to items like this, on every character.</summary>
+    FilterGlobal,
+}
 
 internal sealed class LootAddDialog
 {
@@ -51,6 +71,11 @@ internal sealed class LootAddDialog
 
     private readonly string _id;
     private bool _open, _openRequested, _subscribed;
+    private LootAddMode _mode;
+    // A filter's item_find in flight (its answer is LootEditStateDto.ItemFind with this Seq).
+    private bool _finding, _closeRequested;
+    private DateTime _findSentAt;
+    private string _findError = string.Empty;
     private uint _itemId;
     private string _itemName = string.Empty;
     private bool _toOpenProfile;
@@ -92,17 +117,29 @@ internal sealed class LootAddDialog
 
     public bool IsOpen => _open;
 
+    /// <summary>FilterInventory: the items to judge (the panel's), asked when the player presses Filter.</summary>
+    public Func<System.Collections.Generic.List<uint>>? Candidates { get; set; }
+
+    /// <summary>FilterInventory: RynthAi's answer to Filter (Ok), handed over as the popup closes.</summary>
+    public Action<LootEditItemFindDto>? Found { get; set; }
+
+    /// <summary>A fresh request Seq, unique across popups and the panel's own find_refresh asks.</summary>
+    public static int NextSeq() => System.Threading.Interlocked.Increment(ref s_seq);
+
     /// <summary>
     /// Opens the popup for <paramref name="itemId"/> (0: the item selected in the
     /// game, resolved once). <paramref name="toOpenProfile"/>: the rule goes to the
     /// profile open in the Loot Editor, else to the one RynthAi loots with.
     /// </summary>
-    public void Open(uint itemId, string itemName, bool toOpenProfile)
+    public void Open(uint itemId, string itemName, bool toOpenProfile, LootAddMode mode = LootAddMode.AddRule)
     {
         _itemId = itemId;
         _itemName = itemName ?? string.Empty;
         _toOpenProfile = toOpenProfile;
-        _match = 0;
+        _mode = mode;
+        _finding = _closeRequested = false;
+        _findError = string.Empty;
+        _match = mode == LootAddMode.AddRule ? 0 : 2;   // a filter looks for look-alikes
         _action = 0;
         _keep = -1;
         _includeT11 = false;
@@ -125,9 +162,11 @@ internal sealed class LootAddDialog
 
     private void Send(string op)
     {
-        _seq = System.Threading.Interlocked.Increment(ref s_seq);
+        _seq = NextSeq();
         _mine.Add(_seq);
         _sentAt = DateTime.UtcNow;
+        bool filter = _mode != LootAddMode.AddRule;
+        bool global = _mode == LootAddMode.FilterGlobal;
         LootEditCommands.Send(new LootEditCmd
         {
             Op = op,
@@ -137,6 +176,9 @@ internal sealed class LootAddDialog
                 RuleName = Utf8(_name).Trim(), ToOpenProfile = _toOpenProfile, IncludeT11 = _includeT11, Seq = _seq,
                 // Null until the player changes a row: RynthAi's defaults (and its notes about them).
                 Choices = _choices.Count == 0 ? null : new System.Collections.Generic.List<LootEditItemChoiceDto>(_choices.Values),
+                Find = filter,
+                Scope = !filter ? string.Empty : global ? LootFindScopes.Global : LootFindScopes.Inventory,
+                Candidates = op == "item_find" && filter && !global ? Candidates?.Invoke() : null,
             },
         });
     }
@@ -171,6 +213,7 @@ internal sealed class LootAddDialog
         }
         if (!_open) return;
         TakeDraft();
+        TakeFind();
 
         PushStyle();
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(10, 8));
@@ -184,7 +227,13 @@ internal sealed class LootAddDialog
         }
         try
         {
-            if (Body()) ImGuiNET.ImGui.CloseCurrentPopup();
+            if (_closeRequested)
+            {
+                _closeRequested = false;
+                Close();
+                ImGuiNET.ImGui.CloseCurrentPopup();
+            }
+            else if (_mode == LootAddMode.AddRule ? Body() : FilterBody()) ImGuiNET.ImGui.CloseCurrentPopup();
         }
         finally
         {
@@ -224,6 +273,151 @@ internal sealed class LootAddDialog
                 WriteUtf8(buf, a.Value);
             }
         }
+    }
+
+    /// <summary>
+    /// A filter's answer from RynthAi: an error stays in the popup; Global Inventory gets its
+    /// "/ginv like"; the Inventory panel gets the matches (Found); then the popup closes.
+    /// </summary>
+    private void TakeFind()
+    {
+        if (!_finding) return;
+        LootEditItemFindDto? f = UiSources.LootEdit.Current?.Value.State?.ItemFind;
+        if (f == null || f.Seq != _seq)
+        {
+            if ((DateTime.UtcNow - _findSentAt).TotalSeconds > 5)
+            {
+                _finding = false;
+                _findError = "No answer from RynthAi. A RynthAi older than this feature can't filter; update RynthSuite.";
+            }
+            return;
+        }
+        _finding = false;
+        if (!f.Ok)
+        {
+            _findError = f.Error.Length > 0 ? f.Error : "RynthAi couldn't build the filter.";
+            return;
+        }
+        if (_mode == LootAddMode.FilterGlobal)
+        {
+            if (f.Spec.Length == 0)
+            {
+                _findError = "RynthAi sent no filter for Global Inventory.";
+                return;
+            }
+            ServerMenus.Run("/ginv like " + f.Spec);
+        }
+        else
+            Found?.Invoke(f);
+        _closeRequested = true;
+    }
+
+    /// <summary>The filter modes' contents: match, checklist, the conditions, Filter / Cancel. True when it should close.</summary>
+    private bool FilterBody()
+    {
+        bool global = _mode == LootAddMode.FilterGlobal;
+        LootEditItemDraftDto? d = _draft;
+        float w = d?.AttributesSupported == true ? 440 : 380;
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Amber);
+        ImGuiNET.ImGui.TextUnformatted(global
+            ? PhosphorIcons.GlobeHemisphereWest + " Find like this in Global Inventory"
+            : PhosphorIcons.Funnel + " Filter inventory like this");
+        ImGuiNET.ImGui.PopStyleColor();
+        ImGuiNET.ImGui.TextUnformatted(_itemName.Length > 0 ? _itemName : "the selected item");
+        ImGuiNET.ImGui.Separator();
+
+        bool current = d != null && d.Seq == _seq;
+        if (d == null)
+        {
+            bool slow = (DateTime.UtcNow - _sentAt).TotalSeconds > 3;
+            ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, slow ? Amber : Mute);
+            ImGuiNET.ImGui.PushTextWrapPos(ImGuiNET.ImGui.GetCursorPosX() + w);
+            ImGuiNET.ImGui.TextUnformatted(slow
+                ? "No answer from RynthAi. Is it loaded? (A RynthAi older than this feature can't filter.)"
+                : "Reading the item...");
+            ImGuiNET.ImGui.PopTextWrapPos();
+            ImGuiNET.ImGui.PopStyleColor();
+            return CloseRow(w);
+        }
+        if (!d.Find)
+        {
+            // A RynthAi from before filters answers with a loot rule draft (and asks for a profile).
+            ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Red);
+            ImGuiNET.ImGui.PushTextWrapPos(ImGuiNET.ImGui.GetCursorPosX() + w);
+            ImGuiNET.ImGui.TextUnformatted("This RynthAi is older than inventory filters. Update RynthSuite to filter like this.");
+            ImGuiNET.ImGui.PopTextWrapPos();
+            ImGuiNET.ImGui.PopStyleColor();
+            return CloseRow(w);
+        }
+
+        bool changed = false;
+        ImGuiNET.ImGui.TextDisabled("Match:");
+        for (int i = 0; i < MatchLabels.Length; i++)
+        {
+            ImGuiNET.ImGui.SameLine();
+            if (ImGuiNET.ImGui.RadioButton(MatchLabels[i] + "##fm" + i.ToString(CultureInfo.InvariantCulture), d.Match == i) && d.Match != i)
+            {
+                _match = i;
+                changed = true;
+            }
+            if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(MatchTips[i]);
+        }
+        if (d.AttributesSupported) changed |= DrawAttributes(d, w);
+
+        // The filter in words.
+        ImGuiNET.ImGui.Separator();
+        ImGuiNET.ImGui.PushTextWrapPos(ImGuiNET.ImGui.GetCursorPosX() + w);
+        ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, current ? Teal : Faded(Teal));
+        foreach (string line in d.Preview) ImGuiNET.ImGui.TextUnformatted(line);
+        ImGuiNET.ImGui.PopStyleColor();
+        if (global)
+        {
+            ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Mute);
+            ImGuiNET.ImGui.TextUnformatted("Looks through every character's saved packs and storage. Attributes that need an identify are only known for items that were identified when their character last saved.");
+            ImGuiNET.ImGui.PopStyleColor();
+        }
+        if (d.Notes.Count > 0)
+        {
+            ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Amber);
+            foreach (string n in d.Notes) ImGuiNET.ImGui.TextUnformatted(n);
+            ImGuiNET.ImGui.PopStyleColor();
+        }
+        string error = !d.Ok && d.Error.Length > 0 ? d.Error : _findError;
+        if (error.Length > 0)
+        {
+            ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Red);
+            ImGuiNET.ImGui.TextUnformatted(error);
+            ImGuiNET.ImGui.PopStyleColor();
+        }
+        ImGuiNET.ImGui.PopTextWrapPos();
+
+        if (changed)
+        {
+            Send("item_preview");   // Filter waits for the answer (the conditions show faded until then)
+            _findError = string.Empty;
+            current = false;
+        }
+
+        // Filter / Cancel.
+        Vector2 bp = ImGuiNET.ImGui.GetCursorScreenPos() + new Vector2(0, 4);
+        bool canGo = current && d.Ok && !_finding;
+        string goLabel = _finding ? "Filtering..." : global ? PhosphorIcons.GlobeHemisphereWest + " Search" : PhosphorIcons.Funnel + " Filter";
+        if (Button("##la_find", goLabel, bp, new Vector2(110, 24), canGo ? Green : Mute, canGo ? StartBg : BtnFill, canGo))
+        {
+            _finding = true;
+            _findError = string.Empty;
+            _findSentAt = DateTime.UtcNow;
+            Send("item_find");
+        }
+        if (ImGuiNET.ImGui.IsItemHovered())
+            SafeImGui.SetTooltip(global
+                ? "Open Global Inventory showing every character's items that match"
+                : "Show only the items in your packs that match (the funnel bar over the list clears it)");
+        if (Button("##la_cancel", "Cancel", bp + new Vector2(116, 0), new Vector2(80, 24), Text, BtnFill))
+            return CloseNow();
+        ImGuiNET.ImGui.SetCursorScreenPos(bp + new Vector2(0, 28));
+        ImGuiNET.ImGui.Dummy(new Vector2(w, 0));
+        return false;
     }
 
     /// <summary>The popup's contents; true when it should close.</summary>

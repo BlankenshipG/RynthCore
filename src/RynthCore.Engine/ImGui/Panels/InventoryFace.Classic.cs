@@ -180,6 +180,7 @@ internal sealed partial class InventoryFace
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(o.X + 6, toolsBottom + 4));
             Tools(w - 12);
             Chips(w - 12);
+            LikeBar(w - 12);
             toolsBottom = ImGuiNET.ImGui.GetCursorScreenPos().Y;
         }
         float ry = toolsBottom - TitleH * s;          // where retail y = 0 lands

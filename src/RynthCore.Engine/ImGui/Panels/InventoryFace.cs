@@ -147,6 +147,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         ItemDragBridge.EndPopOutDrag();
         UiDropTargets.EngineDragObject = 0;
         _lootAdd.Cancel();
+        ClearLike();
     }
 
     // =====================================================================
@@ -169,6 +170,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         }
 
         _hoverLabel = _hoverLabel2 = null;
+        LikeTick();
         // Text follows the panel's size setting (the - / + in the Classic title bar).
         ImGuiNET.ImGui.SetWindowFontScale(InventorySettingsStore.SizeFactor);
         if (InventorySettingsStore.Classic) ClassicBody(view, origin, size);
@@ -199,6 +201,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         Header(view, w);
         Tools(w);
         Chips(w);
+        LikeBar(w);
         RebuildIfNeeded(view, _pack);
 
         // Body: pack column | grid, then zones and the status row at the bottom.
@@ -474,14 +477,20 @@ internal sealed partial class InventoryFace : IImGuiPanel
         bool classic = InventorySettingsStore.Classic;
         bool attrOn = AttrOn;
         int attrKey = attrOn ? _attr.Version : -1;
+        bool likeOn = LikeOn;
+        int likeKey = likeOn ? _likeVersion : -1;
         if (ReferenceEquals(view, _builtFor) && _builtPack == pack && _builtSort == _sort
             && _builtCategory == _category && ReferenceEquals(_builtSearch, _searchText) && _builtClassic == classic
-            && _builtOrderVersion == Net.InventoryOrder.Version && _builtAttrKey == attrKey && !AttrRefreshDue(attrOn))
+            && _builtOrderVersion == Net.InventoryOrder.Version && _builtAttrKey == attrKey && _builtLikeKey == likeKey
+            && !AttrRefreshDue(attrOn))
             return;
-        if (_builtPack != pack || !ReferenceEquals(_builtSearch, _searchText) || _builtCategory != _category || _builtAttrKey != attrKey)
+        if (_builtPack != pack || !ReferenceEquals(_builtSearch, _searchText) || _builtCategory != _category || _builtAttrKey != attrKey
+            || _builtLikeKey != likeKey)
             _gridFirstRow = 0;   // another pack or filter: back to the top (Classic grid)
         _builtAttrKey = attrKey;
+        _builtLikeKey = likeKey;
         BeginAttrPass(attrOn);
+        BeginLikePass(likeOn);
         if (!ReferenceEquals(view, _builtFor)) PruneSelection(view);
         _builtFor = view;
         _builtPack = pack;
@@ -555,7 +564,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         _orderKnown && _sort == 0 && !FiltersOn && !item.RequiresPackSlot && !item.IsPack;
 
     /// <summary>Some filter hides items: a category, search text or the attribute filter.</summary>
-    private bool FiltersOn => _category != 0 || _searchText.Length > 0 || AttrOn;
+    private bool FiltersOn => _category != 0 || _searchText.Length > 0 || AttrOn || LikeOn;
 
     /// <summary>The slot an item holds now among its pack's ordinary items, or -1 when unknown.</summary>
     private static int SlotOf(InventoryItem item)
@@ -579,6 +588,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
             if (_category != 0 && it.Category != cat) continue;
             if (_searchText.Length > 0 && !it.SearchName.Contains(_searchText, StringComparison.Ordinal)) continue;
             if (_attrPass && !AttrKeeps(it)) continue;
+            if (_likePass && !LikeKeeps(it)) continue;
             _shown.Add(it);
         }
     }
@@ -1080,6 +1090,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         _searchText = string.Empty;
         _category = 0;
         SetAttrEnabled(false);
+        ClearLike();
     }
 
     private void Refuse(string why)
@@ -1304,6 +1315,17 @@ internal sealed partial class InventoryFace : IImGuiPanel
                 _lootAdd.Open(it.Id, it.Name, toOpenProfile: false);
             if (ImGuiNET.ImGui.IsItemHovered())
                 ImGuiNET.ImGui.SetTooltip("Make a RynthAi loot rule for this item (preview first)");
+            if (ImGuiNET.ImGui.MenuItem("Filter inventory like this..."))
+                OpenLikeFilter(it, global: false);
+            if (ImGuiNET.ImGui.IsItemHovered())
+                ImGuiNET.ImGui.SetTooltip("Show only your items like this one: the same match and attribute choices as Add to loot profile");
+            bool ginv = ScriptWindowRegistry.Has(GlobalInventoryKey);
+            if (ImGuiNET.ImGui.MenuItem("Find like this in Global Inventory...", "", false, ginv))
+                OpenLikeFilter(it, global: true);
+            if (ImGuiNET.ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGuiNET.ImGui.SetTooltip(ginv
+                    ? "Find items like this one on every character (Global Inventory), with the same attribute choices"
+                    : "Needs the RynthInventory plugin (Global Inventory)");
             if (!it.IsPack && ImGuiNET.ImGui.MenuItem("Add to item count HUD"))
                 UI.Data.RynthAiCommands.ApplyRemoteCommand("itemhudadd", it.Name);
             if (ImGuiNET.ImGui.IsItemHovered())

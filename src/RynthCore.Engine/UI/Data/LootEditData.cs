@@ -45,6 +45,8 @@ internal sealed class LootEditStateDto
     public List<LootEditRowDto> Rules { get; set; } = new();
     /// <summary>"Add to loot profile" popup's rule (added 2026-10); null from an older RynthAi.</summary>
     public LootEditItemDraftDto? ItemDraft { get; set; }
+    /// <summary>The Inventory panel's "Filter like this" result (added 2026-10-24); null from an older RynthAi.</summary>
+    public LootEditItemFindDto? ItemFind { get; set; }
 }
 
 internal sealed class LootEditFileDto
@@ -144,6 +146,42 @@ internal sealed class LootEditItemRequestDto
     /// <summary>The attribute checklist's choices (added 2026-10-18); null: every row at its default.</summary>
     public List<LootEditItemChoiceDto>? Choices { get; set; }
     public int Seq { get; set; }
+    /// <summary>A filter, not a rule to add (added 2026-10-24): item_preview without a loot profile; item_find filters.</summary>
+    public bool Find { get; set; }
+    /// <summary>item_find: <see cref="LootFindScopes"/>.</summary>
+    public string Scope { get; set; } = string.Empty;
+    /// <summary>item_find / find_refresh, scope inventory: the panel's items to judge.</summary>
+    public List<uint>? Candidates { get; set; }
+}
+
+/// <summary>Where "Filter like this" looks (LootEditWire's LootFindScopes).</summary>
+internal static class LootFindScopes
+{
+    public const string Inventory = "inventory";
+    public const string Global = "global";
+}
+
+/// <summary>"Filter like this": the rule and, for the panel's items, which match (LootEditWire's LootEditItemFind).</summary>
+internal sealed class LootEditItemFindDto
+{
+    public int Seq { get; set; }
+    public bool Ok { get; set; }
+    public string Error { get; set; } = string.Empty;
+    public string Scope { get; set; } = string.Empty;
+    public uint ItemId { get; set; }
+    public string ItemName { get; set; } = string.Empty;
+    /// <summary>"like Gold Ring".</summary>
+    public string Label { get; set; } = string.Empty;
+    /// <summary>The conditions in words.</summary>
+    public List<string> Lines { get; set; } = new();
+    /// <summary>Scope inventory: the candidates the rule takes.</summary>
+    public List<uint> Ids { get; set; } = new();
+    /// <summary>Scope inventory: candidates it can't judge until they are identified.</summary>
+    public List<uint> Unknown { get; set; } = new();
+    public int Checked { get; set; }
+    /// <summary>Scope global: the "/ginv like" argument.</summary>
+    public string Spec { get; set; } = string.Empty;
+    public bool NeedsIdentify { get; set; }
 }
 
 /// <summary>One checklist row as the player set it (LootEditWire's LootEditItemChoice).</summary>
@@ -224,6 +262,8 @@ internal sealed class LootEditItemDraftDto
     public List<LootEditItemAttributeDto> Attributes { get; set; } = new();
     public bool Added { get; set; }
     public string Message { get; set; } = string.Empty;
+    /// <summary>A filter's draft (added 2026-10-24).</summary>
+    public bool Find { get; set; }
 }
 
 internal sealed class LootEditVocabDto
