@@ -59,6 +59,7 @@ internal static class Program
         LineColorPrecedence();
         LineColorJson();
         SlowRuleRetry();
+        SettingsMergeOnSave();
 
         Console.WriteLine();
         Console.WriteLine($"{_checks - _failed}/{_checks} checks passed.");
@@ -72,6 +73,55 @@ internal static class Program
     /// easy match. A timed-out match now runs once more before a rule is judged slow, and a slow rule
     /// is tried again after 10 minutes (doubling per strike, at most 4 hours); an edit still resets it.
     /// </summary>
+    /// <summary>
+    /// Silentkelpie 2026-10-24: filters kept "losing". Every client saves the whole shared
+    /// rynthchat_settings.json; one that hadn't picked up another client's change (chat window
+    /// closed, so it never polled) wrote its stale rules back over it. A save now merges with the
+    /// file per setting: what this client changed since its base wins, the rest is the file's.
+    /// </summary>
+    private static void SettingsMergeOnSave()
+    {
+        Case("settings merge: a save never undoes another client's rules");
+        const string baseJson = "{\"version\":2,\"fontSize\":10,\"activeChannel\":\"All\",\"filters\":[{\"pattern\":\"old\"}],\"presets\":[{\"id\":\"a\",\"enabled\":true}]}";
+        // Another client added a rule and turned a standard filter off.
+        const string theirs = "{\"version\":2,\"fontSize\":10,\"activeChannel\":\"Loot\",\"filters\":[{\"pattern\":\"old\"},{\"pattern\":\"new\"}],\"presets\":[]}";
+        // This client (stale) only changed its font size and tab.
+        const string mine = "{\"version\":2,\"fontSize\":12,\"activeChannel\":\"Combat\",\"filters\":[{\"pattern\":\"old\"}],\"presets\":[{\"id\":\"a\",\"enabled\":true}]}";
+
+        string merged = ChatSettingsMerge.Merge(baseJson, mine, theirs);
+        using (var doc = JsonDocument.Parse(merged))
+        {
+            JsonElement root = doc.RootElement;
+            Check(root.GetProperty("filters").GetArrayLength() == 2, "the other client's new rule survives");
+            Check(root.GetProperty("presets").GetArrayLength() == 0, "the other client's preset change survives");
+            Check(root.GetProperty("fontSize").GetInt32() == 12, "this client's own change is saved");
+            Check(root.GetProperty("activeChannel").GetString() == "Combat", "this client's tab is its own");
+        }
+
+        // This client edited the rules too: its list wins (one setting), the other client's font stays.
+        const string theirsFont = "{\"version\":2,\"fontSize\":14,\"activeChannel\":\"All\",\"filters\":[{\"pattern\":\"old\"}],\"presets\":[{\"id\":\"a\",\"enabled\":true}]}";
+        const string mineRules = "{\"version\":2,\"fontSize\":10,\"activeChannel\":\"All\",\"filters\":[{\"pattern\":\"mine\"}],\"presets\":[{\"id\":\"a\",\"enabled\":true}]}";
+        using (var doc = JsonDocument.Parse(ChatSettingsMerge.Merge(baseJson, mineRules, theirsFont)))
+        {
+            Check(doc.RootElement.GetProperty("filters")[0].GetProperty("pattern").GetString() == "mine", "this client's rule edit is saved");
+            Check(doc.RootElement.GetProperty("fontSize").GetInt32() == 14, "the other client's font size stays");
+        }
+
+        // A setting only the other client has (newer build), and one this client removed.
+        const string theirsExtra = "{\"version\":2,\"fontSize\":10,\"filters\":[{\"pattern\":\"old\"}],\"presets\":[{\"id\":\"a\",\"enabled\":true}],\"activeChannel\":\"All\",\"lineColors\":{\"x\":1}}";
+        const string mineNoPresets = "{\"version\":2,\"fontSize\":10,\"activeChannel\":\"All\",\"filters\":[{\"pattern\":\"old\"}]}";
+        using (var doc = JsonDocument.Parse(ChatSettingsMerge.Merge(baseJson, mineNoPresets, theirsExtra)))
+        {
+            Check(doc.RootElement.TryGetProperty("lineColors", out _), "a setting only the other client wrote is kept");
+            Check(!doc.RootElement.TryGetProperty("presets", out _), "a setting this client removed stays removed");
+        }
+
+        Check(ChatSettingsMerge.Merge(baseJson, mine, baseJson) == mine, "nobody else saved: this client's text as is");
+        Check(ChatSettingsMerge.Merge(null, mine, theirs) == mine, "no base (first save): this client's text");
+        Check(ChatSettingsMerge.Merge(baseJson, mine, "{ cut-off") == mine, "a broken file is never merged in");
+        Check(ChatSettingsMerge.Merge(baseJson, mine, null) == mine, "no file: this client's text");
+    }
+
     private static void SlowRuleRetry()
     {
         Case("slow rules: a second chance, and tried again later");

@@ -95,8 +95,7 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
 
     protected internal override void Poll()
     {
-        // Another client saved the shared settings: pick up its rules / filters (every 2 s at most).
-        ChatModel.PollSettingsFile();
+        // The shared settings file is checked by UiDataHub every step (ChatModel.PollSettingsFile).
         try { PollLines(); }
         finally
         {
@@ -641,11 +640,14 @@ internal static class ChatModel
         return AllTabs().Contains(active, StringComparer.OrdinalIgnoreCase) ? active : "All";
     }
 
+    /// <summary>
+    /// Switches this client's tab. Not saved on its own: the file is every client's, so a tab
+    /// click rewrote everyone's rules. The tab is written with this client's next real change.
+    /// </summary>
     public static void SelectTab(string tab)
     {
         if (string.Equals(ActiveChannel, tab, StringComparison.Ordinal)) return;
         ActiveChannel = tab;
-        SaveSettings();
     }
 
     /// <summary>Creates a tab (or finds the existing one) and switches to it.</summary>
@@ -1362,13 +1364,30 @@ internal static class ChatModel
     // last write, so its own saves don't count as a change.
     private static readonly SharedFileWatch SettingsWatch = new(pollMs: 2000);
 
+    // The settings text this client's settings in memory come from (its last load, or its own
+    // last write): the base a save merges against when another client changed the file in
+    // between (ChatSettingsMerge).
+    private static string? _baseJson;
+    // A save that took in another client's settings: applied here on the pump thread at the next poll,
+    // unless this client asked for a newer save since (that save merges again and carries its change).
+    private sealed record PendingReload(string Json, long SaveSeq);
+    private static PendingReload? _pendingReload;
+    private static long _saveSeq;
+
     /// <summary>
-    /// Pump thread (ChatSource.Poll): reloads the settings when another client saved the file.
-    /// Rules, standard filters, tabs and display options follow; this client's selected tab stays.
+    /// Pump thread (UiDataHub, every step, chat window open or not): reloads the settings when
+    /// another client saved the file. Rules, standard filters, tabs and display options follow;
+    /// this client's selected tab stays.
     /// </summary>
     internal static void PollSettingsFile()
     {
         if (Volatile.Read(ref _settingsLoaded) == 0) return;
+        PendingReload? merged = Interlocked.Exchange(ref _pendingReload, null);
+        if (merged != null && merged.SaveSeq == Interlocked.Read(ref _saveSeq))
+        {
+            RynthLog.UI("ChatModel: a save took in another client's chat settings; applying them here too.");
+            LoadSettings(merged.Json, reload: true);
+        }
         try
         {
             string? json = SettingsWatch.Changed(Environment.TickCount64, SettingsPath);   // null: nobody else saved
@@ -1472,6 +1491,7 @@ internal static class ChatModel
                 ActiveChannel = dto.ActiveChannel;
             else if (reload && !AllTabs().Contains(ActiveChannel, StringComparer.OrdinalIgnoreCase))
                 ActiveChannel = "All";   // the tab this client was on was removed elsewhere
+            Volatile.Write(ref _baseJson, json);
         }
         catch (Exception ex) when (reload)
         {
@@ -1528,6 +1548,10 @@ internal static class ChatModel
                 .Select(p => new RynthChatPresetDto { Id = p.Id, Enabled = p.Enabled, Tab = p.Tab.Length > 0 ? p.Tab : null })
                 .ToArray(),
         };
+        // The base is taken with the settings, not at write time: a reload of another client's file
+        // between this call and the write must not make these (older) settings look current.
+        string? baseJson = Volatile.Read(ref _baseJson);
+        long seq = Interlocked.Increment(ref _saveSeq);
         UiBackgroundWriter.Enqueue("persist chat settings", () =>
         {
             lock (SaveLock)
@@ -1540,11 +1564,19 @@ internal static class ChatModel
                 string tmp = $"{path}.{Environment.ProcessId}.tmp";   // every client shares the file
                 try
                 {
-                    string json = JsonSerializer.Serialize(dto, RynthChatJsonContext.Default.RynthChatSettingsDto);
+                    string mine = JsonSerializer.Serialize(dto, RynthChatJsonContext.Default.RynthChatSettingsDto);
+                    string json = MergeWithFile(path, mine, baseJson);
                     // Before the swap: PollSettingsFile must see this text as ours, not another client's.
                     SettingsWatch.Saved(json);
                     File.WriteAllText(tmp, json);
                     File.Move(tmp, path, overwrite: true);
+                    // The base is what this client's settings in memory come from. Its own settings
+                    // written as they are: those. A merge: memory doesn't have the other client's part
+                    // until PollSettingsFile applies it (LoadSettings then moves the base).
+                    if (string.Equals(json, mine, StringComparison.Ordinal))
+                        Volatile.Write(ref _baseJson, json);
+                    else
+                        Volatile.Write(ref _pendingReload, new PendingReload(json, seq));
                 }
                 catch
                 {
@@ -1553,5 +1585,32 @@ internal static class ChatModel
                 }
             }
         });
+    }
+
+    /// <summary>
+    /// Writer thread, under SaveLock: <paramref name="mine"/>, or a merge with the file when another
+    /// client saved it after <paramref name="baseJson"/> (this client's last load or write when the
+    /// save was asked for; ChatSettingsMerge). A file that can't be read, or a merge that doesn't
+    /// load back as settings, leaves <paramref name="mine"/>.
+    /// </summary>
+    private static string MergeWithFile(string path, string mine, string? baseJson)
+    {
+        if (baseJson == null || !File.Exists(path)) return mine;
+        string theirs;
+        try { theirs = File.ReadAllText(path); }
+        catch (Exception ex)
+        {
+            RynthLog.UI($"ChatModel: couldn't read the settings before saving ({ex.GetType().Name}); saving this client's.");
+            return mine;
+        }
+        string merged = ChatSettingsMerge.Merge(baseJson, mine, theirs);
+        if (string.Equals(merged, mine, StringComparison.Ordinal)) return mine;
+        try
+        {
+            if (JsonSerializer.Deserialize(merged, RynthChatJsonContext.Default.RynthChatSettingsDto) == null) return mine;
+        }
+        catch (JsonException) { return mine; }
+        RynthLog.UI("ChatModel: another client changed the chat settings since this one read them; saved this client's change on top of theirs.");
+        return merged;
     }
 }

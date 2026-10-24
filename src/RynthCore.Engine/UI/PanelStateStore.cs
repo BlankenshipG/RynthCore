@@ -17,8 +17,13 @@
 //  mode just defaults to docked and the screen coords default to 0. A file
 //  without a barlayout= row gives the toolbar one row, no icon limit.
 //
-//  Stored under %LocalAppData%\RynthCore\panel_state.txt — survives reloads
-//  and out-of-game (the Runtime dir might be wiped during deploy).
+//  Stored under %LocalAppData%\RynthCore — survives reloads and out-of-game (the
+//  Runtime dir might be wiped during deploy). One file per character since
+//  2026-10-24 (panel_state.<server>.<character>.txt, PanelStatePath): every client
+//  used to rewrite one shared panel_state.txt, so a window came back wherever the
+//  client that saved last had its own. A character's first run starts from the
+//  shared file; a client started outside the launcher still uses it. Written to a
+//  temp file and swapped in, so a client dying mid-write can't leave a cut-off file.
 // ============================================================================
 
 using System;
@@ -49,12 +54,34 @@ internal static class PanelStateStore
     private static int _barRows = BarLayout.DefaultRows, _barMaxPerRow = BarLayout.NoLimit;
     private static bool _loaded;
 
-    private static string FilePath
+    private static string? _filePath;
+    // Which file the layout was read from, logged once at the first save (Load runs before the log is up).
+    private static string? _loadNote;
+
+    private static string Folder
+        => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RynthCore");
+
+    /// <summary>The layout every client shared before 2026-10-24: a character's first-run start.</summary>
+    private static string SharedFilePath => Path.Combine(Folder, PanelStatePath.SharedFileName);
+
+    /// <summary>This client's layout file (its character's, PanelStatePath), resolved once. Under Sync.</summary>
+    private static string FilePath => _filePath ??= Path.Combine(Folder, ResolveFileName());
+
+    /// <summary>The launcher's character for this process (launch_context_&lt;pid&gt;.json), else the shared name.</summary>
+    private static string ResolveFileName()
     {
-        get
+        try
         {
-            string root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            return Path.Combine(root, "RynthCore", "panel_state.txt");
+            string context = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "RynthCore", "launch_contexts", $"launch_context_{Environment.ProcessId}.json");
+            if (!File.Exists(context)) return PanelStatePath.SharedFileName;
+            (string server, string character) = PanelStatePath.ParseLaunchContext(File.ReadAllText(context));
+            return PanelStatePath.FileNameFor(server, character);
+        }
+        catch (Exception ex)
+        {
+            try { RynthLog.UI($"PanelStateStore: launch context unreadable ({ex.GetType().Name}); using the shared layout."); } catch { }
+            return PanelStatePath.SharedFileName;
         }
     }
 
@@ -171,7 +198,7 @@ internal static class PanelStateStore
         }
     }
 
-    /// <summary>Rewrite panel_state.txt from the in-memory snapshot (Settings > Display "Save Layout
+    /// <summary>Rewrite this character's layout file from the in-memory snapshot (Settings > Display "Save Layout
     /// Now"). An explicit user action, so unlike the automatic saves it is NOT gated by
     /// RememberWindowLayout: it writes even when that is off.</summary>
     public static void Flush()
@@ -191,9 +218,15 @@ internal static class PanelStateStore
         try
         {
             string path = FilePath;
-            if (!File.Exists(path)) return;
+            // A character's first run: start from the shared layout; saves then go to its own file.
+            string read = File.Exists(path) ? path : SharedFilePath;
+            // Logged at the first save: the first load runs during engine start, before the log is up.
+            _loadNote = read == path
+                ? $"PanelStateStore: window layout in {Path.GetFileName(path)}."
+                : $"PanelStateStore: {Path.GetFileName(path)} is new; it started from {PanelStatePath.SharedFileName}.";
+            if (!File.Exists(read)) return;
 
-            foreach (string raw in File.ReadAllLines(path))
+            foreach (string raw in File.ReadAllLines(read))
             {
                 string line = raw.Trim();
                 if (line.Length == 0 || line.StartsWith('#'))
@@ -269,45 +302,62 @@ internal static class PanelStateStore
         if (!force && !EngineSettings.RememberWindowLayout)
             return;
 
+        string path = FilePath;
+        // Written beside it and swapped in: a client dying mid-write left a cut-off file,
+        // which loaded as no layout (every window back at its default).
+        string tmp = $"{path}.{Environment.ProcessId}.tmp";
         try
         {
-            string path = FilePath;
             string? dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
-            using var sw = new StreamWriter(path, append: false);
-            sw.WriteLine("# RynthCore Avalonia panel state — auto-generated, hand-edits OK.");
-            if (_barPosition is { } bar)
+            using (var sw = new StreamWriter(tmp, append: false))
+                WriteState(sw);
+            File.Move(tmp, path, overwrite: true);
+            if (_loadNote != null)
             {
-                // Always emit the extended form if we have any floating state to
-                // remember; legacy 2-column form only when no popout has happened.
-                if (_barFloating || _barFloatingPosition is not null)
-                {
-                    (double fl, double ft) = _barFloatingPosition ?? (0, 0);
-                    sw.WriteLine(FormattableString.Invariant(
-                        $"bar={bar.Left:0.##},{bar.Top:0.##},{(_barFloating ? "floating" : "docked")},{fl:0.##},{ft:0.##}"));
-                }
-                else
-                {
-                    sw.WriteLine(FormattableString.Invariant($"bar={bar.Left:0.##},{bar.Top:0.##}"));
-                }
-            }
-
-            // Only when changed: a file that never had the row reads back the same.
-            if (_barRows != BarLayout.DefaultRows || _barMaxPerRow != BarLayout.NoLimit)
-                sw.WriteLine("barlayout=" + BarLayout.Format(_barRows, _barMaxPerRow));
-
-            foreach (var kv in Panels)
-            {
-                PanelEntry e = kv.Value;
-                sw.WriteLine(FormattableString.Invariant(
-                    $"panel.{kv.Key}={(e.Open ? "open" : "closed")},{e.Left:0.##},{e.Top:0.##},{e.Width:0.##},{e.Height:0.##},{(e.Floating ? "floating" : "docked")},{e.FloatingLeft:0.##},{e.FloatingTop:0.##}"));
+                string note = _loadNote;
+                _loadNote = null;
+                try { RynthLog.UI(note); } catch { }
             }
         }
         catch (Exception ex)
         {
+            try { File.Delete(tmp); } catch { }
             try { RynthLog.UI($"PanelStateStore: save failed - {ex.Message}"); } catch { }
+        }
+    }
+
+    /// <summary>The whole layout in the file format above. Under Sync.</summary>
+    private static void WriteState(StreamWriter sw)
+    {
+        sw.WriteLine("# RynthCore Avalonia panel state — auto-generated, hand-edits OK.");
+        if (_barPosition is { } bar)
+        {
+            // Always emit the extended form if we have any floating state to
+            // remember; legacy 2-column form only when no popout has happened.
+            if (_barFloating || _barFloatingPosition is not null)
+            {
+                (double fl, double ft) = _barFloatingPosition ?? (0, 0);
+                sw.WriteLine(FormattableString.Invariant(
+                    $"bar={bar.Left:0.##},{bar.Top:0.##},{(_barFloating ? "floating" : "docked")},{fl:0.##},{ft:0.##}"));
+            }
+            else
+            {
+                sw.WriteLine(FormattableString.Invariant($"bar={bar.Left:0.##},{bar.Top:0.##}"));
+            }
+        }
+
+        // Only when changed: a file that never had the row reads back the same.
+        if (_barRows != BarLayout.DefaultRows || _barMaxPerRow != BarLayout.NoLimit)
+            sw.WriteLine("barlayout=" + BarLayout.Format(_barRows, _barMaxPerRow));
+
+        foreach (var kv in Panels)
+        {
+            PanelEntry e = kv.Value;
+            sw.WriteLine(FormattableString.Invariant(
+                $"panel.{kv.Key}={(e.Open ? "open" : "closed")},{e.Left:0.##},{e.Top:0.##},{e.Width:0.##},{e.Height:0.##},{(e.Floating ? "floating" : "docked")},{e.FloatingLeft:0.##},{e.FloatingTop:0.##}"));
         }
     }
 
