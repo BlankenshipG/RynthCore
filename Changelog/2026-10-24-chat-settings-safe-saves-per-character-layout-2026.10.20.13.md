@@ -66,8 +66,19 @@ Before that: 2026.10.20.11.
 Hot deployed with `scripts\Publish-EngineCoreClr.ps1 -EngineOnly -MsBuildArgs
 '-p:Version=2026.10.20.13' -AllowBehind`. `-AllowBehind` is needed because this checkout has no
 `status-export` branch for the script's safety check; it holds everything the live
-2026.10.20.11 engine was built from. Running clients pick up the new engine by themselves; a
-client in combat waits for the fight to end (at most 120 s).
+2026.10.20.11 engine was built from.
+
+**Hot reload closed every running client, both times.** On each deploy, each client loaded the
+new engine generation, logged `[loader] Hooks: 2 patch(es) applied in one freeze`, and its
+process ended within a second:
+- the .12 deploy: the five clients that were running (Silentkelpie's at 09:07:51, after waiting
+  for its fight to end);
+- the .13 deploy: the five clients relaunched at 09:07.
+
+This is not from this change. Every hot reload in the logs since at least 2026-10-21 ends the
+same way, including the 2026.10.20.11 deploy at 13:59 on 2026-10-23. The five clients started
+fresh at 09:12 run 2026.10.20.13. Until the hot reload is fixed, deploy the engine with the
+clients closed.
 
 After the 2026.10.20.12 deploy, four characters made their own layout files within two minutes,
 each started from the shared layout:
