@@ -35,6 +35,7 @@
     <!-- 2026-10-19: re-reading the shared rynthchat_settings.json when another client saved it. -->
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\SharedFileWatch.cs" Link="Engine\SharedFileWatch.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatSettingsMerge.cs" Link="Engine\ChatSettingsMerge.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatReplyTab.cs" Link="Engine\ChatReplyTab.cs" />
   </ItemGroup>
 
 </Project>

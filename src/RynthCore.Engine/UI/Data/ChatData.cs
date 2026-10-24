@@ -170,6 +170,7 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
             {
                 Seq = dto.Seq,
                 Automated = dto.Auto,
+                ReplyTab = ChatModel.ReplyTabs.TabFor(dto.Chan ?? "Other", dto.Auto, Environment.TickCount64),
             };
             line.Route = router.Evaluate(line, null);
             if (line.Route.Mention) ChatModel.PumpMentionSound();
@@ -722,7 +723,12 @@ internal static class ChatModel
     }
 
     /// <summary>Is the line shown under <paramref name="tab"/> (rules applied, no search)?</summary>
-    public static bool LineInTab(ChatLine line, string tab) => line.Route.ShowsIn(tab, line.Channel);
+    public static bool LineInTab(ChatLine line, string tab)
+        => line.Route.ShowsIn(tab, line.Channel)
+           || (line.ReplyTab != null && !line.Route.Hidden && string.Equals(line.ReplyTab, tab, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Where the reply to a command typed in the box also shows (ChatReplyTab).</summary>
+    internal static readonly ChatReplyTab ReplyTabs = new();
 
     public static bool LineVisible(ChatLine line, string tab, string search) =>
         LineInTab(line, tab)
@@ -1154,6 +1160,8 @@ internal static class ChatModel
         SetInput("", 0, null);
         IntPtr send = SendLinePtr;
         if (text.Length == 0 || send == IntPtr.Zero) return;
+        // A /command's reply (System or Rynth text) also shows in the tab it was typed in.
+        ReplyTabs.NoteSent(text, CurrentTab(), Environment.TickCount64);
         IntPtr ptr = Marshal.StringToHGlobalAnsi(text);
         try { ((delegate* unmanaged[Cdecl]<IntPtr, void>)send)(ptr); }
         finally { Marshal.FreeHGlobal(ptr); }

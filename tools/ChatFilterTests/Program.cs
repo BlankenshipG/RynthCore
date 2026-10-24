@@ -60,6 +60,7 @@ internal static class Program
         LineColorJson();
         SlowRuleRetry();
         SettingsMergeOnSave();
+        CommandReplyInTypedTab();
 
         Console.WriteLine();
         Console.WriteLine($"{_checks - _failed}/{_checks} checks passed.");
@@ -120,6 +121,45 @@ internal static class Program
         Check(ChatSettingsMerge.Merge(null, mine, theirs) == mine, "no base (first save): this client's text");
         Check(ChatSettingsMerge.Merge(baseJson, mine, "{ cut-off") == mine, "a broken file is never merged in");
         Check(ChatSettingsMerge.Merge(baseJson, mine, null) == mine, "no file: this client's text");
+    }
+
+    /// <summary>
+    /// Silentkelpie 2026-10-24: /fship typed on another tab "didn't show": its replies are System
+    /// lines, shown only under All and System. A command sent from the box now puts the System and
+    /// Rynth lines of the next few seconds in the tab it was typed in too.
+    /// </summary>
+    private static void CommandReplyInTypedTab()
+    {
+        Case("command replies: shown in the tab the command was typed in");
+        Check(ChatReplyTab.IsCommand("/fship"), "/fship is a command");
+        Check(ChatReplyTab.IsCommand("/bank d p 10k"), "a command with arguments");
+        Check(ChatReplyTab.IsCommand("@help"), "an @ command");
+        Check(!ChatReplyTab.IsCommand("/tell Bob, hi"), "/tell is chat");
+        Check(!ChatReplyTab.IsCommand("/f hello fellows"), "/f is chat");
+        Check(!ChatReplyTab.IsCommand("/a hello"), "/a is chat");
+        Check(!ChatReplyTab.IsCommand("hello"), "plain text is chat");
+        Check(!ChatReplyTab.IsCommand("/"), "a lone slash");
+
+        var reply = new ChatReplyTab();
+        reply.NoteSent("/fship", "Chat", nowMs: 1000);
+        Check(reply.TabFor("System", automated: false, nowMs: 1200) == "Chat", "the server's reply also shows in Chat");
+        Check(reply.TabFor("Rynth", automated: false, nowMs: 1200) == "Chat", "a plugin's reply too");
+        Check(reply.TabFor("Combat", automated: false, nowMs: 1200) == null, "combat lines stay where they are");
+        Check(reply.TabFor("System", automated: true, nowMs: 1200) == null, "a plugin's own poll reply isn't copied");
+        Check(reply.TabFor("System", automated: false, nowMs: 1000 + ChatReplyTab.WindowMs + 1) == null, "only for a few seconds");
+
+        var fromAll = new ChatReplyTab();
+        fromAll.NoteSent("/fship", "All", nowMs: 1000);
+        Check(fromAll.TabFor("System", false, 1200) == null, "typed in All: it already shows there");
+
+        var fromSystem = new ChatReplyTab();
+        fromSystem.NoteSent("/fship", "System", nowMs: 1000);
+        Check(fromSystem.TabFor("System", false, 1200) == null, "typed in System: already there");
+        Check(fromSystem.TabFor("Rynth", false, 1200) == "System", "a plugin reply still follows to System");
+
+        var chat = new ChatReplyTab();
+        chat.NoteSent("/tell Bob, hi", "Combat", nowMs: 1000);
+        Check(chat.TabFor("System", false, 1200) == null, "a /tell marks nothing");
     }
 
     private static void SlowRuleRetry()

@@ -47,6 +47,11 @@ internal sealed class ChatLine
     /// shows in the System tab only (ChatModel.AutomatedToSystem).
     /// </summary>
     public bool Automated { get; init; }
+    /// <summary>
+    /// The tab a /command was typed in when this line (its reply) arrived: it shows there too,
+    /// unless a rule hides it (ChatReplyTab, ChatModel.LineInTab). Null for most lines.
+    /// </summary>
+    public string? ReplyTab { get; init; }
     public string Timestamp { get; }
     /// <summary>The channel tab it belongs to (ChatClassifier in the plugin).</summary>
     public string Channel { get; }
