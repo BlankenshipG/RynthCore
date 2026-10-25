@@ -64,13 +64,14 @@ internal static unsafe class ItemsCommands
 {
     private static delegate* unmanaged[Cdecl]<IntPtr, void> _set;
     private static delegate* unmanaged[Cdecl]<void> _addWeapon, _addShield, _addConsumable, _clean;
+    private static delegate* unmanaged[Cdecl]<uint, void> _addWeaponById;
 
     /// <summary>ItemRule.Action value the plugin uses for off-hand shields.</summary>
     public const string ShieldAction = "Shield";
 
     static ItemsCommands()
     {
-        PluginManager.PluginsUnloaded += () => { _set = null; _addWeapon = null; _addShield = null; _addConsumable = null; _clean = null; };
+        PluginManager.PluginsUnloaded += () => { _set = null; _addWeapon = null; _addShield = null; _addConsumable = null; _clean = null; _addWeaponById = null; };
     }
 
     public static readonly string[] Elements = { "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether" };
@@ -109,6 +110,20 @@ internal static unsafe class ItemsCommands
         if (_addWeapon == null) _addWeapon = (delegate* unmanaged[Cdecl]<void>)Export("RynthPluginAddSelectedWeapon");
         if (_addWeapon != null) _addWeapon();
         UiSources.Items.RequestRefresh();
+    });
+
+    /// <summary>
+    /// Adds item <paramref name="id"/> (a weapon, wand or shield) to RynthAi's weapons: the ones the
+    /// Damage panel offers and combat may use. The Inventory panel's right-click (2026-10-25).
+    /// RynthAi says in chat what it did; one without the export (before 2026-10-25) is logged.
+    /// </summary>
+    public static void AddWeapon(uint id) => UiDataHub.Post("Items add weapon by id", () =>
+    {
+        if (_addWeaponById == null) _addWeaponById = (delegate* unmanaged[Cdecl]<uint, void>)Export("RynthPluginAddWeaponById");
+        if (_addWeaponById != null) _addWeaponById(id);
+        else RynthLog.UI("ItemsCommands: Add to Damage panel weapons unavailable - this RynthAi has no RynthPluginAddWeaponById.");
+        UiSources.Items.RequestRefresh();
+        UiSources.Damage.RequestRefresh();
     });
 
     /// <summary>

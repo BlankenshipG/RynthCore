@@ -122,6 +122,16 @@ internal sealed partial class InventoryFace : IImGuiPanel
     private InventoryItem? _splitItem;
     private int _splitAmount = 1;
     private uint _splitTarget;
+    // AC ItemType bits (melee weapon, missile weapon, caster) and the shield slot (ValidLocations).
+    private const uint TypeMeleeWeapon = 0x1, TypeMissileWeapon = 0x100, TypeCaster = 0x8000, ShieldSlot = 0x200000;
+
+    /// <summary>
+    /// A weapon, wand or shield: what the right-click can add to RynthAi's weapons (the Damage
+    /// panel's list). RynthAi checks again when it adds it.
+    /// </summary>
+    private static bool IsCombatGear(InventoryItem it) =>
+        !it.IsPack && ((it.Type & (TypeMeleeWeapon | TypeMissileWeapon | TypeCaster)) != 0 || (it.ValidLocations & ShieldSlot) != 0);
+
     // "Add to loot profile..." (right-click): RynthAi builds the rule, the popup previews it.
     private readonly LootAddDialog _lootAdd = new("##inv_lootadd");
 
@@ -1326,6 +1336,11 @@ internal sealed partial class InventoryFace : IImGuiPanel
                 ImGuiNET.ImGui.SetTooltip(ginv
                     ? "Find items like this one on every character (Global Inventory), with the same attribute choices"
                     : "Needs the RynthInventory plugin (Global Inventory)");
+            if (IsCombatGear(it) && ImGuiNET.ImGui.MenuItem("Add to Damage panel weapons"))
+                UI.Data.ItemsCommands.AddWeapon(it.Id);
+            if (IsCombatGear(it) && ImGuiNET.ImGui.IsItemHovered())
+                ImGuiNET.ImGui.SetTooltip("Let RynthAi use this in combat: it joins the weapons the Damage panel offers per monster"
+                    + " (a shield goes in as an off-hand item). RynthAi says in chat when it is added or already listed.");
             if (!it.IsPack && ImGuiNET.ImGui.MenuItem("Add to item count HUD"))
                 UI.Data.RynthAiCommands.ApplyRemoteCommand("itemhudadd", it.Name);
             if (ImGuiNET.ImGui.IsItemHovered())
