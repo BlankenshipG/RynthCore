@@ -84,6 +84,9 @@ param(
     # Explicit path to the RynthSuite repo root. When omitted, defaults to the
     # sibling directory of RynthCore (i.e. ..\RynthSuite relative to this repo).
     [string]$RynthSuiteRoot = "",
+    # Explicit path to the RynthServers repo root (rynth's server plugins: RynthILT and one per
+    # server). When omitted, defaults to the sibling directory ..\RynthServers.
+    [string]$RynthServersRoot = "",
     # Version string injected into the installer (yyyy.m.d.n). When omitted,
     # the version defined in RynthCore.iss is used as-is.
     [string]$Version = "",
@@ -195,6 +198,10 @@ $ProjectsRoot = Split-Path $RepoRoot -Parent           # e.g. C:\Projects
 if (-not $RynthSuiteRoot) {
     $RynthSuiteRoot = "$ProjectsRoot\RynthSuite"
 }
+# RynthServers root (server plugins since 2026-10-21): explicit param, else the sibling convention.
+if (-not $RynthServersRoot) {
+    $RynthServersRoot = "$ProjectsRoot\RynthServers"
+}
 
 # ── Source state (release builds) ───────────────────────────────────────────
 # A deployment package must map to exact commits. Tracked changes outside
@@ -246,6 +253,8 @@ $ExperimentalPlugins = @('RynthChat', 'RynthJuice', 'RynthNav', 'RynthTracker', 
 $ExperimentalProjectDirs = @{ 'UbRythai' = "$RynthSuiteRoot\Plugins\ub-Rythai\RynthCore.Plugin.UbRythai" }
 function Get-ExperimentalDir([string]$Name) {
     if ($ExperimentalProjectDirs.ContainsKey($Name)) { return $ExperimentalProjectDirs[$Name] }
+    # RynthILT and the per-server plugins live in RynthServers (rynth, 2026-10-21).
+    if ($Name -eq 'RynthILT' -or $ServerPlugins -contains $Name) { return "$RynthServersRoot\Plugins\RynthCore.Plugin.$Name" }
     return "$RynthSuiteRoot\Plugins\RynthCore.Plugin.$Name"
 }
 function Get-ExperimentalProject([string]$Name) { "$(Get-ExperimentalDir $Name)\RynthCore.Plugin.$Name.csproj" }
@@ -257,7 +266,11 @@ function Get-ExperimentalPublish([string]$Name) { "$(Get-ExperimentalDir $Name)\
 # RynthSuite companion plugins (installer components, on in a Full install). Same layout as the
 # experimental ones: <RynthSuite>\<Name>\RynthCore.Plugin.<Name>.dll, from Plugins\RynthCore.Plugin.<Name>\.
 # They carry no <Version> of their own, so they get the release calver (-p:Version) like the engine.
-$SuitePlugins = @('RynthOracle', 'RynthILT', 'RynthInventory', 'RynthSort')
+# Server plugins (RynthServers): installed with the suite and registered with the launcher; RynthCore
+# loads only the one for the server you connect to (PluginManifestGate), so each one's features show
+# only on its own server. RynthILT is the Infinite Leaftide one.
+$ServerPlugins = @('RynthAChard', 'RynthAelrynth', 'RynthColdeve', 'RynthConquest', 'RynthDerptide', 'RynthDreamWeave', 'RynthEversong', 'RynthFrostACE', 'RynthFrostcull', 'RynthLeafDawn', 'RynthLeafdawning', 'RynthLevistras', 'RynthPortalStorm', 'RynthReefcull', 'RynthSundering', 'RynthThistlecrown', 'RynthThreads')
+$SuitePlugins = @('RynthOracle', 'RynthILT', 'RynthInventory', 'RynthSort') + $ServerPlugins
 # RynthNav's starter portal list (shipped into <RynthCore>\NavData, never overwritten).
 $NavPortalsTsv = "$RynthSuiteRoot\Tools\RynthNav.PortalGraph\Data\portals.tsv"
 

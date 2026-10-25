@@ -68,6 +68,24 @@ Name: "suite\rynthoracle";     Description: "RynthOracle - quests, quest timers,
 Name: "suite\rynthilt";        Description: "RynthILT - Infinite Leaftide features (hub, progression, banking, bounties)"; Types: full
 Name: "suite\rynthinventory";  Description: "RynthInventory - inventory, item counts and global manage"; Types: full
 Name: "suite\rynthsort";       Description: "RynthSort - inventory sorting"; Types: full
+; Server plugins (RynthServers): RynthCore loads only the one for the server you connect to.
+Name: "suite\rynthachard"; Description: "RynthAChard - server plugin for AChard (loads only on that server)"; Types: full
+Name: "suite\rynthaelrynth"; Description: "RynthAelrynth - server plugin for Aelrynth (loads only on that server)"; Types: full
+Name: "suite\rynthcoldeve"; Description: "RynthColdeve - server plugin for Coldeve (loads only on that server)"; Types: full
+Name: "suite\rynthconquest"; Description: "RynthConquest - server plugin for Conquest (loads only on that server)"; Types: full
+Name: "suite\rynthderptide"; Description: "RynthDerptide - server plugin for Derptide (loads only on that server)"; Types: full
+Name: "suite\rynthdreamweave"; Description: "RynthDreamWeave - server plugin for DreamWeave (loads only on that server)"; Types: full
+Name: "suite\ryntheversong"; Description: "RynthEversong - server plugin for Eversong (loads only on that server)"; Types: full
+Name: "suite\rynthfrostace"; Description: "RynthFrostACE - server plugin for FrostACE (loads only on that server)"; Types: full
+Name: "suite\rynthfrostcull"; Description: "RynthFrostcull - server plugin for Frostcull (loads only on that server)"; Types: full
+Name: "suite\rynthleafdawn"; Description: "RynthLeafDawn - server plugin for LeafDawn (loads only on that server)"; Types: full
+Name: "suite\rynthleafdawning"; Description: "RynthLeafdawning - server plugin for Leafdawning (loads only on that server)"; Types: full
+Name: "suite\rynthlevistras"; Description: "RynthLevistras - server plugin for Levistras (loads only on that server)"; Types: full
+Name: "suite\rynthportalstorm"; Description: "RynthPortalStorm - server plugin for PortalStorm (loads only on that server)"; Types: full
+Name: "suite\rynthreefcull"; Description: "RynthReefcull - server plugin for Reefcull (loads only on that server)"; Types: full
+Name: "suite\rynthsundering"; Description: "RynthSundering - server plugin for Sundering (loads only on that server)"; Types: full
+Name: "suite\rynththistlecrown"; Description: "RynthThistlecrown - server plugin for Thistlecrown (loads only on that server)"; Types: full
+Name: "suite\rynththreads"; Description: "RynthThreads - server plugin for DreamWeave's Threads (loads only on that server)"; Types: full
 ; Experimental plugins: unchecked by default in every install type (ticking one switches to Custom).
 Name: "experimental";              Description: "RynthSuite: Experimental plugins (work in progress)"
 Name: "experimental\rynthchat";    Description: "RynthChat - replacement chat window (classifies and owns game chat)"
@@ -120,6 +138,23 @@ Source: "staging\suite\RynthOracle\RynthCore.Plugin.RynthOracle.dll";       Dest
 Source: "staging\suite\RynthILT\RynthCore.Plugin.RynthILT.dll";             DestDir: "{code:GetSuiteDir}\RynthILT";       Components: suite\rynthilt;       Flags: ignoreversion overwritereadonly
 Source: "staging\suite\RynthInventory\RynthCore.Plugin.RynthInventory.dll"; DestDir: "{code:GetSuiteDir}\RynthInventory"; Components: suite\rynthinventory; Flags: ignoreversion overwritereadonly
 Source: "staging\suite\RynthSort\RynthCore.Plugin.RynthSort.dll";           DestDir: "{code:GetSuiteDir}\RynthSort";      Components: suite\rynthsort;      Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthAChard\RynthCore.Plugin.RynthAChard.dll"; DestDir: "{code:GetSuiteDir}\RynthAChard"; Components: suite\rynthachard; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthAelrynth\RynthCore.Plugin.RynthAelrynth.dll"; DestDir: "{code:GetSuiteDir}\RynthAelrynth"; Components: suite\rynthaelrynth; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthColdeve\RynthCore.Plugin.RynthColdeve.dll"; DestDir: "{code:GetSuiteDir}\RynthColdeve"; Components: suite\rynthcoldeve; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthConquest\RynthCore.Plugin.RynthConquest.dll"; DestDir: "{code:GetSuiteDir}\RynthConquest"; Components: suite\rynthconquest; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthDerptide\RynthCore.Plugin.RynthDerptide.dll"; DestDir: "{code:GetSuiteDir}\RynthDerptide"; Components: suite\rynthderptide; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthDreamWeave\RynthCore.Plugin.RynthDreamWeave.dll"; DestDir: "{code:GetSuiteDir}\RynthDreamWeave"; Components: suite\rynthdreamweave; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthEversong\RynthCore.Plugin.RynthEversong.dll"; DestDir: "{code:GetSuiteDir}\RynthEversong"; Components: suite\ryntheversong; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthFrostACE\RynthCore.Plugin.RynthFrostACE.dll"; DestDir: "{code:GetSuiteDir}\RynthFrostACE"; Components: suite\rynthfrostace; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthFrostcull\RynthCore.Plugin.RynthFrostcull.dll"; DestDir: "{code:GetSuiteDir}\RynthFrostcull"; Components: suite\rynthfrostcull; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthLeafDawn\RynthCore.Plugin.RynthLeafDawn.dll"; DestDir: "{code:GetSuiteDir}\RynthLeafDawn"; Components: suite\rynthleafdawn; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthLeafdawning\RynthCore.Plugin.RynthLeafdawning.dll"; DestDir: "{code:GetSuiteDir}\RynthLeafdawning"; Components: suite\rynthleafdawning; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthLevistras\RynthCore.Plugin.RynthLevistras.dll"; DestDir: "{code:GetSuiteDir}\RynthLevistras"; Components: suite\rynthlevistras; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthPortalStorm\RynthCore.Plugin.RynthPortalStorm.dll"; DestDir: "{code:GetSuiteDir}\RynthPortalStorm"; Components: suite\rynthportalstorm; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthReefcull\RynthCore.Plugin.RynthReefcull.dll"; DestDir: "{code:GetSuiteDir}\RynthReefcull"; Components: suite\rynthreefcull; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthSundering\RynthCore.Plugin.RynthSundering.dll"; DestDir: "{code:GetSuiteDir}\RynthSundering"; Components: suite\rynthsundering; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthThistlecrown\RynthCore.Plugin.RynthThistlecrown.dll"; DestDir: "{code:GetSuiteDir}\RynthThistlecrown"; Components: suite\rynththistlecrown; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthThreads\RynthCore.Plugin.RynthThreads.dll"; DestDir: "{code:GetSuiteDir}\RynthThreads"; Components: suite\rynththreads; Flags: ignoreversion overwritereadonly
 
 ; Experimental plugins: each in its own <RynthSuite>\<Name>\ folder (the layout the launcher already uses).
 Source: "staging\suite\RynthChat\RynthCore.Plugin.RynthChat.dll";       DestDir: "{code:GetSuiteDir}\RynthChat";    Components: experimental\rynthchat;    Flags: ignoreversion overwritereadonly
@@ -307,7 +342,7 @@ end;
 
 // Number of entries in SuitePluginName; keep in sync with the [Components]/[Files] suite rows.
 const
-  SuitePluginCount = 4;
+  SuitePluginCount = 21;
 
 // Companion plugin names; component "suite\<lowercase name>" installs <Suite>\<Name>\RynthCore.Plugin.<Name>.dll.
 function SuitePluginName(Index: Integer): string;
@@ -317,6 +352,23 @@ begin
     1: Result := 'RynthILT';
     2: Result := 'RynthInventory';
     3: Result := 'RynthSort';
+    4: Result := 'RynthAChard';
+    5: Result := 'RynthAelrynth';
+    6: Result := 'RynthColdeve';
+    7: Result := 'RynthConquest';
+    8: Result := 'RynthDerptide';
+    9: Result := 'RynthDreamWeave';
+    10: Result := 'RynthEversong';
+    11: Result := 'RynthFrostACE';
+    12: Result := 'RynthFrostcull';
+    13: Result := 'RynthLeafDawn';
+    14: Result := 'RynthLeafdawning';
+    15: Result := 'RynthLevistras';
+    16: Result := 'RynthPortalStorm';
+    17: Result := 'RynthReefcull';
+    18: Result := 'RynthSundering';
+    19: Result := 'RynthThistlecrown';
+    20: Result := 'RynthThreads';
   else
     Result := '';
   end;
