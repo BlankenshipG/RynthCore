@@ -994,7 +994,7 @@ internal sealed partial class MetaFace : IImGuiPanel
     private static void FieldLabel(string text)
     {
         ImGuiNET.ImGui.Dummy(new Vector2(0, 1));
-        SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), text);
+        SafeImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), text);
     }
 
     private static void Separator(float w)

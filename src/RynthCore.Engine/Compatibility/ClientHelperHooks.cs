@@ -374,7 +374,7 @@ internal static class ClientHelperHooks
             // Skills panel raises (CM_Train senders).
             try { PlayerTraining.Probe(text); }
             catch (Exception ex) { RynthLog.Compat($"Compat: raise senders binding failed - {ex.Message}"); }
-            // v85 confirmation answers (CM_Character::Event_ConfirmationResponse).
+            // v81 confirmation answers (CM_Character::Event_ConfirmationResponse).
             try { ConfirmationResponder.Probe(text); }
             catch (Exception ex) { RynthLog.Compat($"Compat: confirmation response binding failed - {ex.Message}"); }
             _initialized = true;

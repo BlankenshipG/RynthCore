@@ -362,17 +362,27 @@ if (-not $NativeAotPlugins) {
 }
 & (Join-Path $ScriptDir "Build-Installer.ps1") @installerArgs
 if (-not $?) { throw "Build-Installer.ps1 failed" }
-# The Decal bridge ships in every release (experimental, opt-in per account): the installer
-# carries it, so a launcher that updates through this feed gets it as a fresh install does.
-# Build-Installer.ps1 fails without Decal; this guards against a -SkipDecalBridge staging.
-$bridgeStaged = Join-Path $ScriptDir "staging\app\DecalBridge\RynthCore.DecalBridge.dll"
-if (-not (Test-Path $bridgeStaged)) { throw "The installer was built without the Decal bridge ($bridgeStaged missing) - not publishing." }
-Write-Host "  Decal bridge in the installer: $((Get-Item $bridgeStaged).VersionInfo.FileVersion)"
-Copy-Item (Join-Path $ScriptDir "Output\RynthCore-Setup.exe") "$rel\RynthCore-Setup.exe"
-Copy-Item (Join-Path $ScriptDir "staging\plugins\RynthAi\RynthCore.Plugin.RynthAi.dll") "$rel\plugins\"
+# The Decal bridge (experimental, opt-in per account) is only in installers built where Decal is
+# installed; a launcher updating through this feed without it can't run "Decal + RynthCore" accounts.
+$bridgeStaged = Join-Path $ScriptDir "staging\core\DecalBridge\RynthCore.DecalBridge.dll"
+if (Test-Path $bridgeStaged) {
+    Write-Host "  Decal bridge in the installer: $((Get-Item $bridgeStaged).VersionInfo.FileVersion)"
+} else {
+    Write-Warning "This installer has no Decal bridge ($bridgeStaged missing); 'Decal + RynthCore' accounts won't work from it."
+}
+# The versioned installer is the primary artifact (the RynthCore-Setup.exe copy is best effort).
+Copy-Item (Join-Path $ScriptDir "Output\RynthCore-Setup-$Version.exe") "$rel\RynthCore-Setup.exe"
+# RynthAi: the managed build when plugins are managed, else the NativeAOT one Build-Installer.ps1
+# staged under staging\suite\RynthAi\.
+$rynthAiFeed = if ($NativeAotPlugins) { Join-Path $ScriptDir "staging\suite\RynthAi\RynthCore.Plugin.RynthAi.dll" }
+               else { "$rel\build\RynthAi\RynthCore.Plugin.RynthAi.dll" }
+Copy-Item $rynthAiFeed "$rel\plugins\"
 foreach ($name in $suitePlugins + $serverPlugins) {
     Copy-Item "$rel\build\$name\RynthCore.Plugin.$name.dll" "$rel\plugins\"
 }
+# Server plugins also go in RynthSuite-Plugins.zip: RynthCore loads only the one whose manifest hosts
+# claim the client's connect host, so installing all of them costs disk, not memory.
+$suitePlugins += $serverPlugins
 
 Step "Packing RynthSuite-Plugins.zip"
 $zipRoot = "$rel\build\zip"
@@ -548,10 +558,27 @@ $pluginDescriptions = @{
     RynthOracle    = "Quests, character and titles."
     RynthInventory = "Search every character's items."
     RynthSort      = "Keeps your packs sorted: new loot goes to the pack its rule names."
-    RynthILT       = "Infinite Leaftide only: the ILT Hub (the Mini Remote's banking, gear, charms and games tabs), the Guardian, bounty tracking and progression planning."
+    RynthILT       = "Infinite Leaftide only: the ILT Hub (the Mini Remote's banking, gear, charms and games tabs), the Guardian, bounty tracking, progression planning, ILT settings and the /fship fellowship commands."
     RynthThreads   = "DreamWeave only: records Fragment Press results and works out what each component brings."
     RynthNet       = "Links your characters on this PC: broadcast commands (/ub bc), shared vitals and the Characters panel."
     RynthDefective = "A shortcut bar with AC's own keys, buttons for AC's panels and the Selection, in place of the retail toolbar."
+    # Server plugins: only the one for the server you connect to loads.
+    RynthAChard       = "AChard's server plugin: server facts, PvP rules and commands. Loads only on AChard."
+    RynthAelrynth     = "Aelrynth's server plugin: server facts, mods and commands. Loads only on Aelrynth."
+    RynthColdeve      = "Coldeve's server plugin: server facts, rules and commands. Loads only on Coldeve."
+    RynthConquest     = "Conquest's server plugin: server facts, rules and commands. Loads only on Conquest."
+    RynthDerptide     = "Derptide's server plugin: server facts, rules and commands. Loads only on Derptide."
+    RynthDreamWeave   = "DreamWeave's server plugin: server facts, rules, commands and wiki link. Loads only on DreamWeave."
+    RynthEversong     = "Eversong's server plugin: server facts, rules and commands. Loads only on Eversong."
+    RynthFrostACE     = "FrostACE's server plugin: server facts, rules and commands. Loads only on FrostACE."
+    RynthFrostcull    = "Frostcull's server plugin: server facts, rates and commands. Loads only on Frostcull."
+    RynthLeafDawn     = "LeafDawn's server plugin: server facts, rules and commands. Loads only on LeafDawn."
+    RynthLeafdawning  = "Leafdawning's server plugin: server facts, account limit and commands. Loads only on Leafdawning."
+    RynthLevistras    = "Levistras's server plugin: server facts and rules (botting is not allowed there). Loads only on Levistras."
+    RynthPortalStorm  = "PortalStorm's server plugin: server facts, rules and commands. Loads only on PortalStorm."
+    RynthReefcull     = "Reefcull's server plugin (GDLE): server facts, rules and commands. Loads only on Reefcull."
+    RynthSundering    = "Sundering's server plugin: server facts, character limit and commands. Loads only on Sundering."
+    RynthThistlecrown = "Thistlecrown's server plugin: server facts, account limit and commands. Loads only on Thistlecrown."
 }
 # Plugin manifests (embedded in each DLL by the SDK's build targets): each plugin's minEngineApi
 # goes into its feed entry, and the core entry says its engine's API ("engineApi"), so launchers

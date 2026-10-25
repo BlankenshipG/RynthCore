@@ -240,7 +240,8 @@ namespace EngineSettingsTests
             Eq(after.GetProperty("EnableImGuiShell").GetBoolean(), false, "EnableImGuiShell kept");
             Eq(after.GetProperty("DecalBridge").GetString(), "On", "DecalBridge On kept");
             foreach (JsonProperty p in before.EnumerateObject())
-                Check(after.TryGetProperty(p.Name, out JsonElement kept) && JsonElement.DeepEquals(kept, p.Value), $"unchanged key {p.Name} keeps the file's value");
+                if (p.Name != "DisabledUiHooks")
+                    Check(after.TryGetProperty(p.Name, out JsonElement kept) && JsonElement.DeepEquals(kept, p.Value), $"unchanged key {p.Name} keeps the file's value");
             foreach (string key in new[] { "EnablePlugins", "EnableDatShareHook", "EnableAvaloniaOverlay", "EnableD3D9Hook", "EnableEngine", "EngineHookCount", "EnableHangMinidump", "PreventIdleLogoff" })
                 Check(after.TryGetProperty(key, out _) == before.TryGetProperty(key, out _), $"owned key {key} not added or dropped by an unrelated save");
 
@@ -256,6 +257,17 @@ namespace EngineSettingsTests
             Eq(after.GetProperty("EnableImGuiBackend").GetBoolean(), false, "EnableImGuiBackend saved");
             Check(after.TryGetProperty("EnableDcompOverlay", out _) && after.TryGetProperty("LauncherWindow", out _), "launcher keys survive a second save");
             Eq(after.GetProperty("DisabledUiHooks").GetArrayLength(), 1, "first save's DisabledUiHooks kept");
+
+            // Two clients: one saved EnableImGuiBackend=false above; "another client" now turns the
+            // shell back on in the file. A later save of a different key here must not put the
+            // stale EnableImGuiShell back (the last-writer-wins reset of 2026-10-16).
+            var doc = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+            doc["EnableImGuiShell"] = true;
+            File.WriteAllText(path, doc.ToJsonString());
+            (exit, output) = RunChild(path, "hook-off", "AnotherHook");
+            Eq(exit, 0, "third child exit code (" + output.Trim() + ")");
+            after = ReadJson(path);
+            Eq(after.GetProperty("EnableImGuiShell").GetBoolean(), true, "another client's EnableImGuiShell survives this client's save");
         }
 
         private static void SaveRoundTripsOwnedKeys()

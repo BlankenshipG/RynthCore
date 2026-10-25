@@ -169,7 +169,8 @@ internal static class ClientObjectHooks
     // 1 TotalExperience, 2 AvailableExperience, 6 AvailableLuminance, 7 MaximumLuminance, then
     // Aelrynth's Bank session totals (custom ids, absent on other servers): 9101 Radiance earned,
     // 9102 Luminance auto-banked, 9103 Luminance drawn from the bank. RynthTracker reads them.
-    private static readonly uint[] PlayerQuadStypes = { 1u, 2u, 6u, 7u, 9101u, 9102u, 9103u };
+    // 9005 is ACECustom's banked luminance (the session rates count its rises as income).
+    private static readonly uint[] PlayerQuadStypes = { 1u, 2u, 6u, 7u, 9005u, 9101u, 9102u, 9103u };
     private static readonly Dictionary<uint, long> _cachedPlayerQuad = new();
     // Secondary attributes (vitals) by stype 1..6 from InqAttribute2ndBaseLevel: the buffed
     // maximums RynthAi's getcharvital_buffedmax and RynthLua read.

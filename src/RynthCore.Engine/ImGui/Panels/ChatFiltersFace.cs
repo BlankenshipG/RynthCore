@@ -205,6 +205,14 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         SafeImGui.SetItemTooltip("On: a line a rule or standard filter hides doesn't print in AC's own chat window either.\n" +
             "Off: hiding only applies to RynthChat; the retail chat shows everything.\n" +
             "Moved / copied lines still show in the retail chat either way.");
+        bool automated = ChatModel.AutomatedToSystem;
+        if (ImGuiNET.ImGui.Checkbox("Automated system text shows in System only##autosys", ref automated))
+            ChatModel.SetAutomatedToSystem(automated);
+        SafeImGui.SetItemTooltip("On (the default): replies to the commands plugins send by themselves (/myquests, /qb list,\n" +
+            "login probes), the server's login messages, and any line a plugin hides from the retail chat\n" +
+            "show in the System tab, not under All.\n" +
+            "Off: they show under All and their channel tab like any other line.\n" +
+            "A rule or standard filter that moves or hides such a line still decides first.");
         foreach (string group in UI.Panels.RynthChatPresets.Groups)
         {
             int on = 0, total = 0;
@@ -416,7 +424,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
     {
         if (r.Pattern.Trim().Length == 0) return ("Type a pattern: the rule matches nothing until then.", Faded(Mute));
         if (r.Invalid) return ("Regex error: " + (r.Error ?? "doesn't compile"), Red);
-        if (r.Slow) return ("Too slow: matching it took too long (see the RynthCore log), so the rule is skipped. Edit the pattern to try again.", Amber);
+        if (r.Slow) return ("Too slow: matching it took too long twice running (see the RynthCore log), so the rule is skipped for a while. It is tried again on its own; editing the pattern tries it at once.", Amber);
         if (r.Action is ChatRuleAction.Move or ChatRuleAction.Copy && r.Tab.Length == 0)
             return ("Pick a tab: until then it only colours.", Amber);
         if (!r.Enabled) return ("Off.", Faded(Mute));
@@ -613,6 +621,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
             _testResult.Add((step.Rule switch
             {
                 ChatRouter.StandardFilterStep => "Standard",
+                ChatRouter.AutomatedStep => "Automated",
                 < 0 => "Your name",
                 _ => $"Rule {step.Rule + 1}",
             } + ": " + step.What, Text));

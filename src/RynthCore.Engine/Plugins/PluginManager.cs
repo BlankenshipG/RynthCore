@@ -40,10 +40,11 @@ internal static partial class PluginManager
     private readonly record struct PendingEnchantmentAdded(uint SpellId, double DurationSeconds);
     private readonly record struct PendingEnchantmentRemoved(uint EnchantmentId);
 
-    // A /myquests reply is one line per quest flag (hundreds on a played character) and arrives
-    // in one burst; a slow pump tick (a busy plugin window) must not drop its head. Lines are short
-    // strings, so a deep queue costs little. Drops are counted and logged (DispatchQueuedChatWindowText).
-    private const int MaxPendingIncomingChats = 4096;
+    // A /myquests or /qb list reply is one line per quest flag (15,000-25,000+ on an ACECustom
+    // character) and arrives in one burst; a slow pump tick (a busy plugin window) must not drop
+    // its head. Lines are short strings (~100 bytes), so even a full queue is a few MB. Drops are
+    // counted and logged (DispatchQueuedChatWindowText).
+    private const int MaxPendingIncomingChats = 65_536;
     private static long _droppedIncomingChats;          // lines dropped unheard since the last log
     private static long _droppedIncomingChatsLoggedMs;  // when that was last logged
     private const int MaxPendingBusyCountEvents = 128;
@@ -1796,6 +1797,11 @@ internal static partial class PluginManager
 
         unsafe
         {
+            // RynthChat's RynthChatNoteEaten (0.3.4+), looked up once per batch on first need:
+            // no plugin loads or unloads in the middle of this loop (same thread).
+            delegate* unmanaged[Cdecl]<IntPtr, int> noteEaten = null;
+            bool noteEatenResolved = false;
+
             foreach (PendingIncomingChat evt in pending)
             {
                 IntPtr textPtr = IntPtr.Zero;
@@ -1838,6 +1844,21 @@ internal static partial class PluginManager
                     }
 
                     eaten = HeldChatQueue.PluginsAteIt(eat, threw);
+                    // A plugin ate it: a reply to that plugin's own command (/myquests, /qb list,
+                    // a login probe). RynthChat marks it automated so it shows in System only.
+                    if (eaten && textPtr != IntPtr.Zero)
+                    {
+                        if (!noteEatenResolved)
+                        {
+                            noteEatenResolved = true;
+                            noteEaten = (delegate* unmanaged[Cdecl]<IntPtr, int>)UI.Data.PluginExportBinder.Resolve("RynthChat", "RynthChatNoteEaten");
+                        }
+                        if (noteEaten != null)
+                        {
+                            try { noteEaten(textPtr); }
+                            catch (Exception ex) { RynthLog.Plugin($"PluginManager: RynthChat eaten-line note failed ({ex.GetType().Name}: {ex.Message})."); }
+                        }
+                    }
                     // RynthChat's Hide rules / standard filters live in the engine, not in a plugin, so
                     // without this a hidden line still printed in AC's own chat window. Only a held line
                     // can still be kept out (one already printed has gone); a failure lets it show.

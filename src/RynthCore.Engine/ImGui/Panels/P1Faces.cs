@@ -34,7 +34,8 @@ internal static class P1Faces
         // Registered here so engine init needs no new line in EntryPoint; ImGuiBar gives
         // it a bar button (ImGuiOnlyPanels).
         SkillsFace.Register();
-        // Sense (watch list of names, anywhere the client knows): ImGui only, like Skills.
+        // Sense (watch list of names, anywhere the client knows): ImGui only; bar icon
+        // lives under RynthNav (header toggle + /rc sense) since 2026-10-16.
         SenseFace.Register();
         // Item Count and Mini Remote (items by name with their carried count; a grid of
         // items to use): ImGui only, saved per character in item_huds.txt.

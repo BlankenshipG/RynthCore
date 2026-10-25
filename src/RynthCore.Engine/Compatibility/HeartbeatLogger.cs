@@ -169,6 +169,8 @@ internal static class HeartbeatLogger
                         if (free >= 0) vaField = $" vafree={free}MB";
                         long largest = AddressSpace.FreeAndLargestMb().LargestFreeMb;
                         if (largest >= 0) vaField += $" valargest={largest}MB";
+                        // Nearly out soon after start: Adaptive degrade back on for the next launch.
+                        Graphics.AcGraphics.CheckLowMemory(free, largest);
                     }
                     catch { }
                     // Crash logger module cache (native): rebuilt every 10 s here, so a fault

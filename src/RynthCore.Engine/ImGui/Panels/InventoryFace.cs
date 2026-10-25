@@ -122,6 +122,16 @@ internal sealed partial class InventoryFace : IImGuiPanel
     private InventoryItem? _splitItem;
     private int _splitAmount = 1;
     private uint _splitTarget;
+    // AC ItemType bits (melee weapon, missile weapon, caster) and the shield slot (ValidLocations).
+    private const uint TypeMeleeWeapon = 0x1, TypeMissileWeapon = 0x100, TypeCaster = 0x8000, ShieldSlot = 0x200000;
+
+    /// <summary>
+    /// A weapon, wand or shield: what the right-click can add to RynthAi's weapons (the Damage
+    /// panel's list). RynthAi checks again when it adds it.
+    /// </summary>
+    private static bool IsCombatGear(InventoryItem it) =>
+        !it.IsPack && ((it.Type & (TypeMeleeWeapon | TypeMissileWeapon | TypeCaster)) != 0 || (it.ValidLocations & ShieldSlot) != 0);
+
     // "Add to loot profile..." (right-click): RynthAi builds the rule, the popup previews it.
     private readonly LootAddDialog _lootAdd = new("##inv_lootadd");
 
@@ -147,6 +157,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         ItemDragBridge.EndPopOutDrag();
         UiDropTargets.EngineDragObject = 0;
         _lootAdd.Cancel();
+        ClearLike();
     }
 
     // =====================================================================
@@ -169,6 +180,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         }
 
         _hoverLabel = _hoverLabel2 = null;
+        LikeTick();
         // Text follows the panel's size setting (the - / + in the Classic title bar).
         ImGuiNET.ImGui.SetWindowFontScale(InventorySettingsStore.SizeFactor);
         if (InventorySettingsStore.Classic) ClassicBody(view, origin, size);
@@ -199,6 +211,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         Header(view, w);
         Tools(w);
         Chips(w);
+        LikeBar(w);
         RebuildIfNeeded(view, _pack);
 
         // Body: pack column | grid, then zones and the status row at the bottom.
@@ -474,14 +487,20 @@ internal sealed partial class InventoryFace : IImGuiPanel
         bool classic = InventorySettingsStore.Classic;
         bool attrOn = AttrOn;
         int attrKey = attrOn ? _attr.Version : -1;
+        bool likeOn = LikeOn;
+        int likeKey = likeOn ? _likeVersion : -1;
         if (ReferenceEquals(view, _builtFor) && _builtPack == pack && _builtSort == _sort
             && _builtCategory == _category && ReferenceEquals(_builtSearch, _searchText) && _builtClassic == classic
-            && _builtOrderVersion == Net.InventoryOrder.Version && _builtAttrKey == attrKey && !AttrRefreshDue(attrOn))
+            && _builtOrderVersion == Net.InventoryOrder.Version && _builtAttrKey == attrKey && _builtLikeKey == likeKey
+            && !AttrRefreshDue(attrOn))
             return;
-        if (_builtPack != pack || !ReferenceEquals(_builtSearch, _searchText) || _builtCategory != _category || _builtAttrKey != attrKey)
+        if (_builtPack != pack || !ReferenceEquals(_builtSearch, _searchText) || _builtCategory != _category || _builtAttrKey != attrKey
+            || _builtLikeKey != likeKey)
             _gridFirstRow = 0;   // another pack or filter: back to the top (Classic grid)
         _builtAttrKey = attrKey;
+        _builtLikeKey = likeKey;
         BeginAttrPass(attrOn);
+        BeginLikePass(likeOn);
         if (!ReferenceEquals(view, _builtFor)) PruneSelection(view);
         _builtFor = view;
         _builtPack = pack;
@@ -555,7 +574,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         _orderKnown && _sort == 0 && !FiltersOn && !item.RequiresPackSlot && !item.IsPack;
 
     /// <summary>Some filter hides items: a category, search text or the attribute filter.</summary>
-    private bool FiltersOn => _category != 0 || _searchText.Length > 0 || AttrOn;
+    private bool FiltersOn => _category != 0 || _searchText.Length > 0 || AttrOn || LikeOn;
 
     /// <summary>The slot an item holds now among its pack's ordinary items, or -1 when unknown.</summary>
     private static int SlotOf(InventoryItem item)
@@ -579,6 +598,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
             if (_category != 0 && it.Category != cat) continue;
             if (_searchText.Length > 0 && !it.SearchName.Contains(_searchText, StringComparison.Ordinal)) continue;
             if (_attrPass && !AttrKeeps(it)) continue;
+            if (_likePass && !LikeKeeps(it)) continue;
             _shown.Add(it);
         }
     }
@@ -903,7 +923,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         ImGuiNET.ImGui.SetCursorScreenPos(pos);
         bool clicked = ImGuiNET.ImGui.InvisibleButton(id, size);
         bool hot = ImGuiNET.ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
-        SafeImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);   // the Give zone's tip carries the target's name
         bool dropHot = enabled && _dragItem != null && hot;
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         uint fill = dropHot ? DropHot : _dragItem != null && enabled ? Selected : hot && enabled ? Lighten(BtnFill) : BtnFill;
@@ -1080,6 +1100,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
         _searchText = string.Empty;
         _category = 0;
         SetAttrEnabled(false);
+        ClearLike();
     }
 
     private void Refuse(string why)
@@ -1304,6 +1325,22 @@ internal sealed partial class InventoryFace : IImGuiPanel
                 _lootAdd.Open(it.Id, it.Name, toOpenProfile: false);
             if (ImGuiNET.ImGui.IsItemHovered())
                 ImGuiNET.ImGui.SetTooltip("Make a RynthAi loot rule for this item (preview first)");
+            if (ImGuiNET.ImGui.MenuItem("Filter inventory like this..."))
+                OpenLikeFilter(it, global: false);
+            if (ImGuiNET.ImGui.IsItemHovered())
+                ImGuiNET.ImGui.SetTooltip("Show only your items like this one: the same match and attribute choices as Add to loot profile");
+            bool ginv = ScriptWindowRegistry.Has(GlobalInventoryKey);
+            if (ImGuiNET.ImGui.MenuItem("Find like this in Global Inventory...", "", false, ginv))
+                OpenLikeFilter(it, global: true);
+            if (ImGuiNET.ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGuiNET.ImGui.SetTooltip(ginv
+                    ? "Find items like this one on every character (Global Inventory), with the same attribute choices"
+                    : "Needs the RynthInventory plugin (Global Inventory)");
+            if (IsCombatGear(it) && ImGuiNET.ImGui.MenuItem("Add to Damage panel weapons"))
+                UI.Data.ItemsCommands.AddWeapon(it.Id);
+            if (IsCombatGear(it) && ImGuiNET.ImGui.IsItemHovered())
+                ImGuiNET.ImGui.SetTooltip("Let RynthAi use this in combat: it joins the weapons the Damage panel offers per monster"
+                    + " (a shield goes in as an off-hand item). RynthAi says in chat when it is added or already listed.");
             if (!it.IsPack && ImGuiNET.ImGui.MenuItem("Add to item count HUD"))
                 UI.Data.RynthAiCommands.ApplyRemoteCommand("itemhudadd", it.Name);
             if (ImGuiNET.ImGui.IsItemHovered())

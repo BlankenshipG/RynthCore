@@ -70,3 +70,10 @@
 
 The engine builds in Release. The filter has 5 new host tests in RynthSuite
 (`InventoryAttributeFilterTests`), and all of them pass. Not yet tested in game.
+
+## Installed
+
+- Published to `C:\Games\RynthCore\Runtime` (file version 2026.10.5.36). No client was running; it
+  loads on the next client start.
+- Previous engine: `C:\Games\RynthCore\PreviousReleases\2026.10.5.35-engine` and
+  `C:\Games\_rynth-backups\20261011-pre-attr-filter\Runtime`.

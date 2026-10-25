@@ -54,7 +54,7 @@ internal static class Program
             Run(nameof(ServerBlockRejectsBadIds), ServerBlockRejectsBadIds);
             Run(nameof(ServerHostMatching), ServerHostMatching);
             Run(nameof(ServerGateKeepsOnlyTheHostsPlugin), ServerGateKeepsOnlyTheHostsPlugin);
-            Run(nameof(ServerGateUnclaimedHost), ServerGateUnclaimedHost);
+            Run(nameof(ServerGateFailsOpen), ServerGateFailsOpen);
             Run(nameof(ServerGatePlanFromFiles), ServerGatePlanFromFiles);
             Run(nameof(SdkApiVersionCannotDrift), SdkApiVersionCannotDrift);
             Run(nameof(TrainingStructsMirror), TrainingStructsMirror);
@@ -519,7 +519,7 @@ internal static class Program
         Eq(PluginManifestGate.SelectServerPlugins(list, "leafdawn.hopto.org", true, log).Count, 0, "LoadAllServerPlugins keeps every one");
     }
 
-    private static void ServerGateUnclaimedHost()
+    private static void ServerGateFailsOpen()
     {
         var list = new List<PluginCandidate>
         {
@@ -528,7 +528,7 @@ internal static class Program
         };
         var log = new List<string>();
         Eq(PluginManifestGate.SelectServerPlugins(list, "", false, log).Count, 0, "no connect host: all load");
-        Eq(PluginManifestGate.SelectServerPlugins(list, "10.0.0.5", false, log).Count, 2, "a host nobody lists: none load now (late load by world name or a pick)");
+        Eq(PluginManifestGate.SelectServerPlugins(list, "10.0.0.5", false, log).Count, 0, "a host nobody lists: all load");
         Check(log.Any(l => l.Contains("none lists host 10.0.0.5")), "said why");
     }
 
@@ -611,8 +611,9 @@ internal static class Program
     }
 
     // v80: GetContainerOrder and PutItemInContainer come right before v81's slot, engine and SDK alike;
-    // v81: GetMergeStackResult, then v82: SalvageDirect, v83's two and v84's GetObjectProperties last. The whole table has the same field names in the same
-    // order on both sides, and the same size.
+    // v81: GetMergeStackResult, v82: SalvageDirect, v83: the ghost-creature pair, v84: GetObjectProperties,
+    // v85: the confirmation pair, v86: GetServerStateJson last.
+    // The whole table has the same field names in the same order on both sides, and the same size.
     private static void ContainerOrderSlots()
     {
         var all = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).ToArray();

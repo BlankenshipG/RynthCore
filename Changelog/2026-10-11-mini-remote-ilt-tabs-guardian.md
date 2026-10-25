@@ -45,3 +45,9 @@
 - ItemHudTests: 63 assertions pass.
 - Engine and plugin both build in Release.
 - In-game checks are listed in the matching RynthSuite changelog.
+
+## Local test install
+
+Installed 2026-10-11 to `C:\Games\RynthCore\Runtime` (engine 2026.10.5.29). The previous engine
+(2026.10.5.28) is saved in `C:\Games\Rynthcore\PreviousReleases\2026.10.5.28-engine` and
+`C:\Games\_rynth-backups\20261011-pre-ilt-tabs`.

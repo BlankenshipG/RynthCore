@@ -136,12 +136,32 @@ public static class EntryPoint
         return 0;
     }
 
+    /// <summary>
+    /// Loader asks before tearing the engine down (loader 2.2+): 1 = reload now, 0 = wait
+    /// (still in the world; poll again). Missing export = old engines, loader proceeds.
+    /// Only with engine.json HoldReloadInWorld on (opt-in, default off): then the loader waits while
+    /// the player is in the world, a manual ERl included, since a mid-session CoreCLR re-init can
+    /// still AV (2026-10-16.5). Off: 1. Loader thread; never throws.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthCoreMayHotReload")]
+    public static int MayHotReload()
+    {
+        try
+        {
+            if (!EngineSettings.HoldReloadInWorld) return 1;
+            return IsInWorldForAutoReloadDeferral() ? 0 : 1;
+        }
+        catch { return 1; } // fail open so a gate bug cannot wedge the loader forever
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthCoreShutdown")]
     public static uint Shutdown(IntPtr lpParam)
     {
         // Only the loader's hot reload calls this export (process exit and the engine's own
         // teardowns call EngineLifecycle.Shutdown directly), on its reload thread: wait here,
         // with the game running on this engine, while a plugin says a reload now would hurt.
+        // Also holds automatic reloads while in-world (ReloadInWorldGate) so old loaders that
+        // never call MayHotReload still avoid mid-session CoreCLR re-init crashes.
         try { DeferReloadWhilePluginsObject(); } catch { }
         try
         {
@@ -261,6 +281,7 @@ public static class EntryPoint
             RynthLog.Info("engine reload: asked for by hand (ERl), so it isn't deferred for the plugins.");
             return;
         }
+
         var deferral = new ReloadDeferral
         {
             Query = PluginManager.QueryReloadBlockers,
@@ -271,6 +292,28 @@ public static class EntryPoint
         ReloadDeferral.Outcome outcome = deferral.Run(out TimeSpan waited);
         if (outcome != ReloadDeferral.Outcome.Clear)
             RynthLog.Info($"engine reload: deferral {outcome} after {waited.TotalSeconds:0.0} s.");
+    }
+
+    /// <summary>
+    /// Player asked for an engine reload (ERl / /rc rl / hotkey). While in-world the loader
+    /// keeps holding; we still signal so it applies on logout, and say so in chat once.
+    /// </summary>
+    internal static void RequestManualReload(string source)
+    {
+        NoteManualReload();
+        if (EngineSettings.HoldReloadInWorld && IsInWorldForAutoReloadDeferral())
+        {
+            RynthLog.Info($"{source}: in-world — signaling reload; loader holds until logout / character select.");
+            try
+            {
+                Compatibility.AcMainThreadQueue.EnqueueWriteToChat(
+                    "[RynthCore] Engine reload will apply when you leave the world (logout / character select). Mid-session hot reload crashes the client.", 1);
+            }
+            catch { /* chat must not block the signal */ }
+        }
+        else
+            RynthLog.Info($"{source}: signaling reload.");
+        EngineLifecycle.SignalReload();
     }
 
     private static uint InitializeCore(IntPtr lpParam)
@@ -682,11 +725,10 @@ public static class EntryPoint
         {
             // RynthILT's ILT tabs in RynthAi's Mini Remote (shown once the server reports each on).
             // A RynthAi that doesn't publish sections gets these stand-ins; one that does lists them itself.
-            // Character (the generic overview) is RynthOracle's Character tab since 2026.10.5.54;
-            // the Leaftide tabs (Charms, Banking, Gear, Games) stay RynthILT's.
+            // Character and Charms are RynthOracle's Character tab and Banking is RynthInventory's
+            // Global Inventory since 2026.10.5.54, so only Gear and Games are left here.
             foreach ((string label, string tab, string section) in new[]
             {
-                ("Charms", "charms", "inventory"), ("Banking", "banking", "inventory"),
                 ("Gear", "gear", "inventory"), ("Games", "games", "fellowship"),
             })
             {

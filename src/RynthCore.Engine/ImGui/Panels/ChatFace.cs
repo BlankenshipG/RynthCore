@@ -101,6 +101,13 @@ internal sealed class ChatFace : IImGuiPanel
     private readonly byte[] _search = new byte[128], _newTab = new byte[64], _mentionWords = new byte[256];
     private bool _stick = true;
     private float _lastScrollY;
+    // The left button went down on the list's scrollbar: a scrollbar drag until it comes up.
+    private bool _scrollbarDrag;
+    // Scrolled up when the list was rebuilt for a route change (another client's settings
+    // reload, a rule edit): the line that was at the top of the view (Id, -1 = none) and how
+    // far into it the view was, so DrawLines puts the view back there instead of jumping.
+    private long _anchorId = -1;
+    private float _anchorOffset;
     // Height of lines dropped off the top (the buffer is full) while not following the
     // tail: the view is moved up by as much, so the lines being read stay put instead of
     // sliding away.
@@ -488,6 +495,21 @@ internal sealed class ChatFace : IImGuiPanel
 
         if (routes != _seenRoutes || tab != _seenTab || search != _seenSearch)
         {
+            // Only the routes changed (rules, or another client's settings) while reading back:
+            // remember the top line, so the rebuild keeps the place. A new tab or search starts
+            // at the newest line, as before.
+            bool keepPlace = tab == _seenTab && search == _seenSearch && !Following && _vis.Count > 0;
+            _anchorId = -1;
+            if (keepPlace)
+            {
+                UpdateTops();
+                int top = FirstAtOrBelow(Math.Max(0f, _lastScrollY), _vis.Count);
+                if (top < _vis.Count)
+                {
+                    _anchorId = _vis[top].Id;
+                    _anchorOffset = _lastScrollY - _tops[top];
+                }
+            }
             _seenRoutes = routes;
             _seenTab = tab;
             _seenSearch = search;
@@ -501,7 +523,8 @@ internal sealed class ChatFace : IImGuiPanel
             _heightsFrom = _measuredFrom = _vis.Count;   // all unmeasured: MeasureLines, newest first
             _topsDirty = true;
             ClearSelection();
-            _stick = true;   // a rebuild re-pins to the newest line
+            // A rebuild re-pins to the newest line, unless it keeps the place being read.
+            _stick = _anchorId < 0;
             _droppedAbove = 0f;
             return;
         }
@@ -509,21 +532,7 @@ internal sealed class ChatFace : IImGuiPanel
         _seenLinesVersion = snap.Version;
 
         // Drop lines the source no longer keeps, then add the new ones.
-        long oldest = lines.Length > 0 ? lines[0].Id : long.MaxValue;
-        int drop = 0;
-        while (drop < _vis.Count && _vis[drop].Id < oldest) drop++;
-        if (drop > 0 && !_selDragging)
-        {
-            if (!Following)
-                for (int i = 0; i < drop; i++) _droppedAbove += _h[i];
-            _vis.RemoveRange(0, drop);
-            _h.RemoveRange(0, drop);
-            _lay.RemoveRange(0, drop);
-            _heightsFrom = Math.Max(0, _heightsFrom - drop);
-            _measuredFrom = Math.Max(0, _measuredFrom - drop);
-            if (_selAnchor >= 0) { _selAnchor -= drop; _selEnd -= drop; if (_selAnchor < 0 || _selEnd < 0) ClearSelection(); }
-            _topsDirty = true;
-        }
+        if (!_selDragging) DropGone(lines);
         foreach (ChatLine line in lines)
         {
             if (line.Id <= _lastId) continue;
@@ -537,8 +546,84 @@ internal sealed class ChatFace : IImGuiPanel
         }
     }
 
+    /// <summary>
+    /// Removes the shown lines the source no longer keeps: the oldest when the history is full,
+    /// and older automated text from anywhere in it (that has its own budget, ChatHistory.Keep,
+    /// 2026-10-24). Both lists are in Id order. Off-screen lines above the view move it up by
+    /// their height (not following), so what is being read stays put.
+    /// </summary>
+    private void DropGone(ChatLine[] lines)
+    {
+        int n = _vis.Count;
+        if (n == 0) return;
+        UpdateTops();
+        float viewTop = _lastScrollY + _scrollCarry - _droppedAbove;
+        bool following = Following;
+        int j = 0, w = 0, goneHeights = 0, goneMeasured = 0;
+        int anchor = -1, end = -1;
+        float above = 0f;
+        for (int i = 0; i < n; i++)
+        {
+            long id = _vis[i].Id;
+            while (j < lines.Length && lines[j].Id < id) j++;
+            bool kept = j < lines.Length && lines[j].Id == id;
+            if (!kept)
+            {
+                if (i < _heightsFrom) goneHeights++;
+                if (i < _measuredFrom) goneMeasured++;
+                if (!following && _tops[i] < viewTop) above += Math.Min(_h[i], viewTop - _tops[i]);
+                continue;
+            }
+            if (i == _selAnchor) anchor = w;
+            if (i == _selEnd) end = w;
+            if (w != i)
+            {
+                _vis[w] = _vis[i];
+                _h[w] = _h[i];
+                _lay[w] = _lay[i];
+            }
+            w++;
+        }
+        if (w == n) return;
+        _vis.RemoveRange(w, n - w);
+        _h.RemoveRange(w, n - w);
+        _lay.RemoveRange(w, n - w);
+        _heightsFrom = Math.Max(0, _heightsFrom - goneHeights);
+        _measuredFrom = Math.Max(0, _measuredFrom - goneMeasured);
+        if (_selAnchor >= 0)
+        {
+            if (anchor < 0 || end < 0) ClearSelection();
+            else { _selAnchor = anchor; _selEnd = end; }
+        }
+        if (!following) _droppedAbove += above;
+        _topsDirty = true;
+    }
+
     /// <summary>The view follows the newest line (auto-scroll on and not scrolled away).</summary>
     private bool Following => ChatModel.AutoScroll && _stick;
+
+    /// <summary>
+    /// After a rebuild that kept the place (SyncLines): moves the view to the line that was at its
+    /// top (or the next one still shown), through the same path as lines dropping off the top, so
+    /// MeasureLines then keeps it there while the lines above it get their real heights.
+    /// </summary>
+    private void RestoreAnchor()
+    {
+        if (_anchorId < 0) return;
+        long id = _anchorId;
+        _anchorId = -1;
+        UpdateTops();
+        int lo = 0, hi = _vis.Count;   // first line with Id >= id (Ids increase)
+        while (lo < hi)
+        {
+            int mid = (lo + hi) >> 1;
+            if (_vis[mid].Id < id) lo = mid + 1; else hi = mid;
+        }
+        if (lo >= _vis.Count) { _stick = true; return; }   // nothing left below it: back to the newest
+        float target = _tops[lo] + (_vis[lo].Id == id ? _anchorOffset : 0f);
+        _scrollCarry = 0f;
+        _droppedAbove = _lastScrollY - target;   // DrawLines: scroll = last - dropped = target
+    }
 
     private void DrawLines(Vector2 size)
     {
@@ -553,6 +638,7 @@ internal sealed class ChatFace : IImGuiPanel
         // _wrapFix corrects that guess if the child ever reports otherwise.
         float wrapW = Math.Max(20, MathF.Floor(size.X) - ListScrollbarW - 6 + _wrapFix);
         float tsW = showTs ? ImGuiNET.ImGui.CalcTextSize("00:00:00 ").X : 0;
+        RestoreAnchor();
         MeasureLines(font, wrapW, tsW, fontSize, showTs, MathF.Floor(size.Y));
         float total = _tops[_vis.Count];
 
@@ -572,27 +658,38 @@ internal sealed class ChatFace : IImGuiPanel
         // A frame with wheel input over the list leaves the scroll to the wheel (this would
         // override it); a drag-select scrolls the list itself.
         Vector2 listPos = ImGuiNET.ImGui.GetCursorScreenPos();
-        bool wheelHere = ImGuiNET.ImGui.GetIO().MouseWheel != 0f
-            && ImGuiNET.ImGui.IsMouseHoveringRect(listPos, listPos + size, false);
+        Vector2 mousePos = ImGuiNET.ImGui.GetMousePos();
+        bool overList = ImGuiNET.ImGui.IsMouseHoveringRect(listPos, listPos + size, false);
+        float wheel = ImGuiNET.ImGui.GetIO().MouseWheel;
+        bool wheelHere = wheel != 0f && overList;
+        // A press on the scrollbar strip starts a scrollbar drag (ImGui moves the scroll in this
+        // frame's Begin); it lasts while the button is held.
+        if (!ImGuiNET.ImGui.IsMouseDown(ImGuiMouseButton.Left)) _scrollbarDrag = false;
+        else if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Left) && overList && mousePos.X >= listPos.X + size.X - ListScrollbarW - 2)
+            _scrollbarDrag = true;
+        // The player moves the list only with the wheel, the scrollbar or a drag-select past its
+        // edges. (2026-10-24, the chat "jumping to the top": any other change of the scroll was
+        // read as the player's - a hover, a focus change, a re-measure, a clamp - so following
+        // stopped by itself and the view then crept up as old lines left the top.)
+        bool playerScroll = wheelHere || _scrollbarDrag || _selDragging;
         ImGuiNET.ImGui.SetNextWindowContentSize(new Vector2(0f, total));
-        bool compensated = false;
         if (Following)
         {
             _droppedAbove = 0f;
             _scrollCarry = 0f;
-            // Not counted as "our move": a scrollbar drag in this Begin overrides it, and the
-            // check below must see that to stop following.
-            if (!wheelHere && !_selDragging)
+            if (!playerScroll)
                 ImGuiNET.ImGui.SetNextWindowScroll(new Vector2(-1f, total));
         }
-        else if (_droppedAbove != 0f && !wheelHere)
+        else if (!playerScroll)
         {
+            // Not following: the view stays where the player left it, moved only by however much
+            // the lines above it changed (dropped off a full buffer, re-measured), every frame,
+            // so nothing else can move it.
             float target = _lastScrollY + _scrollCarry - _droppedAbove;
             float applied = MathF.Round(Math.Max(0f, target));   // ImGui rounds scroll to whole pixels
             _scrollCarry = target > 0f ? target - applied : 0f;
             ImGuiNET.ImGui.SetNextWindowScroll(new Vector2(-1f, applied));
             _droppedAbove = 0f;
-            compensated = true;
         }
 
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ChildBg, 0u);
@@ -617,16 +714,16 @@ internal sealed class ChatFace : IImGuiPanel
         float textW = Math.Max(20, wrapW - tsW);
         int n = _vis.Count;
 
-        // Following the tail until the user scrolls away from it.
+        // Following the tail until the player scrolls away from it; back at the bottom, it follows again.
         float scrollY = ImGuiNET.ImGui.GetScrollY(), maxY = ImGuiNET.ImGui.GetScrollMaxY();
-        if (compensated) _lastScrollY = scrollY;   // our move, not the user's
-        else if (Math.Abs(scrollY - _lastScrollY) > 0.5f) _scrollCarry = 0f;   // the user's: start afresh
-        // Wheel up over the chat stops following at once; reaching the bottom again resumes it.
-        // Not while it has nothing to scroll: no scroll change would ever turn following back on.
-        if (maxY > 0f && ImGuiNET.ImGui.IsWindowHovered() && ImGuiNET.ImGui.GetIO().MouseWheel > 0f)
-            _stick = false;
-        else if (Math.Abs(scrollY - _lastScrollY) > 0.5f)
-            _stick = scrollY >= maxY - StickThreshold;
+        if (playerScroll)
+        {
+            _scrollCarry = 0f;   // the player's move: start afresh from where it ends
+            _droppedAbove = 0f;
+            if (maxY <= 0f) _stick = true;   // nothing to scroll
+            else if (wheelHere && wheel > 0f) _stick = false;   // wheel up stops following at once
+            else _stick = scrollY >= maxY - StickThreshold;
+        }
 
         Vector2 basePos = ImGuiNET.ImGui.GetCursorScreenPos();
         float viewH = ImGuiNET.ImGui.GetWindowHeight();
@@ -1168,7 +1265,7 @@ internal sealed class ChatFace : IImGuiPanel
             ChatModel.SetHistoryLines(_historyEdit);
             _historyEdit = 0;
         }
-        ImGuiNET.ImGui.SetItemTooltip("How many lines the chat keeps, all tabs together (default 2000).\n" +
+        SafeImGui.SetItemTooltip("How many lines the chat keeps, all tabs together (default 2000).\n" +
             "About 2 MB of memory per 1000 lines. Lowering it drops the oldest lines.");
         ImGuiNET.ImGui.PopItemWidth();
 
@@ -1208,7 +1305,7 @@ internal sealed class ChatFace : IImGuiPanel
             ChatModel.LogEnabled = log;
             ChatModel.SaveSettings();
         }
-        ImGuiNET.ImGui.SetItemTooltip("%%AppData%%\\RynthCore\\ChatLogs\\<character>.log"); // a format string: %% is a literal %
+        SafeImGui.SetItemTooltip("%AppData%\\RynthCore\\ChatLogs\\<character>.log"); // SafeImGui doubles the % itself
         bool through = ChatModel.CtrlGatedClickThrough;
         if (ImGuiNET.ImGui.Checkbox("Click-through (hold Ctrl to interact)", ref through))
             ChatModel.SetCtrlGatedClickThrough(through);

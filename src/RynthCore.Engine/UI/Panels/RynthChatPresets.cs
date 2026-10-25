@@ -1,14 +1,19 @@
 // ============================================================================
 //  RynthCore.Engine — UI/Panels/RynthChatPresets.cs
 //  Canned ("standard") RynthChat filters, modelled on UtilityBelt-IT's
-//  ChatFilter / Mag ChatFilter categories. Each preset is a tick-box in the
-//  ChatFilters panel that hides its lines or moves them to a tab.
+//  ChatFilterTool (Mag ChatFilter parity) plus the classic ChatFilter /
+//  ChatHandler categories. Each preset is a tick-box in the ChatFilters
+//  panel that hides its lines or moves them to a tab.
 //
 //  Presets match the raw line text (no timestamp / sender prefix). Most are
 //  limited to non-chat channels so a player typing the same words in Local or
 //  a channel is never eaten. ChatRouter evaluates them on the plugin pump
 //  (after the custom rules); editors change Enabled / Tab from any thread and
 //  then call ChatModel.FiltersChanged so every kept line is routed again.
+//
+//  Not ported as text presets (need Decal WorldFilter / StatusTextIntercept):
+//  VendorTells, MonsterTell, NpcChatter, StatusTextAll. Use custom rules if
+//  you want a blunt "tells you" / "says," filter.
 // ============================================================================
 
 using System;
@@ -87,7 +92,7 @@ internal static class RynthChatPresets
         @"|Your killing blow nearly turns .+ inside-out!|The thunder of crushing .+ is followed by the deafening silence of death!" +
         @"|Your attack stops .+ cold!)";
 
-    // Optional combat prefixes such as "Critical hit! " / "Sneak Attack! ".
+    // Optional combat prefixes ("Critical hit! ", "Sneak Attack! " ...): the older presets' broad form.
     private const string HitPrefix = @"^(?:[A-Z][\w ]{2,20}! )*";
 
     // The new damage presets (melee_dealt ... magic_taken) name their prefixes: "Critical hit! ",
@@ -109,7 +114,7 @@ internal static class RynthChatPresets
 
     private static readonly Preset[] _all =
     {
-        // ── Combat ────────────────────────────────────────────────────────
+        // ── Combat (specific before umbrella: FirstMatch order) ───────────
         new("combat.attack_evades", "Combat", "Your attacks evaded",
             "A monster evades your melee or missile attack.",
             "Drudge Slinker evaded your attack.", Scope.NotPlayerChat, @" evaded your attack\.\s*$"),
@@ -311,7 +316,7 @@ internal static class RynthChatPresets
         new("npc.arbitrator", "NPCs", "Master Arbitrator (Colosseum)",
             "All Master Arbitrator speech and the fellowship-lock notice.",
             "Master Arbitrator tells you, \"You shall be known…\"", Scope.Any,
-            @"^Master Arbitrator (?:says|tells you)|^Your fellowship is now locked\..*you have 15 minutes to be recruited"),
+            @"^Master Arbitrator (?:says|tells you)|^\[Fellowship\] Master Arbitrator |^Your fellowship is now locked\..*you have 15 minutes to be recruited"),
 
         // ── Pets (ACE custom combat pets) ─────────────────────────────────
         new("pet.hit", "Pets", "Pet hits",

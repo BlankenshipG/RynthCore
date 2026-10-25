@@ -55,6 +55,9 @@ internal sealed partial class InventoryFace
         if (_attrLoaded) return;
         _attrLoaded = true;
         _attr = InventoryAttributeFilter.Parse(InventorySettingsStore.AttrFilter);
+        // The tools-row button opens the checklist filter now (InventoryFace.LikeFilter.cs, 2026-10-24):
+        // the old rule list stays saved but no longer hides items.
+        _attr.Enabled = false;
     }
 
     /// <summary>An appraisal rule is on and a second has passed: rebuild to pick up new identifies.</summary>
@@ -111,22 +114,13 @@ internal sealed partial class InventoryFace
 
     private void AttrFilterButton(Vector2 pos)
     {
-        bool on = AttrOn;
+        bool on = LikeOn;
         if (IconButton("##inv_attr", PhosphorIcons.ListChecks, pos, new Vector2(22, 22), on ? Teal : Mute,
                 on ? Selected : BtnFill, border: on ? Teal : 0u, font: UiFont.Ui11))
-            _openAttr = true;
-        if (!ImGuiNET.ImGui.IsItemHovered()) return;
-        if (_attrSummaryVersion != _attr.Version)
-        {
-            _attrSummaryVersion = _attr.Version;
-            _attrSummary = _attr.Rules.Count == 0 ? string.Empty : _attr.Summary();
-        }
-        string tip = on ? "Attribute filter on: " + _attrSummary
-            : _attr.Rules.Count > 0 ? "Attribute filter off (" + _attrSummary + ")"
-            : "Filter by item attributes (armor level, ratings, spells, slot...)";
-        if (on && _unidentified.Count > 0)
-            tip += "\n" + _unidentified.Count.ToString(CultureInfo.InvariantCulture) + " hidden until identified.";
-        SafeImGui.SetTooltip(tip);
+            OpenBlankFilter();
+        if (ImGuiNET.ImGui.IsItemHovered())
+            SafeImGui.SetTooltip(on ? "Filter on: " + _likeLabel + " (click to make a new one; the X on its bar clears it)"
+                : "Filter by item attributes: the same checklist as Add to loot profile, with spell and cantrip lists");
     }
 
     // ── The editor popup ────────────────────────────────────────────────

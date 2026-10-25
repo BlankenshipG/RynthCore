@@ -40,6 +40,9 @@ namespace RynthCore.Engine.Compatibility;
 ///         — read / trade with the open vendor through the engine's vendor
 ///         primitives (<see cref="VendorTrade"/>); a manual test hook for the
 ///         plugin API. Replies go to chat from the main-thread drain and to the log.</item>
+///   <item><c>/rc chatlinkprobe [seconds|off]</c> — a temporary probe (<see cref="ChatLinkProbe"/>):
+///         coordinates in AC's chat window become AC links and every chat UI message is logged,
+///         to find how AC reports a click on a link (native coordinate links, no Decal).</item>
 ///   <item><c>/rc chathold [on|off|status]</c> — incoming chat waits for the plugins'
 ///         verdict before AC prints it, so a line a plugin eats is kept out of AC's chat
 ///         window too (<see cref="ChatCallbackHooks"/>). On at every start; not saved.</item>
@@ -161,6 +164,14 @@ internal static class RynthCoreChatCommands
         {
             try { HandleUiCommand(sub.Length > 2 ? sub.Substring(3).Trim() : string.Empty); }
             catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc ui failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc chatlinkprobe [seconds|off]: coordinates in AC's chat as links + chat UI messages logged
+        if (IsVerb(sub, "chatlinkprobe", out string probeArgs))
+        {
+            try { Reply(ChatLinkProbe.Command(probeArgs)); }
+            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc chatlinkprobe failed - {ex.GetType().Name}: {ex.Message}"); }
             return true;
         }
 
@@ -364,13 +375,15 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
-        // /rc miniremote [show|hide|toggle|tab <tab>|section <id>] : the ImGui Mini Remote panel, like
-        // its bar button (RynthAi's dashboard and "/ra hub" use show / hide). "tab" opens it on one of
-        // its tabs (RynthAi's pets, crafting; RynthILT's gear, games; none = the remote). Quests are
-        // RynthOracle's window (/ro) since 2026-10-13. Since 2026.10.5.54 the old "character" tab
-        // (the generic overview) opens RynthOracle's Character tab (/ro character). Infinite
-        // Leaftide's own tabs ("charms", "banking", "gear", "games") stay RynthILT's, in this window.
-        // "section" opens it on one of its sections (char = Session Stats, map, skills, ...; "remote" = the remote).
+        // /rc miniremote [show|hide|toggle|tab <tab>|section <id>|undock|dock] : the ImGui Mini Remote
+        // panel, like its bar button (RynthAi's dashboard and "/ra hub" use show / hide). "tab" opens
+        // it on one of its tabs (RynthAi's pets, crafting; RynthILT's gear, games; none = the remote).
+        // Quests are RynthOracle's window (/ro) since 2026-10-13. Since 2026.10.5.54 the old
+        // "character" and "charms" tabs open RynthOracle's Character tab (/ro character) and
+        // "banking" opens RynthInventory's Global Inventory on its Banking tab (/ginv bank).
+        // "section" opens it on one of its sections (char = Session Stats, map, skills, ...;
+        // "remote" = the remote). "undock" / "popout" / "float" opens (or keeps) it in its own
+        // window so Options has room; "dock" / "redock" puts it back in the client.
         if (IsVerb(sub, "miniremote", out string remoteArgs) || IsVerb(sub, "remote", out remoteArgs))
         {
             if (IsVerb(remoteArgs, "tab", out string moved) && MovedTabCommand(moved) is string movedTo)
@@ -405,8 +418,17 @@ internal static class RynthCoreChatCommands
                     ImGuiBackend.ImGuiPanelHost.Open(ImGuiBackend.Panels.MiniRemoteFace.Title);
                 }
             }
+            else if (IsMiniRemoteDockVerb(remoteArgs, out bool undock))
+            {
+                if (!UI.PanelRouter.CanPopOut)
+                    Reply("Mini Remote can't undock while the ImGui layer is off.");
+                else if (undock)
+                    ImGuiBackend.Panels.MiniRemoteFace.OpenUndocked();
+                else
+                    ImGuiBackend.Panels.MiniRemoteFace.DockOrOpen();
+            }
             else if (!TryPanelMode(remoteArgs, out bool? show))
-                Reply("Usage: /rc miniremote [show|hide|toggle|tab <tab>|section <id>]");
+                Reply("Usage: /rc miniremote [show|hide|toggle|tab <tab>|section <id>|undock|dock]");
             else
                 SetPanelOpen(ImGuiBackend.Panels.MiniRemoteFace.Title, show);
             return true;
@@ -612,6 +634,49 @@ internal static class RynthCoreChatCommands
             return true;
         }
 
+        // /rc window reset|save|fill on|off (UI/AcWindowChrome.cs):
+        //   reset - a stuck AC window (borderless too small, off-screen) back to a normal framed,
+        //           resizable one, centred; borderless is turned off and the saved spot replaced;
+        //   save  - save where the window is now (framed or borderless) for the next launch;
+        //   fill  - Settings > Display "Borderless Fills Monitor".
+        if (IsVerb(sub, "window", out string windowArgs))
+        {
+            string wa = windowArgs.ToLowerInvariant();
+            if (wa == "reset")
+                Reply(UI.AcWindowChrome.ResetWindow());
+            else if (wa == "save")
+                Reply(UI.AcWindowChrome.SaveWindowNow());
+            else if (wa is "fill on" or "fill off")
+            {
+                Plugins.EngineSettings.BorderlessFillMonitor = wa == "fill on";
+                Graphics.AcGraphics.DisplayTogglesChanged();
+                UI.AcWindowChrome.ApplyFillMonitorChanged(UI.AcWindowChrome.ResolveGameHwndForSettings());
+                Reply(Plugins.EngineSettings.BorderlessFillMonitor
+                    ? "Borderless fills the monitor."
+                    : "Borderless keeps the framed window's size and spot (set it framed, then turn borderless on).");
+            }
+            else
+                Reply("Usage: /rc window reset | save | fill on|off  (reset: borderless off, a normal resizable window, centred)");
+            return true;
+        }
+        // /rc borderless on|off : the Settings > Display toggle (on fills the monitor).
+        if (IsVerb(sub, "borderless", out string borderlessArgs))
+        {
+            if (borderlessArgs.Equals("on", StringComparison.OrdinalIgnoreCase)
+                || borderlessArgs.Equals("off", StringComparison.OrdinalIgnoreCase))
+            {
+                Plugins.EngineSettings.BorderlessWindowed = borderlessArgs.Equals("on", StringComparison.OrdinalIgnoreCase);
+                Graphics.AcGraphics.DisplayTogglesChanged();
+                UI.AcWindowChrome.ApplyBorderlessDesired(UI.AcWindowChrome.ResolveGameHwndForSettings());
+                Reply("Borderless windowed " + (Plugins.EngineSettings.BorderlessWindowed
+                    ? (Plugins.EngineSettings.BorderlessFillMonitor ? "on (fills the monitor)." : "on (kept size).")
+                    : "off."));
+            }
+            else
+                Reply("Usage: /rc borderless on|off  (stuck? /rc window reset)");
+            return true;
+        }
+
         switch (sub.ToLowerInvariant())
         {
             case "rl":
@@ -620,8 +685,8 @@ internal static class RynthCoreChatCommands
                 // loader's reload shuts this engine down, and this handler runs
                 // inside AC's outgoing-chat hook.
                 RynthLog.Compat("RynthCoreChatCommands: /rc rl — engine reload requested.");
-                EntryPoint.NoteManualReload();   // by hand: not held for combat (EntryPoint.DeferReloadWhilePluginsObject)
-                System.Threading.ThreadPool.UnsafeQueueUserWorkItem(static _ => EngineLifecycle.SignalReload(), null);
+                // In-world: loader holds until logout; skips combat deferral once out of world.
+                System.Threading.ThreadPool.UnsafeQueueUserWorkItem(static _ => EntryPoint.RequestManualReload("/rc rl"), null);
                 return true;
 
             case "inv":
@@ -634,7 +699,7 @@ internal static class RynthCoreChatCommands
                 return true;
 
             case "sense":
-                // The ImGui Sense panel (open/close), like its bar button.
+                // Sense left the top bar (under RynthNav); same PanelRouter path as before.
                 if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SenseFace.Title))
                     Reply("The Sense panel isn't available (the ImGui layer is off?).");
                 else
@@ -657,6 +722,14 @@ internal static class RynthCoreChatCommands
                     Reply("The Item Count panel isn't available (the ImGui layer is off?).");
                 else
                     UI.PanelRouter.Toggle(ImGuiBackend.Panels.ItemCountFace.Title);
+                return true;
+
+            case "radar":
+                // Radar left the top bar (under RynthNav); same PanelRouter path as before.
+                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.RadarFace.Title))
+                    Reply("The Radar panel isn't available (the ImGui layer is off?).");
+                else
+                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.RadarFace.Title);
                 return true;
 
             case "resetbar":
@@ -1162,6 +1235,20 @@ internal static class RynthCoreChatCommands
         }
     }
 
+    /// <summary>
+    /// Mini Remote dock verbs: undock / popout / float → true; dock / redock → false.
+    /// </summary>
+    private static bool IsMiniRemoteDockVerb(string args, out bool undock)
+    {
+        undock = false;
+        switch (args.Trim().ToLowerInvariant())
+        {
+            case "undock": case "popout": case "float": undock = true; return true;
+            case "dock": case "redock": return true;
+            default: return false;
+        }
+    }
+
     /// <summary>Opens (true), closes (false) or toggles (null) an ImGui panel, like its bar button.</summary>
     private static void SetPanelOpen(string title, bool? show)
     {
@@ -1209,13 +1296,14 @@ internal static class RynthCoreChatCommands
     }
 
     /// <summary>
-    /// The command for a Mini Remote tab that moved out (2026.10.5.54): "character" (the generic
-    /// overview) is RynthOracle's Character tab. Null for a tab still in the Mini Remote, which
-    /// includes RynthILT's Leaftide tabs (Charms, Banking, Gear, Games): those stay RynthILT's.
+    /// The command for a Mini Remote tab that moved out (2026.10.5.54): "character" and "charms"
+    /// are RynthOracle's Character tab, "banking" is RynthInventory's Global Inventory Banking tab.
+    /// Null for a tab still in the Mini Remote.
     /// </summary>
     internal static string? MovedTabCommand(string tab) => tab.Trim().ToLowerInvariant() switch
     {
-        "character" or "char" => "/ro character",
+        "character" or "char" or "charms" => "/ro character",
+        "banking" or "bank" => "/ginv bank",
         _ => null,
     };
 

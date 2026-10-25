@@ -67,6 +67,8 @@ internal static class D3D9Bootstrapper
                 while (GetModuleHandleA("d3d9.dll") == IntPtr.Zero)
                     if (!EngineThreads.Sleep(PollIntervalMs))
                         return;
+                DxvkDetection.EnsureProbed();
+                DxvkDetection.ApplyOverlayPolicy();
                 RynthLog.D3D9("D3D9Bootstrapper: Decal in the process - discovering EndScene without creating a device.");
                 EndSceneHook.InstallWithoutDevice("decal-live-device");
                 return;
@@ -79,6 +81,9 @@ internal static class D3D9Bootstrapper
             IntPtr earlyModule = GetModuleHandleA("d3d9.dll");
             if (earlyModule != IntPtr.Zero)
             {
+                // Log DXVK / non-system d3d9 early so smoke greps see it before EndScene.
+                DxvkDetection.EnsureProbed();
+                DxvkDetection.ApplyOverlayPolicy();
                 RynthLog.D3D9("D3D9Bootstrapper: d3d9.dll loaded — discovering EndScene via NULLREF device.");
                 Compatibility.MemoryUse.Mark("D3D9 bootstrap: NULLREF device for the vtable");
                 EndSceneHook.Install("post-login-vtable");

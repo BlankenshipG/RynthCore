@@ -67,4 +67,45 @@ internal static class ChatHistory
         Array.Copy(lines, lines.Length - max, kept, 0, max);
         return kept;
     }
+
+    /// <summary>
+    /// The newest <paramref name="max"/> ordinary lines and, on their own budget, the newest
+    /// <paramref name="max"/> <paramref name="extra"/> ones (automated system text: a /myquests
+    /// reply is 2,000+ lines on a well-played character, and on the shared budget each of the
+    /// Meta Manager's polls pushed every line people read out of the history, 2026-10-24),
+    /// in their order. Null when nothing is dropped.
+    /// </summary>
+    public static T[]? Keep<T>(IReadOnlyList<T> lines, int max, Func<T, bool> extra)
+    {
+        max = Math.Max(1, max);
+        if (lines.Count <= max) return null;
+        int normal = 0, auto = 0, from = lines.Count;
+        var keep = new bool[lines.Count];
+        int kept = 0;
+        for (int i = lines.Count - 1; i >= 0; i--)
+        {
+            bool x = extra(lines[i]);
+            if (x ? auto >= max : normal >= max) continue;
+            if (x) auto++; else normal++;
+            keep[i] = true;
+            kept++;
+            from = i;
+            if (normal >= max && auto >= max) break;
+        }
+        if (kept == lines.Count) return null;
+        var result = new T[kept];
+        int w = 0;
+        for (int i = from; i < lines.Count; i++)
+            if (keep[i]) result[w++] = lines[i];
+        return result;
+    }
+
+    /// <summary><see cref="Merge{T}"/> with automated lines on their own budget (<see cref="Keep{T}"/>).</summary>
+    public static T[] Merge<T>(T[] old, IReadOnlyList<T> added, int max, Func<T, bool> extra)
+    {
+        var all = new T[old.Length + added.Count];
+        Array.Copy(old, all, old.Length);
+        for (int i = 0; i < added.Count; i++) all[old.Length + i] = added[i];
+        return Keep(all, max, extra) ?? all;
+    }
 }

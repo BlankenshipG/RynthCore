@@ -26,6 +26,7 @@ internal static unsafe class Program
         InitImGui();
         ScrollChecks();
         HistoryChecks();
+        AutomatedChecks();
         Memory();
         Cpu();
         Console.WriteLine();
@@ -464,6 +465,54 @@ internal static unsafe class Program
         _checks++;
         if (!ok) _failed++;
         Console.WriteLine($"  {(ok ? "ok  " : "FAIL")} {what}: {detail}");
+    }
+
+    /// <summary>
+    /// Automated system text (2026-10-19): RynthChat marks it ("auto"), and the router shows it in
+    /// the System tab only, unless a rule placed it or the setting is off.
+    /// </summary>
+    private static void AutomatedChecks()
+    {
+        Console.WriteLine();
+        Console.WriteLine("Automated system text checks:");
+        const int Broadcast = 0x00, Say = 0x02, AdminTell = 0x1F, Notice = 0x1A;
+        var router = new ChatRouter(Array.Empty<ChatFilterRule>(), null, "Drakkon", countHits: false, automatedToSystem: true);
+        var line = new ChatLine(1, "08:00:00", "System", Broadcast, null, "Dynamic_1_ANND! - 1 solves (1719432000)\"Dynamic\" 1 0") { Automated = true };
+        ChatRoute route = router.Evaluate(line, null);
+        Check("an automated line shows in System only", route.ShowsIn("System", "System") && !route.ShowsIn("All", "System"), "");
+        var other = new ChatLine(2, "08:00:00", "Other", Notice, null, "flagone") { Automated = true };
+        ChatRoute r2 = router.Evaluate(other, null);
+        Check("an automated line from another channel goes to System, not All or Other",
+            r2.ShowsIn("System", "Other") && !r2.ShowsIn("All", "Other") && !r2.ShowsIn("Other", "Other"), "");
+        var plain = new ChatLine(3, "08:00:00", "System", Broadcast, null, "You feel a chill.");
+        Check("a line not marked automated still shows under All", router.Evaluate(plain, null).ShowsIn("All", "System"), "");
+        var off = new ChatRouter(Array.Empty<ChatFilterRule>(), null, "Drakkon", countHits: false, automatedToSystem: false);
+        Check("setting off: automated lines show under All", off.Evaluate(line, null).ShowsIn("All", "System"), "");
+        var move = new ChatFilterRule { Pattern = "solves", Tab = "Quests", Action = ChatRuleAction.Move };
+        move.Recompile();
+        var ruled = new ChatRouter(new[] { move }, null, "Drakkon", countHits: false, automatedToSystem: true);
+        ChatRoute r3 = ruled.Evaluate(line, null);
+        Check("a rule that moves it still decides first", r3.ShowsIn("Quests", "System") && !r3.ShowsIn("System", "System"), "");
+#if HAVE_RYNTHCHAT
+        Check("classifier: /myquests and /qb lines are automated (system types only)",
+            RynthCore.Plugin.RynthChat.ChatClassifier.IsAutomatedText("bigflag00001 - 3 solves (1719432000)\"Q\" -1 0", Broadcast)
+            && RynthCore.Plugin.RynthChat.ChatClassifier.IsAutomatedText("Your current quest bonus count: 15,234", Broadcast)
+            && RynthCore.Plugin.RynthChat.ChatClassifier.IsAutomatedText("Welcome to Asheron's Call\n  powered by ACEmulator", Broadcast)
+            && !RynthCore.Plugin.RynthChat.ChatClassifier.IsAutomatedText("bigflag00001 - 3 solves (1719432000)\"Q\" -1 0", Say)
+            && !RynthCore.Plugin.RynthChat.ChatClassifier.IsAutomatedText("Your current quest bonus count: 1", AdminTell), "");
+        var b = new RynthCore.Plugin.RynthChat.ChatBuffer(100);
+        b.Add("Welcome back, the server restarts at noon.", Broadcast, loginBurst: true);
+        b.Add("Bob says, \"hi\"", Say, loginBurst: true);
+        b.Add("An admin tells you, \"hello\"", AdminTell, loginBurst: true);
+        b.Add("You feel a chill.", Broadcast, loginBurst: false);
+        b.Add("qbflagthree", Notice);
+        bool markedWrong = b.NoteEaten("not the newest line");
+        bool marked = b.NoteEaten("qbflagthree");
+        bool[] autos = JsonSerializer.Deserialize(b.BuildJson(0), RynthChatJsonContext.Default.RynthChatLineDtoArray)!.Select(d => d.Auto).ToArray();
+        Check("buffer: login-burst system text is automated; speech, an admin's tell and later text aren't",
+            autos.Length == 5 && autos[0] && !autos[1] && !autos[2] && !autos[3], string.Join(",", autos));
+        Check("buffer: an eaten line is marked when it is the newest; other text isn't", marked && !markedWrong && autos[4], "");
+#endif
     }
 
     /// <summary>ChatHistory's arithmetic and RynthChat's resizable ring (newest kept, seq untouched).</summary>

@@ -43,6 +43,7 @@ using ImGuiNET;
 using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.Net;
 using RynthCore.Engine.UI;
+using RynthCore.Engine.UI.ScriptWindows;
 using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
@@ -179,6 +180,7 @@ internal sealed partial class InventoryFace
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(o.X + 6, toolsBottom + 4));
             Tools(w - 12);
             Chips(w - 12);
+            LikeBar(w - 12);
             toolsBottom = ImGuiNET.ImGui.GetCursorScreenPos().Y;
         }
         float ry = toolsBottom - TitleH * s;          // where retail y = 0 lands
@@ -213,6 +215,19 @@ internal sealed partial class InventoryFace
         dl.AddImage(tex, o, o + new Vector2(w, band), Vector2.Zero, new Vector2(1, TitleH / ArtH));
         if (h > band)
             dl.AddImage(tex, o + new Vector2(0, band), o + new Vector2(w, h), new Vector2(0, TitleH / ArtH), Vector2.One);
+    }
+
+    /// <summary>The Classic title bar's "more" menu: open or close the panels related to the inventory.</summary>
+    private static void RelatedPanelsMenu(bool remoteOpen, bool sortOpen, bool countOpen, bool ginvOpen)
+    {
+        if (!ImGuiNET.ImGui.BeginPopup("##inv_related_menu")) return;
+        if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote", remoteOpen)) ToggleMiniRemote();
+        if (ImGuiNET.ImGui.MenuItem("RynthSort", "/rsort", sortOpen)) ToggleRynthSort();
+        if (!ScriptWindowRegistry.Has(RynthSortKey)) ImGuiNET.ImGui.SetItemTooltip("Needs the RynthSort plugin");
+        if (ImGuiNET.ImGui.MenuItem("Item Count", "/rc itemcount", countOpen)) ToggleItemCount();
+        if (ImGuiNET.ImGui.MenuItem("Global Inventory", "/ginv", ginvOpen)) ToggleGlobalInventory();
+        if (!ScriptWindowRegistry.Has(GlobalInventoryKey)) ImGuiNET.ImGui.SetItemTooltip("Needs the RynthInventory plugin");
+        ImGuiNET.ImGui.EndPopup();
     }
 
     private void TitleBar(InventoryView view, ImDrawListPtr dl, Vector2 o, float w, float s)

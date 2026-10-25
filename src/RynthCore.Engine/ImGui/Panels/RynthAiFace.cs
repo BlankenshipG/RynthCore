@@ -1042,6 +1042,13 @@ internal sealed partial class RynthAiFace : IImGuiPanel
         RynthAiCommands.ApplyRemoteCommand("hub", section.Length > 0 ? "tab " + section : "tab");
     }
 
+    /// <summary>Opens Mini Remote undocked (floating) on the remote so Options has room.</summary>
+    private static void ShowMiniRemoteUndocked()
+    {
+        MiniRemoteFace.OpenUndocked();
+        RynthAiCommands.ApplyRemoteCommand("hub", "tab");
+    }
+
     /// <summary>
     /// RynthOracle's Character tab ("/ro character"), or the Mini Remote's Session Stats section
     /// when RynthOracle isn't loaded. Every generic "Character" link goes here (Leaftide's Charms
@@ -1117,8 +1124,15 @@ internal sealed partial class RynthAiFace : IImGuiPanel
             SafeImGui.SetItemTooltip(hasOracle
                 ? "RynthOracle's Character tab: level, XP and session rates. Infinite Leaftide's charms and banking are the Mini Remote's ILT tabs (Server, below)."
                 : "RynthOracle's Character tab (RynthOracle isn't loaded).");
-            if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote", ImGuiPanelHost.IsOpen(MiniRemoteFace.Title)))
+            if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote", ImGuiPanelHost.IsOpen(MiniRemoteFace.Title) && !ImGuiPanelHost.IsPopped(MiniRemoteFace.Title)))
                 ShowMiniRemoteTab("");
+            if (PanelRouter.CanPopOut)
+            {
+                if (ImGuiNET.ImGui.MenuItem("Mini Remote (undocked)", "/rc miniremote undock",
+                        ImGuiPanelHost.IsOpen(MiniRemoteFace.Title) && ImGuiPanelHost.IsPopped(MiniRemoteFace.Title)))
+                    ShowMiniRemoteUndocked();
+                SafeImGui.SetItemTooltip("Open Mini Remote in its own floating window (room for Options / sections). Dock back from the title ↙, Float/Dock, or Options.");
+            }
             if (ImGuiNET.ImGui.MenuItem("Spells", "/rc spells"))
                 RynthAiCommands.ApplyRemoteCommand("spells", "toggle");
             ImGuiNET.ImGui.SetItemTooltip("RynthAi Spells: the spell catalog and buff profiles.");
@@ -1155,6 +1169,19 @@ internal sealed partial class RynthAiFace : IImGuiPanel
                 ? "Every character's saved packs and storage (RynthInventory)."
                 : "Global Inventory (RynthInventory isn't loaded).");
             PanelMenuItem("Characters", "/rc characters");   // RynthNet's window (a plugin window since 2026-10-21)
+            // Radar / Sense live under RynthNav (header toggles); keep Char menu linkage.
+            PanelMenuItem(RadarFace.Title, "/rc radar");
+            PanelMenuItem(SenseFace.Title, "/rc sense");
+            PanelMenuItem(RynthNavFace.Title, "/rc ui open RynthNav");
+            // Vision / Tracker / ILT live under Oracle (companion strip); keep Char menu linkage.
+            if (ImGuiPanelHost.HasFace(VisionFace.Title))
+                PanelMenuItem(VisionFace.Title, "/rc ui open Vision");
+            if (ImGuiPanelHost.HasFace("Tracker"))
+                PanelMenuItem("Tracker", "/rc ui open Tracker");
+            if (ImGuiPanelHost.HasFace(BountiesFace.Title))
+                PanelMenuItem(BountiesFace.Title, "/rc ui open " + BountiesFace.Title);
+            if (ImGuiPanelHost.HasFace(GuardianFace.Title))
+                PanelMenuItem(GuardianFace.Title, "/rc ui open " + GuardianFace.Title);
 
             UI.ServerMenus.DrawImGuiMenu(separatorFirst: true);
         }

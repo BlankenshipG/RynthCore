@@ -48,9 +48,6 @@ internal static class ItemsPanel
     private static readonly IBrush ColBtnBord = new SolidColorBrush(Color.FromRgb(0x26, 0x40, 0x59));
     private static readonly IBrush ColHdrBg  = new SolidColorBrush(Color.FromRgb(0x1A, 0x2E, 0x42));
 
-    private static readonly string[] Elements =
-        { "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether" };
-
     private static readonly string[] ConsumableTypes =
         { "General", "Lockpick", "HealthKit", "HealthPotion", "ManaPotion", "StaminaPotion", "ManaStone", "Stamina", "Pet" };
 
@@ -523,8 +520,9 @@ internal static class ItemsPanel
         Grid.SetColumn(nameTb, 0);
         grid.Children.Add(nameTb);
 
-        // Element picker button
-        int elemIdx = Array.IndexOf(Elements, w.Element);
+        // Element picker button (missile weapons and ammo can also be Prismatic: universal damage).
+        string[] choices = UI.Data.ItemsCommands.ElementsFor(w.Kind);
+        int elemIdx = Array.IndexOf(choices, w.Element);
         if (elemIdx < 0) elemIdx = 0;
         var elemBtn = new Button
         {
@@ -540,9 +538,9 @@ internal static class ItemsPanel
         };
         elemBtn.Click += (_, _) =>
         {
-            showPicker(elemBtn, Elements, Array.IndexOf(Elements, w.Element), picked =>
+            showPicker(elemBtn, choices, Array.IndexOf(choices, w.Element), picked =>
             {
-                w.Element = Elements[picked];
+                w.Element = choices[picked];
                 elemBtn.Content = w.Element;
                 onChanged();
             });

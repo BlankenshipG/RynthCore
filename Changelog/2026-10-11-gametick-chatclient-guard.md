@@ -44,3 +44,13 @@ AC's main thread:
 - An x86 harness against the new DLL: a clean call returns its value, a null read is caught and
   attributed to the right module, and a call after the caught fault works. Version reports 4.
 - Not yet seen in game: the chat-server fault can't be reproduced on demand.
+
+## Installed
+
+- Published to `C:\Games\RynthCore\Runtime` with `Publish-EngineCoreClr.ps1 -AllowBehind`
+  (engine file version 2026.10.5.38, plus the loader, shim and trampoline v4). The old trampoline,
+  loader and shim were in use and were moved aside.
+- Clients 8396 and 48400 hot-reloaded to 2026.10.5.38 (gen 2) at 23:34:56. They keep the v3
+  trampoline until they restart, so the guard is off for them until then.
+- Previous engine: `C:\Games\RynthCore\PreviousReleases\2026.10.5.36-engine`.
+- The full installer 2026.10.5.37 predates this fix.

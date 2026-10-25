@@ -23,7 +23,10 @@
 //  and it can colour the whole line or just the matched text. Order: top to
 //  bottom. Copy rules add up; the first matching Move or Hide decides and
 //  stops the routing. The first matching line colour wins; matched-text
-//  colours add up, a higher rule winning where two overlap.
+//  colours add up, a higher rule winning where two overlap. After the rules
+//  and the standard filters, automated system text (2026-10-19: RynthChat's
+//  "auto" - /myquests and /qb list replies, the login burst, lines a plugin
+//  ate) that nothing placed shows in the System tab only (AutomatedToSystem).
 //
 //  Threads: rules are evaluated ONLY on the pump (ChatSource) - each new line
 //  once, and every kept line again when the rules change (in 8 ms slices, newest
@@ -92,8 +95,7 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
 
     protected internal override void Poll()
     {
-        // Another client saved the shared settings: pick up its rules / filters (every 2 s at most).
-        ChatModel.PollSettingsFile();
+        // The shared settings file is checked by UiDataHub every step (ChatModel.PollSettingsFile).
         try { PollLines(); }
         finally
         {
@@ -167,6 +169,8 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
                                     dto.Sender is { Length: > 0 } s ? StripAcLinks(s, out _) : linkedName, text)
             {
                 Seq = dto.Seq,
+                Automated = dto.Auto,
+                ReplyTab = ChatModel.ReplyTabs.TabFor(dto.Chan ?? "Other", dto.Auto, Environment.TickCount64),
             };
             line.Route = router.Evaluate(line, null);
             if (line.Route.Mention) ChatModel.PumpMentionSound();
@@ -179,7 +183,7 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
         }
 
         ChatLine[] old = Current?.Value ?? Array.Empty<ChatLine>();
-        Publish(ChatHistory.Merge(old, added, maxLines));
+        Publish(ChatHistory.Merge(old, added, maxLines, IsAutomated));
         ChatModel.PumpLog(added);
         RelayRead(added);
     }
@@ -225,11 +229,14 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
         return lo - 1;
     }
 
+    /// <summary>Automated system text (/myquests replies, lines a plugin ate) is kept on its own budget.</summary>
+    private static bool IsAutomated(ChatLine line) => line.Automated;
+
     /// <summary>The setting was lowered: drop the oldest kept lines now, not only when new ones arrive.</summary>
     private void TrimToLength(int maxLines)
     {
         ChatLine[]? kept = Current?.Value;
-        if (kept != null && ChatHistory.Trim(kept, maxLines) is { } trimmed) Publish(trimmed);
+        if (kept != null && ChatHistory.Keep(kept, maxLines, IsAutomated) is { } trimmed) Publish(trimmed);
     }
 
     /// <summary>Tells RynthChat (0.3.0+) the history length once it's bound and whenever the setting moves.</summary>
@@ -421,6 +428,20 @@ internal static class ChatModel
     /// just RynthChat's (ShouldHideInRetail, from PluginManager's held-line verdict).
     /// </summary>
     public static volatile bool HideInRetailChat = true;
+    /// <summary>
+    /// Automated system text (the /myquests and /qb list replies, the login burst, lines a
+    /// plugin ate; ChatLine.Automated) shows in the System tab only, not under All. On by
+    /// default; a rule or standard filter that routes such a line still decides first.
+    /// </summary>
+    public static volatile bool AutomatedToSystem = true;
+
+    /// <summary>Turns <see cref="AutomatedToSystem"/> on or off: the kept lines are routed again, and it saves.</summary>
+    public static void SetAutomatedToSystem(bool on)
+    {
+        if (on == AutomatedToSystem) return;
+        AutomatedToSystem = on;
+        FiltersChanged();
+    }
     /// <summary>A short system beep on a new mention (at most every 3 s).</summary>
     public static volatile bool MentionSound;
     /// <summary>Extra words to highlight, comma-separated.</summary>
@@ -625,11 +646,14 @@ internal static class ChatModel
         return AllTabs().Contains(active, StringComparer.OrdinalIgnoreCase) ? active : "All";
     }
 
+    /// <summary>
+    /// Switches this client's tab. Not saved on its own: the file is every client's, so a tab
+    /// click rewrote everyone's rules. The tab is written with this client's next real change.
+    /// </summary>
     public static void SelectTab(string tab)
     {
         if (string.Equals(ActiveChannel, tab, StringComparison.Ordinal)) return;
         ActiveChannel = tab;
-        SaveSettings();
     }
 
     /// <summary>Creates a tab (or finds the existing one) and switches to it.</summary>
@@ -704,7 +728,12 @@ internal static class ChatModel
     }
 
     /// <summary>Is the line shown under <paramref name="tab"/> (rules applied, no search)?</summary>
-    public static bool LineInTab(ChatLine line, string tab) => line.Route.ShowsIn(tab, line.Channel);
+    public static bool LineInTab(ChatLine line, string tab)
+        => line.Route.ShowsIn(tab, line.Channel)
+           || (line.ReplyTab != null && !line.Route.Hidden && string.Equals(line.ReplyTab, tab, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Where the reply to a command typed in the box also shows (ChatReplyTab).</summary>
+    internal static readonly ChatReplyTab ReplyTabs = new();
 
     public static bool LineVisible(ChatLine line, string tab, string search) =>
         LineInTab(line, tab)
@@ -736,7 +765,7 @@ internal static class ChatModel
         long version = FiltersVersion;
         var cached = _pumpRouter;
         if (cached is { } c && c.Version == version && c.Name == name) return c.Router;
-        var router = new ChatRouter(Filters, BuildMentionRegex(name), name, countHits: true);
+        var router = new ChatRouter(Filters, BuildMentionRegex(name), name, countHits: true, AutomatedToSystem);
         _pumpRouter = (version, name, router);
         return router;
     }
@@ -774,7 +803,7 @@ internal static class ChatModel
     {
         string name = SessionStateRegistry.LastCharacterName;
         if (string.IsNullOrWhiteSpace(name)) name = _pumpName ?? "";
-        return new ChatRouter(Filters, BuildMentionRegex(name.Trim()), name, countHits: false);
+        return new ChatRouter(Filters, BuildMentionRegex(name.Trim()), name, countHits: false, AutomatedToSystem);
     }
 
     private static Regex? BuildMentionRegex(string name)
@@ -1136,6 +1165,8 @@ internal static class ChatModel
         SetInput("", 0, null);
         IntPtr send = SendLinePtr;
         if (text.Length == 0 || send == IntPtr.Zero) return;
+        // A /command's reply (System or Rynth text) also shows in the tab it was typed in.
+        ReplyTabs.NoteSent(text, CurrentTab(), Environment.TickCount64);
         IntPtr ptr = Marshal.StringToHGlobalAnsi(text);
         try { ((delegate* unmanaged[Cdecl]<IntPtr, void>)send)(ptr); }
         finally { Marshal.FreeHGlobal(ptr); }
@@ -1346,13 +1377,30 @@ internal static class ChatModel
     // last write, so its own saves don't count as a change.
     private static readonly SharedFileWatch SettingsWatch = new(pollMs: 2000);
 
+    // The settings text this client's settings in memory come from (its last load, or its own
+    // last write): the base a save merges against when another client changed the file in
+    // between (ChatSettingsMerge).
+    private static string? _baseJson;
+    // A save that took in another client's settings: applied here on the pump thread at the next poll,
+    // unless this client asked for a newer save since (that save merges again and carries its change).
+    private sealed record PendingReload(string Json, long SaveSeq);
+    private static PendingReload? _pendingReload;
+    private static long _saveSeq;
+
     /// <summary>
-    /// Pump thread (ChatSource.Poll): reloads the settings when another client saved the file.
-    /// Rules, standard filters, tabs and display options follow; this client's selected tab stays.
+    /// Pump thread (UiDataHub, every step, chat window open or not): reloads the settings when
+    /// another client saved the file. Rules, standard filters, tabs and display options follow;
+    /// this client's selected tab stays.
     /// </summary>
     internal static void PollSettingsFile()
     {
         if (Volatile.Read(ref _settingsLoaded) == 0) return;
+        PendingReload? merged = Interlocked.Exchange(ref _pendingReload, null);
+        if (merged != null && merged.SaveSeq == Interlocked.Read(ref _saveSeq))
+        {
+            RynthLog.UI("ChatModel: a save took in another client's chat settings; applying them here too.");
+            LoadSettings(merged.Json, reload: true);
+        }
         try
         {
             string? json = SettingsWatch.Changed(Environment.TickCount64, SettingsPath);   // null: nobody else saved
@@ -1410,6 +1458,7 @@ internal static class ChatModel
             ShowTimestamps = dto.ShowTimestamps;
             MentionHighlight = dto.MentionHighlight;
             HideInRetailChat = dto.HideInRetail ?? true;   // absent before 2026-10-16: on
+            AutomatedToSystem = dto.AutomatedToSystem ?? true;   // absent before 2026-10-19: on
             MentionSound = dto.MentionSound;
             MentionWords = dto.MentionWords ?? "";
             HistoryLines = ChatHistory.Clamp(dto.HistoryLines ?? 0);   // absent before 2026-10-11: the default
@@ -1456,6 +1505,7 @@ internal static class ChatModel
                 ActiveChannel = dto.ActiveChannel;
             else if (reload && !AllTabs().Contains(ActiveChannel, StringComparer.OrdinalIgnoreCase))
                 ActiveChannel = "All";   // the tab this client was on was removed elsewhere
+            Volatile.Write(ref _baseJson, json);
         }
         catch (Exception ex) when (reload)
         {
@@ -1498,6 +1548,7 @@ internal static class ChatModel
             ShowTimestamps = ShowTimestamps,
             MentionHighlight = MentionHighlight,
             HideInRetail = HideInRetailChat,
+            AutomatedToSystem = AutomatedToSystem,
             MentionSound = MentionSound,
             MentionWords = MentionWords,
             // Left out at the default, so a file follows the default if it ever changes.
@@ -1512,6 +1563,10 @@ internal static class ChatModel
                 .Select(p => new RynthChatPresetDto { Id = p.Id, Enabled = p.Enabled, Tab = p.Tab.Length > 0 ? p.Tab : null })
                 .ToArray(),
         };
+        // The base is taken with the settings, not at write time: a reload of another client's file
+        // between this call and the write must not make these (older) settings look current.
+        string? baseJson = Volatile.Read(ref _baseJson);
+        long seq = Interlocked.Increment(ref _saveSeq);
         UiBackgroundWriter.Enqueue("persist chat settings", () =>
         {
             lock (SaveLock)
@@ -1524,11 +1579,19 @@ internal static class ChatModel
                 string tmp = $"{path}.{Environment.ProcessId}.tmp";   // every client shares the file
                 try
                 {
-                    string json = JsonSerializer.Serialize(dto, RynthChatJsonContext.Default.RynthChatSettingsDto);
+                    string mine = JsonSerializer.Serialize(dto, RynthChatJsonContext.Default.RynthChatSettingsDto);
+                    string json = MergeWithFile(path, mine, baseJson);
                     // Before the swap: PollSettingsFile must see this text as ours, not another client's.
                     SettingsWatch.Saved(json);
                     File.WriteAllText(tmp, json);
                     File.Move(tmp, path, overwrite: true);
+                    // The base is what this client's settings in memory come from. Its own settings
+                    // written as they are: those. A merge: memory doesn't have the other client's part
+                    // until PollSettingsFile applies it (LoadSettings then moves the base).
+                    if (string.Equals(json, mine, StringComparison.Ordinal))
+                        Volatile.Write(ref _baseJson, json);
+                    else
+                        Volatile.Write(ref _pendingReload, new PendingReload(json, seq));
                 }
                 catch
                 {
@@ -1537,5 +1600,32 @@ internal static class ChatModel
                 }
             }
         });
+    }
+
+    /// <summary>
+    /// Writer thread, under SaveLock: <paramref name="mine"/>, or a merge with the file when another
+    /// client saved it after <paramref name="baseJson"/> (this client's last load or write when the
+    /// save was asked for; ChatSettingsMerge). A file that can't be read, or a merge that doesn't
+    /// load back as settings, leaves <paramref name="mine"/>.
+    /// </summary>
+    private static string MergeWithFile(string path, string mine, string? baseJson)
+    {
+        if (baseJson == null || !File.Exists(path)) return mine;
+        string theirs;
+        try { theirs = File.ReadAllText(path); }
+        catch (Exception ex)
+        {
+            RynthLog.UI($"ChatModel: couldn't read the settings before saving ({ex.GetType().Name}); saving this client's.");
+            return mine;
+        }
+        string merged = ChatSettingsMerge.Merge(baseJson, mine, theirs);
+        if (string.Equals(merged, mine, StringComparison.Ordinal)) return mine;
+        try
+        {
+            if (JsonSerializer.Deserialize(merged, RynthChatJsonContext.Default.RynthChatSettingsDto) == null) return mine;
+        }
+        catch (JsonException) { return mine; }
+        RynthLog.UI("ChatModel: another client changed the chat settings since this one read them; saved this client's change on top of theirs.");
+        return merged;
     }
 }

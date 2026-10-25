@@ -66,12 +66,46 @@ internal sealed class RynthNavArrowFace : IImGuiPanel
     private int _scrolledTo = -1;
     private float _requestedH = -1;
 
+    // Auto-close: once the arrow had a target and it went away (you arrived, or it was
+    // cleared elsewhere), the overlay says so for AutoCloseMs and then hides itself. Opened
+    // empty (to type coordinates), it stays until closed.
+    private const long AutoCloseMs = 4000;
+    private bool _hadTarget;
+    private long _targetGoneMs;
+    private string _lastTarget = "";
+
     public void OnShown()
     {
         UiSources.RynthNav.Subscribe();
         UiSources.RynthNav.RequestRefresh();
         _showRoute = false;
         _requestedH = -1;
+        _hadTarget = false;
+        _targetGoneMs = 0;
+    }
+
+    /// <summary>Clears RynthNav's arrow (and stops a walk to it), then hides the overlay.</summary>
+    private static void ClearTarget(RynthNavStatus? st)
+    {
+        if (st?.Goto == true) RynthNavCommands.Move(5);   // stop walking there too
+        RynthNavCommands.Command("arrow clear");
+        ImGuiPanelHost.Close(Title);
+    }
+
+    /// <summary>Tracks the target going away; true when the overlay should hide now.</summary>
+    private bool AutoCloseDue()
+    {
+        if (_read.HasTarget)
+        {
+            _hadTarget = true;
+            _targetGoneMs = 0;
+            _lastTarget = _read.Line1;
+            return false;
+        }
+        if (!_hadTarget) return false;
+        long now = Environment.TickCount64;
+        if (_targetGoneMs == 0) _targetGoneMs = now;
+        return now - _targetGoneMs >= AutoCloseMs;
     }
 
     public void OnHidden() => UiSources.RynthNav.Unsubscribe();
@@ -84,6 +118,13 @@ internal sealed class RynthNavArrowFace : IImGuiPanel
         if (size.X < 40 || size.Y < 30) return;
         RynthNavStatus? st = UiSources.RynthNav.Current?.Value;
         _read.Update(st);
+        if (AutoCloseDue())
+        {
+            _hadTarget = false;
+            ImGuiPanelHost.Close(Title);
+            return;
+        }
+        bool justDone = !_read.HasTarget && _hadTarget;   // arrived or cleared: closing shortly
 
         ImFontPtr bold = ImGuiFonts.Get(UiFont.UiBold11), f10 = ImGuiFonts.Get(UiFont.Ui10), f9 = ImGuiFonts.Get(UiFont.Ui9);
         const float pad = 5, gap = 3;
@@ -111,21 +152,30 @@ internal sealed class RynthNavArrowFace : IImGuiPanel
         // Name, then distance and compass point (the route step on the right of it).
         float tx = origin.X + pad + d + 8, right = origin.X + size.X - pad;
         const float sb = 14;   // the corner buttons: small, for a small panel
-        dl.PushClipRect(new Vector2(tx, origin.Y), new Vector2(right - 2 * sb - 4, origin.Y + size.Y), true);
-        dl.AddText(bold, bold.FontSize, new Vector2(tx, origin.Y + pad + 2), Teal, _read.Line1);
+        dl.PushClipRect(new Vector2(tx, origin.Y), new Vector2(right - 3 * sb - 6, origin.Y + size.Y), true);
+        dl.AddText(bold, bold.FontSize, new Vector2(tx, origin.Y + pad + 2), justDone ? Green : Teal,
+            justDone ? "Done: " + _lastTarget : _read.Line1);
         dl.PopClipRect();
         string step = _read.HasTarget && st?.Arrow is { Steps: > 1 } sa ? $"{sa.Step}/{sa.Steps}" : "";
         float stepW = step.Length > 0 ? f9.CalcTextSizeA(f9.FontSize, float.MaxValue, 0, step).X + 4 : 0;
         float line2Y = origin.Y + pad + 2 + bold.FontSize + 4;
         dl.PushClipRect(new Vector2(tx, origin.Y), new Vector2(right - stepW, origin.Y + size.Y), true);
         if (_read.HasTarget) dl.AddText(f10, f10.FontSize, new Vector2(tx, line2Y), Text, _read.Line2);
+        else if (justDone) dl.AddText(f9, f9.FontSize, new Vector2(tx, line2Y + 1), Mute, "arrived or cleared - closing");
         else dl.AddText(f9, f9.FontSize, new Vector2(tx, line2Y + 1), Mute, _read.Line3.Length > 0 ? "Type coordinates or a place below" : "");
         dl.PopClipRect();
         if (step.Length > 0) dl.AddText(f9, f9.FontSize, new Vector2(right - stepW + 4, line2Y + 1), Mute, step);
 
-        // Top-right corner: pop out, hide (small and flat).
+        // Top-right corner: clear, pop out, hide (small and flat).
         var closePos = new Vector2(origin.X + size.X - 3 - sb, origin.Y + 3);
         var popPos = closePos - new Vector2(sb + 2, 0);
+        var clearPos = popPos - new Vector2(sb + 2, 0);
+        if (IconButton("##rna_clear", PhosphorIcons.Eraser, clearPos, new Vector2(sb, sb), _read.HasTarget ? Amber : Done, Glass,
+                enabled: _read.HasTarget, font: UiFont.Ui9) && _read.HasTarget)
+            ClearTarget(st);
+        SafeImGui.SetItemTooltip(st?.Goto == true
+            ? "Clear the arrow and stop walking there (/rnav arrow clear)"
+            : "Clear the arrow (/rnav arrow clear) and hide this");
         if (PanelRouter.CanPopOut)
         {
             if (IconButton("##rna_pop", ImGuiPanelHost.PopOutGlyph, popPos, new Vector2(sb, sb), Done, Glass, font: UiFont.Ui9))

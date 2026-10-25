@@ -393,6 +393,10 @@ internal partial class MainWindow : Window
         AllowMultipleClientsCheckBox.IsChecked = _settings.AllowMultipleClients;
         SkipIntroVideosCheckBox.IsChecked = _settings.SkipIntroVideos;
         SkipLoginLogosCheckBox.IsChecked = _settings.SkipLoginLogos;
+        EnableDxvkCheckBox.IsChecked = _settings.EnableDxvk;
+        RefreshDxvkCacheStatus();
+        EnableDxvkCheckBox.IsCheckedChanged += OnEnableDxvkChanged;
+        FetchDxvkButton.Click += async (_, _) => await FetchDxvkAsync();
         AutoLaunchHeaderCheckBox.IsChecked = _settings.AutoLaunch;
         AutoInjectAfterLaunchCheckBox.IsChecked = _settings.AutoInjectAfterLaunch;
         WatchForAcStartCheckBox.IsChecked = _settings.WatchForAcStart;
@@ -427,6 +431,73 @@ internal partial class MainWindow : Window
         catch (Exception ex)
         {
             AppendActivity($"Failed to save EnableImGuiBackend to engine.json: {ex.Message}");
+        }
+    }
+
+    private void RefreshDxvkCacheStatus()
+    {
+        if (DxvkCacheStatusText == null)
+            return;
+        if (DxvkPackageService.IsCached)
+        {
+            string ver = DxvkPackageService.CachedVersion ?? "?";
+            DxvkCacheStatusText.Text = $"DXVK cache: {ver}";
+        }
+        else
+        {
+            DxvkCacheStatusText.Text = "DXVK: not cached";
+        }
+    }
+
+    private async void OnEnableDxvkChanged(object? sender, global::Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        bool enable = EnableDxvkCheckBox.IsChecked == true;
+        _settings.EnableDxvk = enable;
+        SaveSettings();
+
+        string acPath = AcClientPathTextBox.Text?.Trim() ?? _settings.AcClientPath;
+        if (enable && !DxvkPackageService.IsCached)
+        {
+            AppendActivity("DXVK enabled — cache empty, fetching latest…");
+            string? ver = await DxvkPackageService.EnsureCachedOrFetchAsync(AppendActivity);
+            RefreshDxvkCacheStatus();
+            if (ver == null)
+            {
+                AppendActivity("DXVK: could not fetch a package; leave the checkbox on and use Fetch later, or reinstall.");
+                return;
+            }
+        }
+
+        DxvkPackageService.ApplyToClient(acPath, enable, AppendActivity);
+        RefreshDxvkCacheStatus();
+        AppendActivity(enable
+            ? "DXVK on — relaunch AC clients to load the drop-in d3d9.dll."
+            : "DXVK off — relaunch AC clients to return to System32 d3d9.");
+    }
+
+    private async Task FetchDxvkAsync()
+    {
+        try
+        {
+            FetchDxvkButton.IsEnabled = false;
+            AppendActivity("Fetching latest DXVK (x32) from GitHub…");
+            string version = await DxvkPackageService.EnsureLatestAsync(new Progress<string>(AppendActivity));
+            RefreshDxvkCacheStatus();
+            AppendActivity($"DXVK {version} ready in {DxvkPackageService.CacheDirectory}.");
+            if (EnableDxvkCheckBox.IsChecked == true)
+            {
+                string acPath = AcClientPathTextBox.Text?.Trim() ?? _settings.AcClientPath;
+                DxvkPackageService.ApplyToClient(acPath, enable: true, AppendActivity);
+                AppendActivity("DXVK cache applied to the current AC client path (relaunch clients).");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"DXVK fetch failed: {ex.Message}");
+        }
+        finally
+        {
+            FetchDxvkButton.IsEnabled = true;
         }
     }
 
@@ -860,7 +931,7 @@ internal partial class MainWindow : Window
         // Defaults to the server selected in the list (a new server's first account), not the
         // first profile, which RefreshLaunchTargets would otherwise assign.
         var draft = new RynthCore.App.LaunchAccountProfile { ServerId = GetSelectedServer()?.Id ?? string.Empty };
-        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters);
+        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters, _settings.AcClientPath);
         bool? accepted = await dialog.ShowDialog<bool?>(this);
         if (accepted != true)
             return;
@@ -881,7 +952,7 @@ internal partial class MainWindow : Window
             return;
 
         LaunchAccountProfile draft = selected.Clone();
-        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters);
+        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters, _settings.AcClientPath);
         bool? accepted = await dialog.ShowDialog<bool?>(this);
         if (accepted != true)
             return;
@@ -1629,6 +1700,7 @@ internal partial class MainWindow : Window
         _settings.AllowMultipleClients = AllowMultipleClientsCheckBox.IsChecked == true;
         _settings.SkipIntroVideos = SkipIntroVideosCheckBox.IsChecked == true;
         _settings.SkipLoginLogos = SkipLoginLogosCheckBox.IsChecked == true;
+        _settings.EnableDxvk = EnableDxvkCheckBox.IsChecked == true;
         _settings.AutoLaunch = AutoLaunchHeaderCheckBox.IsChecked == true;
         _settings.AutoInjectAfterLaunch = AutoInjectAfterLaunchCheckBox.IsChecked == true;
         _settings.WatchForAcStart = WatchForAcStartCheckBox.IsChecked == true;
@@ -1649,6 +1721,10 @@ internal partial class MainWindow : Window
             _settings.EnabledPluginIds.Add("rynthcore-engine");
         SaveSettings();
         SyncPluginPathsToEngineSettings();
+        // Keep the AC folder in sync with the DXVK toggle even when not launching yet.
+        string acPath = AcClientPathTextBox.Text?.Trim() ?? _settings.AcClientPath;
+        DxvkPackageService.ApplyToClient(acPath, _settings.EnableDxvk, appendActivity ? AppendActivity : null);
+        RefreshDxvkCacheStatus();
         if (appendActivity)
         {
             AppendActivity($"Logging level saved: {_settings.LoggingLevel}.");
@@ -1815,7 +1891,12 @@ internal partial class MainWindow : Window
         try
         {
             SetOperationState(true);
-            _launchSettings.Apply(acPath, _settings.AllowMultipleClients, _settings.SkipIntroVideos, AppendActivity);
+            _launchSettings.Apply(
+                acPath,
+                _settings.AllowMultipleClients,
+                _settings.SkipIntroVideos,
+                _settings.EnableDxvk,
+                AppendActivity);
             AppendActivity($"Preparing {launchLabel}.");
             HashSet<string> activeAccountKeys = GetActiveAccountKeys();
 
@@ -1935,12 +2016,14 @@ internal partial class MainWindow : Window
     {
         string resolvedPrefsPath = ResolveUserPrefsPath(account, launchContext.ServerName);
         bool needsPrefsSwap = !string.IsNullOrEmpty(resolvedPrefsPath) && File.Exists(resolvedPrefsPath);
+        // Per-account graphics profiles write different values into the one INI: serialize like a swap.
+        bool needsLock = needsPrefsSwap || GraphicsNeedsLaunchLock();
 
         string entryAccountKey = BuildAccountKey(launchContext.AccountName, launchContext.ServerName);
         int crashHistCount = _crashHistoryByAccount.TryGetValue(entryAccountKey, out List<DateTime>? hist0) ? hist0.Count : 0;
         LauncherDiag.Info($"LaunchOneInjected ENTRY account='{launchContext.AccountName}' needsPrefsSwap={needsPrefsSwap} semCount={_userPrefsSwapLock.CurrentCount} sessionPids={_launchedSessionPids.Count} pidInfo={_launchedPidInfo.Count} crashHist={crashHistCount}");
 
-        if (needsPrefsSwap)
+        if (needsLock)
         {
             LauncherDiag.Info($"LaunchOneInjected acquiring _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
             await _userPrefsSwapLock.WaitAsync();
@@ -1949,7 +2032,9 @@ internal partial class MainWindow : Window
 
         try
         {
-            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath, acPath) : null;
+            // This account's RynthAi graphics profile over whatever the INI holds now (AC rewrites it on exit).
+            ApplyGraphicsForLaunch(acPath, launchContext);
 
             InjectionResult result = await Task.Run(() =>
                 _injector.LaunchSuspendedAndInject(
@@ -1987,12 +2072,12 @@ internal partial class MainWindow : Window
                 AppendActivity($"Launch failed for {launchSummary}: {result.Summary}");
             }
 
-            if (needsPrefsSwap)
+            if (needsLock)
                 await Task.Delay(UserPrefsSettleDelay);
         }
         finally
         {
-            if (needsPrefsSwap)
+            if (needsLock)
             {
                 LauncherDiag.Info($"LaunchOneInjected releasing _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
                 _userPrefsSwapLock.Release();
@@ -2013,12 +2098,14 @@ internal partial class MainWindow : Window
     {
         string resolvedPrefsPath = ResolveUserPrefsPath(account, launchContext.ServerName);
         bool needsPrefsSwap = !string.IsNullOrEmpty(resolvedPrefsPath) && File.Exists(resolvedPrefsPath);
+        // Per-account graphics profiles write different values into the one INI: serialize like a swap.
+        bool needsLock = needsPrefsSwap || GraphicsNeedsLaunchLock();
 
         string entryAccountKey = BuildAccountKey(launchContext.AccountName, launchContext.ServerName);
         int crashHistCount = _crashHistoryByAccount.TryGetValue(entryAccountKey, out List<DateTime>? hist0) ? hist0.Count : 0;
         LauncherDiag.Info($"LaunchOneDecal ENTRY account='{launchContext.AccountName}' needsPrefsSwap={needsPrefsSwap} semCount={_userPrefsSwapLock.CurrentCount} sessionPids={_launchedSessionPids.Count} pidInfo={_launchedPidInfo.Count} crashHist={crashHistCount}");
 
-        if (needsPrefsSwap)
+        if (needsLock)
         {
             LauncherDiag.Info($"LaunchOneDecal acquiring _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
             await _userPrefsSwapLock.WaitAsync();
@@ -2027,7 +2114,9 @@ internal partial class MainWindow : Window
 
         try
         {
-            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath, acPath) : null;
+            // This account's RynthAi graphics profile over whatever the INI holds now (AC rewrites it on exit).
+            ApplyGraphicsForLaunch(acPath, launchContext);
 
             // enginePath != null: "Decal + RynthCore" - Decal is injected first, then the
             // RynthCore loader, before the client resumes.
@@ -2068,12 +2157,12 @@ internal partial class MainWindow : Window
                 AppendActivity($"Decal launch failed for {launchSummary}: {result.Summary}");
             }
 
-            if (needsPrefsSwap)
+            if (needsLock)
                 await Task.Delay(UserPrefsSettleDelay);
         }
         finally
         {
-            if (needsPrefsSwap)
+            if (needsLock)
             {
                 LauncherDiag.Info($"LaunchOneDecal releasing _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
                 _userPrefsSwapLock.Release();
@@ -2092,10 +2181,12 @@ internal partial class MainWindow : Window
     {
         string resolvedPrefsPath = ResolveUserPrefsPath(account, launchContext.ServerName);
         bool needsPrefsSwap = !string.IsNullOrEmpty(resolvedPrefsPath) && File.Exists(resolvedPrefsPath);
+        // Per-account graphics profiles write different values into the one INI: serialize like a swap.
+        bool needsLock = needsPrefsSwap || GraphicsNeedsLaunchLock();
 
         LauncherDiag.Info($"LaunchOneNoInject ENTRY account='{launchContext.AccountName}' needsPrefsSwap={needsPrefsSwap} semCount={_userPrefsSwapLock.CurrentCount} sessionPids={_launchedSessionPids.Count} pidInfo={_launchedPidInfo.Count}");
 
-        if (needsPrefsSwap)
+        if (needsLock)
         {
             LauncherDiag.Info($"LaunchOneNoInject acquiring _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
             await _userPrefsSwapLock.WaitAsync();
@@ -2104,7 +2195,9 @@ internal partial class MainWindow : Window
 
         try
         {
-            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath) : null;
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath, acPath) : null;
+            // This account's RynthAi graphics profile over whatever the INI holds now (AC rewrites it on exit).
+            ApplyGraphicsForLaunch(acPath, launchContext);
 
             Process? proc = null;
             Exception? launchEx = null;
@@ -2148,12 +2241,12 @@ internal partial class MainWindow : Window
             }
             AppendActivity($"Launched AC (no injection) using {launchSummary}.");
 
-            if (needsPrefsSwap)
+            if (needsLock)
                 await Task.Delay(UserPrefsSettleDelay);
         }
         finally
         {
-            if (needsPrefsSwap)
+            if (needsLock)
             {
                 LauncherDiag.Info($"LaunchOneNoInject releasing _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
                 _userPrefsSwapLock.Release();
@@ -4708,9 +4801,10 @@ internal partial class MainWindow : Window
     /// Copies the account's saved UserPreferences.ini over the live one (caller holds
     /// _userPrefsSwapLock) and returns what was swapped, or null when nothing was.
     /// </summary>
-    private PrefsSwapLaunch? ApplyPrefsSwap(LaunchAccountProfile account, string? serverName, string resolvedPrefsPath)
+    private PrefsSwapLaunch? ApplyPrefsSwap(LaunchAccountProfile account, string? serverName, string resolvedPrefsPath, string acPath)
     {
-        UserPrefsSwap? swap = _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity);
+        // Into the INI this install's clients actually read (the game folder's when it has one).
+        UserPrefsSwap? swap = _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity, acPath);
         if (swap == null)
             return null;
 
@@ -4718,6 +4812,50 @@ internal partial class MainWindow : Window
         bool isOverride = !string.IsNullOrWhiteSpace(account.UserPrefsPath);
         LauncherDiag.Info($"PrefsSwap: account='{account.AccountName}' server='{serverName}' gen={generation} override={isOverride} changedLive={UserPrefsSwapRecovery.SwapChangedPrefs(swap)} stash='{swap.StashPath}'");
         return new PrefsSwapLaunch(swap, generation, isOverride, ResolveLegacyUserPrefsPath(account));
+    }
+
+    /// <summary>
+    /// True when any account has a RynthAi graphics profile (graphics.json): accounts started
+    /// together would write different values into the one UserPreferences.ini, so the launch takes
+    /// _userPrefsSwapLock and waits for AC to read it before the next account writes.
+    /// </summary>
+    private static bool GraphicsNeedsLaunchLock()
+    {
+        try
+        {
+            return RynthCore.Graphics.AcGraphicsProfiles.Load(RynthCore.Graphics.AcGraphicsPrefs.ConfigPath).Accounts.Count > 0;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Writes the launching account's RynthAi graphics profile (Settings > Graphics, graphics.json) into
+    /// the UserPreferences.ini files AC reads, just before the client starts (after any per-account prefs
+    /// swap, so RynthAi's values win). Keys left on "AC's choice" are not touched; an account with no
+    /// profile changes nothing. Never throws.
+    /// </summary>
+    private void ApplyGraphicsForLaunch(string acPath, LaunchContextRecord launchContext)
+    {
+        try
+        {
+            var all = RynthCore.Graphics.AcGraphicsProfiles.Load(RynthCore.Graphics.AcGraphicsPrefs.ConfigPath);
+            string accountKey = RynthCore.Graphics.AcGraphicsPrefs.AccountKey(launchContext.ServerName, launchContext.AccountName);
+            RynthCore.Graphics.AcGraphicsConfig cfg = all.For(accountKey);
+            if (!cfg.HasAny)
+                return;
+            Dictionary<string, string> values = cfg.IniValues();
+            foreach (string ini in RynthCore.Graphics.AcGraphicsPrefs.IniPaths(Path.GetDirectoryName(acPath)))
+            {
+                List<string> changed = RynthCore.Graphics.AcPrefsIni.Apply(ini, values);
+                if (changed.Count > 0)
+                    AppendActivity($"Graphics profile applied for account {launchContext.AccountName}: {string.Join(", ", changed)} ({Path.GetFileName(Path.GetDirectoryName(ini))}).");
+                LauncherDiag.Info($"Graphics: {ini} account='{accountKey}' changed=[{string.Join(", ", changed)}]");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"Graphics settings not applied: {ex.Message}");
+        }
     }
 
     /// <summary>Remembers which swap a launched client started with (no-op without a swap).</summary>
@@ -4793,10 +4931,8 @@ internal partial class MainWindow : Window
         if (string.IsNullOrEmpty(stashPath))
             return;
 
-        string livePath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "Asheron's Call",
-            "UserPreferences.ini");
+        // The INI the session actually wrote (the game folder's when it has one).
+        string livePath = AcClientLaunchSettingsService.LivePrefsPath(_settings.AcClientPath);
         if (!File.Exists(livePath))
             return;
 

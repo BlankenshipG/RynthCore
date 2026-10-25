@@ -104,13 +104,10 @@ internal static class PluginManifestGate
     }
 
     /// <summary>
-    /// The server plugins to leave out (their paths). With <paramref name="connectHost"/> known,
-    /// only the plugins that list it load; when none does, none load (every server plugin is a
-    /// runtime in a 32-bit client, and a dozen of them for a server nobody claims only cost address
-    /// space). A skipped plugin still loads late when its server announces a world name it lists,
-    /// or when the character forces its server On (SectionRegistry), so a server that moved to a
-    /// new host still gets its plugin. With no host (an externally launched client) all load.
-    /// Nothing is left out when <paramref name="loadAll"/> is set.
+    /// The server plugins to leave out (their paths). Fail-open: a server plugin is left out only
+    /// when <paramref name="connectHost"/> is known and another installed server plugin claims it,
+    /// so a server that moved to a new host still gets its plugin (all of them load, each shows
+    /// only on its own server). Nothing is left out when <paramref name="loadAll"/> is set.
     /// </summary>
     internal static HashSet<string> SelectServerPlugins(IReadOnlyList<PluginCandidate> candidates, string? connectHost,
                                                         bool loadAll, List<string> log)
@@ -137,14 +134,16 @@ internal static class PluginManifestGate
             if (c.Manifest!.Server!.MatchesHost(host, out string hit))
                 claimants.Add($"{c.Manifest.Name} ({c.Manifest.Server.Id}, \"{hit}\")");
         if (claimants.Count == 0)
-            log.Add($"{servers.Count} server plugin(s): none lists host {host}, so none load now (one loads once its world name is announced, or when its server is picked).");
+        {
+            log.Add($"{servers.Count} server plugin(s): none lists host {host}, so all load (each shows only on its own server).");
+            return skip;
+        }
 
         foreach (PluginCandidate c in servers)
         {
             if (c.Manifest!.Server!.MatchesHost(host, out _)) continue;
             skip.Add(c.Key);
-            if (claimants.Count > 0)
-                log.Add($"{Path.GetFileName(c.Key)}: not loaded - it is for {c.Manifest.Server.Name}, and host {host} is {string.Join(", ", claimants)}.");
+            log.Add($"{Path.GetFileName(c.Key)}: not loaded - it is for {c.Manifest.Server.Name}, and host {host} is {string.Join(", ", claimants)}.");
         }
         return skip;
     }

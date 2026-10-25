@@ -183,9 +183,9 @@ internal sealed partial class MetaFace
             : sc.LastPollMs == 0 ? "Waiting for the first /myquests."
             : $"{sc.QuestCount} quest timer(s), /myquests {Span(now - sc.LastPollMs)} ago.";
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-        SafeImGui.TextColored(RynthTheme.VecOf(sc.ServerDisabled ? RynthTheme.Highlight : RynthTheme.MuteAlt), Fit(poll, w));
+        SafeImGui.TextColored(RynthTheme.Vec(sc.ServerDisabled ? 0xFFE8B333 : 0xFFC8D6E4), Fit(poll, w));
         if (sc.LastSwitch.Length > 0)
-            SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.Accent),
+            SafeImGui.TextColored(RynthTheme.Vec(0xFF26D9E6),
                 Fit($"Last: {sc.LastSwitch}{(sc.LastSwitchMs > 0 ? $", {Span(now - sc.LastSwitchMs)} ago" : "")}", w));
         ImGuiNET.ImGui.PopFont();
     }
@@ -367,7 +367,7 @@ internal sealed partial class MetaFace
         ScheduleRuleDto r = _schedRule;
 
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        SafeImGui.TextColored(RynthTheme.VecOf(RynthTheme.Accent), _schedEdit == -1 ? "New rule" : $"Edit rule {_schedEdit + 1}");
+        SafeImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), _schedEdit == -1 ? "New rule" : $"Edit rule {_schedEdit + 1}");
         ImGuiNET.ImGui.PopFont();
 
         FieldLabel("When:");

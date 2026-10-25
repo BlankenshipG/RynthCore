@@ -43,6 +43,8 @@ internal static class EngineSettings
     private static bool _insertReleasesUi;
     // Settings > Display: strip AC window chrome while windowed (default off).
     private static bool _borderlessWindowed;
+    // Settings > Display: borderless fills the monitor (default on) or keeps the framed game area.
+    private static bool _borderlessFillMonitor = true;
     // Settings > Display: reopen Rynth panels where they were (default on: panels have always been remembered).
     private static bool _rememberWindowLayout = true;
     // Settings > Display: save and restore the AC window's own position and size (default off, opt-in).
@@ -448,6 +450,26 @@ internal static class EngineSettings
         }
     }
 
+    /// <summary>"BorderlessFillMonitor" in engine.json (default true, 2026-10-17): borderless
+    /// windowed fills the monitor the window is on. Off: it keeps the game area where the framed
+    /// window had it (a custom borderless size/spot). Set in game in Settings > Display.</summary>
+    public static bool BorderlessFillMonitor
+    {
+        get
+        {
+            EnsureLoaded();
+            return _borderlessFillMonitor;
+        }
+        set
+        {
+            EnsureLoaded();
+            if (_borderlessFillMonitor == value) return;
+            _borderlessFillMonitor = value;
+            Save("BorderlessFillMonitor");
+            // AcWindowChrome.ApplyFillMonitorChanged (Settings > Display) re-places the window.
+        }
+    }
+
     /// <summary>"RememberWindowLayout" in engine.json (default true: Rynth panels have always been
     /// remembered). Off: panel_state.txt is not overwritten and open panels are not reopened from
     /// the last session. Does not touch the AC window itself (RememberAcWindowPosition).
@@ -803,6 +825,10 @@ internal static class EngineSettings
                 (blwEl.ValueKind == JsonValueKind.True || blwEl.ValueKind == JsonValueKind.False))
                 _borderlessWindowed = blwEl.GetBoolean();
 
+            if (doc.RootElement.TryGetProperty("BorderlessFillMonitor", out var bfmEl) &&
+                (bfmEl.ValueKind == JsonValueKind.True || bfmEl.ValueKind == JsonValueKind.False))
+                _borderlessFillMonitor = bfmEl.GetBoolean();
+
             if (doc.RootElement.TryGetProperty("RememberWindowLayout", out var rwlEl) &&
                 (rwlEl.ValueKind == JsonValueKind.True || rwlEl.ValueKind == JsonValueKind.False))
                 _rememberWindowLayout = rwlEl.GetBoolean();
@@ -906,7 +932,7 @@ internal static class EngineSettings
         "EnableAvaloniaOverlay", "EnableD3D9Hook", "EnableEngine", "EngineHookCount",
         "EnableImGuiBackend", "EnableHangMinidump", "PreventIdleLogoff", "DecalBridge",
         "DecalInGameImGui", "DecalStandDown", "DisabledUiHooks", "ServerMessageStream",
-        "FlightRecorder", "InsertReleasesUi", "BorderlessWindowed", "RememberWindowLayout",
+        "FlightRecorder", "InsertReleasesUi", "BorderlessWindowed", "BorderlessFillMonitor", "RememberWindowLayout",
         "RememberAcWindowPosition", "IltServerNames", "IltHosts", "EnableLargeAddressAlignmentFix",
         "MaxHotReloads", "ReportEndpoint", "CloseOnServerDisconnect", "AutoIdMode", "EnablePluginOverlayWindows", "LoggingLevel",
         "LoadAllServerPlugins", "TransitionGate",
@@ -978,6 +1004,8 @@ internal static class EngineSettings
                     w.WriteBoolean("InsertReleasesUi", true);
                 if (_borderlessWindowed)   // default false: leave the file as it was
                     w.WriteBoolean("BorderlessWindowed", true);
+                if (!_borderlessFillMonitor) // default true: leave the file as it was
+                    w.WriteBoolean("BorderlessFillMonitor", false);
                 if (!_rememberWindowLayout) // default true: leave the file as it was
                     w.WriteBoolean("RememberWindowLayout", false);
                 if (_rememberAcWindowPosition) // default false: leave the file as it was

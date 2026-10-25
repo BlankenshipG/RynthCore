@@ -598,19 +598,13 @@ internal static partial class RynthAiPanel
                 ClosePicker();
                 RynthAiCommands.ApplyRemoteCommand("hub", "show");
             });
-        ToolTip.SetTip(charBtn, "Open the Mini Remote (/ra hub show).");
-
-        // Hub: the Mini Remote and the Inventory HUDs setup are ImGui windows inside RynthAi.
-        var hudBtn = AddLauncher(launcherGrid, 2, 1, "Hub", "▣",
-            onClick: () =>
-            {
-                ClosePicker();
-                RynthAiCommands.ApplyRemoteCommand("remote", "toggle");
-            });
-        ToolTip.SetTip(hudBtn, "Left-click: show/hide the Mini Remote (/ra remote).  Right-click: Inventory HUDs setup (/ra huds).");
-        hudBtn.PointerPressed += (_, e) =>
+        ToolTip.SetTip(charBtn, "Left-click: open the Mini Remote (/ra hub show).  Right-click: Inventory HUDs setup (/ra huds).");
+        // The separate Hub launcher (the same Mini Remote again) was removed 2026-10-13, as on the
+        // ImGui dashboard; its right-click, the Inventory HUDs setup (an ImGui window inside
+        // RynthAi), moved to Char.
+        charBtn.PointerPressed += (_, e) =>
         {
-            if (e.GetCurrentPoint(hudBtn).Properties.IsRightButtonPressed)
+            if (e.GetCurrentPoint(charBtn).Properties.IsRightButtonPressed)
             {
                 e.Handled = true;
                 ClosePicker();

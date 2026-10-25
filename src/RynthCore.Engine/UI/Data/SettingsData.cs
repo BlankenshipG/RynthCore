@@ -265,14 +265,16 @@ internal sealed class RynthAiSettings
     // Salvage with the 0x027D request sent straight to the server, no salvage panel on screen
     // (default on; used when the engine has API v81; an older RynthAi doesn't send it).
     public bool SalvageWithoutPanel { get; set; } = true;
+    // Inter-Item Delay and Closing Delay: RynthAi's corpse looting never reads them (not shown in
+    // the panel since 2026.10.5.59), carried so a save doesn't send them missing.
     public int LootInterItemDelayMs { get; set; } = 50;
-    public int LootContentSettleMs { get; set; } = 100;
-    public int LootEmptyCorpseMs { get; set; } = 300;
+    public int LootContentSettleMs { get; set; } = LootTimerDefaults.ContentSettleMs;
+    public int LootEmptyCorpseMs { get; set; } = LootTimerDefaults.EmptyCorpseMs;
     public int LootClosingDelayMs { get; set; } = 200;
-    public int LootAssessWindowMs { get; set; } = 200;
-    public int LootRetryTimeoutMs { get; set; } = 500;
-    public int LootOpenRetryMs { get; set; } = 1500;
-    public int LootCorpseTimeoutMs { get; set; } = 12000;
+    public int LootAssessWindowMs { get; set; } = LootTimerDefaults.AssessWindowMs;
+    public int LootRetryTimeoutMs { get; set; } = LootTimerDefaults.RetryTimeoutMs;
+    public int LootOpenRetryMs { get; set; } = LootTimerDefaults.OpenRetryMs;
+    public int LootCorpseTimeoutMs { get; set; } = LootTimerDefaults.CorpseTimeoutMs;
     public int SalvageOpenDelayFirstMs { get; set; } = 400;
     public int SalvageOpenDelayFastMs { get; set; } = 50;
     public int SalvageAddDelayFirstMs { get; set; } = 600;
@@ -709,6 +711,129 @@ internal static class SettingsSchema
         return list.ToArray();
     }
 
+    // ── Settings > Graphics (Graphics/AcGraphics.cs, Graphics/AcGraphicsPrefs.cs) ─────────────
+    // AC's own graphics options as a profile per account, written to UserPreferences.ini by the
+    // launcher when it starts that account. "AC's choice" = not enforced (AC keeps whatever it has).
+    // Declared before Tabs: static field initializers run in order.
+    private const string AcChoice = "AC's choice";
+    private const string DisplayToggles = "Display tab's toggles";
+    private static readonly string[] GfxResolutions = Graphics.AcGraphics.AvailableResolutions();
+    private static readonly string[] GfxResolutionItems = Prepend(AcChoice, GfxResolutions);
+    private static readonly string[] GfxModeItems = Prepend(DisplayToggles, global::RynthCore.Graphics.AcGraphicsPrefs.WindowModeLabels);
+    private static readonly string[] GfxRefreshValues = Prepend("Auto", Graphics.AcGraphics.AvailableRefreshRates());
+    private static readonly string[] GfxRefreshItems = Prepend(AcChoice, Array.ConvertAll(GfxRefreshValues, v => v == "Auto" ? "Auto" : v + " Hz"));
+    private static readonly string[] GfxTriState = { AcChoice, "On", "Off" };
+
+    private static string[] Prepend(string first, string[] rest)
+    {
+        var all = new string[rest.Length + 1];
+        all[0] = first;
+        Array.Copy(rest, 0, all, 1, rest.Length);
+        return all;
+    }
+
+    /// <summary>The window-mode combo's index: 0 = the Display tab's toggles decide, else this account's mode.</summary>
+    private static int GfxModeIndex() =>
+        Graphics.AcGraphics.ProfileWindowMode is string m
+            ? Array.IndexOf(global::RynthCore.Graphics.AcGraphicsPrefs.WindowModeIds, m) + 1
+            : 0;
+
+    /// <summary>A combo index for an enforced value in <paramref name="values"/> (0 = AC's choice / not listed).</summary>
+    private static int GfxIndex(string id, string[] values)
+    {
+        string? v = Graphics.AcGraphics.Get(id);
+        if (v == null) return 0;
+        int i = Array.FindIndex(values, x => string.Equals(x, v, StringComparison.OrdinalIgnoreCase));
+        return i < 0 ? 0 : i + 1;
+    }
+
+    /// <summary>The rows for one Render setting: a combo (choices, or AC's choice / On / Off), or for a
+    /// number a "Set" checkbox that shows its slider.</summary>
+    private static SettingRow[] GfxRows(global::RynthCore.Graphics.AcGraphicsSetting g)
+    {
+        string id = g.Id;
+        string tip = g.Help + "\nAC's choice: RynthAi leaves AC's own setting as it is. This account only; applies at the next launch.";
+        switch (g.Kind)
+        {
+            case global::RynthCore.Graphics.AcGraphicsKind.Choice:
+                string[] choices = g.Choices!;
+                return new[]
+                {
+                    Combo(g.Label, Prepend(AcChoice, choices), _ => GfxIndex(id, choices),
+                        (_, v) => Graphics.AcGraphics.Set(id, v <= 0 ? null : choices[v - 1]), tip),
+                };
+            case global::RynthCore.Graphics.AcGraphicsKind.Bool:
+                return new[]
+                {
+                    Combo(g.Label, GfxTriState, _ => GfxIndex(id, new[] { "True", "False" }),
+                        (_, v) => Graphics.AcGraphics.Set(id, v == 1 ? "True" : v == 2 ? "False" : null), tip),
+                };
+            default:
+                double mid = (g.Min + g.Max) / 2;
+                return new[]
+                {
+                    Bool("Set " + char.ToLowerInvariant(g.Label[0]) + g.Label[1..], _ => Graphics.AcGraphics.Get(id) != null,
+                        (_, on) =>
+                        {
+                            if (!on) { Graphics.AcGraphics.Set(id, null); return; }
+                            // Start from what AC has now, inside the slider's range.
+                            double start = double.TryParse(Graphics.AcGraphics.LaunchValue(id), System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out double cur) ? cur : mid;
+                            Graphics.AcGraphics.Set(id, global::RynthCore.Graphics.AcGraphicsPrefs.FormatFloat(Math.Clamp(start, g.Min, g.Max)));
+                        }, tip, gates: true),
+                    Float("   " + g.Label, _ => float.TryParse(Graphics.AcGraphics.Get(id), System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out float f) ? f : (float)mid,
+                        (_, v) => Graphics.AcGraphics.Set(id, global::RynthCore.Graphics.AcGraphicsPrefs.FormatFloat(v)),
+                        (float)g.Min, (float)g.Max, (float)g.Step, tip, when: _ => Graphics.AcGraphics.Get(id) != null),
+                };
+        }
+    }
+
+    private static SettingRow[] GraphicsRows()
+    {
+        var rows = new System.Collections.Generic.List<SettingRow>
+        {
+            Status(_ => Graphics.AcGraphics.StatusLine()),
+            Note("A profile per account: these apply to this account's clients only. AC reads them at startup, so\n" +
+                 "they apply at the next launch: the launcher writes this account's profile into AC's\n" +
+                 "UserPreferences.ini just before it starts the account. Only the window mode changes the window now;\n" +
+                 "the window always follows the resolution AC is really drawing at."),
+            Section("Window"),
+            Combo("Window mode", GfxModeItems, _ => GfxModeIndex(),
+                (_, v) => Graphics.AcGraphics.SetWindowMode(v <= 0 ? null
+                    : global::RynthCore.Graphics.AcGraphicsPrefs.WindowModeIds[Math.Clamp(v - 1, 0, 3)]),
+                "Display tab's toggles: Borderless Windowed / Fills Monitor decide (all clients).\n" +
+                "Windowed: a normal framed window, sized for AC's resolution.\n" +
+                "Borderless (fill the monitor): no frame, covering the whole monitor the game is on.\n" +
+                "Borderless (resolution size): no frame, AC's resolution in size, where the window was.\n" +
+                "Full screen (exclusive): AC's own full screen; starts at the next launch.\n" +
+                "This account only. The window's position is remembered; its size follows AC's resolution."),
+            Combo("Resolution", GfxResolutionItems, _ => GfxIndex(global::RynthCore.Graphics.AcGraphicsPrefs.ResolutionId, GfxResolutions),
+                (_, v) => Graphics.AcGraphics.Set(global::RynthCore.Graphics.AcGraphicsPrefs.ResolutionId, v <= 0 ? null : GfxResolutions[v - 1]),
+                "AC's display resolution for this account, from the next launch (the window isn't changed now: it\n" +
+                "follows what AC draws at). AC's choice: whatever AC's own options have."),
+            Combo("Refresh rate", GfxRefreshItems, _ => GfxIndex(global::RynthCore.Graphics.AcGraphicsPrefs.RefreshRateId, GfxRefreshValues),
+                (_, v) => Graphics.AcGraphics.Set(global::RynthCore.Graphics.AcGraphicsPrefs.RefreshRateId, v <= 0 ? null : GfxRefreshValues[v - 1]),
+                "The monitor refresh rate AC asks for in full screen. Auto: the monitor's own. Applies at the next launch."),
+        };
+        rows.AddRange(GfxRows(global::RynthCore.Graphics.AcGraphicsPrefs.SyncToRefresh));
+
+        rows.Add(Spacer());
+        rows.Add(Section("Graphics"));
+        // Adaptive degrade off with a far draw distance can run the client out of memory (shown only then).
+        rows.Add(Status(_ => Graphics.AcGraphics.MemoryWarning()));
+        foreach (global::RynthCore.Graphics.AcGraphicsSetting g in global::RynthCore.Graphics.AcGraphicsPrefs.RenderSettings)
+            rows.AddRange(GfxRows(g));
+
+        rows.Add(Spacer());
+        rows.Add(Button("Write to AC's settings now", "Write", () => Graphics.AcGraphics.WriteIniNow(),
+            "Write this account's profile into AC's UserPreferences.ini now, for the next start of a client the\n" +
+            "launcher doesn't start (the launcher does it before every start of this account)."));
+        rows.Add(Button("Reset all to AC's choice", "Reset", () => Graphics.AcGraphics.ResetAll(),
+            "Stop enforcing every graphics setting for this account. AC's own settings stay as they are now."));
+        return rows.ToArray();
+    }
+
     public static readonly SettingsTab[] Tabs =
     {
         new("Display", new[]
@@ -727,21 +852,45 @@ internal static class SettingsSchema
                 (_, v) =>
                 {
                     Plugins.EngineSettings.BorderlessWindowed = v;
-                    AcWindowChrome.RequestApply();   // applied from the game thread, not inside this frame
+                    // This toggle decides again over this account's Settings > Graphics window mode.
+                    Graphics.AcGraphics.DisplayTogglesChanged();
+                    try
+                    {
+                        // ResolveGameHwnd covers EntryPoint + Win32Backend; Tick retries if zero.
+                        AcWindowChrome.ApplyBorderlessDesired(AcWindowChrome.ResolveGameHwndForSettings());
+                    }
+                    catch { /* HWND may not be ready; Tick applies later */ }
                 },
-                "On: hide the Asheron's Call window title bar and borders while staying windowed (exclusive fullscreen is left alone).\nOff (default): normal window chrome. Turning it off only gives back the chrome this setting removed.\nApplies to all your clients; others pick it up when they start."),
+                "On: hide the Asheron's Call window title bar and borders while staying windowed (no exclusive fullscreen).\nOff (default): normal window chrome. Applies to all your clients; others pick it up when they start.\nStuck at a size you can't change? Reset Window Borders below, or /rc window reset in chat."),
+            Bool("Borderless Fills Monitor", _ => Plugins.EngineSettings.BorderlessFillMonitor,
+                (_, v) =>
+                {
+                    Plugins.EngineSettings.BorderlessFillMonitor = v;
+                    Graphics.AcGraphics.DisplayTogglesChanged();
+                    try { AcWindowChrome.ApplyFillMonitorChanged(AcWindowChrome.ResolveGameHwndForSettings()); }
+                    catch { /* HWND may not be ready; the next borderless apply uses the setting */ }
+                },
+                "On (default): borderless fills the whole monitor the game is on.\nOff: borderless is AC's resolution in size, where the framed window had the game. To move it: turn\nBorderless Windowed off, move the window, then turn it back on.\nThe borderless position is remembered across launches (with Remember Game Window Position on).\nSettings > Graphics can set a window mode per account instead."),
+            Button("Reset Window Borders", "Reset", () =>
+                {
+                    try { Compatibility.AcMainThreadQueue.EnqueueWriteToChat("[RynthCore] " + AcWindowChrome.ResetWindow(), 1); }
+                    catch { /* chat may not be ready */ }
+                },
+                "Turn borderless off and put the frame back: a normal window sized for the resolution AC is really drawing\nat, centred. Also replaces the saved window position, so the next launch isn't stuck\neither. Same as /rc window reset."),
+            Button("Save Window Position", "Save", () =>
+                {
+                    try { Compatibility.AcMainThreadQueue.EnqueueWriteToChat("[RynthCore] " + AcWindowChrome.SaveWindowNow(), 1); }
+                    catch { /* chat may not be ready */ }
+                },
+                "Save where the game window is now, framed or borderless (kept separately), for the next launch.\nIt is also saved every 10 seconds while Remember Game Window Position is on. Same as /rc window save."),
             Spacer(),
             Section("Window and HUD Layout"),
             Bool("Remember Open Windows and Positions", _ => Plugins.EngineSettings.RememberWindowLayout,
                 (_, v) => Plugins.EngineSettings.RememberWindowLayout = v,
-                "On (default): reopen Rynth panels where you left them.\nOff: do not overwrite the saved panel layout or reopen panels from the last session. Applies to all your clients."),
+                "On (default): reopen Rynth panels where you left them and keep the Vision self-plate / ImGui layout.\nOff: do not overwrite the saved layout or reopen panels from the last session. Applies to all your clients.\nThe game window itself: Remember Game Window Position."),
             Bool("Remember Game Window Position", _ => Plugins.EngineSettings.RememberAcWindowPosition,
-                (_, v) =>
-                {
-                    Plugins.EngineSettings.RememberAcWindowPosition = v;
-                    AcWindowChrome.RequestApply();
-                },
-                "On: save the Asheron's Call window's position and size for each character and put it back after you log in.\nOff (default): the game window is never moved. A saved spot that is off-screen (a monitor that is gone) is ignored."),
+                (_, v) => Plugins.EngineSettings.RememberAcWindowPosition = v,
+                "On: save the Asheron's Call window's position and size (framed and borderless kept separately) and put it\nback at the next launch.\nOff (default): the game window is never moved."),
             Button("Save Layout Now", "Save", () => AcWindowChrome.SaveLayoutNow(),
                 "Write the open panels, the game window position (when Remember Game Window Position is on),\nthe Vision HUD and the ImGui window positions to disk now."),
             Spacer(),
@@ -809,6 +958,7 @@ internal static class SettingsSchema
                 "Which fields the description shows and which item types are described on select (/ra iteminfo window)."),
         }),
 
+        new("Graphics", GraphicsRows()),
         new("UI", new[]
         {
             Section("Radar"),

@@ -15,7 +15,7 @@ using System.Collections.Generic;
 namespace RynthCore.Engine.UI.Sections;
 
 /// <summary>An installed server plugin that is not loaded: its server and the plugin's name.</summary>
-internal readonly record struct NotLoadedServer(string Id, string Name, string Plugin, string[]? WorldNames = null);
+internal readonly record struct NotLoadedServer(string Id, string Name, string Plugin);
 
 internal static class NotLoadedServers
 {
@@ -39,25 +39,10 @@ internal static class NotLoadedServers
 
     /// <summary>The not-loaded servers this character forces On: their plugins should load now.</summary>
     public static List<string> ForcedOn(IReadOnlyList<NotLoadedServer> notLoaded, Func<string, ServerForce> force)
-        => ToLoad(notLoaded, force, world: null);
-
-    /// <summary>
-    /// The not-loaded servers whose plugins should load now: forced On by this character, or (not
-    /// forced Off) named by the world name the server announced (<paramref name="world"/>; null or
-    /// empty before login). The host left them out, but the world says this is their server.
-    /// </summary>
-    public static List<string> ToLoad(IReadOnlyList<NotLoadedServer> notLoaded, Func<string, ServerForce> force, string? world)
     {
         var ids = new List<string>();
         foreach (NotLoadedServer s in notLoaded)
-        {
-            if (s.Id.Length == 0) continue;
-            ServerForce f = force(s.Id);
-            if (f == ServerForce.On
-                || (f != ServerForce.Off && !string.IsNullOrWhiteSpace(world) && s.WorldNames is { Length: > 0 }
-                    && Compatibility.IltDetect.WorldNameMatches(world, s.WorldNames, out _)))
-                ids.Add(s.Id);
-        }
+            if (s.Id.Length > 0 && force(s.Id) == ServerForce.On) ids.Add(s.Id);
         return ids;
     }
 }

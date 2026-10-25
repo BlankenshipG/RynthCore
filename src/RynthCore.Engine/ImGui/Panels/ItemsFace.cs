@@ -87,7 +87,8 @@ internal sealed class ItemsFace : IImGuiPanel
                     int i = idx[k];
                     ItemsPanel.WeaponEntry wpn = _data.Weapons[i];
                     ImGuiNET.ImGui.PushID("w" + i);
-                    int r = Row(wpn.Name, wpn.Element, shown++, bw, _data.MissingIds.Contains(wpn.Id), k > 0, k < idx.Count - 1);
+                    int r = Row(wpn.Name, wpn.Element, shown++, bw, _data.MissingIds.Contains(wpn.Id),
+                                DamageTypeColors.For(wpn.Element, Text), k > 0, k < idx.Count - 1);
                     ImGuiNET.ImGui.PopID();
                     // Up / down inside its group: the order is RynthAi's preference (the buff wand, the
                     // first weapon of a kind), and it couldn't be changed but by removing and re-adding.
@@ -102,9 +103,11 @@ internal sealed class ItemsFace : IImGuiPanel
                     if (r == 1)
                     {
                         Vector2 at = ImGuiNET.ImGui.GetIO().MousePos;
-                        _picker.Open(at, ItemsCommands.Elements, Array.IndexOf(ItemsCommands.Elements, wpn.Element), e =>
+                        // Missile weapons and ammo can also be Prismatic: universal damage, the target's weakest element.
+                        string[] choices = ItemsCommands.ElementsFor(wpn.Kind);
+                        _picker.Open(at, choices, Array.IndexOf(choices, wpn.Element), e =>
                         {
-                            wpn.Element = ItemsCommands.Elements[e];
+                            wpn.Element = choices[e];
                             Save();
                         }, 160);
                     }
@@ -132,7 +135,7 @@ internal sealed class ItemsFace : IImGuiPanel
             {
                 ItemsPanel.ConsumableEntry c = _data.Consumables[i];
                 ImGuiNET.ImGui.PushID("c" + i);
-                int r = Row(c.Name, c.Type, i, bw, missing: false, canUp: i > 0, canDown: i < _data.Consumables.Count - 1);
+                int r = Row(c.Name, c.Type, i, bw, missing: false, tint: Text, canUp: i > 0, canDown: i < _data.Consumables.Count - 1);
                 ImGuiNET.ImGui.PopID();
                 if (r == 3 || r == 4)
                 {
@@ -273,9 +276,11 @@ internal sealed class ItemsFace : IImGuiPanel
     /// Name | up | down | [value picker] | Del. Returns 1 when the picker was clicked, 2 for Del,
     /// 3 for up, 4 for down, else 0. Up / down are drawn dim and do nothing at the ends.
     /// <paramref name="missing"/>: the item isn't carried any more (amber, a warning icon,
-    /// "(missing)" and a tooltip saying what to do).
+    /// "(missing)" and a tooltip saying what to do). Otherwise the name and value are drawn in
+    /// <paramref name="tint"/> (a weapon's damage-type colour, as UB-ILT's Items tab).
     /// </summary>
-    private static int Row(string name, string value, int index, float w, bool missing, bool canUp = false, bool canDown = false)
+    /// <param name="tint">The value button's text colour (a weapon's damage type colour, else Text).</param>
+    private static int Row(string name, string value, int index, float w, bool missing, uint tint, bool canUp = false, bool canDown = false)
     {
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
@@ -294,11 +299,11 @@ internal sealed class ItemsFace : IImGuiPanel
         }
         else
         {
-            dl.AddText(new Vector2(p.X + 6, ty), Text, name);
+            dl.AddText(new Vector2(p.X + 6, ty), tint, name);
         }
         dl.PopClipRect();
         if (missing && ImGuiNET.ImGui.IsWindowHovered() && ImGuiNET.ImGui.IsMouseHoveringRect(p, p + new Vector2(nameW, 24)))
-            ImGuiNET.ImGui.SetTooltip("Not in your pack any more - select the item in your inventory and click\n"
+            SafeImGui.SetTooltip("Not in your pack any more - select the item in your inventory and click\n"
                 + "Add Selected Weapon again, or remove this entry.");
         int result = 0;
         float bx = p.X + nameW + 2;
@@ -307,7 +312,7 @@ internal sealed class ItemsFace : IImGuiPanel
         if (IconButton("##down", PhosphorIcons.CaretDown, new Vector2(bx + 22, p.Y + 2), new Vector2(20, 20), canDown ? Teal : Mute, BtnFill) && canDown) result = 4;
         ImGuiNET.ImGui.SetItemTooltip("Move down");
         bx += MoveW;
-        if (Button("##pick", value, new Vector2(bx, p.Y + 2), new Vector2(96, 20), Text, BtnFill)) result = 1;
+        if (Button("##pick", value, new Vector2(bx, p.Y + 2), new Vector2(96, 20), tint, BtnFill)) result = 1;
         if (IconButton("##del", PhosphorIcons.Trash, new Vector2(bx + 100, p.Y + 2), new Vector2(42, 20), Red, BtnFill)) result = 2;
         ImGuiNET.ImGui.SetItemTooltip("Remove");
         NextLine(p, 24);

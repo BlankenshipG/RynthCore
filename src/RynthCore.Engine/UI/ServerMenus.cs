@@ -123,7 +123,7 @@ internal static class ServerMenus
     /// </summary>
     public static void Tick()
     {
-        SectionRegistry.Tick();   // the server verdicts (GetServerStateJson) and late server-plugin loads
+        SectionRegistry.Tick();
         SectionRegistry.Snapshot snap = SectionRegistry.Current;
         List<string> serverPlugins = ServerPluginTargets(snap);
         if (!PushToRynthAi && !PushToRynthIlt && serverPlugins.Count == 0) return;
@@ -256,7 +256,7 @@ internal static class ServerMenus
         {
             if (ImGuiNET.ImGui.MenuItem("Treat this world as " + g.Server.Name + "##srvforce_" + g.Server.Id))
                 Run(ForceCommand(g.Server.Id));
-            SafeImGui.SetItemTooltip("Saved for this character. Undo with /rc server " + g.Server.Id + " auto, or in the Mini Remote's Char section.");
+            ImGuiNET.ImGui.SetItemTooltip("Saved for this character. Undo with /rc server " + g.Server.Id + " auto, or in the Mini Remote's Char section.");
         }
         return true;
     }
