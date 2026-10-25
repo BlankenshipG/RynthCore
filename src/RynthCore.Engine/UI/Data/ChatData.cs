@@ -183,7 +183,7 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
         }
 
         ChatLine[] old = Current?.Value ?? Array.Empty<ChatLine>();
-        Publish(ChatHistory.Merge(old, added, maxLines));
+        Publish(ChatHistory.Merge(old, added, maxLines, IsAutomated));
         ChatModel.PumpLog(added);
         RelayRead(added);
     }
@@ -229,11 +229,14 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
         return lo - 1;
     }
 
+    /// <summary>Automated system text (/myquests replies, lines a plugin ate) is kept on its own budget.</summary>
+    private static bool IsAutomated(ChatLine line) => line.Automated;
+
     /// <summary>The setting was lowered: drop the oldest kept lines now, not only when new ones arrive.</summary>
     private void TrimToLength(int maxLines)
     {
         ChatLine[]? kept = Current?.Value;
-        if (kept != null && ChatHistory.Trim(kept, maxLines) is { } trimmed) Publish(trimmed);
+        if (kept != null && ChatHistory.Keep(kept, maxLines, IsAutomated) is { } trimmed) Publish(trimmed);
     }
 
     /// <summary>Tells RynthChat (0.3.0+) the history length once it's bound and whenever the setting moves.</summary>
