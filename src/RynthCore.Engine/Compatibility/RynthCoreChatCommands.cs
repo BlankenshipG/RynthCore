@@ -87,6 +87,9 @@ namespace RynthCore.Engine.Compatibility;
 ///         Logs\flight-&lt;pid&gt;-&lt;time&gt;.txt; <c>/rc flightdump auto &lt;reason&gt;</c> is the rate-limited
 ///         automatic form. <c>/rc flight [status|mark &lt;text&gt;|on|off|auto on|off]</c>.</item>
 ///   <item><c>/rc quit</c> / <c>/rc exit</c> - closes the client cleanly, as its close button does.</item>
+///   <item><c>/rc switchchar &lt;name&gt;</c> - logs this client onto another character of the same
+///         account: logs off when in the world, then logs the character on at char-select
+///         (<see cref="CharacterCaptureHooks.RequestSwitch"/>; RynthInventory's trade uses it).</item>
 ///   <item><c>/rc report [text]</c> - "Report a problem" (<see cref="Report.ProblemReport"/>): alone it
 ///         opens the panel; with text it sends that report now, with the recent log attached
 ///         (the panel is where the log can be left out). One report a minute.</item>
@@ -291,6 +294,13 @@ internal static class RynthCoreChatCommands
             Reply("Closing the client.");
             try { ServerDisconnectClose.CloseClientNow("/rc quit"); }
             catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc quit failed - {ex.GetType().Name}: {ex.Message}"); }
+            return true;
+        }
+
+        // /rc switchchar <name> : log this client onto another character of the account (2026-10-25)
+        if (IsVerb(sub, "switchchar", out string switchArgs))
+        {
+            Reply(CharacterCaptureHooks.RequestSwitch(switchArgs));
             return true;
         }
 

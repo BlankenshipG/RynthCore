@@ -112,6 +112,118 @@ internal static class CharacterCaptureHooks
     // or relaunch.
     private static int _autoLoginEverFired;
 
+    // ── Character switch on request (/rc switchchar <name>) ─────────────────────
+    // 2026-10-25: RynthInventory's trade logs a mule account onto the character that holds
+    // the items. In the world: CPlayerSystem::LogOffCharacter(false) (as the Log Out button),
+    // then at char-select the same native LogOnCharacter the launch auto-login drives. The
+    // launch auto-login stands down for good once a switch has been asked for, so its
+    // bounce watch never logs the launch character back on over the switch.
+    private const int SwitchLogoffWaitMs = 30_000;
+    private const int SwitchLogOnTimeoutMs = 90_000;
+    private const int SwitchReissueMs = 5_000;
+    private static string? _switchTarget;
+
+    /// <summary>A /rc switchchar is running (logging off, or logging the new character on).</summary>
+    internal static bool SwitchInProgress => Volatile.Read(ref _switchTarget) != null;
+
+    /// <summary>
+    /// Logs this client onto <paramref name="name"/> (one of this account's characters): logs
+    /// the current character off first when in the world. AC's main thread (the chat
+    /// command). Returns the line for the player.
+    /// </summary>
+    internal static string RequestSwitch(string name)
+    {
+        name = name.Trim();
+        if (name.Length == 0)
+            return "Usage: /rc switchchar <character name>";
+        string? running = Interlocked.CompareExchange(ref _switchTarget, name, null);
+        if (running != null)
+            return $"Already switching to {running}.";
+
+        Interlocked.Exchange(ref _autoLoginEverFired, 1);
+        CharacterManagementHooks.TryGetCurrentMode(out int mode);
+        bool inWorld = mode == GamePlayUIMode;
+        if (inWorld)
+        {
+            if (!LogoffOriginProbe.TryRequestLogOff(out string why))
+            {
+                Volatile.Write(ref _switchTarget, null);
+                return "Can't log off to switch: " + why;
+            }
+        }
+        else if (mode != CharacterManagementUIMode)
+        {
+            Volatile.Write(ref _switchTarget, null);
+            return "Not in the world or at character select yet.";
+        }
+
+        RynthLog.Info($"CharacterCapture: switch to '{name}' requested ({(inWorld ? "logging off first" : "at char-select")}).");
+        EngineThreads.Start("RynthCore.SwitchCharacter", () => SwitchLoop(name));
+        return inWorld ? $"Logging off to switch to {name}." : $"Logging on {name}.";
+    }
+
+    private static void SwitchLoop(string target)
+    {
+        try
+        {
+            // Wait for char-select (the logoff takes ~6 s).
+            long start = Environment.TickCount64;
+            while (true)
+            {
+                if (!EngineThreads.Sleep(250)) return;
+                if (CharacterManagementHooks.TryGetCurrentMode(out int m) && m == CharacterManagementUIMode)
+                    break;
+                if (Environment.TickCount64 - start > SwitchLogoffWaitMs)
+                {
+                    RynthLog.Warn($"CharacterCapture: switch to '{target}' gave up: not at char-select {SwitchLogoffWaitMs / 1000}s after the logoff.");
+                    return;
+                }
+            }
+
+            // Same settle time the launch auto-login gives char-select before logging on.
+            if (!EngineThreads.Sleep(AutoLoginDelayMs)) return;
+            TryCaptureNativeCharacterList();
+
+            long logOnStart = Environment.TickCount64;
+            long lastIssue = 0;
+            string status = string.Empty;
+            while (true)
+            {
+                CharacterManagementHooks.TryGetCurrentMode(out int mode);
+                if (mode == GamePlayUIMode)
+                {
+                    RynthLog.Info($"CharacterCapture: switched to '{target}'.");
+                    return;
+                }
+                long now = Environment.TickCount64;
+                if (mode == CharacterManagementUIMode && (lastIssue == 0 || now - lastIssue >= SwitchReissueMs))
+                {
+                    if (CharacterManagementHooks.TryLogOnCharacter(target, out string matched, out uint avatarId, out status))
+                    {
+                        lastIssue = now;
+                        RynthLog.Info($"CharacterCapture: switch issued LogOnCharacter for '{matched}' (avatar 0x{avatarId:X8}).");
+                    }
+                    else
+                        RynthLog.Verbose($"CharacterCapture: switch to '{target}' - {status}");
+                }
+                if (now - logOnStart > SwitchLogOnTimeoutMs)
+                {
+                    RynthLog.Warn($"CharacterCapture: switch to '{target}' gave up after {SwitchLogOnTimeoutMs / 1000}s at char-select. Last status: {status}");
+                    return;
+                }
+                if (!EngineThreads.Sleep(AutoLoginPollIntervalMs)) return;
+            }
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"CharacterCapture: switch loop crashed - {ex.Message}");
+        }
+        finally
+        {
+            Volatile.Write(ref _switchTarget, null);
+        }
+    }
+
     /// <summary>
     /// Starts the character-list capture poll (always) and the poll-driven
     /// auto-login worker. Call once from InitWorker. Auto-login no-ops if no

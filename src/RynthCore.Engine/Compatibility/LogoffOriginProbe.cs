@@ -122,6 +122,7 @@ internal static unsafe class LogoffOriginProbe
         HookResolver.ResolveResult r;
 
         r = HookResolver.Resolve(text, "LogoffProbe.LogOffCharacter", LogOffCharacterPattern, ProbeLogOffCharacterVa);
+        if (r.Success) _logOffCharacterEntry = r.Address;
         delegate* unmanaged[Thiscall]<IntPtr, byte, void> dLogOffCharacter = &LogOffCharacterDetour;
         if (TryHook(r, "CPlayerSystem::LogOffCharacter", (IntPtr)dLogOffCharacter, out _origLogOffCharacter)) hooked++;
 
@@ -142,6 +143,26 @@ internal static unsafe class LogoffOriginProbe
         if (TryHook(r, "ClientNet::LogOffServer", (IntPtr)dLogOffServer, out _origLogOffServer)) hooked++;
 
         RynthLog.Compat($"LogoffProbe: {hooked}/5 logoff-origin hooks installed (labels {(_labelsValid ? "on" : "off - not the reference client")}).");
+    }
+
+    // CPlayerSystem::LogOffCharacter's entry (hooked or not): TryRequestLogOff calls it.
+    private static IntPtr _logOffCharacterEntry;
+
+    /// <summary>
+    /// Logs the character off the way the Log Out button does: CPlayerSystem::LogOffCharacter(false)
+    /// (through the hook above when it is in, so the logoff is recorded like any other). AC's main
+    /// thread only. False with a reason when it can't be called.
+    /// </summary>
+    public static bool TryRequestLogOff(out string status)
+    {
+        if (!MainThreadGuard.IsOnMainThread()) { status = "off AC's main thread."; return false; }
+        IntPtr fn = _logOffCharacterEntry;
+        if (fn == IntPtr.Zero) { status = "CPlayerSystem::LogOffCharacter isn't resolved."; return false; }
+        IntPtr playerSystem = CharacterManagementHooks.PlayerSystemOnMainThread();
+        if (playerSystem == IntPtr.Zero) { status = "the player system isn't available."; return false; }
+        ((delegate* unmanaged[Thiscall]<IntPtr, byte, void>)fn)(playerSystem, 0);
+        status = "logging off.";
+        return true;
     }
 
     private static bool TryHook(HookResolver.ResolveResult r, string name, IntPtr detour, out IntPtr original)
