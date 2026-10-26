@@ -33,5 +33,8 @@ internal static class PluginContractVersion
     // v90: windows that draw their own frame (manifest "chrome": "none", "fitHeight"):
     //      PanelDragWithLastItem, SetPanelPopOut, PanelTextSize; GetUiColor's Muted and instrument
     //      shades (KeyFace, Hairline, Inset, Faint), GetUiFont's Dash and Narrow fonts (2026-10-21).
-    public const uint Current = 90;
+    // v91: GetWindowPlacement and SetWindowPlacement: a plugin's own floating windows keep their spot
+    //      per character (window_state.<server>.<character>.txt) instead of in the imgui.ini every
+    //      running client shares and rewrites (2026-10-26).
+    public const uint Current = 91;
 }

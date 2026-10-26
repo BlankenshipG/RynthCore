@@ -1745,6 +1745,44 @@ public readonly unsafe struct RynthCoreHost
         return item;
     }
 
+    /// <summary>v91: the engine keeps a plugin window's spot per character (<see cref="TryGetWindowPlacement"/>).</summary>
+    public bool HasWindowPlacements => _api.Version >= 91 && _api.GetWindowPlacementFn != IntPtr.Zero && _api.SetWindowPlacementFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v91: where the player left the plugin's own floating window <paramref name="key"/> on this character
+    /// (ImGui screen pixels; a zero size = the window sized itself). False when nothing is saved, no
+    /// character is logged in yet, or the engine is older. Keys: up to 96 characters, no '=' or line break;
+    /// prefix them with the plugin's name. Any thread. Plugins/Shared SavedWindow wraps this.
+    /// </summary>
+    public bool TryGetWindowPlacement(string key, out System.Numerics.Vector2 pos, out System.Numerics.Vector2 size)
+    {
+        pos = size = default;
+        if (!HasWindowPlacements || string.IsNullOrEmpty(key) || key.Length > 96) return false;
+        Span<byte> utf8 = stackalloc byte[392];
+        int n = System.Text.Encoding.UTF8.GetBytes(key, utf8[..^1]);
+        utf8[n] = 0;
+        float* v = stackalloc float[4];
+        int r;
+        fixed (byte* p = utf8)
+            r = ((delegate* unmanaged[Cdecl]<byte*, float*, int>)_api.GetWindowPlacementFn)(p, v);
+        if (r != 1) return false;
+        pos = new System.Numerics.Vector2(v[0], v[1]);
+        size = new System.Numerics.Vector2(v[2], v[3]);
+        return true;
+    }
+
+    /// <summary>v91: saves window <paramref name="key"/>'s spot for this character (see <see cref="TryGetWindowPlacement"/>). False when not saved.</summary>
+    public bool SetWindowPlacement(string key, System.Numerics.Vector2 pos, System.Numerics.Vector2 size)
+    {
+        if (!HasWindowPlacements || string.IsNullOrEmpty(key) || key.Length > 96) return false;
+        Span<byte> utf8 = stackalloc byte[392];
+        int n = System.Text.Encoding.UTF8.GetBytes(key, utf8[..^1]);
+        utf8[n] = 0;
+        fixed (byte* p = utf8)
+            return ((delegate* unmanaged[Cdecl]<byte*, float, float, float, float, int>)_api.SetWindowPlacementFn)(
+                p, pos.X, pos.Y, size.X, size.Y) == 1;
+    }
+
     /// <summary>v90: AC's own panels (<see cref="IsAcPanelOpen"/>, <see cref="AcPanel"/>).</summary>
     public bool HasAcPanels => _api.Version >= 90 && _api.AcPanelFn != IntPtr.Zero;
 

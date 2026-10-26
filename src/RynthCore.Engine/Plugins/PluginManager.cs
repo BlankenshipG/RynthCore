@@ -302,6 +302,8 @@ internal static partial class PluginManager
     private static AcPanelCallbackDelegate? _acPanelCallback;                             // v90
     private static PanelScaleCallbackDelegate? _panelScaleCallback;                       // v90
     private static DropTargetCallbackDelegate? _dropTargetCallback;                       // v90
+    private static GetWindowPlacementCallbackDelegate? _getWindowPlacementCallback;       // v91
+    private static SetWindowPlacementCallbackDelegate? _setWindowPlacementCallback;       // v91
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -3245,6 +3247,8 @@ internal static partial class PluginManager
         _acPanelCallback ??= ShortcutApi.AcPanel;
         unsafe { _panelScaleCallback ??= UiKit.PanelScale; }
         unsafe { _dropTargetCallback ??= ShortcutApi.DropTarget; }
+        unsafe { _getWindowPlacementCallback ??= WindowPlacementApi.Get; }
+        unsafe { _setWindowPlacementCallback ??= WindowPlacementApi.Set; }
 
         _api.Version = PluginContractVersion.Current;
         _api.LogFn = Marshal.GetFunctionPointerForDelegate(_logCallback);
@@ -3415,6 +3419,8 @@ internal static partial class PluginManager
         _api.AcPanelFn = Marshal.GetFunctionPointerForDelegate(_acPanelCallback);
         _api.PanelScaleFn = Marshal.GetFunctionPointerForDelegate(_panelScaleCallback);
         _api.DropTargetFn = Marshal.GetFunctionPointerForDelegate(_dropTargetCallback);
+        _api.GetWindowPlacementFn = Marshal.GetFunctionPointerForDelegate(_getWindowPlacementCallback);
+        _api.SetWindowPlacementFn = Marshal.GetFunctionPointerForDelegate(_setWindowPlacementCallback);
         RouteApiThroughLoader();
     }
 

@@ -1039,6 +1039,14 @@ internal struct RynthCoreAPI
     /// dropped since the last call (0 = none); *dragging = 1 while an item drag is on. A claimed drop never
     /// reaches AC. AC's main thread, in the window's draw. Requires API v90+.</summary>
     public IntPtr DropTargetFn;
+    /// <summary>v91: <c>int GetWindowPlacement(const char* key, float* xywh)</c>: where the player left the
+    /// plugin's own floating window <c>key</c> on this character (x, y, width, height; ImGui screen pixels,
+    /// width/height 0 = sized itself). 1 found, 0 none saved, -1 bad key or no character. Any thread.</summary>
+    public IntPtr GetWindowPlacementFn;
+    /// <summary>v91: <c>int SetWindowPlacement(const char* key, float x, float y, float w, float h)</c>: saves it,
+    /// per character (window_state.&lt;server&gt;.&lt;character&gt;.txt, not the imgui.ini every client shares).
+    /// 1 saved, 0 no character yet, -1 bad key (empty, over 96 chars, '=' or a line break). Any thread.</summary>
+    public IntPtr SetWindowPlacementFn;
 }
 
 /// <summary>v89 GetUiColor tokens. Append only: plugins compiled against these numbers keep them.</summary>
@@ -1890,6 +1898,12 @@ internal unsafe delegate int PanelScaleCallbackDelegate(byte* key, int percent);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate uint DropTargetCallbackDelegate(byte* window, float x0, float y0, float x1, float y1, int flags, int* dragging);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetWindowPlacementCallbackDelegate(byte* key, float* xywh);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int SetWindowPlacementCallbackDelegate(byte* key, float x, float y, float w, float h);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate uint VendorBuyCallbackDelegate(uint vendorId, VendorTradeEntryNative* entries, int count);

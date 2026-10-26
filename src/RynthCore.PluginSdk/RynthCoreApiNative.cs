@@ -199,6 +199,8 @@ public struct RynthCoreApiNative
     public IntPtr AcPanelFn;                 // int AcPanel(int id, int op) -> op 0: 1 open, 0 closed, -1 none; else 1 queued, -1 refused
     public IntPtr PanelScaleFn;              // int PanelScale(const char* key, int percent) -> percent now, 0 = follows the text size
     public IntPtr DropTargetFn;              // uint DropTarget(const char* window, float x0, y0, x1, y1, int flags, int* dragging) -> dropped object, 0 none
+    public IntPtr GetWindowPlacementFn;      // v91 int GetWindowPlacement(const char* key, float* xywh) -> 1 found, 0 none, -1 bad key / no character
+    public IntPtr SetWindowPlacementFn;      // v91 int SetWindowPlacement(const char* key, float x, y, w, h) -> 1 saved, 0 no character, -1 bad key
 }
 
 /// <summary>
