@@ -1229,6 +1229,8 @@ internal static partial class InventoryModel
                 lines.Add(sb.ToString());
             }
         }
+        if (appraised && item != null && (item.Type & WeaponTypeMask) != 0)
+            AddWeaponSpecials(id, lines);
         if (item != null && item.SpellId != 0 && (lines.Count == 0 || !appraised))
         {
             if (!PortalSpellTable.Ready) PortalSpellTable.EnsureLoadQueued();
@@ -1237,6 +1239,94 @@ internal static partial class InventoryModel
         if (identifying) lines.Add("Identifying...");
         else if (!appraised) lines.Add("Not identified yet.");
         return new InventoryTooltip { Id = id, Lines = lines.ToArray(), Identifying = identifying };
+    }
+
+    // ── Weapon imbues and slayer (tooltip, 2026-10-25) ──────────────────
+    // ItemType melee weapon | missile weapon | caster.
+    private const uint WeaponTypeMask = 0x1 | 0x100 | 0x8000;
+    // ACE: ImbuedEffect 179 (+ ImbuedEffect2..5 = 303..306), SlayerCreatureType 166,
+    // SlayerDamageBonus 138 (rarely sent), LongDesc 16 (ACECustom "Property Details:" strengths).
+    private const uint StypeImbuedEffect = 179, StypeSlayerCreature = 166, StypeSlayerBonus = 138, StypeLongDesc = 16;
+    private static readonly uint[] ImbueStypes = { StypeImbuedEffect, 303, 304, 305, 306 };
+
+    // ACE ImbuedEffectType bits, in the order the appraisal lists them.
+    private static readonly (int Bit, string Name, string Detail)[] ImbueNames =
+    {
+        (0x0001, "Critical Strike", "Critical Strike"), (0x0002, "Crippling Blow", "Crippling Blow"),
+        (0x0004, "Armor Rending", "Armor Rending"), (0x0008, "Slash Rending", "Slash"),
+        (0x0010, "Pierce Rending", "Pierc"), (0x0020, "Bludgeon Rending", "Bludg"),
+        (0x0040, "Acid Rending", "Acid"), (0x0080, "Cold Rending", "Cold|Frost"),
+        (0x0100, "Lightning Rending", "Electric|Lightning"), (0x0200, "Fire Rending", "Fire"),
+        (0x4000, "Nether Rending", "Nether"), (0x0400, "Melee Defense imbue", ""),
+        (0x0800, "Missile Defense imbue", ""), (0x1000, "Magic Defense imbue", ""),
+        (0x2000, "Spellbook (Hematited)", ""),
+    };
+
+    // ACE CreatureType, index = value (same list as RynthAi's MagItemInfoTables / LootRuleText).
+    private static readonly string[] CreatureTypeNames =
+    {
+        "Invalid", "Olthoi", "Banderling", "Drudge", "Mosswart", "Lugian", "Tumerok", "Mite", "Tusker",
+        "Phyntos Wasp", "Rat", "Auroch", "Cow", "Golem", "Undead", "Gromnie", "Reedshark", "Armoredillo",
+        "Fae", "Virindi", "Wisp", "Knathtead", "Shadow", "Mattekar", "Mumiyah", "Rabbit", "Sclavus",
+        "Shallows Shark", "Monouga", "Zefir", "Skeleton", "Human", "Shreth", "Chittick", "Moarsman",
+        "Olthoi Larvae", "Slithis", "Deru", "Fire Elemental", "Snowman", "Unknown", "Bunny",
+        "Lightning Elemental", "Rockslide", "Grievver", "Niffis", "Ursuin", "Crystal", "Hollow Minion",
+        "Scarecrow", "Idol", "Empyrean", "Hopeslayer", "Doll", "Marionette", "Carenzi", "Siraluun",
+        "Aun Tumerok", "Hea Tumerok", "Simulacrum", "Acid Elemental", "Frost Elemental", "Elemental",
+        "Statue", "Wall", "Altered Human", "Device", "Harbinger", "Dark Sarcophagus", "Chicken",
+        "Gotrok Lugian", "Margul", "Bleached Rabbit", "Nasty Rabbit", "Grimacing Rabbit", "Burun",
+        "Target", "Ghost", "Fiun", "Eater", "Penguin", "Ruschk", "Thrungus", "Viamontian Knight",
+        "Remoran", "Swarm", "Moar", "Enchanted Arms", "Sleech", "Mukkir", "Merwart", "Food",
+        "Paradox Olthoi", "Harvest", "Energy", "Apparition", "Aerbax", "Touched", "Blighted Moarsman",
+        "Gear Knight", "Gurog", "Anekshay",
+    };
+
+    // "- Fire Rending: +176% Dmg", "- Armor Rending: 12.5% Ignored", "- Crippling Blow: 2.5x Crit Dmg".
+    private static readonly System.Text.RegularExpressions.Regex ImbueDetailLine = new(
+        @"^\s*-\s*(?<name>[A-Za-z' ]+?)\s*:\s*(?<value>[+-]?[\d.,]+\s?[%x])",
+        System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>"Imbues: Armor Rending 16%, Slash Rending +161%" and "Slayer: Undead" for an identified weapon.</summary>
+    private static void AddWeaponSpecials(uint id, List<string> lines)
+    {
+        int mask = 0;
+        foreach (uint stype in ImbueStypes)
+            if (ClientObjectHooks.TryGetObjectIntProperty(id, stype, out int v)) mask |= v;
+        if (mask != 0)
+        {
+            string desc = ClientObjectHooks.TryGetObjectStringProperty(id, StypeLongDesc, out string d) ? d ?? string.Empty : string.Empty;
+            var parts = new List<string>(2);
+            foreach (var (bit, name, detail) in ImbueNames)
+            {
+                if ((mask & bit) == 0) continue;
+                string strength = detail.Length > 0 ? ImbueStrength(desc, detail) : string.Empty;
+                parts.Add(strength.Length > 0 ? name + " " + strength : name);
+            }
+            if (parts.Count > 0) lines.Add("Imbues: " + string.Join(", ", parts));
+        }
+
+        if (ClientObjectHooks.TryGetObjectIntProperty(id, StypeSlayerCreature, out int slay) && slay > 0)
+        {
+            string creature = slay < CreatureTypeNames.Length ? CreatureTypeNames[slay] : "creature type " + slay.ToString(CultureInfo.InvariantCulture);
+            string bonus = ClientObjectHooks.TryGetObjectDoubleProperty(id, StypeSlayerBonus, out double b) && b > 1
+                ? $" ({b.ToString("0.##", CultureInfo.InvariantCulture)}x damage)" : string.Empty;
+            lines.Add($"Slayer: {creature}{bonus}");
+        }
+    }
+
+    /// <summary>The strength of one imbue from the "Property Details:" text, or empty.</summary>
+    private static string ImbueStrength(string desc, string detail)
+    {
+        if (desc.Length == 0) return string.Empty;
+        bool rending = detail is not ("Critical Strike" or "Crippling Blow" or "Armor Rending");
+        foreach (System.Text.RegularExpressions.Match m in ImbueDetailLine.Matches(desc))
+        {
+            string name = m.Groups["name"].Value;
+            if (!Array.Exists(detail.Split('|'), k => name.Contains(k, StringComparison.OrdinalIgnoreCase))) continue;
+            if (rending && !name.Contains("Rending", StringComparison.OrdinalIgnoreCase)) continue;
+            return m.Groups["value"].Value.Replace(" ", "");
+        }
+        return string.Empty;
     }
 
     private static string SpellName(uint spellId)
