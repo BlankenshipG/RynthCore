@@ -574,6 +574,16 @@ internal static class ChatCallbackHooks
                 _lastOutgoingSource = commandSource;
             }
 
+            // Typed in AC's own chat bar (not a line Dispatch is sending: a plugin's, or RynthChat's
+            // box, which marks it itself): a /command's reply also shows in RynthChat's open tab,
+            // as when it is typed in RynthChat's box (ChatReplyTab). 2026-10-26: /fship typed in
+            // AC's bar printed in AC's chat but sat only under RynthChat's All and System.
+            if (!ChatCommandDispatcher.InDispatch && line != null)
+            {
+                try { UI.Data.ChatModel.ReplyTabs.NoteSent(line, UI.Data.ChatModel.CurrentTab(), Environment.TickCount64); }
+                catch { }
+            }
+
             // RynthCore engine commands (/rc ...) — consume before plugins or
             // AC see the line so the user never broadcasts "/rc resetbar" and
             // a hidden overlay bar stays recoverable.

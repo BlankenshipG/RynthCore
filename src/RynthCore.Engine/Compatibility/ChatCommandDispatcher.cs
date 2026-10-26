@@ -77,6 +77,14 @@ internal static unsafe class ChatCommandDispatcher
     private static bool _inPluginPreDispatch;
 
     /// <summary>
+    /// True on AC's main thread while Dispatch sends a line (a plugin's InvokeChatParser, RynthChat's
+    /// box, a login command): AC's outgoing-chat hook then knows the line wasn't typed in AC's own
+    /// chat bar (ChatCallbackHooks.OutgoingChatDetour, ChatReplyTab). 2026-10-26.
+    /// </summary>
+    [ThreadStatic]
+    internal static bool InDispatch;
+
+    /// <summary>
     /// AC1Legacy::PStringBase&lt;char&gt; for Event_* functions.
     /// </summary>
     [StructLayout(LayoutKind.Sequential)]
@@ -130,6 +138,8 @@ internal static unsafe class ChatCommandDispatcher
         if (!MainThreadGuard.IsOnMainThread())
             return AcMainThreadQueue.EnqueueChatCommand(text);
 
+        bool outerDispatch = InDispatch;
+        InDispatch = true;
         try
         {
             string trimmed = text.Trim();
@@ -225,6 +235,7 @@ internal static unsafe class ChatCommandDispatcher
             RynthLog.Compat($"ChatDispatch: error - {ex.GetType().Name}: {ex.Message}");
             return false;
         }
+        finally { InDispatch = outerDispatch; }
     }
 
     /// <summary>
