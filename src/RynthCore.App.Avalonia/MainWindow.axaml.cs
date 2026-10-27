@@ -84,6 +84,8 @@ internal partial class MainWindow : Window
     // Last observed window rect per PID — set on first post-login observation,
     // used to detect an actual move before we commit anything to appsettings.
     private readonly Dictionary<int, (int x, int y, int w, int h)> _baselineWindowRects = [];
+    // When each client's saved window was put back, and the put-backs since (AcWindowRestoreRule).
+    private readonly Dictionary<int, (DateTime At, DateTime? Last, int Count)> _windowRestores = [];
     // Serializes prefs-swap launches so two accounts don't race on the live
     // UserPreferences.ini. Non-prefs launches don't acquire this and stay
     // parallel.
@@ -3399,6 +3401,8 @@ internal partial class MainWindow : Window
         _everLoggedInPids.RemoveWhere(pid => !activePids.Contains(pid));
         foreach (int pid in _baselineWindowRects.Keys.Where(pid => !activePids.Contains(pid)).ToList())
             _baselineWindowRects.Remove(pid);
+        foreach (int pid in _windowRestores.Keys.Where(pid => !activePids.Contains(pid)).ToList())
+            _windowRestores.Remove(pid);
 
         // Latch any PID that's currently reporting IsLoggedIn=true. Once
         // latched, the reaper will permanently exempt it — even if some race
@@ -4474,6 +4478,7 @@ internal partial class MainWindow : Window
                     profile.WindowWidth!.Value,
                     profile.WindowHeight!.Value,
                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+                _windowRestores[process.Id] = (DateTime.UtcNow, null, 0);
                 LauncherDiag.Info($"WindowPos PID {process.Id} ({accountName}@{serverName}): restored to ({profile.WindowX},{profile.WindowY},{profile.WindowWidth}x{profile.WindowHeight}).");
                 return;
             }
@@ -4557,6 +4562,19 @@ internal partial class MainWindow : Window
         }
         if (refW > 0 && refH > 0 && (long)w * h * 2L < (long)refW * refH)
         {
+            // Shortly after our restore it is AC shrinking the window back while it brings the character in
+            // (AcWindowRestoreRule): put the saved window back instead of leaving the game drawn into a small one.
+            if (hasSaved && _windowRestores.TryGetValue(process.Id, out var rs)
+                && AcWindowRestoreRule.ShouldReapply(DateTime.UtcNow, rs.At, rs.Last, rs.Count, sess?.LogoutAtUtc != null,
+                                                     w, h, profile.WindowWidth!.Value, profile.WindowHeight!.Value))
+            {
+                SetWindowPos(hwnd, IntPtr.Zero, profile.WindowX!.Value, profile.WindowY!.Value,
+                             profile.WindowWidth!.Value, profile.WindowHeight!.Value,
+                             SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+                _windowRestores[process.Id] = (rs.At, DateTime.UtcNow, rs.Count + 1);
+                LauncherDiag.Info($"WindowPos PID {process.Id} ({accountName}@{serverName}): AC shrank it to {w}x{h} after the restore: put back to ({profile.WindowX},{profile.WindowY},{profile.WindowWidth}x{profile.WindowHeight}) (#{rs.Count + 1}).");
+                return;
+            }
             LauncherDiag.Info($"WindowPos PID {process.Id} ({accountName}@{serverName}): ignored char-select/login shrink ({w}x{h}, <50% of in-game {refW}x{refH}).");
             return;
         }

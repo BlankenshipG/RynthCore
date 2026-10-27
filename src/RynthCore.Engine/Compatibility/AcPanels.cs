@@ -218,7 +218,8 @@ internal static unsafe class AcPanels
     {
         if (Requests.IsEmpty) return;
         long now = Environment.TickCount64;
-        if (PlayerLifecycleLog.HoldQueuedWork(now)) return;
+        // Not held between worlds: a panel opens and closes in portal space as with AC's own keys
+        // (held, a click there or just after landing was dropped; Tom 2026-10-23).
         while (Requests.TryDequeue(out Request r))
         {
             if (now - r.QueuedMs > 3000) continue;

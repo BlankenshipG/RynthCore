@@ -31,8 +31,7 @@
 //    clear  gmToolbarUI::RemoveShortcutInSlotNum(slot, 1)  0x004BE180, ret 8.
 //  Queued from any thread and run on AC's game thread just before its tick
 //  (GameTickHooks, beside the cast drain: AC's own input -> UseTime order),
-//  held while the player is between worlds (PlayerLifecycleLog), dropped after
-//  6 s. The slots are read on the game thread after the tick, 4 times a second,
+//  dropped after 6 s. Not held between worlds: the keys aren't either. The slots are read on the game thread after the tick, 4 times a second,
 //  into a snapshot GetShortcuts returns from any thread.
 // ============================================================================
 
@@ -184,12 +183,9 @@ internal static unsafe class AcShortcuts
     {
         if (Queue.IsEmpty) return;
         long now = Environment.TickCount64;
-        if (PlayerLifecycleLog.HoldQueuedWork(now))
-        {
-            // Between worlds: keep them, unless they waited too long.
-            while (Queue.TryPeek(out Request old) && now - old.QueuedMs > GiveUpMs) Queue.TryDequeue(out _);
-            return;
-        }
+        // Not held between worlds (portal space, the seconds after landing): a slot pressed then does
+        // what its key does then - AC's own toolbar call, which AC answers or refuses itself. Held,
+        // a click in portal space did nothing (Tom 2026-10-23). Logout empties the queue (Reset).
         IntPtr toolbar = RetailToolbarHooks.ShortcutToolbar();
         while (Queue.TryDequeue(out Request r))
         {
