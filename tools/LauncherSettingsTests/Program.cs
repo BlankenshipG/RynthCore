@@ -498,6 +498,26 @@ internal static class Program
                     "expired stays expired through the grace");
                 Check(CrashDumpWriterRule.Grace == TimeSpan.FromSeconds(60), "the grace is 60 s");
             });
+
+            // Drakkon 2026-10-25 23:04: the saved window was put back 3 s after the login, AC shrank it to its
+            // login size 3 s later and drew the game at 1600x900 into 806x629 all night.
+            Scenario("window restore: AC's shrink right after the restore is put back", root, () =>
+            {
+                var at = new DateTime(2026, 10, 26, 3, 4, 48, DateTimeKind.Utc);
+                bool Re(double sec, DateTime? last = null, int count = 0, bool loggedOut = false, int w = 806, int h = 629) =>
+                    AcWindowRestoreRule.ShouldReapply(at.AddSeconds(sec), at, last, count, loggedOut, w, h, 1606, 929);
+                Check(Re(3), "806x629 three seconds after the restore: put back");
+                Check(!Re(3, w: 1606, h: 929), "the saved size: nothing to do");
+                Check(!Re(3, w: 1300, h: 800), "a moderate resize (the player's): left alone");
+                Check(!Re(3, loggedOut: true), "logged out (the real character select): left alone");
+                Check(!Re(61), "past the minute after the restore: left alone (the tracker only refuses to save it)");
+                Check(!Re(5, last: at.AddSeconds(3), count: 1), "two seconds after a put-back: wait (AC may still be resizing)");
+                Check(Re(6, last: at.AddSeconds(3), count: 1), "three seconds after: again");
+                Check(!Re(30, last: at.AddSeconds(20), count: AcWindowRestoreRule.MaxReapplies), "after MaxReapplies: no more");
+                Check(AcWindowRestoreRule.IsLoginShrink(806, 629, 1606, 929) && !AcWindowRestoreRule.IsLoginShrink(1200, 700, 1606, 929),
+                    "login size is under half the saved area");
+                Check(!AcWindowRestoreRule.IsLoginShrink(806, 629, 0, 0), "no saved size: never");
+            });
         }
         finally
         {
