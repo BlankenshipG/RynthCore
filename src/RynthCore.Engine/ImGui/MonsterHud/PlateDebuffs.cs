@@ -44,21 +44,7 @@ using RynthCore.Engine.Compatibility;
 
 namespace RynthCore.Engine.ImGuiBackend.Hud;
 
-/// <summary>What an icon on the plate stands for (one icon per kind).</summary>
-internal enum DebuffKind : byte
-{
-    VulnFire, VulnCold, VulnLightning, VulnAcid, VulnSlash, VulnPierce, VulnBludgeon,
-    Imperil, MagicYield, Defense, Attributes, Vitals, Movement, Skills, Dot, Other,
-}
-
-/// <summary>One icon: the kind, when its soonest entry expires, that entry's full length, and how many categories it merges.</summary>
-internal struct DebuffIcon
-{
-    public DebuffKind Kind;
-    public long Expiry;         // Stopwatch ticks
-    public float Duration;      // seconds, of the entry expiring first
-    public int Stack;
-}
+// DebuffKind and DebuffIcon (what an icon stands for) are in DebuffIcon.cs, shared with your own plate's row.
 
 internal static class PlateDebuffs
 {

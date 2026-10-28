@@ -79,6 +79,18 @@ internal static class MonsterHudSettings
     public static float SelfFixedX = DefaultSelfFixedX, SelfFixedY = DefaultSelfFixedY;
     /// <summary>Just under a third-person character, clear of the chat in the bottom-left corner.</summary>
     public const float DefaultSelfFixedX = 0.5f, DefaultSelfFixedY = 0.68f;
+    // Your plate's look (2026-10-27), each piece on its own; all on = the look before they existed.
+    // Your plate only: the monster plates share the bar painter but always draw all of it.
+    /// <summary>The dark track and 1 px black edge behind each of your bars.</summary>
+    public static bool SelfBarTrack = true;
+    /// <summary>The pale gold "chip" that shows what a drop took, then drains.</summary>
+    public static bool SelfBarChip = true;
+    /// <summary>The black outline around your plate's text (numbers, name).</summary>
+    public static bool SelfTextOutline = true;
+    /// <summary>The dark band behind the "cur / max" numbers.</summary>
+    public static bool SelfNumberBand = true;
+    /// <summary>"Debuffs on you": icons for harmful spells on you under your mana bar (only while you have one).</summary>
+    public static bool SelfDebuffs = true;
 
     // Combat text (CombatText): floating numbers and the kill burst.
     public static bool Numbers = true;
@@ -209,6 +221,11 @@ internal static class MonsterHudSettings
                 case "selfLocked": SelfLocked = val == "1"; break;
                 case "selfFixedX": if (TryF(val, out float fx)) SelfFixedX = Math.Clamp(fx, 0f, 1f); break;
                 case "selfFixedY": if (TryF(val, out float fy)) SelfFixedY = Math.Clamp(fy, 0f, 1f); break;
+                case "selfBarTrack": SelfBarTrack = val == "1"; break;
+                case "selfBarChip": SelfBarChip = val == "1"; break;
+                case "selfTextOutline": SelfTextOutline = val == "1"; break;
+                case "selfNumberBand": SelfNumberBand = val == "1"; break;
+                case "selfDebuffs": SelfDebuffs = val == "1"; break;
                 case "numbers": Numbers = val == "1"; break;
                 case "numDealt": NumDealt = val == "1"; break;
                 case "numTaken": NumTaken = val == "1"; break;
@@ -291,6 +308,11 @@ internal static class MonsterHudSettings
         sw.WriteLine($"selfLocked={B(SelfLocked)}");
         sw.WriteLine(FormattableString.Invariant($"selfFixedX={SelfFixedX:0.####}"));
         sw.WriteLine(FormattableString.Invariant($"selfFixedY={SelfFixedY:0.####}"));
+        sw.WriteLine($"selfBarTrack={B(SelfBarTrack)}");
+        sw.WriteLine($"selfBarChip={B(SelfBarChip)}");
+        sw.WriteLine($"selfTextOutline={B(SelfTextOutline)}");
+        sw.WriteLine($"selfNumberBand={B(SelfNumberBand)}");
+        sw.WriteLine($"selfDebuffs={B(SelfDebuffs)}");
         sw.WriteLine($"numbers={B(Numbers)}");
         sw.WriteLine($"numDealt={B(NumDealt)}");
         sw.WriteLine($"numTaken={B(NumTaken)}");
@@ -329,6 +351,7 @@ internal static class MonsterHudSettings
         NpcNames = true; NpcMaxDistance = 30f; MaxNpcLabels = 15; PlayerNames = false; PlayerBars = false;
         SelfPlate = true; SelfNumbers = false; SelfName = false; SelfHideFirstPerson = true;
         SelfPlacement = SelfPlacement.Fixed; SelfLocked = true; SelfFixedX = DefaultSelfFixedX; SelfFixedY = DefaultSelfFixedY;
+        SelfBarTrack = true; SelfBarChip = true; SelfTextOutline = true; SelfNumberBand = true; SelfDebuffs = true;
         Numbers = true; NumDealt = true; NumTaken = true; NumHeals = true; NumKills = true;
         NumSize = 1.0f; NumTime = 1.0f; NumRestores = true; KeepOnScreen = true;
         GainSize = 1.0f; GainTime = 1.0f; SelfPosition = SelfPlatePosition.Above;
@@ -359,6 +382,22 @@ internal static class MonsterHudSettings
         Save();
     }
 
+    /// <summary>
+    /// Locks or unlocks your plate (not saved: the caller saves). Only a plate fixed on screen can be
+    /// dragged, so unlocking one that follows your character fixes it on screen first, at its saved
+    /// spot. True when that switch happened. Render / chat thread.
+    /// </summary>
+    public static bool SetSelfLocked(bool locked)
+    {
+        SelfLocked = locked;
+        if (locked || SelfPlacement == SelfPlacement.Fixed) return false;
+        SelfPlacement = SelfPlacement.Fixed;
+        return true;
+    }
+
+    /// <summary>Your plate can be dragged right now: fixed on screen and unlocked.</summary>
+    public static bool SelfMovable => SelfPlacement == SelfPlacement.Fixed && !SelfLocked;
+
     /// <summary>Every master switch at once ("/rv plates all on|off").</summary>
     public static void SetAll(bool on)
     {
@@ -374,7 +413,9 @@ internal static class MonsterHudSettings
         $"distance {OnOff(ShowDistance)}, fade {OnOff(FadeWithDistance)}, click to select {OnOff(ClickToSelect)}), debuffs {OnOff(ShowDebuffs)} (others {OnOff(ShowOthersDebuff)}); " +
         $"NPC names {OnOff(NpcNames)} ({NpcMaxDistance:0}yd, max {MaxNpcLabels}), player names {OnOff(PlayerNames)} (bars {OnOff(PlayerBars)}); " +
         $"self {OnOff(SelfPlate)} ({(SelfPlacement == SelfPlacement.Fixed ? "fixed on screen, " + (SelfLocked ? "locked" : "unlocked") : "follows you, " + SelfPosition.ToString().ToLowerInvariant())}, " +
-        $"numbers {OnOff(SelfNumbers)}, name {OnOff(SelfName)}, hide in first person {OnOff(SelfHideFirstPerson)}); " +
+        $"numbers {OnOff(SelfNumbers)}, name {OnOff(SelfName)}, hide in first person {OnOff(SelfHideFirstPerson)}, " +
+        $"debuffs on you {OnOff(SelfDebuffs)}, track {OnOff(SelfBarTrack)}, damage trail {OnOff(SelfBarChip)}, " +
+        $"text outline {OnOff(SelfTextOutline)}, number band {OnOff(SelfNumberBand)}); " +
         $"combat text {OnOff(Numbers)} (dealt {OnOff(NumDealt)}, taken {OnOff(NumTaken)}, heals {OnOff(NumHeals)}, kills {OnOff(NumKills)}); " +
         $"gains {OnOff(Gains)} (xp {OnOff(GainXp)}, lum {OnOff(GainLum)}, radiance {OnOff(GainRadiance)}); " +
         $"sizes: monster bar {MonsterBarWidth:0.##}x{MonsterBarHeight:0.##} text {MonsterTextSize:0.##}, " +

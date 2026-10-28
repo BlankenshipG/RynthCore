@@ -163,8 +163,11 @@ internal static unsafe class ShortcutApi
     /// v90 SetActionKey: for a keymap action ("UseQuickSlot_5") or an engine command ("/rdef use 2"), key
     /// "Ctrl+F5" (or a key as GetActionKeys wrote it, to remove): op 0 checks (0 free, 1 it would be taken
     /// from what the message names, -1 it can't be, why in the message), 1 binds it (it comes off
-    /// everything else; every client follows within a second), 2 removes it. 1/2 return 1 queued (done on
-    /// AC's game thread; the result goes to chat), -1 refused (why in the message). Any thread.
+    /// everything else; every client follows within a second), 2 removes it (an engine command's: its hotkey
+    /// only, as ever), 3 binds an engine command's key as its hotkey alone (off RynthCore's other hotkeys; AC's
+    /// keymap untouched, nothing reloaded anywhere; 2026-10-27, an engine before that refuses op 3 as unknown).
+    /// 1-3 return 1 queued (done on AC's game thread; the result goes to chat), -1 refused (why in the
+    /// message). Any thread.
     /// </summary>
     public static int SetActionKey(byte* action, byte* key, int op, byte* message, int length)
     {
@@ -176,7 +179,7 @@ internal static unsafe class ShortcutApi
             string msg;
             int result;
             if (op == 0) result = AcKeymapLive.Check(a, k, out msg);
-            else if (op is 1 or 2) result = AcKeymapLive.Enqueue(a, k, op == 1 ? AcKeymapLive.Op.Bind : AcKeymapLive.Op.Unbind, out msg) ? 1 : -1;
+            else if (op is 1 or 2 or 3) result = AcKeymapLive.Enqueue(a, k, (AcKeymapLive.Op)op, out msg) ? 1 : -1;
             else { result = -1; msg = "Unknown op."; }
             Write(msg, message, length);
             return result;

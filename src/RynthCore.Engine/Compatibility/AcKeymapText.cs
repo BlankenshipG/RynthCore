@@ -24,10 +24,17 @@
 //  has Home and Ctrl+C). The key names written are the ones AC writes itself
 //  (DIK_PGUP, DIK_UPARROW...), all in its own name table; any name it accepts
 //  is matched (DIK_PRIOR is DIK_PGUP).
+//
+//  A change every client makes (2026-10-27: a player's own Configure Keyboard
+//  keys reverted mid-fight when another client changed one): the client that
+//  changes a key records the edits it made (Edit, Change) in "<keymap>.
+//  rynthcore"; every other client makes the same edits to its OWN keys (AC
+//  writes them out, ApplyChanges, AC loads them), never to the shared file's.
 // ============================================================================
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using RynthCore.Engine.Hotkeys;
@@ -194,10 +201,14 @@ internal static class AcKeymapText
     /// <summary>
     /// Binds the key to <paramref name="action"/>, taking it from every other action that has it (game
     /// groups). <paramref name="taken"/>: the bindings it came off. Returns false (lines unchanged) with
-    /// <paramref name="error"/> when there is nowhere to put it.
+    /// <paramref name="error"/> when there is nowhere to put it. <paramref name="group"/>: where a new line
+    /// goes when the action has none yet (another client's change: the group it went in there), before
+    /// <see cref="DefaultGroup"/>.
     /// </summary>
-    public static bool Bind(List<string> lines, string action, int device, string dik, uint meta, out List<Line> taken, out string error)
+    public static bool Bind(List<string> lines, string action, int device, string dik, uint meta, out List<Line> taken, out string error,
+        string? group = null)
     {
+        string? recordedGroup = string.IsNullOrEmpty(group) || IsTextGroup(group) ? null : group;
         error = string.Empty;
         string d = Canonical(dik);
         List<Line> all = Bindings(lines);
@@ -207,7 +218,7 @@ internal static class AcKeymapText
                                        && l.Action.Equals(action, StringComparison.OrdinalIgnoreCase));
 
         // Where the new line goes: after the action's last line, else at the end of its group.
-        string? group = null;
+        group = null;
         int insertAt = -1;
         if (!already)
         {
@@ -215,7 +226,7 @@ internal static class AcKeymapText
                 if (l.Action.Equals(action, StringComparison.OrdinalIgnoreCase) && !IsTextGroup(l.Group)) { group = l.Group; insertAt = l.Index + 1; }
             if (insertAt < 0)
             {
-                group = DefaultGroup(action);
+                group = recordedGroup ?? DefaultGroup(action);
                 if (group == null) { error = $"No group for {action} in the keymap."; taken = new(); return false; }
             }
         }
@@ -260,6 +271,277 @@ internal static class AcKeymapText
                                                       && l.Action.Equals(action, StringComparison.OrdinalIgnoreCase));
         for (int k = mine.Count - 1; k >= 0; k--) lines.RemoveAt(mine[k].Index);
         return mine.Count > 0;
+    }
+
+    /// <summary>Takes the key off every action that has it in the game's groups (an engine command's key); the bindings removed.</summary>
+    public static List<Line> Take(List<string> lines, int device, string dik, uint meta)
+    {
+        List<Line> uses = Uses(lines, device, dik, meta);
+        for (int k = uses.Count - 1; k >= 0; k--) lines.RemoveAt(uses[k].Index);
+        return uses;
+    }
+
+    /// <summary>The game group the action's binding of this key is in ("" when it has none).</summary>
+    public static string GroupOf(List<string> lines, string action, int device, string dik, uint meta)
+    {
+        string d = Canonical(dik);
+        List<Line> all = Bindings(lines);
+        int i = all.FindIndex(x => x.Device == device && x.Dik == d && x.Meta == meta && !IsTextGroup(x.Group)
+                                   && x.Action.Equals(action, StringComparison.OrdinalIgnoreCase));
+        return i >= 0 ? all[i].Group : string.Empty;
+    }
+
+    // ── A change every client makes ─────────────────────────────────────────
+    //
+    //  "<keymap>.rynthcore", one line per edit, oldest first:
+    //    RynthCore keymap changes 2
+    //    <stamp> <pid> bind|unbind|take <action, or - for take> <device> <key> <modifiers, or -> <group, or ->
+    //  stamp: the change's UTC ticks (every edit of one change has it; each change's is past the last's), pid:
+    //  the client that made it. The modifiers are each metakey bit by its key names ("DIK_LCONTROL|DIK_RCONTROL+
+    //  DIK_LSHIFT"), so a keymap numbering its MetaKeys differently gets the same keys; "0x00000005" is a raw mask
+    //  (a bit no metakey names). The group (a bind's): where the line went, for a keymap with no line for the
+    //  action yet. An older RynthCore wrote just the keymap's time there (one number): that says the file
+    //  changed, not what.
+
+    /// <summary>Bind: the action gets the key, which comes off every other game action. Unbind: off the action. Take: off every game action.</summary>
+    public enum EditKind { Bind, Unbind, Take }
+
+    /// <summary>
+    /// One edit of a change. <see cref="Action"/> is "" for Take; <see cref="Mods"/> as <see cref="ModsOf"/>
+    /// writes it; <see cref="Group"/> a bind's group where it was made ("" none).
+    /// </summary>
+    internal readonly record struct Edit(EditKind Kind, string Action, int Device, string Dik, string Mods, string Group = "");
+
+    /// <summary>One change: its stamp (UTC ticks), the client that made it, its edits in order.</summary>
+    internal sealed record Change(long Stamp, int Pid, List<Edit> Edits);
+
+    public const string ChangesHeader = "RynthCore keymap changes 2";
+    private const string ChangesHeaderPrefix = "RynthCore keymap changes ";
+
+    private static readonly Regex ModsText = new(@"^(0x[0-9A-Fa-f]{1,8}|[A-Za-z0-9_]+(\|[A-Za-z0-9_]+)*(\+[A-Za-z0-9_]+(\|[A-Za-z0-9_]+)*)*)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// A modifier mask as the key names of its metakeys in this keymap ("" for none): bits joined by '+', each
+    /// bit's names by '|'. A bit no metakey names goes as the raw mask ("0x00000010").
+    /// </summary>
+    public static string ModsOf(List<string> lines, uint mask)
+    {
+        if (mask == 0) return string.Empty;
+        var names = new Dictionary<int, List<string>>();
+        foreach (KeyValuePair<string, int> kv in MetaKeys(lines))
+        {
+            if (!names.TryGetValue(kv.Value, out List<string>? list)) names[kv.Value] = list = new List<string>();
+            list.Add(kv.Key);
+        }
+        var parts = new List<string>();
+        for (int n = 1; n <= 32; n++)
+        {
+            if ((mask & (1u << (n - 1))) == 0) continue;
+            if (!names.TryGetValue(n, out List<string>? list)) return "0x" + mask.ToString("X8", CultureInfo.InvariantCulture);
+            parts.Add(string.Join("|", list));
+        }
+        return string.Join("+", parts);
+    }
+
+    /// <summary>The mask of <see cref="ModsOf"/>'s text by this keymap's own MetaKeys. False (why) when it has no such modifier.</summary>
+    public static bool TryMaskOf(List<string> lines, string mods, out uint mask, out string error)
+    {
+        mask = 0;
+        error = string.Empty;
+        if (mods.Length == 0) return true;
+        if (mods.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            if (uint.TryParse(mods.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out mask)) return true;
+            error = $"Not a modifier mask: {mods}.";
+            return false;
+        }
+        Dictionary<string, int> meta = MetaKeys(lines);
+        foreach (string part in mods.Split('+'))
+        {
+            int n = 0;
+            foreach (string name in part.Split('|'))
+                if (meta.TryGetValue(Canonical(name), out n)) break;
+            if (n is < 1 or > 32)
+            {
+                error = $"This keymap has no {part} modifier (MetaKeys).";
+                return false;
+            }
+            mask |= 1u << (n - 1);
+        }
+        return true;
+    }
+
+    /// <summary>Makes one recorded edit: 1 changed, 0 nothing to do (the keys have it already), -1 can't (why in <paramref name="error"/>).</summary>
+    public static int ApplyEdit(List<string> lines, Edit e, out string error)
+    {
+        if (!TryMaskOf(lines, e.Mods, out uint meta, out error)) return -1;
+        switch (e.Kind)
+        {
+            case EditKind.Bind:
+            {
+                var before = new List<string>(lines);
+                if (!Bind(lines, e.Action, e.Device, e.Dik, meta, out _, out error, e.Group)) return -1;
+                return SameLines(before, lines) ? 0 : 1;
+            }
+            case EditKind.Unbind:
+                return Unbind(lines, e.Action, e.Device, e.Dik, meta) ? 1 : 0;
+            case EditKind.Take:
+                return Take(lines, e.Device, e.Dik, meta).Count > 0 ? 1 : 0;
+            default:
+                error = "Not an edit.";
+                return -1;
+        }
+    }
+
+    /// <summary>
+    /// Every edit of the changes, in order, on a copy of <paramref name="lines"/>: the lines are changed only
+    /// when all of them could be made. 1 changed, 0 nothing to do, -1 one couldn't be made (why in
+    /// <paramref name="error"/>; the lines as they were).
+    /// </summary>
+    public static int ApplyChanges(List<string> lines, IEnumerable<Change> changes, out string error)
+    {
+        error = string.Empty;
+        var work = new List<string>(lines);
+        foreach (Change c in changes)
+            foreach (Edit e in c.Edits)
+                if (ApplyEdit(work, e, out string err) < 0)
+                {
+                    error = $"{Describe(e)}: {err}";
+                    return -1;
+                }
+        if (SameLines(work, lines)) return 0;
+        lines.Clear();
+        lines.AddRange(work);
+        return 1;
+    }
+
+    /// <summary>An edit as the log reads: "bind UseQuickSlot_5 DIK_F5 DIK_LCONTROL|DIK_RCONTROL".</summary>
+    public static string Describe(Edit e) =>
+        KindName(e.Kind) + (e.Action.Length > 0 ? " " + e.Action : "") + (e.Device != 0 ? $" device {e.Device}" : "") + " " + e.Dik
+        + (e.Mods.Length > 0 ? " " + e.Mods : "");
+
+    private static bool SameLines(List<string> a, List<string> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+            if (!string.Equals(a[i], b[i], StringComparison.Ordinal)) return false;
+        return true;
+    }
+
+    private static string KindName(EditKind k) => k switch { EditKind.Bind => "bind", EditKind.Unbind => "unbind", _ => "take" };
+
+    private static bool TryKind(string s, out EditKind k)
+    {
+        switch (s)
+        {
+            case "bind": k = EditKind.Bind; return true;
+            case "unbind": k = EditKind.Unbind; return true;
+            case "take": k = EditKind.Take; return true;
+            default: k = EditKind.Take; return false;
+        }
+    }
+
+    /// <summary>The log's text (<see cref="ChangesHeader"/>, then one line per edit).</summary>
+    public static string FormatChanges(IReadOnlyList<Change> log)
+    {
+        var sb = new StringBuilder();
+        sb.Append(ChangesHeader).Append("\r\n");
+        foreach (Change c in log)
+            foreach (Edit e in c.Edits)
+            {
+                sb.Append(c.Stamp.ToString(CultureInfo.InvariantCulture)).Append(' ')
+                  .Append(c.Pid.ToString(CultureInfo.InvariantCulture)).Append(' ')
+                  .Append(KindName(e.Kind)).Append(' ')
+                  .Append(e.Action.Length > 0 ? e.Action : "-").Append(' ')
+                  .Append(e.Device.ToString(CultureInfo.InvariantCulture)).Append(' ')
+                  .Append(e.Dik).Append(' ')
+                  .Append(e.Mods.Length > 0 ? e.Mods : "-").Append(' ')
+                  .Append(e.Group.Length > 0 ? e.Group : "-").Append("\r\n");
+            }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The changes in a "&lt;keymap&gt;.rynthcore" file's text, by stamp. <paramref name="older"/>: it is an
+    /// older RynthCore's marker (the keymap's time alone, no edits). A change with a line this version can't
+    /// read is left out whole (never made in part); so is anything in a text that is neither.
+    /// </summary>
+    public static List<Change> ParseChanges(string text, out bool older)
+    {
+        older = false;
+        var list = new List<Change>();
+        List<string> lines = Split(text ?? string.Empty, out _);
+        int i = 0;
+        while (i < lines.Count && lines[i].Trim().Length == 0) i++;
+        if (i >= lines.Count) return list;
+        string first = lines[i].Trim();
+        if (long.TryParse(first, NumberStyles.None, CultureInfo.InvariantCulture, out _)) { older = true; return list; }
+        if (!first.StartsWith(ChangesHeaderPrefix, StringComparison.Ordinal)
+            || !int.TryParse(first.AsSpan(ChangesHeaderPrefix.Length), NumberStyles.None, CultureInfo.InvariantCulture, out int version)
+            || version < 2)
+            return list;
+
+        var bad = new HashSet<(long, int)>();
+        for (i++; i < lines.Count; i++)
+        {
+            string[] f = lines[i].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (f.Length == 0 || f[0].StartsWith('#')) continue;
+            if (f.Length < 2 || !long.TryParse(f[0], NumberStyles.None, CultureInfo.InvariantCulture, out long stamp) || stamp <= 0
+                || !int.TryParse(f[1], NumberStyles.None, CultureInfo.InvariantCulture, out int pid))
+                continue;   // not even whose: nothing to leave out
+            bool ok = f.Length == 8 && TryKind(f[2], out EditKind kind)
+                      && (kind == EditKind.Take ? f[3] == "-" : Name.IsMatch(f[3]))
+                      && int.TryParse(f[4], NumberStyles.None, CultureInfo.InvariantCulture, out int device) && device <= 15
+                      && Name.IsMatch(f[5])
+                      && (f[6] == "-" || ModsText.IsMatch(f[6]))
+                      && (f[7] == "-" || Name.IsMatch(f[7]));
+            if (!ok) { bad.Add((stamp, pid)); continue; }
+            TryKind(f[2], out kind);
+            var edit = new Edit(kind, kind == EditKind.Take ? string.Empty : f[3], int.Parse(f[4], CultureInfo.InvariantCulture),
+                Canonical(f[5]), f[6] == "-" ? string.Empty : f[6], f[7] == "-" ? string.Empty : f[7]);
+            Change? c = list.Count > 0 && list[^1].Stamp == stamp && list[^1].Pid == pid ? list[^1]
+                : list.Find(x => x.Stamp == stamp && x.Pid == pid);
+            if (c == null) list.Add(c = new Change(stamp, pid, new List<Edit>()));
+            c.Edits.Add(edit);
+        }
+        list.RemoveAll(c => bad.Contains((c.Stamp, c.Pid)));
+        // By stamp, keeping the file's order for equal ones (List.Sort isn't stable).
+        var ordered = new List<(Change C, int At)>(list.Count);
+        for (int k = 0; k < list.Count; k++) ordered.Add((list[k], k));
+        ordered.Sort((a, b) => a.C.Stamp != b.C.Stamp ? a.C.Stamp.CompareTo(b.C.Stamp) : a.At.CompareTo(b.At));
+        return ordered.ConvertAll(o => o.C);
+    }
+
+    /// <summary>The newest stamp in the log (0 for none).</summary>
+    public static long Newest(IReadOnlyList<Change> log)
+    {
+        long n = 0;
+        foreach (Change c in log) if (c.Stamp > n) n = c.Stamp;
+        return n;
+    }
+
+    /// <summary>A new change's stamp: now, or just past the newest in the log when that is later (another clock).</summary>
+    public static long NextStamp(IReadOnlyList<Change> log, long nowTicks) => Math.Max(nowTicks, Newest(log) + 1);
+
+    /// <summary>The log with <paramref name="change"/> added, keeping the newest <paramref name="keep"/> changes.</summary>
+    public static List<Change> Append(IReadOnlyList<Change> log, Change change, int keep)
+    {
+        var list = new List<Change>(log) { change };
+        if (keep > 0 && list.Count > keep) list.RemoveRange(0, list.Count - keep);
+        return list;
+    }
+
+    /// <summary>
+    /// The changes a client that has made every change up to <paramref name="seenStamp"/> still has to make:
+    /// the newer ones, not its own (<paramref name="ownPid"/>), oldest first.
+    /// </summary>
+    public static List<Change> Pending(IReadOnlyList<Change> log, long seenStamp, int ownPid)
+    {
+        var list = new List<Change>();
+        foreach (Change c in log)
+            if (c.Stamp > seenStamp && c.Pid != ownPid && c.Edits.Count > 0) list.Add(c);
+        return list;
     }
 
     /// <summary>A binding line as AC writes it: <c>UseQuickSlot_1 [ "" [ 0 DIK_1 ] 0x00000002 ]</c>.</summary>

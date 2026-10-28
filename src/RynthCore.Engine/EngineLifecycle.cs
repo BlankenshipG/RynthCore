@@ -160,6 +160,8 @@ internal static class EngineLifecycle
         Step("AcUiPassHook.Uninstall", () => AcUiPassHook.Uninstall());
         // The video patch's scene hook passes straight to AC from here on (AC draws again).
         Step("VideoPatch.Uninstall", () => VideoPatch.Uninstall());
+        // The ambient light floor's hook passes AC's own colour from here on (no floor).
+        Step("AmbientLight.Uninstall", () => AmbientLight.Uninstall());
         Step("EndSceneHook.Uninstall", () => EndSceneHook.Uninstall());
 
         // Give in-flight EndScene calls a chance to drain. AC's render thread

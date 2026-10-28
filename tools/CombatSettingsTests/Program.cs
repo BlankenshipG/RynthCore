@@ -170,6 +170,34 @@ namespace CombatSettingsTests
             rule.GetProperty("AttackPower")!.SetValue(r3, "Variable");
             Check(!(bool)equal.Invoke(null, new object[] { Lst(r1), Lst(r3) })!, "a changed Power is a change (it is saved)");
 
+            // ── The monster rule: the Void debuffs (2026-10-27) ─────────────────────────
+            string[] voidFields = { "Corrosion", "Corruption", "DestructiveCurse", "WeakeningCurse", "FesteringCurse" };
+            var voidDefs = ((string Field, string Label, string Tip)[])damage.GetField("VoidDebuffDefs", All)!.GetValue(null)!;
+            Check(voidDefs.Select(d => d.Field).SequenceEqual(voidFields), "the Void debuffs are spelled as RynthAi's MonsterRule fields");
+            MethodInfo getT = rule.GetMethod("GetToggle", All)!, setT = rule.GetMethod("SetToggle", All)!;
+            object allVoid = Activator.CreateInstance(rule, nonPublic: true)!;
+            foreach (string f in voidFields)
+            {
+                object off = Activator.CreateInstance(rule, nonPublic: true)!, on = Activator.CreateInstance(rule, nonPublic: true)!;
+                Check(!(bool)getT.Invoke(off, new object[] { f })!, f + " is off on a new rule");
+                setT.Invoke(on, new object[] { f, true });
+                setT.Invoke(allVoid, new object[] { f, true });
+                Check((bool)rule.GetProperty(f)!.GetValue(on)! && (bool)getT.Invoke(on, new object[] { f })!, f + " is a toggle on its own property");
+                Check(!(bool)equal.Invoke(null, new object[] { Lst(off), Lst(on) })!, f + " changed is a change (it is saved)");
+            }
+            MethodInfo marks = damage.GetMethod("DebuffMarks", All)!;
+            Check((string)marks.Invoke(null, new[] { allVoid })! == "CRDWH", "the Damage panel marks them C R D W H");
+            MethodInfo copy = damage.GetMethod("CopyOfDefault", All)!;
+            object copied = copy.Invoke(null, new[] { allVoid, "Drudge" })!;
+            Check(voidFields.All(f => (bool)rule.GetProperty(f)!.GetValue(copied)!), "a monster's own rule starts with Default's Void debuffs");
+            // RynthAi keeps its own Void switches when the panel's JSON has no "Corrosion": key
+            // (an older engine), so this engine must write exactly that.
+            var panelJson = (System.Text.Json.Serialization.JsonSerializerContext)engine.GetType("RynthCore.Engine.UI.Panels.MonstersPanelJsonContext", throwOnError: true)!
+                .GetProperty("Default", All)!.GetValue(null)!;
+            string ruleJson = JsonSerializer.Serialize((object)Lst(allVoid), listType, panelJson);
+            foreach (string f in voidFields)
+                Check(ruleJson.Contains($"\"{f}\":true"), $"the panel sends \"{f}\":true");
+
             return Finish();
         }
 

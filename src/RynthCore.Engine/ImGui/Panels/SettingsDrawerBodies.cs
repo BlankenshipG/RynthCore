@@ -15,7 +15,19 @@
 //  here is saved the same way and a pin made here is the same pin. A drawer
 //  that wasn't drawn in a frame drops its hub subscriptions (EndFrame).
 //
-//  AC thread only (inside RynthAi's window, and EndFrame after the panels).
+//  2026-10-27: RynthVision draws the whole Vision window itself (it takes over
+//  the engine's VisionFace, "takeOver"), but two of its tabs set things that are
+//  still RynthCore's: the nameplates and the combat text (ImGui/MonsterHud,
+//  MonsterHudSettings) are drawn by the engine until they move to RynthVision.
+//  So RynthVision's window asks for those two tab bodies here, the same rows the
+//  engine's Vision panel shows (MonsterHudSettingsUi), saved the same way:
+//    nameplates   the "Nameplates" tab
+//    combattext   the "Combat text" tab
+//  They draw popped out too (the engine's Vision panel did); the three drawers
+//  above stay docked-only (UiKit.RenderSettingsDrawer, DrawsPoppedOut).
+//
+//  AC thread only (inside RynthAi's or RynthVision's window, and EndFrame after
+//  the panels).
 // ============================================================================
 
 using System;
@@ -43,6 +55,7 @@ internal static class SettingsDrawerBodies
     {
         Vector2 at = ImGuiNET.ImGui.GetCursorScreenPos();
         float w = MathF.Max(1, width);
+        if (key is "nameplates" or "combattext") return DrawVisionTab(key, at, w);
         float k = MathF.Max(1f, ImGuiFonts.Get(UiFont.Dash11).FontSize / 11f);
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Dash10));
         try
@@ -99,6 +112,30 @@ internal static class SettingsDrawerBodies
         {
             ImGuiNET.ImGui.PopFont();
         }
+    }
+
+    /// <summary>True for the bodies that draw in a popped-out window too (the Vision tabs).</summary>
+    public static bool DrawsPoppedOut(string key) => key is "nameplates" or "combattext";
+
+    /// <summary>
+    /// A Vision tab RynthVision's window shows (the engine's rows: MonsterHudSettingsUi), in Ui11 as the
+    /// engine's Vision panel drew them. Returns the height drawn.
+    /// </summary>
+    private static float DrawVisionTab(string key, Vector2 at, float w)
+    {
+        ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui11));
+        ImGuiNET.ImGui.PushID(key == "nameplates" ? "##sdb_plates" : "##sdb_ctext");
+        try
+        {
+            if (key == "nameplates") Hud.MonsterHudSettingsUi.DrawNameplates(w);
+            else Hud.MonsterHudSettingsUi.DrawCombatText(w);
+        }
+        finally
+        {
+            ImGuiNET.ImGui.PopID();
+            ImGuiNET.ImGui.PopFont();
+        }
+        return MathF.Max(0f, ImGuiNET.ImGui.GetCursorScreenPos().Y - at.Y);
     }
 
     /// <summary>After the panels each frame: a body that wasn't drawn this frame lets its hub sources go.</summary>

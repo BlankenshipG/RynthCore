@@ -10,8 +10,11 @@
 //    1. a rule's line colour (ChatRoute.LineArgb),
 //    2. the colour the user set for the line's kind,
 //    3. the colour the user set for its tab,
-//    4. the tab's built-in colour (what every line looked like before).
-//  With nothing set, every line looks exactly as before.
+//    4. with Retail colours on (2026-10-28, the default), AC's own colour for
+//       the line's ChatMessageType: magic blue, combat red, tells yellow...;
+//       not for the Rynth and Items tabs (RynthCore's own lines),
+//    5. the tab's built-in colour (what every line looked like before).
+//  With nothing set and Retail colours off, every line looks exactly as before.
 //
 //  Kept apart from ChatData.cs (no engine state) so tools/ChatFilterTests can
 //  compile it in. The colours are an immutable snapshot, replaced on every
@@ -69,7 +72,50 @@ internal static class ChatLineColors
 
     /// <summary>A kind or tab's colour as it shows now: the user's, else its default.</summary>
     public static uint EffectiveArgb(ChatColorKind kind) =>
-        Get(kind.Key) ?? (kind.Key.StartsWith(TabPrefix, StringComparison.Ordinal) ? BuiltInTabArgb(kind.Tab) : TabArgb(kind.Tab));
+        Get(kind.Key) ?? (kind.Key.StartsWith(TabPrefix, StringComparison.Ordinal) ? BuiltInTabArgb(kind.Tab) : DefaultArgb(kind));
+
+    // ── Retail colours (2026-10-28) ──────────────────────────────────────
+
+    /// <summary>
+    /// AC's own chat colour for each ChatMessageType 0x00-0x21, as 0xAARRGGBB: the retail client's
+    /// table, taken from OpenAC (AcDream.Runtime.Chat.RuntimeChatColors, MIT licence). 0x06/0x15
+    /// combat red, 0x16 your hits on you light red, 0x07/0x11 magic and spellcasting light blue,
+    /// 0x03 tells yellow, 0x05 system purple, 0x12 allegiance orange, 0x08/0x09 channels pink.
+    /// </summary>
+    private static readonly uint[] RetailArgbByType =
+    {
+        0xFF80FF7F, 0xFF80FF7F, 0xFFFFFFFF, 0xFFFFFF3F,   // 0x00 default, 0x01 all, 0x02 speech, 0x03 tell
+        0xFFD2D264, 0xFFFF7FFF, 0xFFFF3F3F, 0xFF3FBFFF,   // 0x04 tell sent, 0x05 system, 0x06 combat, 0x07 magic
+        0xFFFF9696, 0xFFFF9696, 0xFFFFFF3F, 0xFFD2D264,   // 0x08 channel, 0x09 channel sent, 0x0A social, 0x0B social sent
+        0xFFD2D2C8, 0xFF3FDCDC, 0xFFB4DCF0, 0xFFFF3F3F,   // 0x0C emote, 0x0D advancement, 0x0E abuse, 0x0F help
+        0xFF80FF7F, 0xFF3FBFFF, 0xFFEE921E, 0xFFFFFF3F,   // 0x10 appraisal, 0x11 spellcasting, 0x12 allegiance, 0x13 fellowship
+        0xFF80FF7F, 0xFFFF3F3F, 0xFFF57572, 0xFF80FF7F,   // 0x14 world broadcast, 0x15 combat enemy, 0x16 combat self, 0x17 recall
+        0xFF80FF7F, 0xFF80FF7F, 0xFFFF0000, 0xFFB4DCF0,   // 0x18 craft, 0x19 salvaging, 0x1A, 0x1B
+        0xFFB4DCF0, 0xFFB4DCF0, 0xFFB4DCF0, 0xFFFFFF3F,   // 0x1C, 0x1D, 0x1E, 0x1F admin tell
+        0xFFB4DCF0, 0xFFEE921E,                           // 0x20, 0x21
+    };
+
+    private static volatile bool _retail = true;
+
+    /// <summary>Lines take AC's own colour for their kind (on unless the settings file says off).</summary>
+    public static bool RetailColors { get => _retail; set => _retail = value; }
+
+    /// <summary>AC's own colour for <paramref name="chatType"/>, or null for a type it has none for (-1: unknown).</summary>
+    public static uint? RetailArgb(int chatType) =>
+        chatType >= 0 && chatType < RetailArgbByType.Length ? RetailArgbByType[chatType] : null;
+
+    /// <summary>The tabs of RynthCore's own lines (plugins' "[RynthAi] ..." and the item info), which keep their colour.</summary>
+    private static bool IsOwnTab(string tab) =>
+        string.Equals(tab, "Rynth", StringComparison.OrdinalIgnoreCase) || string.Equals(tab, "Items", StringComparison.OrdinalIgnoreCase);
+
+    private static uint? RetailFor(int chatType, string tab) => _retail && !IsOwnTab(tab) ? RetailArgb(chatType) : null;
+
+    /// <summary>The ChatMessageType a kind's lines come as, for showing its unset colour (the emotes: 0x0C, channels: 0x08).</summary>
+    private static int TypeOfKind(string key) => key switch
+    {
+        Say => 0x02, Tell => 0x03, TellOut => 0x04, Allegiance => 0x12, Fellowship => 0x13, Emote => 0x0C,
+        _ => key.StartsWith(ChanPrefix, StringComparison.Ordinal) ? 0x08 : -1,
+    };
 
     /// <summary>A tab's colour before anything is set, as 0xAARRGGBB (ChatModel.ChannelArgb until 2026-10-08).</summary>
     public static uint BuiltInTabArgb(string tab) => tab switch
@@ -216,12 +262,15 @@ internal static class ChatLineColors
     /// <summary>A tab's colour: the user's, else the built-in one. 0xAARRGGBB.</summary>
     public static uint TabArgb(string tab) => Get(TabPrefix + tab) ?? BuiltInTabArgb(tab);
 
-    /// <summary>What a kind looks like while it has no colour of its own: its tab's colour.</summary>
-    public static uint DefaultArgb(ChatColorKind kind) => TabArgb(kind.Tab);
+    /// <summary>What a kind looks like while it has no colour of its own: its tab's colour if the user
+    /// set one, else AC's own (Retail colours on), else the tab's built-in colour.</summary>
+    public static uint DefaultArgb(ChatColorKind kind) =>
+        Get(TabPrefix + kind.Tab) ?? RetailFor(TypeOfKind(kind.Key), kind.Tab) ?? BuiltInTabArgb(kind.Tab);
 
-    /// <summary>A line's colour; see the header for the order.</summary>
-    public static uint Resolve(uint? ruleArgb, string? kind, string channel) =>
-        ruleArgb ?? Get(kind) ?? TabArgb(channel);
+    /// <summary>A line's colour; see the header for the order. <paramref name="chatType"/> is AC's
+    /// ChatMessageType (-1 unknown: no retail colour).</summary>
+    public static uint Resolve(uint? ruleArgb, string? kind, string channel, int chatType = -1) =>
+        ruleArgb ?? Get(kind) ?? Get(TabPrefix + channel) ?? RetailFor(chatType, channel) ?? BuiltInTabArgb(channel);
 
     /// <summary>A key worth keeping from the settings file: a listed kind, a base tab, or a sane channel tag.</summary>
     public static bool IsValidKey(string? key)

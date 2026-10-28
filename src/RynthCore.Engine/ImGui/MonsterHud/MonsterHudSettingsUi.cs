@@ -111,12 +111,25 @@ internal static class MonsterHudSettingsUi
             "Your own health, stamina and mana bars: fixed on screen, or following your character. Chat: /rv plates self.");
         changed |= Toggle("Numbers on your bars", ref MonsterHudSettings.SelfNumbers, "\"cur / max\" inside each bar (taller bars).", sub: true);
         changed |= Toggle("Your name", ref MonsterHudSettings.SelfName, null, sub: true);
+        changed |= Toggle("Debuffs on you", ref MonsterHudSettings.SelfDebuffs,
+            "Icons under your mana bar for harmful spells on you (vulnerabilities, Imperil, Magic Yield, attribute and skill debuffs...), " +
+            "the monster plates' icons: one per kind, a line that runs out with the spell, blinking in its last 5 seconds, \"+N\" when more than fit. " +
+            "Only shows while you have one.", sub: true);
         changed |= SizeSlider("Your bar width", ref MonsterHudSettings.SelfBarWidth, MonsterHudSettings.MinBarWidth, MonsterHudSettings.MaxBarWidth, w,
             "How wide your health, stamina and mana bars are (1.00x = the default).");
         changed |= SizeSlider("Your bar height", ref MonsterHudSettings.SelfBarHeight, MonsterHudSettings.MinBarHeight, MonsterHudSettings.MaxBarHeight, w,
             "How tall (thick) each of your bars is (1.00x = the default). The numbers need a bar at least 8 px tall.");
         changed |= SizeSlider("Your text size", ref MonsterHudSettings.SelfTextSize, MonsterHudSettings.MinTextSize, MonsterHudSettings.MaxTextSize, w,
             "Your plate's text: the cur / max numbers and your name (1.00x = the default).");
+        // The plate's shading, piece by piece (your plate only; the monster plates keep theirs).
+        changed |= Toggle("Dark track behind the bars", ref MonsterHudSettings.SelfBarTrack,
+            "The dark background and thin black edge behind each of your bars. Off: only the coloured fill shows.", sub: true);
+        changed |= Toggle("Damage trail", ref MonsterHudSettings.SelfBarChip,
+            "The pale gold strip that shows what a drop just took, then drains away.", sub: true);
+        changed |= Toggle("Text outline", ref MonsterHudSettings.SelfTextOutline,
+            "The thin black outline around your numbers and your name.", sub: true);
+        changed |= Toggle("Band behind the numbers", ref MonsterHudSettings.SelfNumberBand,
+            "The dark band behind the cur / max numbers (with Numbers on your bars).", sub: true);
 
         bool fixedOn = MonsterHudSettings.SelfPlacement == SelfPlacement.Fixed;
         if (Toggle("Fixed on screen", ref fixedOn,
@@ -132,9 +145,10 @@ internal static class MonsterHudSettingsUi
             bool locked = MonsterHudSettings.SelfLocked;
             if (Toggle("Lock position", ref locked,
                     "Locked, the plate can't be grabbed or clicked, so play never moves it. " +
-                    "Untick it, then drag the plate (it shows a frame) and tick it again. Chat: /rv plates self lock on|off.", indent: 32))
+                    "Untick it, then drag the plate (it shows a frame) and tick it again. Also in Settings > UI > Vitals. " +
+                    "Chat: /rv plates self lock on|off.", indent: 32))
             {
-                MonsterHudSettings.SelfLocked = locked;
+                MonsterHudSettings.SetSelfLocked(locked);
                 changed = true;
             }
             if (unlocked)

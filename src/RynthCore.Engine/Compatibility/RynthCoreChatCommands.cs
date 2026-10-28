@@ -1288,8 +1288,9 @@ internal static class RynthCoreChatCommands
                     // Placement: fixed on screen (drag it while unlocked) or following the character.
                     case "fixed": case "screen": S.SelfPlacement = ImGuiBackend.Hud.SelfPlacement.Fixed; break;
                     case "follow": case "world": S.SelfPlacement = ImGuiBackend.Hud.SelfPlacement.Follow; break;
-                    case "lock": S.SelfLocked = subValue == null || Flag(subValue, S.SelfLocked); break;
-                    case "unlock": S.SelfLocked = false; break;
+                    // Unlocking a plate that follows you fixes it on screen first (only a fixed plate drags).
+                    case "lock": S.SetSelfLocked(subValue == null || Flag(subValue, S.SelfLocked)); break;
+                    case "unlock": S.SetSelfLocked(false); break;
                     case "reset": S.SelfFixedX = S.DefaultSelfFixedX; S.SelfFixedY = S.DefaultSelfFixedY; break;
                     case "position": case "pos":
                     {

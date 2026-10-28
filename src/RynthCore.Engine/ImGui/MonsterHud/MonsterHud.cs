@@ -77,45 +77,23 @@ internal static class MonsterHud
     private const uint BfVendor = 0x200;             // PublicWeenieDesc BF_VENDOR
     private const uint PetOwnerIid = 44;             // PropertyInstanceId PetOwner (summoned pets)
     internal const float LandblockSize = 192f;
-    private const int MaxIcons = 5;                  // debuff icons per plate; more shows "+N"
-    private const float BlinkSec = 5f;               // icons blink in their last seconds
 
     // ── Palette (ARGB literals -> ImGui ABGR) ────────────────────────────
     private static readonly uint BarBack = C(0xE00C1118), BarEdge = C(0xFF000000), Tick = C(0x70000000),
         Shine = C(0x38FFFFFF), Trail = C(0xFFF3E2A8), Gold = C(0xFFE6C766), GoldBright = C(0xFFFFD966),
-        GoldGlow = C(0x55E6C766), NameText = C(0xFFF2E8DC), AttackerText = C(0xFFFF8A7A), Outline = C(0xE6000000),
-        HpText = C(0xFFFFFFFF), DimText = C(0xFFB8C4D0), BadgeBack = C(0xD0101820), Leader = C(0x60FFFFFF),
-        HoverEdge = C(0xC0FFFFFF), UnknownFill = C(0xFF5E8A6A), IconBack = C(0xD80B1219), OthersTint = C(0xFFFF8A7A);
+        GoldGlow = C(0x55E6C766), NameText = C(0xFFF2E8DC), AttackerText = C(0xFFFF8A7A),
+        BadgeBack = C(0xD0101820), Leader = C(0x60FFFFFF),
+        HoverEdge = C(0xC0FFFFFF), UnknownFill = C(0xFF5E8A6A);
+    // Also the debuff icon row's (DebuffIconRow): outlines, stack digits, "+N".
+    internal static readonly uint Outline = C(0xE6000000), HpText = C(0xFFFFFFFF), DimText = C(0xFFB8C4D0);
     private static uint BadgeEdge => RynthTheme.Border;
     private static readonly Vector3 HpHigh = new(0x3F, 0xD0, 0x6A), HpMid = new(0xE8, 0xB3, 0x33), HpLow = new(0xE0, 0x4A, 0x4A);
 
-    // Element colours, shared by the "weak to" pill and the vulnerability icons.
-    private static readonly uint ElemSlash = C(0xFFC9D1DB), ElemPierce = C(0xFFD9C19A), ElemBludgeon = C(0xFFB59A7E),
+    // Element colours, shared by the "weak to" pill and the vulnerability icons (DebuffIconRow's tints).
+    internal static readonly uint ElemSlash = C(0xFFC9D1DB), ElemPierce = C(0xFFD9C19A), ElemBludgeon = C(0xFFB59A7E),
         ElemFire = C(0xFFFF7A3D), ElemCold = C(0xFF7FD3FF), ElemLightning = C(0xFFC89BFF), ElemAcid = C(0xFF8FE36A);
 
-    // One glyph and tint per DebuffKind (index = kind).
-    private static readonly string[] KindGlyph =
-    {
-        PhosphorIcons.Fire, PhosphorIcons.Snowflake, PhosphorIcons.Lightning, PhosphorIcons.Flask,
-        PhosphorIcons.Sword, PhosphorIcons.Knife, PhosphorIcons.Hammer,
-        PhosphorIcons.ShieldSlash, PhosphorIcons.MagicWand, PhosphorIcons.ShieldWarning,
-        PhosphorIcons.ArrowFatLinesDown, PhosphorIcons.HeartBreak, PhosphorIcons.Footprints,
-        PhosphorIcons.TrendDown, PhosphorIcons.Skull, PhosphorIcons.ArrowFatDown,
-    };
-    private static readonly uint[] KindTint =
-    {
-        ElemFire, ElemCold, ElemLightning, ElemAcid, ElemSlash, ElemPierce, ElemBludgeon,
-        C(0xFF9FB4C8),   // Imperil: steel
-        C(0xFFB98CFF),   // Magic Yield: violet
-        C(0xFFFFB347),   // melee / missile defense: orange
-        C(0xFFF2D24B),   // attributes: yellow
-        C(0xFFFF6B8A),   // vitals / regen: pink-red
-        C(0xFFA8C66C),   // movement: moss
-        C(0xFF8FB8DE),   // skills: blue-grey
-        C(0xFF7CE08A),   // damage over time: green
-        C(0xFFC8C8C8),   // other
-    };
-    private static readonly string[] StackDigits = { "", "", "2", "3", "4", "5", "6", "7", "8", "9" };
+    // The debuff icons' glyphs, tints and painter are in DebuffIconRow (shared with your own plate).
 
     internal static uint C(uint argb) => RynthTheme.Argb(argb);
 
@@ -160,8 +138,8 @@ internal static class MonsterHud
         public float LastX, LastY, LastZ;
 
         // Debuff icons (this frame)
-        public readonly DebuffIcon[] Icons = new DebuffIcon[MaxIcons];
-        public int IconCount;            // may exceed MaxIcons (overflow)
+        public readonly DebuffIcon[] Icons = new DebuffIcon[DebuffIconRow.MaxIcons];
+        public int IconCount;            // may exceed DebuffIconRow.MaxIcons (overflow)
         public bool Others;              // "debuffed by others" marker
 
         // Layout (this frame)
@@ -290,6 +268,8 @@ internal static class MonsterHud
             if (!track) ClearPlates();
             SetDamageSubscription(monsters && MonsterHudSettings.ShowWeakness);
             if (monsters && MonsterHudSettings.ShowDebuffs) PortalSpellTable.EnsureLoadQueued();
+            // Your own plate's "Debuffs on you" row reads it too, plates on or off.
+            if (MonsterHudSettings.SelfPlate && MonsterHudSettings.SelfDebuffs) PortalSpellTable.EnsureLoadQueued();
 
             long now = Stopwatch.GetTimestamp();
             if (now >= _nextSnapshotTicks)
@@ -1310,7 +1290,8 @@ internal static class MonsterHud
 
         // Under the bar: the debuff icons.
         if (icons)
-            PaintIcons(dl, p, cx, iconTop, k, a, now);
+            DebuffIconRow.Paint(dl, p.Icons, p.IconCount, p.Others, p.IconSize, p.SmallFont, p.SmallSize,
+                ref p.OverflowKey, ref p.OverflowString, cx, iconTop, k, a, now);
 
         // ── Name line: [level badge] Name ──
         if (p.NameW > 0 || p.BadgeW > 0)
@@ -1394,13 +1375,18 @@ internal static class MonsterHud
     /// <summary>
     /// A bar: black edge, dark track, the chip (what the last drop took), the
     /// gradient fill with a shine line, and optional quarter ticks. Shared with
-    /// the player plate.
+    /// the player plate, whose options can leave out the edge and track
+    /// (<paramref name="track"/>) and the chip (<paramref name="chip"/>);
+    /// monster plates always draw both.
     /// </summary>
     internal static void PaintBar(ImDrawListPtr dl, Vector2 b0, Vector2 b1, float round, float a,
-        float shownRatio, float trailRatio, uint baseCol, bool ticks)
+        float shownRatio, float trailRatio, uint baseCol, bool ticks, bool track = true, bool chip = true)
     {
-        dl.AddRectFilled(b0 - Vector2.One, b1 + Vector2.One, Mul(BarEdge, a * 0.9f), round + 1);
-        dl.AddRectFilled(b0, b1, Mul(BarBack, a), round);
+        if (track)
+        {
+            dl.AddRectFilled(b0 - Vector2.One, b1 + Vector2.One, Mul(BarEdge, a * 0.9f), round + 1);
+            dl.AddRectFilled(b0, b1, Mul(BarBack, a), round);
+        }
 
         float innerW = b1.X - b0.X - 2f;
         var i0 = new Vector2(b0.X + 1, b0.Y + 1);
@@ -1409,7 +1395,7 @@ internal static class MonsterHud
         float shown = Math.Clamp(shownRatio, 0f, 1f);
         float trail = Math.Clamp(trailRatio, 0f, 1f);
 
-        if (trail > shown + 0.002f)
+        if (chip && trail > shown + 0.002f)
             dl.AddRectFilled(new Vector2(i0.X + innerW * shown, i0.Y), new Vector2(i0.X + innerW * trail, innerBottom), Mul(Trail, a * 0.85f));
 
         if (shown > 0.001f)
@@ -1426,84 +1412,6 @@ internal static class MonsterHud
                 float tx = MathF.Round(i0.X + innerW * q * 0.25f);
                 dl.AddLine(new Vector2(tx, i0.Y + 1), new Vector2(tx, innerBottom - 1), Mul(Tick, a), 1f);
             }
-    }
-
-    /// <summary>
-    /// The debuff row, centred under the bar: one icon per kind with a shrinking
-    /// countdown line, blinking in its last seconds; "+N" when more than fit;
-    /// then the "debuffed by others" marker.
-    /// </summary>
-    private static void PaintIcons(ImDrawListPtr dl, Plate p, float cx, float top, float k, float a, long now)
-    {
-        float sz = p.IconSize;
-        float gap = MathF.Max(2f, MathF.Round(2f * k));
-        int count = p.IconCount;
-        int shown = count > MaxIcons ? MaxIcons - 1 : count;
-        int overflow = count - shown;
-        string more = "";
-        float moreW = 0f;
-        if (overflow > 0)
-        {
-            if (overflow != p.OverflowKey)
-            {
-                p.OverflowKey = overflow;
-                p.OverflowString = "+" + overflow.ToString(CultureInfo.InvariantCulture);
-            }
-            more = p.OverflowString;
-            moreW = TextWidth(p.SmallFont, p.SmallSize, more) + 4f * k;
-        }
-        int slots = shown + (p.Others ? 1 : 0);
-        float rowW = slots * sz + Math.Max(0, slots - 1) * gap + (overflow > 0 ? gap + moreW : 0f);
-        float x = MathF.Round(cx - rowW * 0.5f);
-        float glyphPx = MathF.Round(sz * 0.8f);
-        ImFontPtr iconFont = ImGuiFonts.Sharp(glyphPx, bold: false);   // the icons are merged into every bake
-        float lineH = MathF.Max(1f, MathF.Round(1.5f * k));
-
-        for (int i = 0; i < shown; i++)
-        {
-            DebuffIcon ic = p.Icons[i];
-            int kind = (int)ic.Kind;
-            uint tint = kind < KindTint.Length ? KindTint[kind] : KindTint[^1];
-            float remaining = (ic.Expiry - now) / (float)Stopwatch.Frequency;
-            float frac = ic.Duration > 0 ? Math.Clamp(remaining / ic.Duration, 0f, 1f) : 0f;
-            float blink = remaining < BlinkSec ? 0.45f + 0.55f * MathF.Abs(MathF.Cos(remaining * MathF.PI * 2f)) : 1f;
-
-            var i0 = new Vector2(x, top);
-            var i1 = i0 + new Vector2(sz, sz);
-            dl.AddRectFilled(i0, i1, Mul(IconBack, a), 2f * k);
-            dl.AddRect(i0, i1, Mul(tint, a * 0.55f * blink), 2f * k, ImDrawFlags.None, 1f);
-            PhosphorIcons.DrawCentered(dl, iconFont, glyphPx, KindGlyph[kind < KindGlyph.Length ? kind : KindGlyph.Length - 1],
-                i0, new Vector2(sz, sz), Mul(tint, a * blink));
-            if (ic.Stack > 1 && ic.Stack < StackDigits.Length)
-            {
-                string digit = StackDigits[ic.Stack];
-                float ds = MathF.Round(p.SmallSize * 0.85f);
-                var dp = new Vector2(i1.X - TextWidth(p.SmallFont, ds, digit) + 1f, i0.Y - 2f);
-                OutlinedText(dl, p.SmallFont, ds, dp, a, digit);
-                dl.AddText(p.SmallFont, ds, dp, Mul(HpText, a), digit);
-            }
-            // Countdown: a line under the icon that shrinks to nothing at expiry.
-            float ly = i1.Y + 1f;
-            dl.AddRectFilled(new Vector2(i0.X, ly), new Vector2(i1.X, ly + lineH), Mul(Outline, a * 0.8f));
-            if (frac > 0f)
-                dl.AddRectFilled(new Vector2(i0.X, ly), new Vector2(i0.X + MathF.Max(1f, sz * frac), ly + lineH), Mul(tint, a * blink));
-            x += sz + gap;
-        }
-
-        if (overflow > 0)
-        {
-            var mp = new Vector2(x, MathF.Round(top + (sz - p.SmallSize) * 0.5f));
-            OutlinedText(dl, p.SmallFont, p.SmallSize, mp, a, more);
-            dl.AddText(p.SmallFont, p.SmallSize, mp, Mul(DimText, a), more);
-            x += moreW + gap;
-        }
-
-        if (p.Others)
-        {
-            var i0 = new Vector2(x, top);
-            dl.AddRectFilled(i0, i0 + new Vector2(sz, sz), Mul(IconBack, a * 0.8f), 2f * k);
-            PhosphorIcons.DrawCentered(dl, iconFont, glyphPx, PhosphorIcons.UsersThree, i0, new Vector2(sz, sz), Mul(OthersTint, a * 0.8f));
-        }
     }
 
     /// <summary>A soft 1 px outline under text (the text itself is drawn by the caller).</summary>

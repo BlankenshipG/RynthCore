@@ -1267,6 +1267,15 @@ internal sealed class ChatFace : IImGuiPanel
     /// </summary>
     private void DrawLineColours()
     {
+        bool retail = ChatLineColors.RetailColors;
+        if (ImGuiNET.ImGui.Checkbox("Retail colours", ref retail))
+        {
+            ChatLineColors.RetailColors = retail;
+            SaveColours();
+        }
+        SafeImGui.SetItemTooltip("Each kind of line in AC's own colour: magic and spells blue, combat red, tells yellow,\n" +
+            "system purple, allegiance orange. RynthCore's own lines (the Rynth and Items tabs) keep theirs.\n" +
+            "Off: every line takes its tab's colour. A colour you set below still wins.");
         Label("A rule's colour wins over these.", Mute);
         ColourGroup("Chat", ChatLineColors.ChatKinds);
 
@@ -1320,7 +1329,9 @@ internal sealed class ChatFace : IImGuiPanel
         ImGuiNET.ImGui.SameLine();
         Label(kind.Label, RynthTheme.Argb(argb));
         SafeImGui.SetItemTooltip(kind.Hint + (set ? "" : kind.Key.StartsWith(ChatLineColors.TabPrefix, StringComparison.Ordinal)
-            ? "\nThe built-in colour." : $"\nNot set: the {kind.Tab} tab's colour."));
+            ? (ChatLineColors.RetailColors ? "\nThe built-in colour, for lines AC has no colour for (Retail colours on)." : "\nThe built-in colour.")
+            : ChatLineColors.RetailColors && ChatLineColors.Get(ChatLineColors.TabPrefix + kind.Tab) == null
+                ? "\nNot set: AC's own colour." : $"\nNot set: the {kind.Tab} tab's colour."));
         if (set)
         {
             ImGuiNET.ImGui.SameLine();

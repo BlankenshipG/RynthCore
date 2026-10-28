@@ -207,6 +207,7 @@ internal sealed class ClassicMonstersTab : IClassicTab
         // Debuffs and shapes: three gems a row.
         float gw = w / 3;
         y = GemGrid("Debuffs", DamageCommands.DebuffDefs, sel, name, new Vector2(o.X, y), gw);
+        y = GemGrid("Void", DamageCommands.VoidDebuffDefs, sel, name, new Vector2(o.X, y), gw);
         y = GemGrid("Spells", DamageCommands.ShapeDefs, sel, name, new Vector2(o.X, y), gw);
         return y;
     }

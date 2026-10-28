@@ -301,6 +301,8 @@ internal static partial class PluginManager
     private static AcPanelCallbackDelegate? _acPanelCallback;                             // v90
     private static PanelScaleCallbackDelegate? _panelScaleCallback;                       // v90
     private static DropTargetCallbackDelegate? _dropTargetCallback;                       // v90
+    private static SetAmbientLightFloorCallbackDelegate? _setAmbientLightFloorCallback;   // v91
+    private static GetAmbientLightCallbackDelegate? _getAmbientLightCallback;             // v91
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -3224,6 +3226,8 @@ internal static partial class PluginManager
         _acPanelCallback ??= ShortcutApi.AcPanel;
         unsafe { _panelScaleCallback ??= UiKit.PanelScale; }
         unsafe { _dropTargetCallback ??= ShortcutApi.DropTarget; }
+        _setAmbientLightFloorCallback ??= AmbientLight.SetFloor;      // v91
+        unsafe { _getAmbientLightCallback ??= AmbientLight.Get; }
 
         _api.Version = PluginContractVersion.Current;
         _api.LogFn = Marshal.GetFunctionPointerForDelegate(_logCallback);
@@ -3394,6 +3398,8 @@ internal static partial class PluginManager
         _api.AcPanelFn = Marshal.GetFunctionPointerForDelegate(_acPanelCallback);
         _api.PanelScaleFn = Marshal.GetFunctionPointerForDelegate(_panelScaleCallback);
         _api.DropTargetFn = Marshal.GetFunctionPointerForDelegate(_dropTargetCallback);
+        _api.SetAmbientLightFloorFn = Marshal.GetFunctionPointerForDelegate(_setAmbientLightFloorCallback);
+        _api.GetAmbientLightFn = Marshal.GetFunctionPointerForDelegate(_getAmbientLightCallback);
         RouteApiThroughLoader();
     }
 

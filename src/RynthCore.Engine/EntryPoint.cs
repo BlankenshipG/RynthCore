@@ -938,6 +938,10 @@ public static class EntryPoint
             // SmartBox::RenderNormalMode: the video patch (/rc video) skips AC's 3D scene on
             // request; off until asked. Kill switch: engine.json DisabledUiHooks ["VideoPatch"].
             Step("video patch hook", VideoPatch.Initialize);
+            // RenderDeviceD3D::SetFFAmbientColor32: a floor under AC's world ambient light that a
+            // plugin can set (API v91; RynthVision's dungeon light). No floor until one is set.
+            // Kill switch: engine.json DisabledUiHooks ["AmbientLight"].
+            Step("ambient light hook", AmbientLight.Initialize);
             Step("vendor hooks", VendorHooks.Initialize);
             Step("chat callback hooks", ChatCallbackHooks.Initialize);
             // Flight recorder (Net/FlightRecorder.cs): before the packet hooks that feed it.

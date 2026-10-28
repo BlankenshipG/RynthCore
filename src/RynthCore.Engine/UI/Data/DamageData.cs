@@ -691,6 +691,8 @@ internal static unsafe class DamageCommands
         ExVuln = s.ExVuln, PetDamage = "PAuto", AttackPower = "Default", Kite = "Default", PreferredDamage = "Auto",
         Fester = s.Fester, Broadside = s.Broadside, GravityWell = s.GravityWell,
         Imperil = s.Imperil, Yield = s.Yield, Vuln = s.Vuln,
+        Corrosion = s.Corrosion, Corruption = s.Corruption, DestructiveCurse = s.DestructiveCurse,
+        WeakeningCurse = s.WeakeningCurse, FesteringCurse = s.FesteringCurse,
         UseArc = s.UseArc, UseBolt = s.UseBolt, UseRing = s.UseRing, UseStreak = s.UseStreak, UseBlast = s.UseBlast, UseWall = s.UseWall,
         CustomDebuffs = s.CustomDebuffs,
     };
@@ -747,10 +749,23 @@ internal static unsafe class DamageCommands
         ("GravityWell", "Gravity",  "Gravity Well (Vulnerability Other)"),
     };
 
-    /// <summary>The Damage panel's one-letter debuff marks, in DebuffDefs order.</summary>
+    /// <summary>The Void debuffs, cast with Void Magic (a character without it skips them). Drawn
+    /// as their own group: the faces lay DebuffDefs out in one row.</summary>
+    public static readonly (string Field, string Label, string Tip)[] VoidDebuffDefs =
+    {
+        ("Corrosion",        "Corrosion",   "Corrosion: Nether damage over about 15 seconds.\nA Void projectile; the damage starts when it hits."),
+        ("Corruption",       "Corruption",  "Corruption: Nether damage over about 30 seconds.\nA Void blast (a spread of projectiles); the damage starts when it hits."),
+        ("DestructiveCurse", "Destructive", "Destructive Curse: Nether damage over about 30 seconds."),
+        ("WeakeningCurse",   "Weakening",   "Weakening Curse: the monster does less damage (15 seconds)."),
+        ("FesteringCurse",   "Festering",   "Festering Curse: the monster is healed less (30 seconds)."),
+    };
+
+    /// <summary>The Damage panel's one-letter debuff marks, in DebuffDefs then VoidDebuffDefs order.</summary>
     public static readonly (string Field, char Letter)[] DebuffLetters =
     {
         ("Imperil", 'I'), ("Vuln", 'V'), ("Fester", 'F'), ("Yield", 'Y'), ("Broadside", 'B'), ("GravityWell", 'G'),
+        // Void: C Corrosion, R coRRuption, D Destructive Curse, W Weakening Curse, H Festering Curse (less healing).
+        ("Corrosion", 'C'), ("Corruption", 'R'), ("DestructiveCurse", 'D'), ("WeakeningCurse", 'W'), ("FesteringCurse", 'H'),
     };
 
     /// <summary>"IVF" for the debuffs a rule has on; X = an extra vuln, + = typed-in ones.</summary>

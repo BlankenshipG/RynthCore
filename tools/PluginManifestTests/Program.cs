@@ -601,12 +601,12 @@ internal static class Program
             Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.TrainingEntryNative>(f.Name), (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.TrainingEntryNative>(f.Name), "TrainingEntryNative." + f.Name + " offset");
         Eq(RynthCore.PluginSdk.TrainingInfoFlags.Busy, RynthCore.Engine.Plugins.TrainingInfoFlags.Busy, "info flag bits");
         Eq(RynthCore.PluginSdk.TrainingEntryFlags.Trainable, RynthCore.Engine.Plugins.TrainingEntryFlags.Trainable, "entry flag bits");
-        // The three v79 slots follow v78's, then v80's two and v81's GetMergeStackResultFn (v82-v90 follow:
-        // eleven slots to v89, then v90's thirteen).
-        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(24).TakeLast(6).ToArray();
+        // The three v79 slots follow v78's, then v80's two and v81's GetMergeStackResultFn (v82-v91 follow:
+        // eleven slots to v89, then v90's thirteen and v91's two).
+        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(26).TakeLast(6).ToArray();
         Check(names.SequenceEqual(new[] { "GetTrainingInfoFn", "RaiseFn", "TrainSkillFn", "GetContainerOrderFn", "PutItemInContainerFn", "GetMergeStackResultFn" }),
             "v79, v80 then v81 slots last: " + string.Join(",", names));
-        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(24).TakeLast(6).ToArray();
+        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(26).TakeLast(6).ToArray();
         Check(sdkNames.SequenceEqual(names), "SDK v79, v80 and v81 slots in the same order");
     }
 
@@ -617,6 +617,18 @@ internal static class Program
     {
         var all = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).ToArray();
         var sdkAll = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).ToArray();
+        // v91: the ambient light floor's two slots end the table (2026-10-27); the checks after these are
+        // on the table before them.
+        string[] v91 = { "SetAmbientLightFloorFn", "GetAmbientLightFn" };
+        Check(all.TakeLast(v91.Length).SequenceEqual(v91), "v91 slots last: " + string.Join(",", all.TakeLast(v91.Length)));
+        Check(sdkAll.TakeLast(v91.Length).SequenceEqual(v91), "SDK v91 slots last: " + string.Join(",", sdkAll.TakeLast(v91.Length)));
+        foreach (string slot in v91)
+            Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>(slot),
+               (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>(slot), slot + " offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("SetAmbientLightFloorFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("DropTargetFn") + IntPtr.Size, "SetAmbientLightFloorFn right after DropTargetFn");
+        all = all.SkipLast(v91.Length).ToArray();
+        sdkAll = sdkAll.SkipLast(v91.Length).ToArray();
         // v90: the frameless-window slots and the settings drawers end the table; the checks after these
         // are on the table before them.
         string[] v90 = { "PanelDragWithLastItemFn", "SetPanelPopOutFn", "PanelTextSizeFn", "RenderSettingsDrawerFn",

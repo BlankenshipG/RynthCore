@@ -356,7 +356,7 @@ internal static class ChatModel
 
     /// <summary>The line's colour: a rule's line colour, else the colour set for its kind
     /// (say, fellowship, [General]...), else its channel's. 0xAARRGGBB.</summary>
-    public static uint LineArgb(ChatLine line) => ChatLineColors.Resolve(line.Route.LineArgb, line.ColorKind, line.Channel);
+    public static uint LineArgb(ChatLine line) => ChatLineColors.Resolve(line.Route.LineArgb, line.ColorKind, line.Channel, line.ChatType);
 
     /// <summary>
     /// What a rule's "When" can be: (stored value, label). Channel tabs, then
@@ -1415,6 +1415,7 @@ internal static class ChatModel
             HistoryLines = ChatHistory.Clamp(dto.HistoryLines ?? 0);   // absent before 2026-10-11: the default
             TabsAcross = dto.TabsAcross ?? false;   // absent before 2026-10-20 (and while off): the drawer
             ChatLineColors.Load(dto.LineColors);   // absent before 2026-10-08: nothing set
+            ChatLineColors.RetailColors = dto.RetailColors ?? true;   // absent before 2026-10-28 (and while on): on
 
             var tabs = new List<string>();
             foreach (string t in dto.CustomTabs ?? Array.Empty<string>())
@@ -1504,6 +1505,7 @@ internal static class ChatModel
             HistoryLines = HistoryLines == ChatHistory.DefaultLines ? null : HistoryLines,
             TabsAcross = TabsAcross ? true : null,
             LineColors = ChatLineColors.ToJson(),   // null (left out) until a colour is set
+            RetailColors = ChatLineColors.RetailColors ? null : false,   // left out while on (the default)
             CustomTabs = Volatile.Read(ref _customTabs),
             Filters = Filters.Select(ToDto).ToArray(),
             // Only presets the user touched: new presets in later builds start off.

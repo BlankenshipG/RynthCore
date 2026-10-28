@@ -116,6 +116,13 @@ internal static class MonstersPanel
         public bool Imperil { get; set; }
         public bool Yield { get; set; }
         public bool Vuln { get; set; }
+        /// <summary>The Void debuffs (Void Magic): Corrosion, Corruption and Destructive Curse (Nether
+        /// damage over time), Weakening Curse and Festering Curse. Off in rules saved before 2026-10-27.</summary>
+        public bool Corrosion { get; set; }
+        public bool Corruption { get; set; }
+        public bool DestructiveCurse { get; set; }
+        public bool WeakeningCurse { get; set; }
+        public bool FesteringCurse { get; set; }
         public bool UseArc { get; set; }
         public bool UseRing { get; set; }
         public bool UseStreak { get; set; }
@@ -145,6 +152,11 @@ internal static class MonstersPanel
             "Imperil"     => Imperil,
             "Yield"       => Yield,
             "Vuln"        => Vuln,
+            "Corrosion"        => Corrosion,
+            "Corruption"       => Corruption,
+            "DestructiveCurse" => DestructiveCurse,
+            "WeakeningCurse"   => WeakeningCurse,
+            "FesteringCurse"   => FesteringCurse,
             "UseArc"      => UseArc,
             "UseBolt"     => UseBolt,
             "UseRing"     => UseRing,
@@ -164,6 +176,11 @@ internal static class MonstersPanel
                 case "Imperil":     Imperil = v; break;
                 case "Yield":       Yield = v; break;
                 case "Vuln":        Vuln = v; break;
+                case "Corrosion":        Corrosion = v; break;
+                case "Corruption":       Corruption = v; break;
+                case "DestructiveCurse": DestructiveCurse = v; break;
+                case "WeakeningCurse":   WeakeningCurse = v; break;
+                case "FesteringCurse":   FesteringCurse = v; break;
                 case "UseArc":      UseArc = v; break;
                 case "UseBolt":     UseBolt = v; break;
                 case "UseRing":     UseRing = v; break;
@@ -1031,6 +1048,8 @@ internal static class MonstersPanel
                 || x.MatchExpression != y.MatchExpression
                 || x.Fester != y.Fester || x.Broadside != y.Broadside || x.GravityWell != y.GravityWell
                 || x.Imperil != y.Imperil || x.Yield != y.Yield || x.Vuln != y.Vuln
+                || x.Corrosion != y.Corrosion || x.Corruption != y.Corruption || x.DestructiveCurse != y.DestructiveCurse
+                || x.WeakeningCurse != y.WeakeningCurse || x.FesteringCurse != y.FesteringCurse
                 || x.UseArc != y.UseArc || x.UseBolt != y.UseBolt
                 || x.UseRing != y.UseRing || x.UseStreak != y.UseStreak || x.UseBlast != y.UseBlast || x.UseWall != y.UseWall
                 || (x.CustomDebuffs ?? "") != (y.CustomDebuffs ?? ""))

@@ -478,6 +478,7 @@ internal sealed class DamageDetailFace : IImGuiPanel
 
         // A name rule has no Damage panel row: its debuffs, off hand and pet are set here.
         ToggleRow("Debuffs", DamageCommands.DebuffDefs, view, name);
+        ToggleRow("Void", DamageCommands.VoidDebuffDefs, view, name);
         int off = view.OffhandId;
         string offText = off >= 0 && off < DamageCommands.OffhandModeNames.Length ? DamageCommands.OffhandModeNames[off] : "Item " + unchecked((uint)off);
         Combo("Off hand", "##offhand", DamageCommands.OffhandModeNames, offText,

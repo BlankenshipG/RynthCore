@@ -997,7 +997,9 @@ internal struct RynthCoreAPI
     /// open its list of settings to pin). Drawn at the cursor of the window being drawn, <c>width</c>
     /// pixels wide and at most <c>room</c> tall (0 = its own height). Returns the height it wants
     /// (pixels), -1 for another key. AC's render thread, inside a docked window's
-    /// RynthPluginRenderEmbed. Requires API v90+.</summary>
+    /// RynthPluginRenderEmbed. Requires API v90+. 2026-10-27 (engines with v91): also "nameplates"
+    /// and "combattext", the Vision window's tabs that set RynthCore's nameplates and combat text,
+    /// for RynthVision's own Vision window (it takes over the engine's); those draw popped out too.</summary>
     public IntPtr RenderSettingsDrawerFn;
     /// <summary>v90: <c>int GetShortcuts(uint* objectIds, uint* spellIds, int max)</c>: the player's
     /// 18 shortcut slots (AC's own, the retail toolbar's), object id 0 = empty. Returns 18, or 0 out
@@ -1023,7 +1025,9 @@ internal struct RynthCoreAPI
     /// <summary>v90: <c>int SetActionKey(const char* action, const char* key, int op, char* message, int
     /// length)</c>: a keymap action ("UseQuickSlot_5") or engine command ("/rdef use 2") and a key: op 0
     /// checks (0 free, 1 taken from what the message names, -1 can't), 1 binds it (off everything else,
-    /// every client follows), 2 removes it (1 queued, -1 refused). Any thread. Requires API v90+.</summary>
+    /// every client follows), 2 removes it, 3 binds an engine command's key as its hotkey alone (AC's keymap
+    /// untouched; engines after 2026-10-27, older ones refuse it) (1 queued, -1 refused). Any thread.
+    /// Requires API v90+.</summary>
     public IntPtr SetActionKeyFn;
     /// <summary>v90: <c>int AcPanel(int id, int op)</c>: AC's own panel by the id its panel notice uses (7
     /// the pack, 12 fellowship/allegiance, 13 spellbook, 16 the map...): op 0 asks (1 open, 0 closed, -1
@@ -1039,6 +1043,20 @@ internal struct RynthCoreAPI
     /// dropped since the last call (0 = none); *dragging = 1 while an item drag is on. A claimed drop never
     /// reaches AC. AC's main thread, in the window's draw. Requires API v90+.</summary>
     public IntPtr DropTargetFn;
+
+    // ── v91: a floor under the world's ambient light (D3D9/AmbientLight.cs) ──
+
+    /// <summary>v91: <c>int SetAmbientLightFloor(uint rgb)</c>: the least ambient light AC may draw the
+    /// world with, 0x00RRGGBB (alpha ignored; per channel the brighter of AC's and this), 0 = none
+    /// (AC's own). Shows from the next frame, in this client only (drawing; nothing goes to the
+    /// server). Returns 1 when the engine's hook is live, 0 when it isn't (not installed, or switched
+    /// off: /rc hooks AmbientLight). One floor for all plugins (the last call wins); it goes back to 0
+    /// when the plugins unload. Any thread. Requires API v91+.</summary>
+    public IntPtr SetAmbientLightFloorFn;
+    /// <summary>v91: <c>int GetAmbientLight(uint* client, uint* applied)</c>: the ambient colour AC last
+    /// asked for and the one drawn (0xAARRGGBB; 0 before the first frame). Returns 1 when the hook is
+    /// live, 0 when it isn't (both 0). Either pointer may be null. Any thread. Requires API v91+.</summary>
+    public IntPtr GetAmbientLightFn;
 }
 
 /// <summary>v89 GetUiColor tokens. Append only: plugins compiled against these numbers keep them.</summary>
@@ -1890,6 +1908,12 @@ internal unsafe delegate int PanelScaleCallbackDelegate(byte* key, int percent);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate uint DropTargetCallbackDelegate(byte* window, float x0, float y0, float x1, float y1, int flags, int* dragging);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int SetAmbientLightFloorCallbackDelegate(uint rgb);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetAmbientLightCallbackDelegate(uint* client, uint* applied);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate uint VendorBuyCallbackDelegate(uint vendorId, VendorTradeEntryNative* entries, int count);
