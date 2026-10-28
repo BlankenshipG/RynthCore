@@ -42,6 +42,11 @@
 //  (PortalSpellTable, queued by MonsterHud.Update while the row is on). The
 //  row hangs under the bars: placement keeps the bars where they are and
 //  only the clamp and the drag area grow to cover it.
+//  "Your debuff icon size" (2026-10-28, 50-200 %, 100 = as before): the row's
+//  own scale, apart from your text size. The lengths that need no font are in
+//  SelfPlateMetrics (PlateMetrics.cs, offline-tested): the clamp and the drag
+//  area cover the row at any size, and an enlarged row wider than the bars
+//  (IconsOver) too.
 //
 //  Render thread only. Engine-owned statics.
 // ============================================================================
@@ -145,7 +150,7 @@ internal static class PlayerPlate
                     PlayerVitalsHooks.TryGetSnapshot(out _);
         if (!Advance(ref f, show)) return;
         Layout l = Measure(f.UiScale);
-        float k = l.K, barW = l.BarW, blockH = l.BlockH, nameH = l.NameH, iconsH = l.IconsH;
+        float k = l.M.K, barW = l.M.BarW, blockH = l.M.BlockH, nameH = l.M.NameH, iconsH = l.M.IconsH;
 
         // Where the block goes: above the head (default), under the feet, or beside the character.
         float left, y;
@@ -181,8 +186,8 @@ internal static class PlayerPlate
         }
         if (MonsterHudSettings.KeepOnScreen)
         {
-            left = Math.Clamp(left, 4f, MathF.Max(4f, f.Display.X - barW - 4f));
-            y = Math.Clamp(y, 4f + nameH, MathF.Max(4f + nameH, f.Display.Y - blockH - iconsH - 4f));
+            left = l.M.ClampLeft(left, f.Display.X);
+            y = l.M.ClampTop(y, f.Display.Y);
         }
         float top = Paint(f.Dl, ref l, MathF.Round(left), MathF.Round(y), f.Now);
         // Gain text floats above the plate when it's over the head, else above the head itself.
@@ -204,6 +209,7 @@ internal static class PlayerPlate
         // The bars' centre from the saved fractions, then the block kept inside the screen.
         Vector2 display = f.Display;
         float cx = MonsterHudSettings.SelfFixedX * display.X, cy = MonsterHudSettings.SelfFixedY * display.Y;
+        ref SelfPlateMetrics m = ref l.M;
         ImGuiIOPtr io = ImGuiNET.ImGui.GetIO();
         bool unlocked = !MonsterHudSettings.SelfLocked;
         if (_dragging)
@@ -221,23 +227,23 @@ internal static class PlayerPlate
             }
         }
         // The saved spot is the bars' centre (a debuff row coming and going never moves them); the
-        // clamp keeps the row under them on screen too.
-        float left = Math.Clamp(cx - l.BarW * 0.5f, 4f, MathF.Max(4f, display.X - l.BarW - 4f));
-        float y = Math.Clamp(cy - l.BlockH * 0.5f, 4f + l.NameH, MathF.Max(4f + l.NameH, display.Y - l.BlockH - l.IconsH - 4f));
+        // clamp keeps the row under them (and past their ends, when it is wider) on screen too.
+        float left = m.ClampLeft(cx - m.BarW * 0.5f, display.X);
+        float y = m.ClampTop(cy - m.BlockH * 0.5f, display.Y);
         left = MathF.Round(left);
         y = MathF.Round(y);
         if (_dragging && display.X > 1 && display.Y > 1)
         {
             // The spot as fractions (clamped, so letting go off screen keeps it reachable).
-            MonsterHudSettings.SelfFixedX = Math.Clamp((left + l.BarW * 0.5f) / display.X, 0f, 1f);
-            MonsterHudSettings.SelfFixedY = Math.Clamp((y + l.BlockH * 0.5f) / display.Y, 0f, 1f);
+            MonsterHudSettings.SelfFixedX = Math.Clamp((left + m.BarW * 0.5f) / display.X, 0f, 1f);
+            MonsterHudSettings.SelfFixedY = Math.Clamp((y + m.BlockH * 0.5f) / display.Y, 0f, 1f);
         }
 
         // The plate's rect (name and debuff row included), a little padded: the drag surface.
-        float pad = MathF.Round(4f * l.K);
-        var r0 = new Vector2(left - pad, y - l.NameH - pad);
-        var r1 = new Vector2(left + l.BarW + pad, y + l.BlockH + l.IconsH + pad);
-        Drag(unlocked, r0, r1, new Vector2(left + l.BarW * 0.5f, y + l.BlockH * 0.5f));
+        float pad = MathF.Round(4f * m.K);
+        var r0 = new Vector2(left - pad - m.IconsOver, y - m.NameH - pad);
+        var r1 = new Vector2(left + m.BarW + pad + m.IconsOver, y + m.BlockH + m.IconsH + pad);
+        Drag(unlocked, r0, r1, new Vector2(left + m.BarW * 0.5f, y + m.BlockH * 0.5f));
 
         ImDrawListPtr dl = ImGuiNET.ImGui.GetBackgroundDrawList();
         if (unlocked)
@@ -333,45 +339,46 @@ internal static class PlayerPlate
     /// <summary>The plate's sizes, fonts and look this frame.</summary>
     private struct Layout
     {
-        public float K, BarW, BarH, Gap, Round, BlockH, NameH, SmallSize, NameSize;
+        // The lengths that need no font: bars, the name's room, the debuff row (SelfPlateMetrics, offline-tested).
+        public SelfPlateMetrics M;
+        public float SmallSize, NameSize;
         public bool Numbers;
         public ImFontPtr Small, NameFont;
         // Look options (MonsterHudSettings.SelfBarTrack ...), read once per frame.
         public bool Track, Chip, Outline, Band;
-        // The debuff row under the bars: icon square, its text (stack digit, "+N"), and the room it takes (0 = none).
-        public float IconSize, IconTextSize, IconsH;
+        // The debuff row's text (stack digit, "+N") before the row's own size scales it.
+        public float IconTextSize;
         public ImFontPtr IconText;
     }
 
     private static Layout Measure(float uiScale)
     {
         Layout l = default;
-        float k = l.K = MonsterHudSettings.Scale * uiScale;
+        float k = MonsterHudSettings.Scale * uiScale;
         bool numbers = l.Numbers = MonsterHudSettings.SelfNumbers;
-        // With numbers on, the bars grow to fit bold, outlined text that reads over any fill.
-        // Width, height and text each have their own multiplier on top (1 = the default look).
-        l.BarW = MathF.Round((numbers ? 124f : 96f) * k * MonsterHudSettings.SelfBarWidth);
-        l.BarH = MathF.Round((numbers ? 15f : 5f) * k * MonsterHudSettings.SelfBarHeight);
-        l.Gap = MathF.Max(2f, MathF.Round(2f * k));
-        l.Round = MathF.Max(1f, 1.5f * k);
         // Sized from the 11 px bold bake, drawn from the smallest bake at least that big (no blur when scaled up;
         // nothing is re-baked when the text size changes).
         float text = MonsterHudSettings.Scale * MonsterHudSettings.SelfTextSize;
         l.SmallSize = MathF.Round(ImGuiFonts.Get(UiFont.UiBold11).FontSize * text);
         l.Small = ImGuiFonts.Sharp(l.SmallSize, bold: true);
-        l.BlockH = 3 * l.BarH + 2 * l.Gap;
         l.NameSize = MathF.Round(ImGuiFonts.Get(UiFont.UiBold11).FontSize * text);
         l.NameFont = ImGuiFonts.Sharp(l.NameSize, bold: true);
-        l.NameH = MonsterHudSettings.SelfName ? l.NameSize + 3f * k : 0f;
+        // With numbers on, the bars grow to fit bold, outlined text that reads over any fill. Width, height
+        // and text each have their own multiplier on top (1 = the default look). The debuff row takes room
+        // only while there is an icon, at "Your debuff icon size" (not the text size).
+        l.M = SelfPlateMetrics.Measure(k, numbers, MonsterHudSettings.SelfBarWidth, MonsterHudSettings.SelfBarHeight,
+            MonsterHudSettings.SelfName ? l.NameSize : 0f, _iconCount > 0, MonsterHudSettings.SelfDebuffIconSize);
         l.Track = MonsterHudSettings.SelfBarTrack;
         l.Chip = MonsterHudSettings.SelfBarChip;
         l.Outline = MonsterHudSettings.SelfTextOutline;
         l.Band = MonsterHudSettings.SelfNumberBand;
-        // The debuff row: the monster plates' icon size and small text, only while there is an icon.
-        l.IconSize = MathF.Round(13f * k);
+        // The debuff row's small text: the monster plates' 9 px bake at your text size (the row scales it).
         l.IconTextSize = MathF.Round(ImGuiFonts.Get(UiFont.Ui9).FontSize * text);
         l.IconText = ImGuiFonts.Sharp(l.IconTextSize, bold: false);
-        l.IconsH = _iconCount > 0 ? MathF.Round(3f * k) + l.IconSize + 3f : 0f;
+        // Icons made bigger than the default can be wider than the bars: the clamp and the drag area cover them.
+        if (_iconCount > 0 && l.M.Row.Scale > 1f)
+            l.M.IconsOver = l.M.Row.Overhang(DebuffIconRow.Width(_icons.Length, _iconCount, others: false, in l.M.Row,
+                l.IconText, l.IconTextSize, ref _overflowKey, ref _overflowText), l.M.BarW);
         return l;
     }
 
@@ -382,12 +389,13 @@ internal static class PlayerPlate
     private static float Paint(ImDrawListPtr dl, ref Layout l, float left, float y, long now)
     {
         float a = Math.Clamp(_alpha, 0f, 1f);
+        ref SelfPlateMetrics m = ref l.M;
         PaintOne(dl, ref _hp, ref l, left, y, a, HealthCol);
-        PaintOne(dl, ref _st, ref l, left, y + l.BarH + l.Gap, a, StaminaCol);
-        PaintOne(dl, ref _mn, ref l, left, y + 2 * (l.BarH + l.Gap), a, ManaCol);
+        PaintOne(dl, ref _st, ref l, left, y + m.BarH + m.Gap, a, StaminaCol);
+        PaintOne(dl, ref _mn, ref l, left, y + 2 * (m.BarH + m.Gap), a, ManaCol);
         if (_iconCount > 0)
-            DebuffIconRow.Paint(dl, _icons, _iconCount, others: false, l.IconSize, l.IconText, l.IconTextSize,
-                ref _overflowKey, ref _overflowText, left + l.BarW * 0.5f, y + l.BlockH + MathF.Round(3f * l.K), l.K, a, now);
+            DebuffIconRow.Paint(dl, _icons, _iconCount, others: false, in m.Row, l.IconText, l.IconTextSize,
+                ref _overflowKey, ref _overflowText, left + m.BarW * 0.5f, y + m.RowTop, a, now);
         float top = y - 1f;
         if (MonsterHudSettings.SelfName)
         {
@@ -395,7 +403,7 @@ internal static class PlayerPlate
             if (name.Length > 0)
             {
                 float w = MonsterHud.TextWidth(l.NameFont, l.NameSize, name);
-                var pos = new Vector2(MathF.Round(left + (l.BarW - w) * 0.5f), MathF.Round(y - 3f * l.K - l.NameSize));
+                var pos = new Vector2(MathF.Round(left + (m.BarW - w) * 0.5f), MathF.Round(y - 3f * m.K - l.NameSize));
                 if (l.Outline) MonsterHud.OutlinedText(dl, l.NameFont, l.NameSize, pos, a, name);
                 dl.AddText(l.NameFont, l.NameSize, pos, MonsterHud.Mul(NameCol, a), name);
                 top = pos.Y;
@@ -430,11 +438,11 @@ internal static class PlayerPlate
 
     private static void PaintOne(ImDrawListPtr dl, ref BarState b, ref Layout l, float left, float top, float a, uint col)
     {
-        float w = l.BarW, h = l.BarH, size = l.SmallSize;
+        float w = l.M.BarW, h = l.M.BarH, size = l.SmallSize;
         ImFontPtr font = l.Small;
         var b0 = new Vector2(left, top);
         var b1 = new Vector2(left + w, top + h);
-        MonsterHud.PaintBar(dl, b0, b1, l.Round, a, b.Shown, b.Trail, col, ticks: false, track: l.Track, chip: l.Chip);
+        MonsterHud.PaintBar(dl, b0, b1, l.M.Round, a, b.Shown, b.Trail, col, ticks: false, track: l.Track, chip: l.Chip);
         if (!l.Numbers || h < 8f || b.Max == 0) return;
         long key = ((long)b.Max << 32) | b.Cur;
         string? text = b.Text;

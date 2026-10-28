@@ -10,6 +10,10 @@
 //
 //  Moved out of MonsterHud.PaintIcons unchanged (2026-10-27) so the player
 //  plate can draw the same row; the monster plates look exactly as before.
+//  Sizes (2026-10-28): every length comes from DebuffRowMetrics (PlateMetrics.cs),
+//  the plate's scale x its own "Debuff icon size" setting (monster plates and
+//  your plate apart, neither tied to a text size); the stack digit and "+N"
+//  scale the plate's small text by it. At 100 % the row is exactly as before.
 //  Render thread only. Engine-owned statics.
 // ============================================================================
 
@@ -59,35 +63,24 @@ internal static class DebuffIconRow
     /// The row centred on <paramref name="cx"/> with its top at <paramref name="top"/>:
     /// <paramref name="count"/> kinds (may exceed <paramref name="icons"/>' length: the rest
     /// show as "+N"), then the "debuffed by others" marker when <paramref name="others"/>.
-    /// <paramref name="sz"/> is the icon square, <paramref name="smallFont"/>/<paramref name="smallSize"/>
-    /// draw the stack digit and "+N"; <paramref name="overflowKey"/>/<paramref name="overflowText"/>
+    /// <paramref name="row"/> holds every length (the plate's scale x its icon size setting);
+    /// <paramref name="smallFont"/>/<paramref name="smallSize"/> are the plate's small text, which the
+    /// stack digit and "+N" scale by the icon size; <paramref name="overflowKey"/>/<paramref name="overflowText"/>
     /// cache the "+N" string per row. <paramref name="now"/> is Stopwatch ticks.
     /// </summary>
-    internal static void Paint(ImDrawListPtr dl, DebuffIcon[] icons, int count, bool others, float sz,
+    internal static void Paint(ImDrawListPtr dl, DebuffIcon[] icons, int count, bool others, in DebuffRowMetrics row,
         ImFontPtr smallFont, float smallSize, ref int overflowKey, ref string overflowText,
-        float cx, float top, float k, float a, long now)
+        float cx, float top, float a, long now)
     {
-        float gap = MathF.Max(2f, MathF.Round(2f * k));
-        int shown = count > icons.Length ? icons.Length - 1 : count;
-        int overflow = count - shown;
-        string more = "";
-        float moreW = 0f;
-        if (overflow > 0)
-        {
-            if (overflow != overflowKey)
-            {
-                overflowKey = overflow;
-                overflowText = "+" + overflow.ToString(CultureInfo.InvariantCulture);
-            }
-            more = overflowText;
-            moreW = MonsterHud.TextWidth(smallFont, smallSize, more) + 4f * k;
-        }
-        int slots = shown + (others ? 1 : 0);
-        float rowW = slots * sz + Math.Max(0, slots - 1) * gap + (overflow > 0 ? gap + moreW : 0f);
+        float sz = row.Icon, gap = row.Gap;
+        int shown = Prepare(icons.Length, count, in row, ref smallFont, ref smallSize, ref overflowKey, ref overflowText,
+            out int overflow, out string more, out float moreTextW);
+        float moreW = overflow > 0 ? row.MoreWidth(moreTextW) : 0f;
+        float rowW = row.Width(shown + (others ? 1 : 0), overflow > 0, moreTextW);
         float x = MathF.Round(cx - rowW * 0.5f);
-        float glyphPx = MathF.Round(sz * 0.8f);
+        float glyphPx = row.Glyph;
         ImFontPtr iconFont = ImGuiFonts.Sharp(glyphPx, bold: false);   // the icons are merged into every bake
-        float lineH = MathF.Max(1f, MathF.Round(1.5f * k));
+        float lineH = row.LineH;
 
         for (int i = 0; i < shown; i++)
         {
@@ -100,20 +93,20 @@ internal static class DebuffIconRow
 
             var i0 = new Vector2(x, top);
             var i1 = i0 + new Vector2(sz, sz);
-            dl.AddRectFilled(i0, i1, MonsterHud.Mul(IconBack, a), 2f * k);
-            dl.AddRect(i0, i1, MonsterHud.Mul(tint, a * 0.55f * blink), 2f * k, ImDrawFlags.None, 1f);
+            dl.AddRectFilled(i0, i1, MonsterHud.Mul(IconBack, a), row.Round);
+            dl.AddRect(i0, i1, MonsterHud.Mul(tint, a * 0.55f * blink), row.Round, ImDrawFlags.None, 1f);
             PhosphorIcons.DrawCentered(dl, iconFont, glyphPx, KindGlyph[kind < KindGlyph.Length ? kind : KindGlyph.Length - 1],
                 i0, new Vector2(sz, sz), MonsterHud.Mul(tint, a * blink));
             if (ic.Stack > 1 && ic.Stack < StackDigits.Length)
             {
                 string digit = StackDigits[ic.Stack];
                 float ds = MathF.Round(smallSize * 0.85f);
-                var dp = new Vector2(i1.X - MonsterHud.TextWidth(smallFont, ds, digit) + 1f, i0.Y - 2f);
+                var dp = new Vector2(i1.X - MonsterHud.TextWidth(smallFont, ds, digit) + row.DigitDx, i0.Y - row.DigitDy);
                 MonsterHud.OutlinedText(dl, smallFont, ds, dp, a, digit);
                 dl.AddText(smallFont, ds, dp, MonsterHud.Mul(MonsterHud.HpText, a), digit);
             }
             // Countdown: a line under the icon that shrinks to nothing at expiry.
-            float ly = i1.Y + 1f;
+            float ly = i1.Y + row.LineGap;
             dl.AddRectFilled(new Vector2(i0.X, ly), new Vector2(i1.X, ly + lineH), MonsterHud.Mul(MonsterHud.Outline, a * 0.8f));
             if (frac > 0f)
                 dl.AddRectFilled(new Vector2(i0.X, ly), new Vector2(i0.X + MathF.Max(1f, sz * frac), ly + lineH), MonsterHud.Mul(tint, a * blink));
@@ -131,8 +124,50 @@ internal static class DebuffIconRow
         if (others)
         {
             var i0 = new Vector2(x, top);
-            dl.AddRectFilled(i0, i0 + new Vector2(sz, sz), MonsterHud.Mul(IconBack, a * 0.8f), 2f * k);
+            dl.AddRectFilled(i0, i0 + new Vector2(sz, sz), MonsterHud.Mul(IconBack, a * 0.8f), row.Round);
             PhosphorIcons.DrawCentered(dl, iconFont, glyphPx, PhosphorIcons.UsersThree, i0, new Vector2(sz, sz), MonsterHud.Mul(OthersTint, a * 0.8f));
         }
+    }
+
+    /// <summary>
+    /// The row's width as <see cref="Paint"/> lays it out (same arguments): the plates' layout uses it so
+    /// their box (crowding, clicks, the screen clamp) holds an enlarged row.
+    /// </summary>
+    internal static float Width(int capacity, int count, bool others, in DebuffRowMetrics row,
+        ImFontPtr smallFont, float smallSize, ref int overflowKey, ref string overflowText)
+    {
+        int shown = Prepare(capacity, count, in row, ref smallFont, ref smallSize, ref overflowKey, ref overflowText,
+            out int overflow, out _, out float moreTextW);
+        return row.Width(shown + (others ? 1 : 0), overflow > 0, moreTextW);
+    }
+
+    /// <summary>
+    /// How many icons show (the last slot makes room for "+N" when more kinds than fit), the "+N" string and
+    /// its width, and the row's text (stack digit, "+N"): the plate's small text scaled by the icon size, from
+    /// the smallest bake at least that big (at 100 % the plate's own font and size, untouched).
+    /// </summary>
+    private static int Prepare(int capacity, int count, in DebuffRowMetrics row, ref ImFontPtr font, ref float size,
+        ref int overflowKey, ref string overflowText, out int overflow, out string more, out float moreTextW)
+    {
+        if (row.Scale != 1f)
+        {
+            size = row.TextSize(size);
+            font = ImGuiFonts.Sharp(size, bold: false);
+        }
+        int shown = count > capacity ? capacity - 1 : count;
+        overflow = count - shown;
+        more = "";
+        moreTextW = 0f;
+        if (overflow > 0)
+        {
+            if (overflow != overflowKey)
+            {
+                overflowKey = overflow;
+                overflowText = "+" + overflow.ToString(CultureInfo.InvariantCulture);
+            }
+            more = overflowText;
+            moreTextW = MonsterHud.TextWidth(font, size, more);
+        }
+        return shown;
     }
 }

@@ -1231,16 +1231,17 @@ internal static class RynthCoreChatCommands
     /// <summary>
     /// /rv plates (alias /rc plates): the RynthVision nameplates and combat text
     /// (ImGui/MonsterHud). Alone it toggles the monster plates; on|off, all on|off,
-    /// self|debuffs|others|numbers|gains [sub] [on|off], all|engaged, dist|max|scale|
-    /// opacity|lift &lt;n&gt;, names|hp|level|weak|distance|fade|click [on|off], reset, status.
-    /// Every change is saved.
+    /// self|debuffs|others|numbers|gains [sub] [on|off], debuffs size / self debuffs size &lt;50-200&gt;,
+    /// all|engaged, dist|max|scale|opacity|lift &lt;n&gt;, names|hp|level|weak|distance|fade|click [on|off],
+    /// reset, status. Every change is saved.
     /// </summary>
     private static void HandlePlatesCommand(string args)
     {
-        const string usage = "Usage: /rv plates [on|off] | all on|off | self [numbers|name|firstperson|lock] [on|off] | " +
-                             "self fixed|follow|unlock|reset | " +
-                             "debuffs [on|off] | others [on|off] | numbers [dealt|taken|heals|kills] [on|off] | " +
-                             "gains [xp|lum|radiance] [on|off] | npcs [on|off] | npcs dist <yd>|max <n> | players [on|off] | all|engaged |dist <yd>|max <n>|scale <x>|opacity <x>|lift <m> | " +
+        const string usage = "Usage: /rv plates [on|off] | all on|off | self [numbers|name|firstperson|lock|debuffs] [on|off] | " +
+                             "self fixed|follow|unlock|reset | self debuffs size <50-200%> | " +
+                             "debuffs [on|off] | debuffs size <50-200%> | others [on|off] | numbers [dealt|taken|heals|kills] [on|off] | " +
+                             "gains [xp|lum|radiance] [on|off] | npcs [on|off] | npcs dist <yd>|max <n> | players [on|off] | portals [on|off] | portals dist <yd> | " +
+                             "all|engaged |dist <yd>|max <n>|scale <x>|opacity <x>|lift <m> | " +
                              "names|hp|level|weak|distance|fade|click [on|off] | reset | status | test";
         if (!ImGuiBackend.Hud.HudFeed.VisionInstalled)
         {
@@ -1285,6 +1286,19 @@ internal static class RynthCoreChatCommands
                     case "numbers": case "text": S.SelfNumbers = Flag(subValue, S.SelfNumbers); break;
                     case "name": S.SelfName = Flag(subValue, S.SelfName); break;
                     case "firstperson": case "fp": S.SelfHideFirstPerson = Flag(subValue, S.SelfHideFirstPerson); break;
+                    // "Debuffs on you": on|off, or its icon size ("self debuffs size 150").
+                    case "debuffs": case "debuff":
+                        if (subValue != null && subValue.Equals("size", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!S.TryParseDebuffIconSize(parts.Length > 3 ? parts[3] : null, out int sdi))
+                            {
+                                Reply($"usage: /rv plates self debuffs size {S.MinDebuffIconSize}-{S.MaxDebuffIconSize} (percent; now {S.SelfDebuffIconSize}%)");
+                                return;
+                            }
+                            S.SelfDebuffIconSize = sdi;
+                        }
+                        else S.SelfDebuffs = Flag(subValue, S.SelfDebuffs);
+                        break;
                     // Placement: fixed on screen (drag it while unlocked) or following the character.
                     case "fixed": case "screen": S.SelfPlacement = ImGuiBackend.Hud.SelfPlacement.Fixed; break;
                     case "follow": case "world": S.SelfPlacement = ImGuiBackend.Hud.SelfPlacement.Follow; break;
@@ -1318,7 +1332,18 @@ internal static class RynthCoreChatCommands
                 S.KeepOnScreen = Flag(value, S.KeepOnScreen); break;
             case "debuffs":
             case "debuff":
-                S.ShowDebuffs = Flag(value, S.ShowDebuffs); break;
+                if (sub == "size")
+                {
+                    // The monster plates' icon size ("debuffs size 150"); your own row's is "self debuffs size".
+                    if (!S.TryParseDebuffIconSize(subValue, out int mdi))
+                    {
+                        Reply($"usage: /rv plates debuffs size {S.MinDebuffIconSize}-{S.MaxDebuffIconSize} (percent; now {S.MonsterDebuffIconSize}%)");
+                        return;
+                    }
+                    S.MonsterDebuffIconSize = mdi;
+                }
+                else S.ShowDebuffs = Flag(value, S.ShowDebuffs);
+                break;
             case "others":
                 S.ShowOthersDebuff = Flag(value, S.ShowOthersDebuff); break;
             case "numbers":
@@ -1392,6 +1417,17 @@ internal static class RynthCoreChatCommands
                     case "max":
                         if (!TryNum(subValue, out float nm)) { Reply("usage: /rv plates npcs max 1-40"); return; }
                         S.MaxNpcLabels = Math.Clamp((int)Math.Round(nm), S.MinNpcLabels, S.MaxNpcLabelsLimit); break;
+                    default: Reply(usage); return;
+                }
+                break;
+            case "portals":
+            case "portal":
+                switch (sub)
+                {
+                    case null: S.PortalNames = Flag(subValue, S.PortalNames); break;
+                    case "dist": case "range":
+                        if (!TryNum(subValue, out float pd)) { Reply("usage: /rv plates portals dist 5-120"); return; }
+                        S.PortalMaxDistance = Math.Clamp(pd, S.MinPortalDistance, S.MaxPortalDistanceLimit); break;
                     default: Reply(usage); return;
                 }
                 break;

@@ -15,7 +15,7 @@ namespace SelfPlateTests
 {
     using S = MonsterHudSettings;
 
-    /// <summary>Your own plate's look switches, the lock from Follow mode, and the "Debuffs on you" selection.</summary>
+    /// <summary>Your own plate's look switches, the lock from Follow mode, the "Debuffs on you" selection, and its icon size.</summary>
     internal static class Program
     {
         private static int _checks, _failed;
@@ -42,6 +42,11 @@ namespace SelfPlateTests
             TicksAndDuration();
             CategoryZeroStandsAlone();
             ShortArraysAndHugeExpiry();
+
+            SelfIconSizeSetting();
+            SelfPlateAt100IsTheOldPlate();
+            MeasuredHeightIncludesTheScaledRow();
+            ClampKeepsTheRowOnScreen();
 
             Console.WriteLine();
             Console.WriteLine($"{_checks - _failed}/{_checks} checks passed.");
@@ -323,6 +328,163 @@ namespace SelfPlateTests
             Check(dst.Take(2).All(i => i.Expiry > Now), "both end after now");
             c = SelfDebuffs.Select(ids, exp, cats, 2, ServerNow, Now, Freq, Lookup, Array.Empty<DebuffIcon>());
             Check(c == 2, "an empty destination still counts");
+        }
+
+        // ── Your debuff icon size (2026-10-28) ──────────────────────────────
+
+        private static void SelfIconSizeSetting()
+        {
+            Case("Your debuff icon size: 100 by default and from an older file, round-trips apart from your text size");
+            S.ResetToDefaults();
+            Check(S.SelfDebuffIconSize == 100, $"defaults to 100 (got {S.SelfDebuffIconSize})");
+            Check(Written().Contains("selfDebuffIconSize=100"), "selfDebuffIconSize=100 written");
+            S.SelfTextSize = 1.8f; S.SelfNumbers = true;
+            string[] old = Written().Where(l => !l.StartsWith("selfDebuffIconSize=", StringComparison.Ordinal) &&
+                                                !l.StartsWith("monsterDebuffIconSize=", StringComparison.Ordinal)).ToArray();
+            S.SelfDebuffIconSize = 180;
+            S.ResetToDefaults();
+            S.ApplyLines(old);
+            Check(S.SelfDebuffIconSize == 100, "100 after loading a 2026.10.28.1 file (no key)");
+            Check(MathF.Abs(S.SelfTextSize - 1.8f) < 0.001f && S.SelfNumbers, "that file's text size still loads (and leaves the icons alone)");
+            S.SelfDebuffIconSize = 140;
+            string[] lines = Written();
+            S.ResetToDefaults();
+            S.ApplyLines(lines);
+            Check(S.SelfDebuffIconSize == 140 && S.MonsterDebuffIconSize == 100, "140 comes back; the monster plates' stays 100");
+            S.ApplyLines(new[] { "selfDebuffIconSize=1000" });
+            Check(S.SelfDebuffIconSize == S.MaxDebuffIconSize, "clamped to the top");
+            S.ApplyLines(new[] { "selfDebuffIconSize=1" });
+            Check(S.SelfDebuffIconSize == S.MinDebuffIconSize, "clamped to the bottom");
+            S.ResetToDefaults();
+        }
+
+        // Your plate's lengths as PlayerPlate.Measure computed them before the setting (2026.10.28.1).
+        private readonly record struct OldPlate(float BarW, float BarH, float Gap, float Round, float BlockH, float NameH, float IconsH)
+        {
+            public float Height => NameH + BlockH + IconsH;
+        }
+
+        private static OldPlate Old(float k, bool numbers, float bw, float bh, float nameSize, bool icons)
+        {
+            float barW = MathF.Round((numbers ? 124f : 96f) * k * bw);
+            float barH = MathF.Round((numbers ? 15f : 5f) * k * bh);
+            float gap = MathF.Max(2f, MathF.Round(2f * k));
+            float round = MathF.Max(1f, 1.5f * k);
+            float blockH = 3 * barH + 2 * gap;
+            float nameH = nameSize > 0f ? nameSize + 3f * k : 0f;
+            float iconSize = MathF.Round(13f * k);
+            float iconsH = icons ? MathF.Round(3f * k) + iconSize + 3f : 0f;
+            return new OldPlate(barW, barH, gap, round, blockH, nameH, iconsH);
+        }
+
+        private static IEnumerable<(float K, bool Numbers, float Bw, float Bh, float Name, bool Icons)> Plates()
+        {
+            float[] ks = { 0.6f, 0.75f, 1f, 1.1f, 1.25f, 1.3f * 1.25f, 1.5f, 1.75f, 2f, 2f * 1.5f, 0.6f * 1.75f };
+            float[] bws = { 0.5f, 0.85f, 1f, 1.37f, 2.5f };
+            float[] bhs = { 0.5f, 1f, 1.6f, 3f };
+            float[] names = { 0f, 6f, 11f, 13f, 22f };
+            foreach (float k in ks)
+                foreach (bool numbers in new[] { false, true })
+                    foreach (float bw in bws)
+                        foreach (float bh in bhs)
+                            foreach (float name in names)
+                                foreach (bool icons in new[] { false, true })
+                                    yield return (k, numbers, bw, bh, name, icons);
+        }
+
+        private static void SelfPlateAt100IsTheOldPlate()
+        {
+            Case("100 %: your plate's bars, name room, debuff row, measured height and clamp are the old ones exactly");
+            int bad = 0, n = 0;
+            float[] xs = { -500f, 0f, 3f, 4f, 37.5f, 900f, 1800f, 1890f, 5000f };
+            foreach (var c in Plates())
+            {
+                n++;
+                SelfPlateMetrics m = SelfPlateMetrics.Measure(c.K, c.Numbers, c.Bw, c.Bh, c.Name, c.Icons, 100);
+                OldPlate o = Old(c.K, c.Numbers, c.Bw, c.Bh, c.Name, c.Icons);
+                bool ok = m.K == c.K && m.BarW == o.BarW && m.BarH == o.BarH && m.Gap == o.Gap && m.Round == o.Round &&
+                          m.BlockH == o.BlockH && m.NameH == o.NameH && m.IconsH == o.IconsH && m.Height == o.Height &&
+                          m.IconsOver == 0f && m.RowTop == o.BlockH + MathF.Round(3f * c.K);
+                foreach (float x in xs)
+                {
+                    // The fixed plate's and Keep on screen's clamp before the setting.
+                    float oldLeft = Math.Clamp(x, 4f, MathF.Max(4f, 1920f - o.BarW - 4f));
+                    float oldTop = Math.Clamp(x, 4f + o.NameH, MathF.Max(4f + o.NameH, 1080f - o.BlockH - o.IconsH - 4f));
+                    ok &= m.ClampLeft(x, 1920f) == oldLeft && m.ClampTop(x, 1080f) == oldTop;
+                }
+                // Even a row wider than narrow bars reaches past nothing at 100 % (as before).
+                ok &= m.Row.Overhang(m.Row.Width(5, true, 14f), m.BarW) == 0f;
+                if (!ok)
+                {
+                    bad++;
+                    if (bad <= 5) Console.WriteLine($"    k={c.K:R} numbers={c.Numbers} bw={c.Bw} bh={c.Bh} name={c.Name} icons={c.Icons}: " +
+                                                    $"height {m.Height} vs {o.Height}, icons {m.IconsH} vs {o.IconsH}");
+                }
+            }
+            Check(bad == 0, $"{bad} of {n} plates differ from the old plate");
+        }
+
+        private static void MeasuredHeightIncludesTheScaledRow()
+        {
+            Case("the measured height is name + bars + the debuff row at its own size; no icon, no row");
+            foreach (float k in new[] { 0.75f, 1f, 1.5f, 2f })
+                foreach (bool numbers in new[] { false, true })
+                {
+                    float prev = 0f;
+                    bool ok = true;
+                    for (int pct = 50; pct <= 200; pct += 10)
+                    {
+                        SelfPlateMetrics m = SelfPlateMetrics.Measure(k, numbers, 1f, 1f, 11f, icons: true, pct);
+                        SelfPlateMetrics none = SelfPlateMetrics.Measure(k, numbers, 1f, 1f, 11f, icons: false, pct);
+                        var row = new DebuffRowMetrics(k, pct);
+                        ok &= m.IconsH == row.Height && m.Row.Height == row.Height;
+                        ok &= m.Height == m.NameH + m.BlockH + row.Height;
+                        ok &= none.IconsH == 0f && none.Height == none.NameH + none.BlockH;
+                        ok &= m.BlockH == none.BlockH && m.NameH == none.NameH && m.BarW == none.BarW;   // only the row changes
+                        ok &= m.RowTop == m.BlockH + row.Above;
+                        ok &= m.Height >= prev;
+                        prev = m.Height;
+                    }
+                    Check(ok, $"k {k}, numbers {numbers}: 50-200 % - the row is in the height, grows with the setting, nothing else moves");
+                }
+            SelfPlateMetrics h100 = SelfPlateMetrics.Measure(1f, false, 1f, 1f, 0f, true, 100);
+            SelfPlateMetrics h200 = SelfPlateMetrics.Measure(1f, false, 1f, 1f, 0f, true, 200);
+            SelfPlateMetrics h50 = SelfPlateMetrics.Measure(1f, false, 1f, 1f, 0f, true, 50);
+            Check(h100.BlockH == 19f && h100.IconsH == 19f && h100.Height == 38f, $"k 1, 100 %: bars 19 + row 19 (got {h100.BlockH} + {h100.IconsH})");
+            Check(h200.IconsH == 38f && h200.Height == 57f, $"k 1, 200 %: the row doubles to 38 (got {h200.IconsH})");
+            Check(h50.IconsH == 10f && h50.Height == 29f, $"k 1, 50 %: a 10 px row (got {h50.IconsH})");
+            // Your text size never sizes the row: only the name's room follows it.
+            SelfPlateMetrics bigText = SelfPlateMetrics.Measure(1f, false, 1f, 1f, 22f, true, 100);
+            Check(bigText.IconsH == h100.IconsH && bigText.Row.Icon == h100.Row.Icon, "a bigger name (text size) leaves the row as it is");
+        }
+
+        private static void ClampKeepsTheRowOnScreen()
+        {
+            Case("fixed / keep on screen: the whole plate, an enlarged row included, stays inside the screen");
+            const float w = 1280f, h = 720f;
+            bool ok = true;
+            foreach (int pct in new[] { 50, 75, 100, 125, 150, 200 })
+                foreach (float k in new[] { 1f, 1.5f, 2f })
+                    foreach (bool name in new[] { false, true })
+                    {
+                        SelfPlateMetrics m = SelfPlateMetrics.Measure(k, false, 0.5f, 1f, name ? 11f : 0f, true, pct);
+                        // Five icons and "+N" under bars half the default width: wider than the bars once enlarged.
+                        float rowW = m.Row.Width(5, true, 12f);
+                        m.IconsOver = m.Row.Overhang(rowW, m.BarW);
+                        if (pct > 100) ok &= m.IconsOver > 0f && m.IconsOver * 2f + m.BarW >= rowW;
+                        else ok &= m.IconsOver == 0f;
+                        foreach (float x in new[] { -9999f, 0f, 400f, 9999f })
+                        {
+                            float left = m.ClampLeft(x, w), top = m.ClampTop(x, h);
+                            ok &= top - m.NameH >= 4f && top + m.BlockH + m.IconsH <= h - 4f;          // name above, row under
+                            ok &= left - m.IconsOver >= 4f && left + m.BarW + m.IconsOver <= w - 4f;  // the row's ends
+                        }
+                    }
+            Check(ok, "every size: the name, the bars and the debuff row (and its ends) inside a 1280x720 screen");
+            SelfPlateMetrics big = SelfPlateMetrics.Measure(1f, false, 1f, 1f, 0f, true, 200);
+            SelfPlateMetrics def = SelfPlateMetrics.Measure(1f, false, 1f, 1f, 0f, true, 100);
+            Check(big.ClampTop(9999f, h) == h - 4f - big.BlockH - big.IconsH && big.ClampTop(9999f, h) < def.ClampTop(9999f, h),
+                "at the bottom edge a bigger row lifts the bars by exactly its extra height");
         }
 
         // ── harness ─────────────────────────────────────────────────────────

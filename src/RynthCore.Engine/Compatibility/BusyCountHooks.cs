@@ -396,6 +396,13 @@ internal static class BusyCountHooks
     public static void ResetSession()
     {
         _lastThisPtr = IntPtr.Zero;
+        // The next session's ClientUISystem starts at 0, and so does our copy (2026-10-28). Kept,
+        // a count left up by a logout mid-action stayed up for good: the watchdog can't clear it
+        // without the pointer, switches itself off, and is armed again only by a 0 -> 1 step, so
+        // GetBusyState answered "busy" until the client restarted (the item bar refused every use
+        // after a relog; RynthAi's waiting-on-the-server test reads the same count).
+        Interlocked.Exchange(ref _netBusyCount, 0);
+        Volatile.Write(ref _busyBecamePositiveTickMs, 0);
         Volatile.Write(ref _realBusyPositiveTickMs, 0);
         _realBusyNegativeSince = 0;
         lock (_directLock)
