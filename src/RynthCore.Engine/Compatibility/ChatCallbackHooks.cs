@@ -563,12 +563,18 @@ internal static class ChatCallbackHooks
 
             // RynthCore engine commands (/rc ...) — consume before plugins or
             // AC see the line so the user never broadcasts "/rc resetbar" and
-            // a hidden overlay bar stays recoverable.
-            if (RynthCoreChatCommands.TryHandle(line))
+            // a hidden overlay bar stays recoverable. Typed by the player: every
+            // reply goes to chat.
+            if (RynthCoreChatCommands.TryHandle(line, ChatCommandOrigin.Player))
                 return 1;
 
-            if (PluginManager.DispatchChatBarEnter(line))
-                return 1;
+            // A /rc line a plugin runs while it handles this one (RynthAi's /ra videopatch) is the
+            // player's too, so it answers in chat.
+            using (RynthCoreChatCommands.PlayerLine())
+            {
+                if (PluginManager.DispatchChatBarEnter(line))
+                    return 1;
+            }
 
             return _originalOutgoingChat!(thisPtr, text, commandSource);
         }

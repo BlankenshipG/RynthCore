@@ -22,7 +22,10 @@
 //  nothing out there the margin is 0 and the picture is just the panel. The
 //  window grows by the margin and moves so the panel stays put (LayeredWindow
 //  .Present). Before this, the window was the panel and a tooltip below the
-//  one-button-high popped-out bar was cut off at its edge.
+//  one-button-high popped-out bar was cut off at its edge. A tooltip in the
+//  margin lets clicks through; a menu, or a window of the face's own drawn
+//  past the panel (RynthAi's dashboard drawers, 2026-10-24), takes them where
+//  it is drawn (transparent pixels still let them through).
 //
 //  Threads: everything here runs on AC's main thread, which both renders
 //  (EndScene) and dispatches the game and pop-out WndProcs. No locks.
@@ -507,7 +510,8 @@ internal static unsafe class ImGuiPopOuts
             // a menu). Only a menu there takes clicks; a tooltip lets them through.
             ImDrawDataPtr drawData = ImGuiNET.ImGui.GetDrawData();
             UpdateMargins(pop, drawData.NativePtr, w, h);
-            window.MarginsClickThrough = !ImGuiNET.ImGui.IsPopupOpen("", ImGuiPopupFlags.AnyPopupId | ImGuiPopupFlags.AnyPopupLevel);
+            window.MarginsClickThrough = !ImGuiNET.ImGui.IsPopupOpen("", ImGuiPopupFlags.AnyPopupId | ImGuiPopupFlags.AnyPopupLevel)
+                && !WindowPastPanel(drawData.NativePtr, pop.OriginX, pop.OriginY, pop.OriginX + w, pop.OriginY + h, pop.DisplayW, pop.DisplayH);
             int sx = pop.OriginX - pop.MarginL, sy = pop.OriginY - pop.MarginT;
             int sw = w + pop.MarginL + pop.MarginR, sh = h + pop.MarginT + pop.MarginB;
             if (drawData.NativePtr != null)
@@ -630,43 +634,78 @@ internal static unsafe class ImGuiPopOuts
         if (dd == null) return false;
         ImDrawList** lists = (ImDrawList**)dd->CmdLists.Data;
         for (int n = 0; n < dd->CmdListsCount; n++)
+            ListOverflow(lists[n], px0, py0, px1, py1, displayW, displayH, ref x0, ref y0, ref x1, ref y1);
+        return px0 - x0 > OverflowSlack || py0 - y0 > OverflowSlack || x1 - px1 > OverflowSlack || y1 - py1 > OverflowSlack;
+    }
+
+    /// <summary>
+    /// A window other than a tooltip draws past the panel: a face's own window (a dashboard's
+    /// drawers). Popups count too, but IsPopupOpen already says so. ImGui names a tooltip
+    /// window "##Tooltip_NN" and its draw list after its window.
+    /// </summary>
+    private static bool WindowPastPanel(ImDrawData* dd, float px0, float py0, float px1, float py1, float displayW, float displayH)
+    {
+        if (dd == null) return false;
+        ImDrawList** lists = (ImDrawList**)dd->CmdLists.Data;
+        for (int n = 0; n < dd->CmdListsCount; n++)
         {
             ImDrawList* list = lists[n];
-            if (list == null) continue;
-            int vtxCount = list->VtxBuffer.Size, idxCount = list->IdxBuffer.Size;
-            ImDrawVert* vtx = (ImDrawVert*)list->VtxBuffer.Data;
-            ushort* idx = (ushort*)list->IdxBuffer.Data;
-            ImDrawCmd* cmds = (ImDrawCmd*)list->CmdBuffer.Data;
-            for (int c = 0; c < list->CmdBuffer.Size; c++)
-            {
-                ImDrawCmd* cmd = &cmds[c];
-                if (cmd->UserCallback != IntPtr.Zero || cmd->ElemCount == 0) continue;
-                float cx0 = Math.Max(cmd->ClipRect.X, 0f), cy0 = Math.Max(cmd->ClipRect.Y, 0f);
-                float cx1 = Math.Min(cmd->ClipRect.Z, displayW), cy1 = Math.Min(cmd->ClipRect.W, displayH);
-                if (cx1 <= cx0 || cy1 <= cy0) continue;
-                if (cx0 >= px0 && cy0 >= py0 && cx1 <= px1 && cy1 <= py1) continue;   // can't draw outside the panel
-
-                float vx0 = float.MaxValue, vy0 = float.MaxValue, vx1 = float.MinValue, vy1 = float.MinValue;
-                long start = cmd->IdxOffset, end = Math.Min((long)idxCount, start + cmd->ElemCount);
-                long vbase = cmd->VtxOffset;
-                for (long i = start; i < end; i++)
-                {
-                    long v = vbase + idx[i];
-                    if (v >= vtxCount) continue;
-                    Vector2 pos = vtx[v].pos;
-                    if (pos.X < vx0) vx0 = pos.X;
-                    if (pos.Y < vy0) vy0 = pos.Y;
-                    if (pos.X > vx1) vx1 = pos.X;
-                    if (pos.Y > vy1) vy1 = pos.Y;
-                }
-                vx0 = Math.Max(vx0, cx0); vy0 = Math.Max(vy0, cy0);
-                vx1 = Math.Min(vx1, cx1); vy1 = Math.Min(vy1, cy1);
-                if (vx1 <= vx0 || vy1 <= vy0) continue;
-                x0 = Math.Min(x0, vx0); y0 = Math.Min(y0, vy0);
-                x1 = Math.Max(x1, vx1); y1 = Math.Max(y1, vy1);
-            }
+            if (list == null || IsTooltipList(list)) continue;
+            float x0 = px0, y0 = py0, x1 = px1, y1 = py1;
+            ListOverflow(list, px0, py0, px1, py1, displayW, displayH, ref x0, ref y0, ref x1, ref y1);
+            if (px0 - x0 > OverflowSlack || py0 - y0 > OverflowSlack || x1 - px1 > OverflowSlack || y1 - py1 > OverflowSlack)
+                return true;
         }
-        return px0 - x0 > OverflowSlack || py0 - y0 > OverflowSlack || x1 - px1 > OverflowSlack || y1 - py1 > OverflowSlack;
+        return false;
+    }
+
+    private static bool IsTooltipList(ImDrawList* list)
+    {
+        byte* name = list->_OwnerName;
+        if (name == null) return false;
+        ReadOnlySpan<byte> prefix = "##Tooltip"u8;
+        for (int i = 0; i < prefix.Length; i++)
+            if (name[i] != prefix[i]) return false;
+        return true;
+    }
+
+    /// <summary>Widens the bounds by what one draw list shows outside the panel (see <see cref="OverflowBounds"/>).</summary>
+    private static void ListOverflow(ImDrawList* list, float px0, float py0, float px1, float py1, float displayW, float displayH,
+        ref float x0, ref float y0, ref float x1, ref float y1)
+    {
+        if (list == null) return;
+        int vtxCount = list->VtxBuffer.Size, idxCount = list->IdxBuffer.Size;
+        ImDrawVert* vtx = (ImDrawVert*)list->VtxBuffer.Data;
+        ushort* idx = (ushort*)list->IdxBuffer.Data;
+        ImDrawCmd* cmds = (ImDrawCmd*)list->CmdBuffer.Data;
+        for (int c = 0; c < list->CmdBuffer.Size; c++)
+        {
+            ImDrawCmd* cmd = &cmds[c];
+            if (cmd->UserCallback != IntPtr.Zero || cmd->ElemCount == 0) continue;
+            float cx0 = Math.Max(cmd->ClipRect.X, 0f), cy0 = Math.Max(cmd->ClipRect.Y, 0f);
+            float cx1 = Math.Min(cmd->ClipRect.Z, displayW), cy1 = Math.Min(cmd->ClipRect.W, displayH);
+            if (cx1 <= cx0 || cy1 <= cy0) continue;
+            if (cx0 >= px0 && cy0 >= py0 && cx1 <= px1 && cy1 <= py1) continue;   // can't draw outside the panel
+
+            float vx0 = float.MaxValue, vy0 = float.MaxValue, vx1 = float.MinValue, vy1 = float.MinValue;
+            long start = cmd->IdxOffset, end = Math.Min((long)idxCount, start + cmd->ElemCount);
+            long vbase = cmd->VtxOffset;
+            for (long i = start; i < end; i++)
+            {
+                long v = vbase + idx[i];
+                if (v >= vtxCount) continue;
+                Vector2 pos = vtx[v].pos;
+                if (pos.X < vx0) vx0 = pos.X;
+                if (pos.Y < vy0) vy0 = pos.Y;
+                if (pos.X > vx1) vx1 = pos.X;
+                if (pos.Y > vy1) vy1 = pos.Y;
+            }
+            vx0 = Math.Max(vx0, cx0); vy0 = Math.Max(vy0, cy0);
+            vx1 = Math.Min(vx1, cx1); vy1 = Math.Min(vy1, cy1);
+            if (vx1 <= vx0 || vy1 <= vy0) continue;
+            x0 = Math.Min(x0, vx0); y0 = Math.Min(y0, vy0);
+            x1 = Math.Max(x1, vx1); y1 = Math.Max(y1, vy1);
+        }
     }
 
     /// <summary>Folds the picture's placement into the draw-data hash.</summary>

@@ -353,7 +353,8 @@ internal static class HotkeyService
         if (b.IsCommand)
         {
             if (b.Command.Trim().Length == 0) return;
-            if (!AcMainThreadQueue.EnqueueChatCommand(b.Command.Trim()))
+            // The player pressed it: a /rc command answers in chat, as typed.
+            if (!AcMainThreadQueue.EnqueueChatCommand(b.Command.Trim(), ChatCommandOrigin.Player))
                 Reply("Hotkey: the chat command queue is full; try again.");
             return;
         }
@@ -386,7 +387,7 @@ internal static class HotkeyService
                 Reply($"Hotkey {b.Combo}: '{a.Name}' has no {a.Param!.ToLowerInvariant()} (edit it in Settings > Hotkeys).");
                 return;
             }
-            if (!AcMainThreadQueue.EnqueueChatCommand(HotkeyActions.ChatFor(a, b)))
+            if (!AcMainThreadQueue.EnqueueChatCommand(HotkeyActions.ChatFor(a, b), ChatCommandOrigin.Player))
                 Reply("Hotkey: the chat command queue is full; try again.");
             return;
         }

@@ -60,6 +60,12 @@
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatLineColors.cs" Link="Engine\ChatLineColors.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatRuleMatching.cs" Link="Engine\ChatRuleMatching.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatSettingsDto.cs" Link="Engine\ChatSettingsDto.cs" />
+    <!-- ChatRouting's standard filters (2026-10-28: the bench stopped building when ChatRouting
+         started calling RynthChatPresets; the same files as tools\ChatFilterTests). -->
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Panels\RynthChatPresets.cs" Link="Engine\RynthChatPresets.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatFilterPresets.cs" Link="Engine\ChatFilterPresets.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatRetailVerdict.cs" Link="Engine\ChatRetailVerdict.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Data\SharedFileWatch.cs" Link="Engine\SharedFileWatch.cs" />
   </ItemGroup>
 
   <ItemGroup Condition="Exists('$(RynthChatDir)\ChatBuffer.cs')">

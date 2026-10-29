@@ -1137,7 +1137,13 @@ internal static class ChatModel
         IntPtr send = SendLinePtr;
         if (text.Length == 0 || send == IntPtr.Zero) return;
         IntPtr ptr = Marshal.StringToHGlobalAnsi(text);
-        try { ((delegate* unmanaged[Cdecl]<IntPtr, void>)send)(ptr); }
+        // RynthChat sends the line through Host.InvokeChatParser, on this thread: an engine /rc
+        // command in it is the player's, so it answers in chat (RynthCoreChatCommands.PlayerLine).
+        try
+        {
+            using (RynthCoreChatCommands.PlayerLine())
+                ((delegate* unmanaged[Cdecl]<IntPtr, void>)send)(ptr);
+        }
         finally { Marshal.FreeHGlobal(ptr); }
     }
 

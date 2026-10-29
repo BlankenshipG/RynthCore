@@ -13,7 +13,10 @@
 //    pinned   My settings, the rows the player pinned (QuickSettingsDrawer.cs)
 //  Each is the same drawer the engine's own dashboard shows, so a value changed
 //  here is saved the same way and a pin made here is the same pin. A drawer
-//  that wasn't drawn in a frame drops its hub subscriptions (EndFrame).
+//  not drawn for 2 s drops its hub subscriptions (EndFrame). Not "this frame":
+//  a popped-out dashboard draws at its own rate (30 Hz at most, 10 idle), so a
+//  drawer there missed most game frames, let its sources go each time and came
+//  back empty (2026-10-24).
 //
 //  2026-10-27: RynthVision draws the whole Vision window itself (it takes over
 //  the engine's VisionFace, "takeOver"), but two of its tabs set things that are
@@ -23,8 +26,8 @@
 //  engine's Vision panel shows (MonsterHudSettingsUi), saved the same way:
 //    nameplates   the "Nameplates" tab
 //    combattext   the "Combat text" tab
-//  They draw popped out too (the engine's Vision panel did); the three drawers
-//  above stay docked-only (UiKit.RenderSettingsDrawer, DrawsPoppedOut).
+//  They draw popped out too (the engine's Vision panel did), as the three
+//  drawers above do since 2026-10-24.
 //
 //  AC thread only (inside RynthAi's or RynthVision's window, and EndFrame after
 //  the panels).
@@ -42,8 +45,9 @@ internal static class SettingsDrawerBodies
     private static RynthAiFace.PatrolDrawer? _patrol;
     private static QuickSettingsDrawer? _pinned;
 
-    // The frame each was last drawn in (EndFrame counts frames).
-    private static long _frame, _rangesDrawn = -1, _patrolDrawn = -1, _pinnedDrawn = -1;
+    // When each was last drawn (Environment.TickCount64).
+    private static long _rangesDrawn = long.MinValue / 2, _patrolDrawn = long.MinValue / 2, _pinnedDrawn = long.MinValue / 2;
+    private const long KeepMs = 2000;
 
     /// <summary>
     /// Draws <paramref name="key"/>'s body at the cursor, <paramref name="width"/> pixels wide, in at most
@@ -65,7 +69,7 @@ internal static class SettingsDrawerBodies
                 case "ranges":
                 {
                     _ranges ??= new RangesSlideOut();
-                    _rangesDrawn = _frame;
+                    _rangesDrawn = Environment.TickCount64;
                     _ranges.Update(true);
                     float h = RangesSlideOut.BodyHeight(k);
                     ImGuiNET.ImGui.PushID("##sdb_ranges");
@@ -78,7 +82,7 @@ internal static class SettingsDrawerBodies
                 case "patrol":
                 {
                     _patrol ??= new RynthAiFace.PatrolDrawer();
-                    _patrolDrawn = _frame;
+                    _patrolDrawn = Environment.TickCount64;
                     _patrol.Update(true);
                     RynthAiFace.UseScale(k);
                     float h = room > 0 ? room : 400 * k;
@@ -93,7 +97,7 @@ internal static class SettingsDrawerBodies
                 case "pinned":
                 {
                     _pinned ??= new QuickSettingsDrawer();
-                    _pinnedDrawn = _frame;
+                    _pinnedDrawn = Environment.TickCount64;
                     _pinned.Update(true);
                     float h = room > 0 ? room : 120 * k;
                     float want;
@@ -113,9 +117,6 @@ internal static class SettingsDrawerBodies
             ImGuiNET.ImGui.PopFont();
         }
     }
-
-    /// <summary>True for the bodies that draw in a popped-out window too (the Vision tabs).</summary>
-    public static bool DrawsPoppedOut(string key) => key is "nameplates" or "combattext";
 
     /// <summary>
     /// A Vision tab RynthVision's window shows (the engine's rows: MonsterHudSettingsUi), in Ui11 as the
@@ -138,12 +139,12 @@ internal static class SettingsDrawerBodies
         return MathF.Max(0f, ImGuiNET.ImGui.GetCursorScreenPos().Y - at.Y);
     }
 
-    /// <summary>After the panels each frame: a body that wasn't drawn this frame lets its hub sources go.</summary>
+    /// <summary>After the panels each frame: a body not drawn for <see cref="KeepMs"/> lets its hub sources go.</summary>
     public static void EndFrame()
     {
-        if (_ranges != null && _rangesDrawn != _frame) _ranges.Update(false);
-        if (_patrol != null && _patrolDrawn != _frame) _patrol.Update(false);
-        if (_pinned != null && _pinnedDrawn != _frame) _pinned.Update(false);
-        _frame++;
+        long now = Environment.TickCount64;
+        if (_ranges != null && now - _rangesDrawn > KeepMs) _ranges.Update(false);
+        if (_patrol != null && now - _patrolDrawn > KeepMs) _patrol.Update(false);
+        if (_pinned != null && now - _pinnedDrawn > KeepMs) _pinned.Update(false);
     }
 }

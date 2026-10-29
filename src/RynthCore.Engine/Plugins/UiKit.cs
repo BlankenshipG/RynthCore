@@ -213,8 +213,10 @@ internal static unsafe class UiKit
     /// "patrol", "pinned"; SettingsDrawerBodies) at the cursor, <paramref name="width"/> pixels wide
     /// and at most <paramref name="room"/> tall (0 = its own height); flags 1: open My settings' list
     /// of settings to pin. Since 2026-10-27 also the Vision window's engine-owned tabs for RynthVision's
-    /// own window ("nameplates", "combattext"), which draw popped out too. Returns the height it wants
-    /// (pixels), -1 for another key or outside a panel's draw on AC's thread (docked, for the drawers).
+    /// own window ("nameplates", "combattext"). All of them draw popped out too (2026-10-24: RynthAi's
+    /// popped-out dashboard has its drawers; SettingsDrawerBodies keeps a body's sources between its
+    /// draws). Returns the height it wants (pixels), -1 for another key or outside a panel's draw on
+    /// AC's thread.
     /// </summary>
     public static float RenderSettingsDrawer(byte* key, float width, float room, int flags)
     {
@@ -224,7 +226,6 @@ internal static unsafe class UiKit
                 || !float.IsFinite(width) || !float.IsFinite(room)) return -1f;
             string? name = Marshal.PtrToStringUTF8((IntPtr)key);
             if (string.IsNullOrEmpty(name) || name.Length > MaxKeyLength) return -1f;
-            if (ImGuiPopOuts.InPopOutFrame && !SettingsDrawerBodies.DrawsPoppedOut(name)) return -1f;
             return SettingsDrawerBodies.Draw(name, width, MathF.Max(0f, room), (flags & 1) != 0);
         }
         catch (Exception ex)

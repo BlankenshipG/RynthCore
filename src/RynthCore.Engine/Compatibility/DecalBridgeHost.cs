@@ -405,9 +405,12 @@ internal static unsafe class DecalBridgeHost
                 // VTank, UB and MagTools already ran them).
                 if (arg0 == 0)
                     break;
-                if (RynthCoreChatCommands.TryHandle(text))
+                // Decal hands the bridge typed lines and its plugins' InvokeChatParser lines (a VTank
+                // meta's chat command) alike, so these count as the player's: every reply shows.
+                if (RynthCoreChatCommands.TryHandle(text, ChatCommandOrigin.Player))
                     break;
-                PluginManager.DispatchChatBarEnter(text);
+                using (RynthCoreChatCommands.PlayerLine())
+                    PluginManager.DispatchChatBarEnter(text);
                 break;
             }
 

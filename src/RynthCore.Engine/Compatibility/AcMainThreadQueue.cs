@@ -1130,12 +1130,16 @@ internal static class AcMainThreadQueue
     // Dispatch() itself (rather than at each caller) covers all three at once.
     // A full command line can't ride the uint Entry ring, so it gets its own
     // string queue, same shape as the WriteToChat slot above.
-    private static readonly System.Collections.Generic.Queue<(string Text, long At, int Epoch)> _chatCommandQueue = new();
+    private static readonly System.Collections.Generic.Queue<(string Text, long At, int Epoch, ChatCommandOrigin Origin)> _chatCommandQueue = new();
     private static readonly object _chatCommandLock = new();
     private const int MaxChatCommandQueue = 64;
 
     // Off-thread enqueue. Drops (returns false) if the queue is full.
-    public static bool EnqueueChatCommand(string text)
+    public static bool EnqueueChatCommand(string text) => EnqueueChatCommand(text, ChatCommandOrigin.Script);
+
+    // The same, saying who sent the line (Player: a RynthCore hotkey), for the answer of an engine
+    // /rc command (ChatCommandDispatcher.Dispatch, RynthCoreChatCommands).
+    public static bool EnqueueChatCommand(string text, ChatCommandOrigin origin)
     {
         lock (_chatCommandLock)
         {
@@ -1144,7 +1148,7 @@ internal static class AcMainThreadQueue
                 Interlocked.Increment(ref _dropped);
                 return false;
             }
-            _chatCommandQueue.Enqueue((text, NowMs, Volatile.Read(ref _loginEpoch)));
+            _chatCommandQueue.Enqueue((text, NowMs, Volatile.Read(ref _loginEpoch), origin));
             return true;
         }
     }
@@ -1162,7 +1166,7 @@ internal static class AcMainThreadQueue
         int epoch = Volatile.Read(ref _loginEpoch);
         while (budget-- > 0)
         {
-            (string Text, long At, int Epoch) item;
+            (string Text, long At, int Epoch, ChatCommandOrigin Origin) item;
             lock (_chatCommandLock)
             {
                 if (_chatCommandQueue.Count == 0) return;
@@ -1173,7 +1177,7 @@ internal static class AcMainThreadQueue
                 NoteStale("a chat command", now - item.At, dropped: true);
                 continue;
             }
-            try { ChatCommandDispatcher.Dispatch(item.Text); }
+            try { ChatCommandDispatcher.Dispatch(item.Text, item.Origin); }
             catch { }
         }
     }

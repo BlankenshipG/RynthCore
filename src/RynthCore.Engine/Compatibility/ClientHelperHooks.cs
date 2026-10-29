@@ -1112,10 +1112,11 @@ internal static class ClientHelperHooks
     // also hook the same function in ChatCallbackHooks.IncomingChatAddTextDetour,
     // which fires when AC processes our own WriteToChat output — guard
     // against unbounded recursion into ourselves.
-    private const int WriteToChatMinIntervalMs = 100;
+    // A burst of up to 12 lines, then one per 100 ms (ChatRateLimiter, 2026-10-28; it was one line
+    // per 100 ms, which cut every multi-line command reply to its first line).
+    private static readonly ChatRateLimiter _chatLimiter = new();
     [System.Runtime.CompilerServices.ModuleInitializer]
     internal static void EnsureChatRateLimiterReady() { /* triggers static init */ }
-    private static long _lastWriteToChatTick;
     [ThreadStatic] private static int _writeToChatDepth;
 
     public static bool WriteToChat(string? text, int chatType)
@@ -1130,11 +1131,8 @@ internal static class ClientHelperHooks
         // dropped before they queue, and drained messages are never re-dropped.
         if (!MainThreadGuard.IsOnMainThread())
         {
-            long now = Environment.TickCount64;
-            long last = System.Threading.Interlocked.Read(ref _lastWriteToChatTick);
-            if (last != 0 && now - last < WriteToChatMinIntervalMs)
+            if (!_chatLimiter.TryTake(Environment.TickCount64))
                 return false;
-            System.Threading.Interlocked.Exchange(ref _lastWriteToChatTick, now);
             return AcMainThreadQueue.EnqueueWriteToChat(text!, chatType);
         }
 
