@@ -30,6 +30,9 @@ internal static class RadarSettingsStore
     /// <summary>ImGui face: a round radar (everything cut to a circle) instead of the square one.</summary>
     public static bool RoundRadar;
     public static bool CtrlGatedClickThrough = false;
+    /// <summary>ImGui face, with click-through on: the mouse wheel over the docked radar still zooms it
+    /// (and doesn't reach the game); clicks still go through. Off by default (2026-10-29).</summary>
+    public static bool ClickThroughWheelZoom = false;
     public static bool ShowMonsters = true;
     public static bool ShowNpcs = true;
     public static bool ShowPortals = true;
@@ -187,6 +190,7 @@ internal static class RadarSettingsStore
                         case "showGoldRim":      ShowGoldRim             = val == "1"; break;
                         case "round":            RoundRadar              = val == "1"; break;
                         case "ctrlClickThrough": CtrlGatedClickThrough   = val == "1"; break;
+                        case "clickThroughWheel": ClickThroughWheelZoom  = val == "1"; break;
                         case "showMonsters":     ShowMonsters            = val == "1"; break;
                         case "showNpcs":     ShowNpcs         = val == "1"; break;
                         case "showPortals":  ShowPortals      = val == "1"; break;
@@ -249,6 +253,7 @@ internal static class RadarSettingsStore
                 sw.WriteLine($"showGoldRim={(ShowGoldRim ? "1" : "0")}");
                 sw.WriteLine($"round={(RoundRadar ? "1" : "0")}");
                 sw.WriteLine($"ctrlClickThrough={(CtrlGatedClickThrough ? "1" : "0")}");
+                sw.WriteLine($"clickThroughWheel={(ClickThroughWheelZoom ? "1" : "0")}");
                 sw.WriteLine($"showMonsters={(ShowMonsters ? "1" : "0")}");
                 sw.WriteLine($"showNpcs={(ShowNpcs ? "1" : "0")}");
                 sw.WriteLine($"showPortals={(ShowPortals ? "1" : "0")}");

@@ -46,6 +46,7 @@ namespace RadarSettingsTests
                 Run("StyleKeysClampAndIgnore", StyleKeysClampAndIgnore);
                 Run("WorldMapBackdropSettings", () => WorldMapBackdropSettings(root));
                 Run("RoundRadarAndClipping", () => RoundRadarAndClipping(root));
+                Run("ClickThroughWheelZoom", () => ClickThroughWheelZoom(root));
             }
             finally
             {
@@ -252,6 +253,42 @@ namespace RadarSettingsTests
             Check(text.Contains("worldMap=0\n"), "saved worldMap=0 when off");
         }
         // The round radar: the setting saves, and the geometry cuts shapes to the circle.
+        // Docked click-through with "Mouse wheel still zooms" (2026-10-29): the wheel over the radar is
+        // the radar's, everywhere else and in every other case it stays the game's.
+        private static void ClickThroughWheelZoom(string root)
+        {
+            Check(!RadarSettingsStore.ClickThroughWheelZoom, "off by default");
+            string saved = Path.Combine(root, "wheel.txt");
+            Environment.SetEnvironmentVariable("RYNTHCORE_RADAR_SETTINGS", saved);
+            RadarSettingsStore.ClickThroughWheelZoom = true;
+            RadarSettingsStore.Save();
+            Check(File.ReadAllText(saved).Replace("\r\n", "\n").Contains("clickThroughWheel=1\n"), "saved clickThroughWheel=1");
+            RadarSettingsStore.ClickThroughWheelZoom = false;
+            RadarSettingsStore.Save();
+            Check(File.ReadAllText(saved).Replace("\r\n", "\n").Contains("clickThroughWheel=0\n"), "saved clickThroughWheel=0");
+            // (The store loads once per process, so a file from before - no clickThroughWheel line - is
+            // covered by the default above: Load only sets the switch from its own line.)
+
+            var min = new System.Numerics.Vector2(100, 100);
+            var max = new System.Numerics.Vector2(300, 300);
+            var mid = new System.Numerics.Vector2(200, 200);
+            Check(RadarWheel.Owns(true, true, false, false, mid, min, max, null), "on, click-through, mouse on the radar: the radar's");
+            Check(!RadarWheel.Owns(false, true, false, false, mid, min, max, null), "option off: the game's");
+            Check(!RadarWheel.Owns(true, false, false, false, mid, min, max, null), "not click-through this frame (Ctrl, a dot): the window has the wheel itself");
+            Check(!RadarWheel.Owns(true, true, true, false, mid, min, max, null), "popped out: always interactive");
+            Check(!RadarWheel.Owns(true, true, false, true, mid, min, max, null), "another RynthCore window has the mouse");
+            Check(!RadarWheel.Owns(true, true, false, false, new System.Numerics.Vector2(99, 200), min, max, null), "just left of the radar");
+            Check(!RadarWheel.Owns(true, true, false, false, new System.Numerics.Vector2(200, 301), min, max, null), "just under it");
+            Check(RadarWheel.Owns(true, true, false, false, max, min, max, null), "its corner counts (square)");
+            var circle = new RoundMask(mid, 100);
+            Check(!RadarWheel.Owns(true, true, false, false, new System.Numerics.Vector2(105, 105), min, max, circle), "round: the box's corner is outside the circle");
+            Check(RadarWheel.Owns(true, true, false, false, new System.Numerics.Vector2(200, 105), min, max, circle), "round: inside the circle");
+
+            Check(Math.Abs(RadarWheel.Zoomed(1.5f, 1f) - 1.65f) < 0.0001f, "one notch up: +0.15");
+            Check(Math.Abs(RadarWheel.Zoomed(1.5f, -2f) - 1.2f) < 0.0001f, "two down: -0.30");
+            Check(RadarWheel.Zoomed(5.95f, 3f) == RadarWheel.MaxZoom && RadarWheel.Zoomed(0.6f, -3f) == RadarWheel.MinZoom, "kept to 0.5..6 like the slider");
+        }
+
         private static void RoundRadarAndClipping(string root)
         {
             Check(!RadarSettingsStore.RoundRadar, "round off by default");
