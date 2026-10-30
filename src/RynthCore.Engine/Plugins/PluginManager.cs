@@ -658,7 +658,9 @@ internal static partial class PluginManager
 
                     try
                     {
+                        int before = eat;
                         plugin.OnChatBarEnter(textPtr, eatPtr);
+                        if (before == 0 && eat != 0) NoteChatBarEaten(plugin.DisplayName, text);
                     }
                     catch (Exception ex)
                     {
@@ -677,6 +679,26 @@ internal static partial class PluginManager
             if (textPtr != IntPtr.Zero)
                 Marshal.FreeHGlobal(textPtr);
         }
+    }
+
+    // Which plugin took a typed / dispatched chat line (2026-10-30: a /fship list that never
+    // left the client could have been any of fifteen plugins; the log said nothing). Three
+    // lines per plugin and command word, so a plugin's own /ra or /ilt commands don't flood it.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _chatBarEatLogged = new(StringComparer.OrdinalIgnoreCase);
+
+    private static void NoteChatBarEaten(string plugin, string? text)
+    {
+        try
+        {
+            string t = (text ?? "").Trim();
+            int sp = t.IndexOf(' ');
+            string verb = sp < 0 ? t : t[..sp];
+            if (verb.Length > 24) verb = verb[..24];
+            int n = _chatBarEatLogged.AddOrUpdate(plugin + "|" + verb, 1, (_, v) => v + 1);
+            if (n <= 3)
+                RynthLog.Plugin($"PluginManager: {plugin} took the chat line '{(t.Length > 80 ? t[..80] + "..." : t)}' (it isn't sent to AC or the server){(n == 3 ? "; no more lines logged for " + verb : "")}.");
+        }
+        catch { }
     }
 
     public static void QueueChatWindowText(string? text, uint chatType) => QueueChatWindowText(text, chatType, null);

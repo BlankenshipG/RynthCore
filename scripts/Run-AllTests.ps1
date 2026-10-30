@@ -14,6 +14,9 @@
     (2026-10-22: tests only ran when someone remembered to; a release went out with Missile Crafting
     broken while the tests that existed passed).
 
+    Each test program is also checked for test groups that exist but never run (a class with a static
+    Register(...) that is never registered, a static RunXxx() that is never called): those fail the run.
+
     Every folder whose name contains "Test" is run unless $Skip below names it with a reason; skipped ones
     are listed in the summary, never dropped silently. Each program's output goes to
     <LogDir>\<repo>.<name>.log, and the summary (also <LogDir>\summary.txt) shows each failure's last lines.
@@ -74,6 +77,48 @@ foreach ($r in $repos) {
     }
 }
 if ($Only.Count -gt 0 -and $tests.Count -eq 0 -and $skipped.Count -eq 0) { throw "-Only matched no test folder: $($Only -join ', ')" }
+
+# Tests that exist but never run (2026-10-30: RynthAiHostTests' RingEscapeTests and RingEvadeTests
+# had stopped being registered in a merge, and PetDamageTintTests never was; their checks silently
+# didn't run). In each test program: every class with a static Register(...) must be registered
+# (Name.Register( somewhere in the program), and every parameterless "static void RunXxx()" group
+# must be called. A miss fails the run as "<repo>.<folder> (registration)".
+function Find-UnrunTests([string]$dir) {
+    $files = @(Get-ChildItem $dir -Recurse -Filter *.cs | Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' })
+    if ($files.Count -eq 0) { return @() }
+    $src = @{}
+    foreach ($f in $files) { $src[$f.FullName] = Get-Content $f.FullName -Raw }
+    $all = ($src.Values -join "`n")
+    $miss = [System.Collections.Generic.List[string]]::new()
+    foreach ($kv in $src.GetEnumerator()) {
+        $text = $kv.Value
+        if ($text -notmatch 'static\s+void\s+Register\s*\(\s*Runner\b') { }
+        else {
+            foreach ($m in [regex]::Matches($text, '(?:internal|public)\s+(?:static\s+)?(?:sealed\s+)?(?:partial\s+)?class\s+(\w+)')) {
+                $cls = $m.Groups[1].Value
+                # the class's own Register: the first "static void Register(" after its declaration, before the next class
+                $rest = $text.Substring($m.Index + $m.Length)
+                $next = [regex]::Match($rest, '(?:internal|public)\s+(?:static\s+)?(?:sealed\s+)?(?:partial\s+)?class\s+\w+')
+                $body = if ($next.Success) { $rest.Substring(0, $next.Index) } else { $rest }
+                if ($body -match 'static\s+void\s+Register\s*\(\s*Runner\b' -and $all -notmatch "\b$cls\.Register\s*\(") {
+                    $miss.Add("$cls.Register(...) is never called ($([IO.Path]::GetRelativePath($dir, $kv.Key)))")
+                }
+            }
+        }
+        foreach ($m in [regex]::Matches($text, 'static\s+void\s+(Run[A-Z]\w*)\s*\(\s*\)')) {
+            $name = $m.Groups[1].Value
+            if ($all -notmatch "\b$name\s*\(\s*\)\s*;") { $miss.Add("$name() is never called ($([IO.Path]::GetRelativePath($dir, $kv.Key)))") }
+        }
+    }
+    return $miss
+}
+
+$registration = [System.Collections.Generic.List[object]]::new()
+foreach ($t in $tests) {
+    if ($t.Kind -ne "dotnet") { continue }
+    $miss = @(Find-UnrunTests $t.Dir)
+    if ($miss.Count -gt 0) { $registration.Add([pscustomobject]@{ Id = "$($t.Id) (registration)"; Lines = $miss }) }
+}
 
 # Runs one program with its output captured; returns @{ Code; TimedOut; Output }.
 function Invoke-Captured([string]$file, [string[]]$argList, [string]$cwd) {
@@ -136,6 +181,13 @@ foreach ($t in $tests) {
     $color = if ($status -eq "PASS") { "Green" } else { "Red" }
     Write-Host ("{0} ({1:0}s)" -f $status, $sw.Elapsed.TotalSeconds) -ForegroundColor $color
     $results.Add([pscustomobject]@{ Id = $t.Id; Status = $status; Seconds = [math]::Round($sw.Elapsed.TotalSeconds); Log = $log })
+}
+
+foreach ($g in $registration) {
+    $log = Join-Path $LogDir "$($g.Id -replace '[^\w.\-]', '_').log"
+    Set-Content $log (@("Tests that exist but never run:") + $g.Lines)
+    Write-Host ("{0}: {1} test group(s) never run" -f $g.Id, $g.Lines.Count) -ForegroundColor Red
+    $results.Add([pscustomobject]@{ Id = $g.Id; Status = "NOT RUN"; Seconds = 0; Log = $log })
 }
 
 $failed = @($results | Where-Object Status -ne "PASS")

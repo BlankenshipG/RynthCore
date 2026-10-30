@@ -63,6 +63,8 @@ internal static class Program
         SlowRuleRetry();
         SettingsMergeOnSave();
         CommandReplyInTypedTab();
+        FshipListNotFiltered();
+        ServerCommandsWithoutChatTarget();
 
         Console.WriteLine();
         Console.WriteLine($"{_checks - _failed}/{_checks} checks passed.");
@@ -214,6 +216,44 @@ internal static class Program
     {
         _case = name;
         Console.WriteLine("- " + name);
+    }
+
+    /// <summary>
+    /// Silentkelpie 2026-10-30: /fship list showed nowhere in RynthChat. ILT's reply (flight
+    /// recorder, chat type 0): a dashed rule, "[FSHIP]: Fellowships in your area:", one line per
+    /// fellowship, a dashed rule. No standard filter (every one on) may hide it.
+    /// </summary>
+    private static void FshipListNotFiltered()
+    {
+        string[] reply =
+        {
+            "---------------------------",
+            "[FSHIP]: Fellowships in your area:",
+            "  'But the lum is so good' led by Io (Leader not in area)",
+            "No fellowships found in your area.",
+        };
+        foreach (var p in RynthCore.Engine.UI.Panels.RynthChatPresets.All)
+            foreach (string line in reply)
+                Check(!p.Matches(line, "System"), $"fship list: standard filter '{p.Id}' leaves \"{line.Trim()}\" alone");
+    }
+
+    /// <summary>
+    /// 2026-10-30: with no chat target captured yet, a server command goes out as "@command"
+    /// (ACE runs it as the "/command"); AC's own commands and chat still need the chat bar.
+    /// </summary>
+    private static void ServerCommandsWithoutChatTarget()
+    {
+        static string? At(string c) => RynthCore.Engine.Compatibility.ServerCommandFallback.TryAsServerCommand(c, out string? a) ? a : null;
+        Check(At("/fship list") == "@fship list", "/fship list -> @fship list");
+        Check(At("  /bank  ") == "@bank", "/bank -> @bank (trimmed)");
+        Check(At("/myquests") == "@myquests", "/myquests -> @myquests");
+        Check(At("/f hello all") == null, "/f is fellowship chat: the chat bar");
+        Check(At("/tell Bob, hi") == null, "/tell: the chat bar");
+        Check(At("/framerate") == null, "/framerate is AC's own");
+        Check(At("/LOC") == null, "/loc is AC's own (any case)");
+        Check(At("hello") == null, "plain text isn't a command");
+        Check(At("/") == null && At("/1") == null, "no command word");
+        Check(At("/fship add Bjørn") == null, "non-ASCII stays on the chat bar");
     }
 
     private static void Check(bool ok, string what)

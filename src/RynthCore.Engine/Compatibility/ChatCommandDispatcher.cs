@@ -390,8 +390,28 @@ internal static unsafe class ChatCommandDispatcher
             return DecalBridgeHost.TryInvokeChatParser(command);
         if (ChatCallbackHooks.TryDispatchDirect(command))
             return true;
+        // No chat target captured yet this login (nothing has gone through AC's chat bar since):
+        // the keystroke fallback types into AC's window, and on a client in the background, or
+        // with RynthChat's window popped out, those keystrokes were lost while the dispatch said
+        // ok (2026-10-30: /fship list from RynthChat never left two of five clients). A server
+        // command goes to the server as "@command" instead (ACE runs "@x" exactly as a forwarded
+        // "/x"). Only commands AC handles itself still need the keystrokes.
+        if (ServerCommandFallback.TryAsServerCommand(command, out string? atCommand))
+        {
+            LogoffOriginProbe.RecordChat("ServerCommand fallback", atCommand!);
+            if (DispatchSay(atCommand!))
+            {
+                if (Interlocked.Increment(ref _fallbackSentLogged) <= 5)
+                    RynthLog.Compat($"ChatDispatch: no chat target captured yet; '{command.Trim()}' sent to the server as '{atCommand}'.");
+                return true;
+            }
+        }
+        if (Interlocked.Increment(ref _fallbackKeysLogged) <= 5)
+            RynthLog.Compat($"ChatDispatch: no chat target captured yet; '{command.Trim()}' typed into AC's window with simulated keys (lost if AC doesn't take them).");
         return SimulateChatInput(command);
     }
+
+    private static int _fallbackSentLogged, _fallbackKeysLogged;
 
     /// <summary>
     /// Simulates keyboard input to type and submit a chat command.
