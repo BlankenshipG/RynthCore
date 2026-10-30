@@ -90,7 +90,7 @@ internal sealed class RynthNavFace : IImGuiPanel
     // Go tab: the picked destination (a row of the list), what the commands get for it, its line.
     private AtlasRow? _pick;
     private string _pickArg = "", _pickCoord = "", _pickLine = "", _typedLine = "", _typedCoord = "";
-    private bool _recallsOpen, _infoOpen;
+    private bool _recallsOpen, _infoOpen, _learnOpen;
 
     public void OnShown()
     {
@@ -386,6 +386,7 @@ internal sealed class RynthNavFace : IImGuiPanel
             DrawRouteView(st, cw);
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
             if (Fold("##go_fold_recalls", _recallsOpen ? RecallsOpenLabel : RecallsShutLabel, ref _recallsOpen, cw)) DrawRecalls(st, cw);
+            if (st?.HasLearn == true && Fold("##go_fold_learn", _learnOpen || st.LearnOn ? LearnOpenLabel : LearnShutLabel, ref _learnOpen, cw)) DrawLearn(st, cw);
             if (Fold("##go_fold_info", _infoOpen ? InfoOpenLabel : InfoShutLabel, ref _infoOpen, cw)) DrawInfo(st, cw);
         }
         ImGuiNET.ImGui.EndChild();
@@ -496,6 +497,8 @@ internal sealed class RynthNavFace : IImGuiPanel
     private const string GoLabel = PhosphorIcons.Play + " Go";
     private const string RecallsOpenLabel = PhosphorIcons.CaretDown + "  RECALLS AND PORTAL TIES",
         RecallsShutLabel = PhosphorIcons.CaretRight + "  RECALLS AND PORTAL TIES",
+        LearnOpenLabel = PhosphorIcons.CaretDown + "  CUSTOM PORTALS (THIS SERVER)",
+        LearnShutLabel = PhosphorIcons.CaretRight + "  CUSTOM PORTALS (THIS SERVER)",
         InfoOpenLabel = PhosphorIcons.CaretDown + "  INFO, LOAD / TEST, MOVEMENT",
         InfoShutLabel = PhosphorIcons.CaretRight + "  INFO, LOAD / TEST, MOVEMENT";
 
@@ -607,6 +610,70 @@ internal sealed class RynthNavFace : IImGuiPanel
         ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
         ImGuiNET.ImGui.Unindent(4);
     }
+
+    // ── Custom portals section (RynthNav "learn") ─────────────────────────
+
+    /// <summary>
+    /// This server's own portals: the counts, Scan (write down the portals around you), Learn (go
+    /// and try every portal within the range, learn each landing, come back, repeat; Stop ends it)
+    /// and the range with - / +.
+    /// </summary>
+    private static void DrawLearn(RynthNavStatus st, float cw)
+    {
+        ImGuiNET.ImGui.Indent(4);
+        float iw = cw - 4;
+        Wrapped(st.LearnCounts, Text, iw);
+
+        // Range: - [ 200 yd ] +
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        double r = st.LearnRange, step = r >= 500 ? 100 : r >= 100 ? 25 : 10;
+        ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
+        DrawSmallLabel(p + new Vector2(0, 5), Mute, "SEARCH RANGE");
+        ImGuiNET.ImGui.PopFont();
+        float x = p.X + 92;
+        if (Button("##learn_minus", "-", new Vector2(x, p.Y), new Vector2(24, 22), Text, BtnFill, enabled: r > st.LearnMin))
+            RynthNavCommands.Command("portals learn range " + Math.Max(st.LearnMin, r - step).ToString("0", System.Globalization.CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.SetItemTooltip("A smaller range: fewer portals, closer to where learning starts");
+        string rt = r.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " yd";
+        float tw = ImGuiNET.ImGui.CalcTextSize(rt).X;
+        ImGuiNET.ImGui.GetWindowDrawList().AddText(new Vector2(x + 28 + (64 - tw) * 0.5f, p.Y + 3), Teal, rt);
+        if (Button("##learn_plus", "+", new Vector2(x + 96, p.Y), new Vector2(24, 22), Text, BtnFill, enabled: r < st.LearnMax))
+            RynthNavCommands.Command("portals learn range " + Math.Min(st.LearnMax, r + step).ToString("0", System.Globalization.CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.SetItemTooltip($"A bigger range (up to {st.LearnMax:0} yd): more portals, longer runs");
+        NextLine(p, 26);
+
+        // Learn / Stop, Scan
+        p = ImGuiNET.ImGui.GetCursorScreenPos();
+        float bw = (iw - 4) * 0.5f;
+        if (!st.LearnOn)
+        {
+            if (Button("##learn_go", PhosphorIcons.Play + " Learn portals", p, new Vector2(bw, 24), RunGreen, BtnFill, border: RunGreen))
+                RynthNavCommands.Command("portals learn");
+            ImGuiNET.ImGui.SetItemTooltip("From where you stand: walk into every portal within the range it hasn't mapped,\n"
+                + "learn where each one lands, come back here by a route (portals and recalls), and go on\n"
+                + "until all have been tried. Stop (or any movement key) ends it.");
+        }
+        else
+        {
+            if (Button("##learn_stop", PhosphorIcons.Stop + " Stop learning", p, new Vector2(bw, 24), Amber, BtnFill, border: Amber))
+                RynthNavCommands.Command("portals learn stop");
+            ImGuiNET.ImGui.SetItemTooltip("Stop learning portals (the walk stops too)");
+        }
+        if (Button("##learn_scan", PhosphorIcons.MagnifyingGlass + " Scan here", new Vector2(p.X + bw + 4, p.Y), new Vector2(bw, 24), Text, BtnFill,
+                enabled: !st.LearnOn))
+            RynthNavCommands.Command("portals scan " + r.ToString("0", System.Globalization.CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.SetItemTooltip("Write down the portals around you within the range (their landing is learned when one is taken)");
+        NextLine(p, 28);
+
+        if (st.LearnLine.Length > 0) Wrapped(st.LearnLine, st.LearnOn ? Amber : Mute, iw);
+        ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
+        Wrapped("Routes use these with \"Use portals and recalls\" on. A portal that lands in a dungeon is kept, not routed. /rnav portals list shows them.", Mute, iw);
+        ImGuiNET.ImGui.PopFont();
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+        ImGuiNET.ImGui.Unindent(4);
+    }
+
+    private static void DrawSmallLabel(Vector2 at, uint color, string text) => ImGuiNET.ImGui.GetWindowDrawList().AddText(at, color, text);
 
     // ── Info section ─────────────────────────────────────────────────────
 

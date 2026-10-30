@@ -116,6 +116,11 @@ internal sealed class RynthNavStatus
     public int MeshRadius = 40, MeshTriangles = 3000, MeshDrawn;
     public bool HasSave, CanSave, SaveBusy;
     public string SaveFor = "", SaveName = "", SaveConflict = "", SaveLast = "";
+    // Custom-server portals and learning them (RynthNav "learn", 2026-10-29; HasLearn false on older plugins).
+    public bool HasLearn, LearnOn;
+    public double LearnRange = 200, LearnMin = 20, LearnMax = 2000;
+    public int LearnSaved, LearnRoutable, LearnTried, LearnLearned;
+    public string LearnServer = "", LearnLine = "", LearnCounts = "";
     public bool HasTies;
     public int Tie1Known = -1, Tie2Known = -1;
     public string TiePending = "";
@@ -283,6 +288,22 @@ internal sealed class RynthNavStatus
             s.HasTownNet = info.TryGetProperty("townNet", out _);
             s.TownNetLoaded = Int(info, "townNet") != 0;
             s.TownNetStatus = Str(info, "townNetStatus");
+        }
+        if (r.TryGetProperty("learn", out var ln) && ln.ValueKind == JsonValueKind.Object)
+        {
+            s.HasLearn = true;
+            s.LearnOn = Int(ln, "on") != 0;
+            s.LearnRange = Num(ln, "range");
+            s.LearnMin = Num(ln, "min");
+            s.LearnMax = Num(ln, "max");
+            s.LearnServer = Str(ln, "server");
+            s.LearnSaved = Int(ln, "saved");
+            s.LearnRoutable = Int(ln, "routable");
+            s.LearnTried = Int(ln, "tried");
+            s.LearnLearned = Int(ln, "learned");
+            s.LearnLine = Str(ln, "line");
+            s.LearnCounts = s.LearnServer.Length == 0 ? "Not logged in yet."
+                : $"{s.LearnServer}: {s.LearnSaved} custom portal(s) saved, {s.LearnRoutable} with a known landing (used by routes).";
         }
         if (r.TryGetProperty("markers", out var mk) && mk.ValueKind == JsonValueKind.Object)
         {
