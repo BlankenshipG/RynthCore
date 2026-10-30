@@ -112,6 +112,13 @@ internal interface IImGuiPanel
     bool ClickThrough => false;
 
     /// <summary>
+    /// While <see cref="ClickThrough"/>: the mouse wheel over the panel is the panel's (the face reads
+    /// io.MouseWheel itself) and doesn't reach the game; clicks and moves still do. Answered by the
+    /// face's last Draw (the radar's "Mouse wheel still zooms", 2026-10-29).
+    /// </summary>
+    bool ClickThroughWantsWheel => false;
+
+    /// <summary>
     /// Popped out and not hovered or in use: how often the face is redrawn (Hz).
     /// Its pictures are only pushed when they change; this bounds the cost of
     /// building the frame. Hovered or just used, a pop-out runs at 30 Hz.
@@ -571,6 +578,13 @@ internal static class ImGuiPanelHost
     /// </summary>
     public static float BodyGripReserve { get; private set; }
 
+    /// <summary>
+    /// The last DrawAll: a docked click-through panel has the mouse wheel over it
+    /// (IImGuiPanel.ClickThroughWantsWheel), so the wheel is kept from the game while the clicks
+    /// still reach it (EngineFrameController, Win32Backend.UpdateCaptureFlags). AC thread.
+    /// </summary>
+    public static bool WheelWanted { get; private set; }
+
     // ── Frame (AC thread) ──────────────────────────────────────────────
 
     /// <summary>
@@ -581,6 +595,7 @@ internal static class ImGuiPanelHost
     public static void DrawAll(float uiScale)
     {
         _frameScale = uiScale;
+        WheelWanted = false;
         float placeScale = PlacementScale();
         ApplyFaceChanges(placeScale);   // plugin windows taking over (or giving back) engine panels
         while (Requests.TryDequeue(out var req))
@@ -1172,6 +1187,8 @@ internal static class ImGuiPanelHost
                     BodyGripReserve = inlineGrip && gripRoom == 0f ? gSize + 1f * uiScale : 0f;
                     try { DrawBody(entry); }
                     finally { BodyGripReserve = 0f; }
+                    // A click-through face that takes the wheel over itself (IImGuiPanel.ClickThroughWantsWheel).
+                    if (clickThrough) try { if (entry.Instance.ClickThroughWantsWheel) WheelWanted = true; } catch { }
                 }
                 // Grip painted on top of the face when the body covers the corner
                 // (a GripInBody face's even while it lets clicks through: its slot stays).

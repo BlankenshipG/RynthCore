@@ -11,6 +11,12 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item>dispatch.txt / OnLoginCommandRunner / Host.InvokeChatParser —
 ///         <see cref="ChatCommandDispatcher.Dispatch"/></item>
 /// </list>
+/// Every command answers (2026-10-28): what changed and the value now, or why not with the
+/// usage; an unknown verb or arguments a verb can't take get the usage before anything runs
+/// (<see cref="ChatCommandReplies.Check"/>). Typed by the player (AC's chat bar, RynthChat's box,
+/// a hotkey, or a plugin passing on a typed line) every reply goes to chat; sent by a plugin, a
+/// command file, the login commands or an engine button, a success goes to the log only and a
+/// failure still to chat (<see cref="ChatCommandOrigin"/>). All replies go through Reply / Fail.
 /// Commands:
 /// <list type="bullet">
 ///   <item><c>/rc resetbar</c> — recover the RynthCore overlay bar when it has
@@ -112,62 +118,131 @@ internal static class RynthCoreChatCommands
     /// <summary>The Settings tab with the server picker (UI/Data/SettingsData.cs "Diagnostics").</summary>
     private const string DiagnosticsTabName = "Diagnostics";
 
+    // The line being handled on this thread: who sent it, and whether it has answered yet.
+    [ThreadStatic] private static ChatCommandOrigin _origin;
+    [ThreadStatic] private static bool _answered;
+
+    // Above 0 while a line the player typed is handed on (to the plugins, or by RynthChat's box).
+    [ThreadStatic] private static int _playerLineDepth;
+
+    /// <summary>
+    /// Until disposed, every line handled on this thread is the player's: a /rc command a plugin runs
+    /// while it handles a line the player typed answers in chat (RynthAi's /ra videopatch runs
+    /// /rc videopatch through Host.InvokeChatParser, on the same thread, before returning).
+    /// <c>using (RynthCoreChatCommands.PlayerLine()) PluginManager.DispatchChatBarEnter(line);</c>
+    /// </summary>
+    internal static PlayerLineScope PlayerLine()
+    {
+        _playerLineDepth++;
+        return default;
+    }
+
+    /// <summary>Ends a <see cref="PlayerLine"/>.</summary>
+    internal readonly struct PlayerLineScope : IDisposable
+    {
+        public void Dispose()
+        {
+            if (_playerLineDepth > 0) _playerLineDepth--;
+        }
+    }
+
     /// <summary>
     /// True if <paramref name="line"/> was a RynthCore engine command and has
     /// been handled — the caller must consume it (do NOT forward to AC chat
-    /// or to plugins).
+    /// or to plugins). Every handled line answers (<see cref="ChatCommandReplies"/>):
+    /// in chat for the <paramref name="origin"/> Player; for a Script, a success goes
+    /// to the log only and a failure to chat.
     /// </summary>
-    public static bool TryHandle(string? line)
+    public static bool TryHandle(string? line, ChatCommandOrigin origin)
     {
         if (string.IsNullOrWhiteSpace(line))
             return false;
 
         string trimmed = line.Trim();
+        if (!IsEngineLine(trimmed))
+            return false;
 
+        ChatCommandOrigin outerOrigin = _origin;
+        bool outerAnswered = _answered;
+        _origin = ChatCommandReplies.Effective(origin, _playerLineDepth > 0);
+        _answered = false;
+        try
+        {
+            try { Handle(trimmed); }
+            catch (Exception ex) { Failed(ChatCommandReplies.CommandName(trimmed), ex); }
+            if (!_answered)
+            {
+                // A handler that said nothing is a gap to fill (this log line names it), never silence.
+                RynthLog.Compat($"RynthCoreChatCommands: '{trimmed}' wrote no reply.");
+                Reply(ChatCommandReplies.Done(ChatCommandReplies.CommandName(trimmed)));
+            }
+            return true;
+        }
+        finally
+        {
+            _origin = outerOrigin;
+            _answered = outerAnswered;
+        }
+    }
+
+    /// <summary>"/rc", "/rc ..." and "/rv plates|nameplates ..." are the engine's; every other "/rv" line
+    /// goes on to the RynthVision plugin.</summary>
+    private static bool IsEngineLine(string trimmed)
+    {
+        if (trimmed.Equals("/rc", StringComparison.OrdinalIgnoreCase) || trimmed.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (!trimmed.StartsWith("/rv ", StringComparison.OrdinalIgnoreCase))
+            return false;
+        string rv = trimmed.Substring(4).Trim();
+        return IsVerb(rv, "plates", out _) || IsVerb(rv, "nameplates", out _);
+    }
+
+    /// <summary>Runs one engine line (<see cref="IsEngineLine"/>). An exception is answered by TryHandle.</summary>
+    private static void Handle(string trimmed)
+    {
         // /rv plates ... : the RynthVision overlays live engine-side, so the engine answers
         // before the plugin's "/rv" prefix handler would (it runs after this, on pre-dispatch).
         if (trimmed.StartsWith("/rv ", StringComparison.OrdinalIgnoreCase))
         {
             string rv = trimmed.Substring(4).Trim();
-            if (IsVerb(rv, "plates", out string rvArgs) || IsVerb(rv, "nameplates", out rvArgs))
-            {
-                try { HandlePlatesCommand(rvArgs); }
-                catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rv plates failed - {ex.GetType().Name}: {ex.Message}"); }
-                return true;
-            }
-            return false;
+            if (!IsVerb(rv, "plates", out string rvArgs))
+                IsVerb(rv, "nameplates", out rvArgs);
+            HandlePlatesCommand(rvArgs);
+            return;
         }
 
-        if (!trimmed.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase))
-            return false;
+        string sub = trimmed.Length > 3 ? trimmed.Substring(3).Trim() : string.Empty;
 
-        string sub = trimmed.Substring(Prefix.Length).Trim();
-
-        // /rc vendor [list|info|status|buy <id|sel> [n]|sell <id|sel> [id ...]]
-        if (sub.Equals("vendor", StringComparison.OrdinalIgnoreCase)
-            || sub.StartsWith("vendor ", StringComparison.OrdinalIgnoreCase))
+        // An unknown verb, or arguments the verb can't take, answers with the usage before anything
+        // runs ("/rc" alone lists the commands). Commands with their own handler check theirs there.
+        ChatVerbCheck check = ChatCommandReplies.Check(sub);
+        if (check.Problem != null)
         {
-            try { VendorTrade.HandleChatCommand(sub.Length > 6 ? sub.Substring(7) : string.Empty); }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc vendor failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            Fail(check.Problem);
+            return;
         }
 
-        // /rc imgui [on|off|fonttest]
-        if (sub.Equals("imgui", StringComparison.OrdinalIgnoreCase)
-            || sub.StartsWith("imgui ", StringComparison.OrdinalIgnoreCase))
+        // /rc vendor [list|info|status|buy <id|sel> [n]|sell <id|sel> [id ...]]: VendorTrade's own
+        // "[RC]" lines are the reply (to chat from the main-thread drain, and to the log).
+        if (IsVerb(sub, "vendor", out string vendorArgs))
         {
-            try { HandleImGuiCommand(sub.Length > 5 ? sub.Substring(6).Trim() : string.Empty); }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc imgui failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            VendorTrade.HandleChatCommand(vendorArgs);
+            AnswersItself();
+            return;
+        }
+
+        // /rc imgui [on|off|fonttest|diag]
+        if (IsVerb(sub, "imgui", out string imguiArgs))
+        {
+            HandleImGuiCommand(imguiArgs);
+            return;
         }
 
         // /rc ui list | open|close|popout|redock|snap <Panel> | bar settings (HandleUiCommand)
-        if (sub.Equals("ui", StringComparison.OrdinalIgnoreCase)
-            || sub.StartsWith("ui ", StringComparison.OrdinalIgnoreCase))
+        if (IsVerb(sub, "ui", out string uiArgs))
         {
-            try { HandleUiCommand(sub.Length > 2 ? sub.Substring(3).Trim() : string.Empty); }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc ui failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            HandleUiCommand(uiArgs);
+            return;
         }
 
         // /rc chatlinkprobe [seconds|off]: coordinates in AC's chat as links + chat UI messages logged
@@ -175,181 +250,142 @@ internal static class RynthCoreChatCommands
         {
             try { Reply(ChatLinkProbe.Command(probeArgs)); }
             catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc chatlinkprobe failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            return;
         }
 
         // /rc chathold [on|off|status]: lines a plugin eats stay out of AC's chat window too
         if (IsVerb(sub, "chathold", out string holdArgs))
         {
-            try { HandleChatHoldCommand(holdArgs); }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc chathold failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            HandleChatHoldCommand(holdArgs);
+            return;
         }
 
         // /rc discord [on|off|status|window|test [route]|resume [route]] : RynthChat's Discord relay
         if (IsVerb(sub, "discord", out string discordArgs))
         {
-            try { HandleDiscordCommand(discordArgs); }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc discord failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            HandleDiscordCommand(discordArgs);
+            return;
         }
 
         // /rc plates [on|off|all|engaged|dist N|max N|scale X|opacity X|lift X|names|hp|level|weak|distance|fade|reset|status]
         if (IsVerb(sub, "plates", out string platesArgs) || IsVerb(sub, "nameplates", out platesArgs))
         {
-            try { HandlePlatesCommand(platesArgs); }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc plates failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            HandlePlatesCommand(platesArgs);
+            return;
         }
 
         // /rc server [<server> auto|on|off | names ilt ...] : the servers, why each is active, per-character overrides
         if (IsVerb(sub, "server", out string serverArgs))
         {
-            try { HandleServerCommand(serverArgs); }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc server failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            HandleServerCommand(serverArgs);
+            return;
         }
 
         // /rc ilt [auto|on|off] : is this Infinite Leaftide (the ILT section), with a per-character override
         if (IsVerb(sub, "ilt", out string iltArgs))
         {
-            try { HandleIltCommand(iltArgs); }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc ilt failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            HandleIltCommand(iltArgs);
+            return;
         }
 
         // /rc mastery : the Aelrynth mastery feed's state, and ask the server again
         if (IsVerb(sub, "mastery", out _))
         {
-            try { HandleMasteryCommand(); }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc mastery failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            HandleMasteryCommand();
+            return;
         }
 
         // /rc worldlayer [auto|uipass|transition|endscene] : where the world overlays draw
         if (IsVerb(sub, "worldlayer", out string worldArgs))
         {
-            try { HandleWorldLayerCommand(worldArgs); }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc worldlayer failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            HandleWorldLayerCommand(worldArgs);
+            return;
         }
 
         // /rc acmouse [watch [seconds]] : what AC's own UI has under the cursor (the 3D world or
         // one of its windows) - whether a nameplate there may take the click (AcMouseOver)
         if (IsVerb(sub, "acmouse", out string acMouseArgs) || IsVerb(sub, "mouseover", out acMouseArgs))
         {
-            try
+            string[] p = acMouseArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (p.Length > 0 && p[0].Equals("watch", StringComparison.OrdinalIgnoreCase))
             {
-                string[] p = acMouseArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (p.Length > 0 && p[0].Equals("watch", StringComparison.OrdinalIgnoreCase))
-                {
-                    int secs = p.Length > 1 && int.TryParse(p[1], out int n) ? n : 20;
-                    AcMouseOver.Watch(secs);
-                    Reply($"Watching AC's mouse-over for {Math.Clamp(secs, 1, 120)} s: move the cursor over the world and over AC's windows.");
-                }
-                else
-                {
-                    Reply(AcMouseOver.Describe());
-                }
+                int secs = p.Length > 1 && int.TryParse(p[1], out int n) ? n : 20;
+                AcMouseOver.Watch(secs);
+                Reply($"Watching AC's mouse-over for {Math.Clamp(secs, 1, 120)} s: move the cursor over the world and over AC's windows.");
             }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc acmouse failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            else
+            {
+                Reply(AcMouseOver.Describe());
+            }
+            return;
         }
 
         // /rc video [status|off|world|unfocused|all|fps <n>] : the video patch (stop drawing the 3D world)
         if (IsVerb(sub, "video", out string videoArgs) || IsVerb(sub, "videopatch", out videoArgs))
         {
-            try
-            {
-                foreach (string l in D3D9.VideoPatch.HandleCommand(videoArgs))
-                    Reply(l);
-            }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc video failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            ReplyLines(D3D9.VideoPatch.HandleCommand(videoArgs));
+            return;
         }
 
         // /rc hooks [on|off <name>] : the UI hooks (screen mode, client cleanup, tooltip, drag/drop)
         if (IsVerb(sub, "hooks", out string hooksArgs) || IsVerb(sub, "uihooks", out hooksArgs))
         {
-            try { HandleHooksCommand(hooksArgs); }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc hooks failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            HandleHooksCommand(hooksArgs);
+            return;
         }
 
         // /rc flightdump [note] | /rc flightdump auto <reason> : write the flight recorder now
         if (IsVerb(sub, "flightdump", out string dumpArgs))
         {
-            try
-            {
-                foreach (string l in Net.FlightRecorder.HandleDumpCommand(dumpArgs))
-                    Reply(l);
-            }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc flightdump failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            ReplyLines(Net.FlightRecorder.HandleDumpCommand(dumpArgs));
+            return;
         }
 
         // /rc quit | /rc exit : close the client cleanly (as its close button; the character logs off)
         if (IsVerb(sub, "quit", out _) || IsVerb(sub, "exit", out _))
         {
             Reply("Closing the client.");
-            try { ServerDisconnectClose.CloseClientNow("/rc quit"); }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc quit failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            ServerDisconnectClose.CloseClientNow("/rc quit");
+            return;
         }
 
         // /rc switchchar <name> : log this client onto another character of the account (2026-10-25)
         if (IsVerb(sub, "switchchar", out string switchArgs))
         {
             Reply(CharacterCaptureHooks.RequestSwitch(switchArgs));
-            return true;
+            return;
         }
 
         // /rc report [text] : Report a problem - alone it opens the panel; with text it sends now (with the log)
         if (IsVerb(sub, "report", out string reportArgs))
         {
-            try
-            {
-                foreach (string l in Report.ProblemReport.HandleCommand(reportArgs))
-                    Reply(l);
-            }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc report failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            var lines = new System.Collections.Generic.List<string>(Report.ProblemReport.HandleCommand(reportArgs));
+            if (lines.Count == 0)
+                Reply("Report a problem: the panel is open (or /rc report <what went wrong> sends one from chat).");
+            else
+                ReplyLines(lines);
+            return;
         }
 
         // /rc flight [status|mark <text>|on|off|auto on|off] : the flight recorder
         if (IsVerb(sub, "flight", out string flightArgs))
         {
-            try
-            {
-                foreach (string l in Net.FlightRecorder.HandleCommand(flightArgs))
-                    Reply(l);
-            }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc flight failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            ReplyLines(Net.FlightRecorder.HandleCommand(flightArgs));
+            return;
         }
 
         // /rc autoid [all|limited|off] : which background appraisals AutoId sends (alone: status)
         if (IsVerb(sub, "autoid", out string autoIdArgs))
         {
-            try
-            {
-                foreach (string l in AutoIdService.HandleCommand(autoIdArgs))
-                    Reply(l);
-            }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc autoid failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            ReplyLines(AutoIdService.HandleCommand(autoIdArgs));
+            return;
         }
 
         // /rc netmsg [status|on|off|log on|off|capture on|off] : the v78 server message stream
         if (IsVerb(sub, "netmsg", out string netArgs))
         {
-            try
-            {
-                foreach (string l in Net.ServerMessageStream.HandleCommand(netArgs))
-                    Reply(l);
-            }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc netmsg failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            ReplyLines(Net.ServerMessageStream.HandleCommand(netArgs));
+            return;
         }
 
         // /rc vtank [clear] : what the engine knows about VTank's macro (Decal bridge only);
@@ -359,7 +395,7 @@ internal static class RynthCoreChatCommands
             if (vtankArgs.Equals("clear", StringComparison.OrdinalIgnoreCase))
                 Reply(VTankWatch.Clear() ? "VTank marked as not running; RynthAi's macro can start again." : "VTank was already marked as not running.");
             Reply(VTankWatch.Describe());
-            return true;
+            return;
         }
 
         // /rc bounties|guardian [show|hide|toggle] : the ILT section's panels, like the bar's
@@ -368,12 +404,12 @@ internal static class RynthCoreChatCommands
         if (IsVerb(sub, "bounties", out string panelArgs) || IsVerb(sub, "bounty", out panelArgs) || IsVerb(sub, "bountys", out panelArgs))
         {
             IltPanel(ImGuiBackend.Panels.BountiesFace.Title, "Bounties", "RynthILT", panelArgs);
-            return true;
+            return;
         }
         if (IsVerb(sub, "guardian", out panelArgs) || IsVerb(sub, "guardians", out panelArgs))
         {
             IltPanel(ImGuiBackend.Panels.GuardianFace.Title, "Guardian", "RynthILT", panelArgs);
-            return true;
+            return;
         }
 
         // /rc dashboard [classic|modern|tab <name>] : the RynthAi dashboard's look (the title bar buttons and
@@ -382,7 +418,7 @@ internal static class RynthCoreChatCommands
         if (IsVerb(sub, "dashboard", out string dashArgs))
         {
             DashboardCommand(dashArgs.Trim());
-            return true;
+            return;
         }
 
         // /rc miniremote [show|hide|toggle|tab <tab>|section <id>|undock|dock] : the ImGui Mini Remote
@@ -396,52 +432,8 @@ internal static class RynthCoreChatCommands
         // window so Options has room; "dock" / "redock" puts it back in the client.
         if (IsVerb(sub, "miniremote", out string remoteArgs) || IsVerb(sub, "remote", out remoteArgs))
         {
-            if (IsVerb(remoteArgs, "tab", out string moved) && MovedTabCommand(moved) is string movedTo)
-                UI.ServerMenus.Run(movedTo);
-            else if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.MiniRemoteFace.Title))
-                Reply("The Mini Remote panel isn't available (the ImGui layer is off?).");
-            else if (IsVerb(remoteArgs, "tab", out string tab)
-                     && tab.Length > 0 && ImGuiBackend.Panels.MiniRemoteFace.TryRequestSurface("section:" + tab.Trim().ToLowerInvariant()))
-            {
-                // A RynthAi that publishes sections: its tabs are sections here.
-                ImGuiBackend.ImGuiPanelHost.Open(ImGuiBackend.Panels.MiniRemoteFace.Title);
-            }
-            else if (IsVerb(remoteArgs, "tab", out tab))
-            {
-                ImGuiBackend.Panels.MiniRemoteFace.RequestSection(UI.Sections.SectionCatalog.RemoteId);
-                ImGuiBackend.ImGuiPanelHost.Open(ImGuiBackend.Panels.MiniRemoteFace.Title);
-                UI.Data.RynthAiCommands.ApplyRemoteCommand("hub", tab.Length > 0 ? "tab " + tab : "tab");
-            }
-            else if (IsVerb(remoteArgs, "section", out string section))
-            {
-                string id = UI.Sections.SectionManifestParser.Id(section);
-                var snap = UI.Sections.SectionRegistry.Current;
-                if (id != UI.Sections.SectionCatalog.RemoteId && snap.Find(id) == null)
-                {
-                    var names = new System.Collections.Generic.List<string> { UI.Sections.SectionCatalog.RemoteId };
-                    foreach (UI.Sections.SectionView v in snap.Sections) names.Add(v.Id);
-                    Reply($"Usage: /rc miniremote section <{string.Join("|", names)}>");
-                }
-                else
-                {
-                    ImGuiBackend.Panels.MiniRemoteFace.RequestSection(id);
-                    ImGuiBackend.ImGuiPanelHost.Open(ImGuiBackend.Panels.MiniRemoteFace.Title);
-                }
-            }
-            else if (IsMiniRemoteDockVerb(remoteArgs, out bool undock))
-            {
-                if (!UI.PanelRouter.CanPopOut)
-                    Reply("Mini Remote can't undock while the ImGui layer is off.");
-                else if (undock)
-                    ImGuiBackend.Panels.MiniRemoteFace.OpenUndocked();
-                else
-                    ImGuiBackend.Panels.MiniRemoteFace.DockOrOpen();
-            }
-            else if (!TryPanelMode(remoteArgs, out bool? show))
-                Reply("Usage: /rc miniremote [show|hide|toggle|tab <tab>|section <id>|undock|dock]");
-            else
-                SetPanelOpen(ImGuiBackend.Panels.MiniRemoteFace.Title, show);
-            return true;
+            MiniRemoteCommand(remoteArgs);
+            return;
         }
 
         // /rc oracle-skills <skills|attrs|progress|off> : RynthOracle says which SkillsFace body to embed
@@ -449,24 +441,17 @@ internal static class RynthCoreChatCommands
         // Oracle has the tabs, which hides the standalone Skills bar icon and routes /rc skills there.
         if (IsVerb(sub, "oracle-skills", out string oracleSkillsArgs))
         {
-            string a = oracleSkillsArgs.Trim().ToLowerInvariant();
-            int tab = a switch
+            int tab = ChatCommandReplies.OracleSkillsTab(oracleSkillsArgs);
+            if (tab == ChatCommandReplies.InvalidTab)
             {
-                "off" or "clear" or "none" or "-1" => -1,
-                "0" or "skills" or "skill" => 0,
-                "1" or "attrs" or "attributes" or "vitals" => 1,
-                "2" or "progress" or "progression" => 2,
-                _ => -2,
-            };
-            if (tab == -2)
-                Reply("Usage: /rc oracle-skills <skills|attrs|progress|off>");
-            else
-            {
-                ImGuiBackend.Panels.OracleSkillsEmbed.Announce();
-                if (tab < 0) ImGuiBackend.Panels.OracleSkillsEmbed.Clear();
-                else ImGuiBackend.Panels.OracleSkillsEmbed.SetActiveTab(tab);
+                Fail(ChatCommandReplies.Usage("oracle-skills"));
+                return;
             }
-            return true;
+            ImGuiBackend.Panels.OracleSkillsEmbed.Announce();
+            if (tab < 0) ImGuiBackend.Panels.OracleSkillsEmbed.Clear();
+            else ImGuiBackend.Panels.OracleSkillsEmbed.SetActiveTab(tab);
+            Reply(ChatCommandReplies.OracleSkillsReply(tab));
+            return;
         }
 
         // /rc skills [show|hide|toggle] : RynthOracle's Skills tab when Oracle provides it (see
@@ -475,29 +460,45 @@ internal static class RynthCoreChatCommands
         if (IsVerb(sub, "skills", out string skillsArgs))
         {
             if (!TryPanelMode(skillsArgs, out bool? show))
-                Reply("Usage: /rc skills [show|hide|toggle]");
-            else if (!ImGuiBackend.Panels.SkillsRouting.SetOpen(show))
-                Reply("The Skills panel isn't available (the ImGui layer is off?).");
-            return true;
+            {
+                Fail(ChatCommandReplies.Usage("skills"));
+                return;
+            }
+            bool oracle = ImGuiBackend.Panels.SkillsRouting.OracleTabsAvailable;
+            bool wasShowing = oracle
+                ? UI.ScriptWindows.ScriptWindowRegistry.IsOpen(ImGuiBackend.Panels.SkillsRouting.OracleKey)
+                  && ImGuiBackend.Panels.OracleSkillsEmbed.ActiveTab == 0
+                : ImGuiBackend.ImGuiPanelHost.IsOpen(ImGuiBackend.Panels.SkillsFace.Title);
+            if (!ImGuiBackend.Panels.SkillsRouting.SetOpen(show))
+                Fail("The Skills panel isn't available (the ImGui layer is off?).");
+            else
+                Reply(ChatCommandReplies.PanelReply(oracle ? "RynthOracle's Skills tab" : "Skills panel", show, wasShowing));
+            return;
         }
-        if (sub.Equals("progression", StringComparison.OrdinalIgnoreCase)
-            || sub.Equals("progress", StringComparison.OrdinalIgnoreCase))
+        if (IsVerb(sub, "progression", out _) || IsVerb(sub, "progress", out _))
         {
+            bool oracle = ImGuiBackend.Panels.SkillsRouting.OracleTabsAvailable;
             if (!ImGuiBackend.Panels.SkillsRouting.Open(2))
-                Reply("The Skills panel isn't available (the ImGui layer is off?).");
-            return true;
+                Fail("The Skills panel isn't available (the ImGui layer is off?).");
+            else
+                Reply(oracle ? "RynthOracle's Progress tab opened." : "Skills panel opened on Progression.");
+            return;
         }
 
         // /rc spells [show|hide|toggle] : RynthAi's Spells window (spell catalog, buff profiles).
         if (IsVerb(sub, "spells", out string spellsArgs))
         {
             if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.RynthAiFace.Title))
-                Reply("The Spells window comes with RynthAi; it isn't installed.");
+                Fail("The Spells window comes with RynthAi; it isn't installed.");
             else if (!TryPanelMode(spellsArgs, out bool? show))
-                Reply("Usage: /rc spells [show|hide|toggle]");
+                Fail(ChatCommandReplies.Usage("spells"));
             else
+            {
                 UI.Data.RynthAiCommands.ApplyRemoteCommand("spells", show == null ? "toggle" : show.Value ? "show" : "hide");
-            return true;
+                Reply(show == null ? "Opening or closing RynthAi's Spells window (toggle)."
+                    : show.Value ? "Opening RynthAi's Spells window." : "Closing RynthAi's Spells window.");
+            }
+            return;
         }
 
         // /rc hotkeys : Settings > Hotkeys. /rc hotkey list|add|remove|enable|disable|actions|status|on|off
@@ -505,28 +506,20 @@ internal static class RynthCoreChatCommands
         if (IsVerb(sub, "hotkeys", out string hotkeyArgs) && hotkeyArgs.Length == 0)
         {
             if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SettingsFace.Title))
-                Reply("The Settings panel isn't available (the ImGui layer is off?). /rc hotkey list|add|remove work here in chat.");
+                Fail("The Settings panel isn't available (the ImGui layer is off?). /rc hotkey list|add|remove work here in chat.");
             else
-            {
-                ImGuiBackend.Panels.SettingsFace.RequestTab(ImGuiBackend.Panels.HotkeysSettingsUi.TabName);
-                if (!ImGuiBackend.ImGuiPanelHost.IsOpen(ImGuiBackend.Panels.SettingsFace.Title))
-                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.SettingsFace.Title);
-            }
-            return true;
+                OpenSettingsTab(ImGuiBackend.Panels.HotkeysSettingsUi.TabName);
+            return;
         }
         // /rc diagnostics : Settings > Diagnostics, where a server is forced for this character (the
         // server picker). The one place to force a server since 2026.10.5.54, so plugins link here.
         if ((IsVerb(sub, "diagnostics", out string diagArgs) || IsVerb(sub, "serverpick", out diagArgs)) && diagArgs.Length == 0)
         {
             if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SettingsFace.Title))
-                Reply("The Settings panel isn't available (the ImGui layer is off?). /rc server <id> auto|on|off works here in chat.");
+                Fail("The Settings panel isn't available (the ImGui layer is off?). /rc server <id> auto|on|off works here in chat.");
             else
-            {
-                ImGuiBackend.Panels.SettingsFace.RequestTab(DiagnosticsTabName);
-                if (!ImGuiBackend.ImGuiPanelHost.IsOpen(ImGuiBackend.Panels.SettingsFace.Title))
-                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.SettingsFace.Title);
-            }
-            return true;
+                OpenSettingsTab(DiagnosticsTabName);
+            return;
         }
         // /rc settings [tab] : the Settings panel (toggled), or opened on a tab ("/rc settings buffing").
         // A plugin's own window links to a tab this way (RynthAi's dashboard: the Buffing key's
@@ -538,27 +531,28 @@ internal static class RynthCoreChatCommands
             string[] sa = shortcutArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (sa.Length >= 2 && sa[0].Equals("use", StringComparison.OrdinalIgnoreCase) && int.TryParse(sa[1], out int useSlot))
             {
-                Reply(AcShortcuts.Enqueue(AcShortcuts.Op.Use, useSlot - 1, 0)
-                    ? $"Using shortcut {useSlot}." : $"Shortcut {useSlot} can't be used ({AcShortcuts.Status})");
-                return true;
+                Answer(AcShortcuts.Enqueue(AcShortcuts.Op.Use, useSlot - 1, 0),
+                    $"Using shortcut {useSlot}.", $"Shortcut {useSlot} can't be used ({AcShortcuts.Status})");
+                return;
             }
             // /rc shortcuts set N: the selected item into slot N; clear N: empty it (the retail toolbar's way).
             if (sa.Length >= 2 && sa[0].Equals("set", StringComparison.OrdinalIgnoreCase) && int.TryParse(sa[1], out int setSlot))
             {
                 uint sel = sa.Length >= 3 && uint.TryParse(sa[2].Replace("0x", "", StringComparison.OrdinalIgnoreCase),
                     System.Globalization.NumberStyles.HexNumber, null, out uint given) ? given : ClientHelperHooks.GetSelectedItemId();
-                Reply(sel == 0 ? "Select the item first."
-                    : AcShortcuts.Enqueue(AcShortcuts.Op.Set, setSlot - 1, sel) ? $"Shortcut {setSlot}: 0x{sel:X8}." : $"Shortcut {setSlot} can't be set ({AcShortcuts.Status})");
-                return true;
+                if (sel == 0) Fail("Select the item first.");
+                else Answer(AcShortcuts.Enqueue(AcShortcuts.Op.Set, setSlot - 1, sel),
+                    $"Shortcut {setSlot}: 0x{sel:X8}.", $"Shortcut {setSlot} can't be set ({AcShortcuts.Status})");
+                return;
             }
             if (sa.Length >= 2 && sa[0].Equals("clear", StringComparison.OrdinalIgnoreCase) && int.TryParse(sa[1], out int clearSlot))
             {
-                Reply(AcShortcuts.Enqueue(AcShortcuts.Op.Clear, clearSlot - 1, 0)
-                    ? $"Shortcut {clearSlot} emptied." : $"Shortcut {clearSlot} can't be emptied ({AcShortcuts.Status})");
-                return true;
+                Answer(AcShortcuts.Enqueue(AcShortcuts.Op.Clear, clearSlot - 1, 0),
+                    $"Shortcut {clearSlot} emptied.", $"Shortcut {clearSlot} can't be emptied ({AcShortcuts.Status})");
+                return;
             }
             AcShortcuts.Slot[] slots = AcShortcuts.Slots;
-            if (slots.Length == 0) { Reply("No shortcut slots read yet (in the world? " + AcShortcuts.Status + ")"); return true; }
+            if (slots.Length == 0) { Fail("No shortcut slots read yet (in the world? " + AcShortcuts.Status + ")"); return; }
             Reply($"Shortcuts (keymap {System.IO.Path.GetFileName(AcKeymap.FilePath)}):");
             for (int i = 0; i < slots.Length; i++)
             {
@@ -567,7 +561,7 @@ internal static class RynthCoreChatCommands
                 string keys = AcKeymap.KeysText($"UseQuickSlot_{i + 1}");
                 Reply($"  {i + 1,2}: {what}{(keys.Length > 0 ? "  [" + keys + "]" : "")}");
             }
-            return true;
+            return;
         }
 
         // /rc keymap [check|bind|unbind <action> <key> | reload]: AC's keys, changed so every client follows
@@ -585,63 +579,58 @@ internal static class RynthCoreChatCommands
                 if (verb == "check")
                 {
                     int r = AcKeymapLive.Check(action, key, out string msg);
-                    Reply(r == 0 ? $"{key} is free for {action}." : msg);
+                    if (r == 0) Reply($"{key} is free for {action}.");
+                    else Fail(msg);
                 }
                 else if (!AcKeymapLive.Enqueue(action, key, verb == "bind" ? AcKeymapLive.Op.Bind : AcKeymapLive.Op.Unbind, out string why))
-                    Reply(why);
-                return true;
+                    Fail(why);
+                else
+                    AnswersItself();   // AC's thread says how the change went (AcKeymapLive.DrainRequests)
+                return;
             }
             if (verb == "dump")
             {
-                AcKeymapLive.RequestDump(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "rynthcore-keymap-memory.keymap"));
-                return true;
+                string dumpPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "rynthcore-keymap-memory.keymap");
+                AcKeymapLive.RequestDump(dumpPath);
+                if (AcKeymapLive.CanChange)
+                    AnswersItself();   // written on AC's next tick, which says so in chat (AcKeymapLive.Tick)
+                else
+                    Fail($"AC's keys can't be read here yet ({AcKeymapLive.Status}); they're written to {dumpPath} once they can.");
+                return;
             }
             Reply($"Keymap {AcKeymap.FilePath} - {AcKeymapLive.Status} Usage: /rc keymap check|bind|unbind <action> <key> | dump, e.g. /rc keymap bind UseQuickSlot_10 F11");
-            return true;
+            return;
         }
 
         // /rc panels [open|close|toggle <id>]: AC's own panels (AcPanels): their ids, classes and which are open.
         if (IsVerb(sub, "panels", out string acPanelArgs))
         {
             string[] pa = acPanelArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (pa.Length == 2 && uint.TryParse(pa[1].Replace("0x", "", StringComparison.OrdinalIgnoreCase),
-                    pa[1].StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? System.Globalization.NumberStyles.HexNumber : System.Globalization.NumberStyles.Integer,
-                    null, out uint panelId))
+            if (pa.Length == 2 && ChatCommandReplies.TryPanelId(pa[1], out uint panelId))
             {
                 AcPanels.Op op = pa[0].ToLowerInvariant() switch { "open" => AcPanels.Op.Open, "close" => AcPanels.Op.Close, _ => AcPanels.Op.Toggle };
-                if (!AcPanels.Enqueue(panelId, op)) Reply("Can't: " + AcPanels.Status);
-                return true;
+                if (!AcPanels.Enqueue(panelId, op)) Fail("Can't: " + AcPanels.Status);
+                else Reply($"AC panel {panelId}: {op.ToString().ToLowerInvariant()} requested.");
+                return;
             }
             var panels = AcPanels.List(names: true);
             Reply($"AC panels ({panels.Count}; {AcPanels.Status}):");
             foreach (var p in panels)
                 Reply($"  {p.Id,3} {p.Class}{(p.Open ? " - open" : "")}");
-            return true;
+            return;
         }
 
         if (IsVerb(sub, "settings", out string settingsArgs))
         {
-            string settingsTitle = ImGuiBackend.Panels.SettingsFace.Title;
-            if (!ImGuiBackend.ImGuiPanelHost.HasFace(settingsTitle))
-                Reply("The Settings panel isn't available (the ImGui layer is off?).");
-            else if (settingsArgs.Length == 0)
-                UI.PanelRouter.Toggle(settingsTitle);
-            else
-            {
-                ImGuiBackend.Panels.SettingsFace.RequestTab(settingsArgs);
-                if (!ImGuiBackend.ImGuiPanelHost.IsOpen(settingsTitle)) UI.PanelRouter.Toggle(settingsTitle);
-            }
-            return true;
+            SettingsCommand(settingsArgs);
+            return;
         }
         if (IsVerb(sub, "hotkey", out hotkeyArgs) || IsVerb(sub, "hotkeys", out hotkeyArgs))
         {
-            try
-            {
-                foreach (string l in Hotkeys.HotkeyService.HandleCommand(hotkeyArgs))
-                    Reply(l);
-            }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc hotkey failed - {ex.GetType().Name}: {ex.Message}"); }
-            return true;
+            // The parser's own errors (an unknown verb, a bad key) are the failures; the rest is what changed.
+            bool bad = Hotkeys.HotkeyCommandParser.Parse(hotkeyArgs).Verb == Hotkeys.HotkeyVerb.Error;
+            ReplyLines(Hotkeys.HotkeyService.HandleCommand(hotkeyArgs), bad ? ChatReplyKind.Fail : ChatReplyKind.Ok);
+            return;
         }
 
         // /rc window reset|save|fill on|off (UI/AcWindowChrome.cs):
@@ -667,7 +656,7 @@ internal static class RynthCoreChatCommands
             }
             else
                 Reply("Usage: /rc window reset | save | fill on|off  (reset: borderless off, a normal resizable window, centred)");
-            return true;
+            return;
         }
         // /rc borderless on|off : the Settings > Display toggle (on fills the monitor).
         if (IsVerb(sub, "borderless", out string borderlessArgs))
@@ -684,7 +673,7 @@ internal static class RynthCoreChatCommands
             }
             else
                 Reply("Usage: /rc borderless on|off  (stuck? /rc window reset)");
-            return true;
+            return;
         }
 
         switch (sub.ToLowerInvariant())
@@ -695,44 +684,37 @@ internal static class RynthCoreChatCommands
                 // loader's reload shuts this engine down, and this handler runs
                 // inside AC's outgoing-chat hook.
                 RynthLog.Compat("RynthCoreChatCommands: /rc rl — engine reload requested.");
-                // In-world: loader holds until logout; skips combat deferral once out of world.
-                System.Threading.ThreadPool.UnsafeQueueUserWorkItem(static _ => EntryPoint.RequestManualReload("/rc rl"), null);
-                return true;
+                Reply("Reloading RynthCore (as the bar's RL button).");
+                EntryPoint.NoteManualReload();   // by hand: not held for combat (EntryPoint.DeferReloadWhilePluginsObject)
+                System.Threading.ThreadPool.UnsafeQueueUserWorkItem(static _ => EngineLifecycle.SignalReload(), null);
+                return;
 
             case "inv":
             case "inventory":
                 // The ImGui Inventory panel (open/close), like its bar button.
-                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.InventoryFace.Title))
-                    Reply("The Inventory panel isn't available (the ImGui layer is off?).");
-                else
-                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.InventoryFace.Title);
-                return true;
+                TogglePanel(ImGuiBackend.Panels.InventoryFace.Title, "Inventory panel",
+                    "The Inventory panel isn't available (the ImGui layer is off?).");
+                return;
 
             case "sense":
-                // Sense left the top bar (under RynthNav); same PanelRouter path as before.
-                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SenseFace.Title))
-                    Reply("The Sense panel isn't available (the ImGui layer is off?).");
-                else
-                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.SenseFace.Title);
-                return true;
+                // The ImGui Sense panel (open/close), like its bar button.
+                TogglePanel(ImGuiBackend.Panels.SenseFace.Title, "Sense panel",
+                    "The Sense panel isn't available (the ImGui layer is off?).");
+                return;
 
             case "characters":
             case "chars":
                 // The Characters window: RynthNet's own since 2026-10-21 (a plugin window, keyed by its title).
-                if (!ImGuiBackend.ImGuiPanelHost.HasFace(CharactersWindowTitle))
-                    Reply("The Characters window comes with the RynthNet plugin (add it in the launcher's Plugins tab).");
-                else
-                    UI.PanelRouter.Toggle(CharactersWindowTitle);
-                return true;
+                TogglePanel(CharactersWindowTitle, "Characters window",
+                    "The Characters window comes with the RynthNet plugin (add it in the launcher's Plugins tab).");
+                return;
 
             case "itemcount":
             case "itemhud":
                 // The ImGui Item Count panel (open/close), like its bar button.
-                if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.ItemCountFace.Title))
-                    Reply("The Item Count panel isn't available (the ImGui layer is off?).");
-                else
-                    UI.PanelRouter.Toggle(ImGuiBackend.Panels.ItemCountFace.Title);
-                return true;
+                TogglePanel(ImGuiBackend.Panels.ItemCountFace.Title, "Item Count panel",
+                    "The Item Count panel isn't available (the ImGui layer is off?).");
+                return;
 
             case "radar":
                 // Radar left the top bar (under RynthNav); same PanelRouter path as before.
@@ -740,50 +722,41 @@ internal static class RynthCoreChatCommands
                     Reply("The Radar panel isn't available (the ImGui layer is off?).");
                 else
                     UI.PanelRouter.Toggle(ImGuiBackend.Panels.RadarFace.Title);
-                return true;
+                return;
 
             case "resetbar":
             case "barreset":
                 RynthLog.Compat("RynthCoreChatCommands: /rc resetbar — resetting overlay bar position.");
                 ImGuiBackend.RynthCoreShell.RequestExternalReset();
-                return true;
+                Reply("RynthCore bar moved back to the top-left corner.");
+                return;
 
             case "actionstate":
             case "actions":
                 // Read-only: every client-side gate on item use/equip/move
                 // (ClientActionGates). Works while those are locked — chat still does.
-                try
-                {
-                    foreach (string stateLine in ClientActionGates.DescribeLines())
-                        Reply(stateLine);
-                }
-                catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc actionstate failed - {ex.GetType().Name}: {ex.Message}"); }
-                return true;
+                ReplyLines(ClientActionGates.DescribeLines());
+                return;
 
             case "unlockactions":
             case "unlock":
-                try
-                {
-                    foreach (string unlockLine in ClientActionGates.RequestUnlock())
-                        Reply(unlockLine);
-                }
-                catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc unlockactions failed - {ex.GetType().Name}: {ex.Message}"); }
-                return true;
+                ReplyLines(ClientActionGates.RequestUnlock());
+                return;
 
             case "vitals":
             case "hud":
             {
                 // The old D3D9 vitals HUD is gone (2026-09-29): your vitals are the
                 // RynthVision player plate now.
-                Reply("The old vitals HUD was removed. Your health/stamina/mana bars are the RynthVision player plate: /rv plates self [on|off].");
-                return true;
+                Fail("The old vitals HUD was removed. Your health/stamina/mana bars are the RynthVision player plate: /rv plates self [on|off].");
+                return;
             }
 
             default:
                 // Consume anything else under the /rc namespace so a typo
-                // does not leak into world chat.
-                RynthLog.Compat($"RynthCoreChatCommands: unknown subcommand '/rc {sub}'.");
-                return true;
+                // does not leak into world chat (ChatCommandReplies.Check answers first).
+                Fail(ChatCommandReplies.UnknownReply(sub));
+                return;
         }
     }
 
@@ -846,7 +819,7 @@ internal static class RynthCoreChatCommands
                 else if (parts[1] == "-") next = cur - 1;
                 else if (!int.TryParse(parts[1], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out next))
                 {
-                    Reply("Usage: /rc ui barsize [0-10|+|-|status]");
+                    Fail("Usage: /rc ui barsize [0-10|+|-|status]");
                     return;
                 }
                 else if (parts[1][0] is '+' or '-')
@@ -869,7 +842,7 @@ internal static class RynthCoreChatCommands
                 else if (parts[1] == "-") next = cur - 1;
                 else if (!int.TryParse(parts[1], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out next))
                 {
-                    Reply("Usage: /rc ui barrows [1-6|+|-|status]");
+                    Fail("Usage: /rc ui barrows [1-6|+|-|status]");
                     return;
                 }
                 else if (parts[1][0] is '+' or '-')
@@ -894,7 +867,7 @@ internal static class RynthCoreChatCommands
                     next = UI.BarLayout.NoLimit;
                 else if (!int.TryParse(parts[1], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out next))
                 {
-                    Reply("Usage: /rc ui baricons [2-30|none|+|-|status]");
+                    Fail("Usage: /rc ui baricons [2-30|none|+|-|status]");
                     return;
                 }
                 ImGuiBackend.ImGuiBar.SetRowLayout(ImGuiBackend.ImGuiBar.Rows, next);
@@ -907,6 +880,9 @@ internal static class RynthCoreChatCommands
         if (parts[0].Equals("channels", StringComparison.OrdinalIgnoreCase))
         {
             ImGuiBackend.Panels.ChatFace.ToggleChannelsRequested = true;
+            Reply(ImGuiBackend.ImGuiPanelHost.IsOpen(ImGuiBackend.Panels.ChatFace.Title)
+                ? "Chat: the channels drawer opens or closes."
+                : "Chat: the channels drawer opens or closes the next time the chat window shows.");
             return;
         }
 
@@ -924,7 +900,7 @@ internal static class RynthCoreChatCommands
                 return;
             }
             if (title.Equals("bar", StringComparison.OrdinalIgnoreCase) && verb == "snap") title = "__bar";
-            else if (!ImGuiBackend.ImGuiPanelHost.HasFace(title)) { Reply($"No ImGui panel named '{title}'."); return; }
+            else if (!ImGuiBackend.ImGuiPanelHost.HasFace(title)) { Fail($"No ImGui panel named '{title}'."); return; }
             switch (verb)
             {
                 case "open": ImGuiBackend.ImGuiPanelHost.Open(title); break;
@@ -943,11 +919,11 @@ internal static class RynthCoreChatCommands
         // The old face choice: nothing to pick any more (nothing is stored either).
         if (parts.Length == 2 && UI.PanelFaceStore.TryParseFace(parts[1], out _))
         {
-            Reply("The Avalonia / Both faces are gone: docked panels and the bar always show their ImGui face.");
+            Fail("The Avalonia / Both faces are gone: docked panels and the bar always show their ImGui face.");
             return;
         }
 
-        Reply("Usage: /rc ui list  |  /rc ui open|close|popout|redock|snap <Panel>  |  /rc ui retailvitals [on|off]  |  /rc ui retailtoolbar [on|off]  |  /rc ui barsize [0-10|+|-|status]  |  /rc ui barrows [1-6|+|-]  |  /rc ui baricons [2-30|none|+|-]");
+        Fail("Usage: /rc ui list  |  /rc ui open|close|popout|redock|snap <Panel>  |  /rc ui retailvitals [on|off]  |  /rc ui retailtoolbar [on|off]  |  /rc ui barsize [0-10|+|-|status]  |  /rc ui barrows [1-6|+|-]  |  /rc ui baricons [2-30|none|+|-]");
     }
 
     /// <summary>
@@ -990,7 +966,7 @@ internal static class RynthCoreChatCommands
                 Reply($"ImGui layer is {(Plugins.EngineSettings.EnableImGuiBackend ? "ON" : "OFF")}. Usage: /rc imgui on|off|fonttest|diag");
                 return;
             default:
-                Reply("Usage: /rc imgui on|off|fonttest|diag");
+                Fail("Usage: /rc imgui on|off|fonttest|diag");
                 return;
         }
     }
@@ -1016,15 +992,13 @@ internal static class RynthCoreChatCommands
             case "status":
                 break;
             default:
-                Reply("Usage: /rc chathold [on|off|status]");
+                Fail("Usage: /rc chathold [on|off|status]");
                 return;
         }
         Reply(ChatCallbackHooks.HoldStatusText());
     }
 
-    /// <summary>"verb" or "verb args..." (case-insensitive); args trimmed.</summary>
-    private const string ServerUsage =
-        "Usage: /rc server [<server> auto|on|off] | pick <server>|auto | [aelrynth|other|auto] | names ilt [add|remove <pattern>]";
+    private const string ServerUsage = ChatCommandReplies.ServerUsage;
 
     /// <summary>
     /// /rc server: every server the engine and the plugins know, whether each is active and why.
@@ -1046,7 +1020,7 @@ internal static class RynthCoreChatCommands
         if (first == "pick")
         {
             // One server for this character (every other off), or "auto": the Diagnostics page's picker.
-            if (words.Length != 2) { Reply(ServerUsage); return; }
+            if (words.Length != 2) { Fail(ServerUsage); return; }
             UI.Sections.ServerSelectionStore.Apply(words[1], out string message);
             Reply(message);
             ReplyServers();
@@ -1062,7 +1036,7 @@ internal static class RynthCoreChatCommands
                 "auto" => ServerInfo.Mode.Auto,
                 _ => null,
             };
-            if (legacy == null) { Reply(ServerUsage); return; }
+            if (legacy == null) { Fail(ServerUsage); return; }
             SetServerForce(ServerInfo.ServerId, legacy switch
             {
                 ServerInfo.Mode.ForceAelrynth => UI.Sections.ServerForce.On,
@@ -1072,12 +1046,12 @@ internal static class RynthCoreChatCommands
         }
         else if (words.Length == 2)
         {
-            if (!UI.Sections.ServerForceText.TryParse(words[1], out UI.Sections.ServerForce mode)) { Reply(ServerUsage); return; }
+            if (!UI.Sections.ServerForceText.TryParse(words[1], out UI.Sections.ServerForce mode)) { Fail(ServerUsage); return; }
             if (!SetServerForce(first, mode)) return;
         }
         else if (words.Length > 2)
         {
-            Reply(ServerUsage);
+            Fail(ServerUsage);
             return;
         }
 
@@ -1095,12 +1069,12 @@ internal static class RynthCoreChatCommands
         if (id.Length == 0 || (!UI.Sections.SectionRegistry.IsBuiltInServer(id)
                                && UI.Sections.SectionRegistry.Current.Server(id) == null))
         {
-            Reply($"No server called '{serverId}'. /rc server lists them.");
+            Fail($"No server called '{serverId}'. /rc server lists them.");
             return false;
         }
         if (!UI.Sections.ServerForceStore.Set(id, mode, out string where))
         {
-            Reply($"Server override not changed: {where}.");
+            Fail($"Server override not changed: {where}.");
             return false;
         }
         UI.Sections.SectionRegistry.Invalidate();
@@ -1134,7 +1108,7 @@ internal static class RynthCoreChatCommands
     {
         if (words.Length < 2 || !words[1].Equals(IltInfo.ServerId, StringComparison.OrdinalIgnoreCase))
         {
-            Reply("Usage: /rc server names ilt [add|remove <pattern>] (other servers' lists come from their plugins).");
+            Fail("Usage: /rc server names ilt [add|remove <pattern>] (other servers' lists come from their plugins).");
             return;
         }
         if (words.Length >= 4)
@@ -1142,20 +1116,21 @@ internal static class RynthCoreChatCommands
             bool add = words[2].Equals("add", StringComparison.OrdinalIgnoreCase);
             if (!add && !words[2].Equals("remove", StringComparison.OrdinalIgnoreCase))
             {
-                Reply("Usage: /rc server names ilt [add|remove <pattern>]");
+                Fail("Usage: /rc server names ilt [add|remove <pattern>]");
                 return;
             }
             string pattern = string.Join(' ', words, 3, words.Length - 3);
             bool changed = Plugins.EngineSettings.EditIltServerName(pattern, add);
-            Reply(changed
-                ? $"Infinite Leaftide world names: {(add ? "added" : "removed")} \"{pattern}\" (engine.json)."
-                : $"Infinite Leaftide world names: \"{pattern}\" was {(add ? "already there (or too long)" : "not there")}.");
+            if (changed)
+                Reply($"Infinite Leaftide world names: {(add ? "added" : "removed")} \"{pattern}\" (engine.json).");
+            else
+                Fail($"Infinite Leaftide world names: \"{pattern}\" was {(add ? "already there (or too long)" : "not there")}.");
             IltInfo.Invalidate();
             UI.Sections.SectionRegistry.Invalidate();
         }
         else if (words.Length == 3)
         {
-            Reply("Usage: /rc server names ilt [add|remove <pattern>]");
+            Fail("Usage: /rc server names ilt [add|remove <pattern>]");
             return;
         }
         Reply($"Infinite Leaftide lists: {IltInfo.ListsDescription}.");
@@ -1175,7 +1150,7 @@ internal static class RynthCoreChatCommands
             case "auto": SetServerForce(IltInfo.ServerId, UI.Sections.ServerForce.Auto); break;
             case "": break;
             default:
-                Reply("Usage: /rc ilt [auto|on|off]");
+                Fail("Usage: /rc ilt [auto|on|off]");
                 return;
         }
         IltVerdict v = IltInfo.Current;
@@ -1192,7 +1167,7 @@ internal static class RynthCoreChatCommands
     {
         if (!ServerInfo.IsAelrynth)
         {
-            Reply("Mastery: not on Aelrynth, so nothing is asked (/rc server for why).");
+            Fail("Mastery: not on Aelrynth, so nothing is asked (/rc server for why).");
             return;
         }
         MasterySnapshot? s = MasteryFeed.Snapshot;
@@ -1224,26 +1199,16 @@ internal static class RynthCoreChatCommands
             return;
         }
         if (arg.Length > 0 && !arg.Equals("status", StringComparison.OrdinalIgnoreCase))
-            Reply("Usage: /rc worldlayer [auto|uipass|transition|endscene]");
+            Fail("Usage: /rc worldlayer [auto|uipass|transition|endscene]");
         Reply(D3D9.Nav3DRenderInjector.Describe());
         Reply(ImGuiBackend.UnderUiLayer.Describe());
     }
 
     /// <summary>
     /// "" / "toggle" → null (flip), "show" / "on" / "open" → true, "hide" / "off" / "close" →
-    /// false. False for anything else.
+    /// false. False for anything else (<see cref="ChatCommandReplies.TryPanelMode"/>).
     /// </summary>
-    private static bool TryPanelMode(string args, out bool? show)
-    {
-        show = null;
-        switch (args.Trim().ToLowerInvariant())
-        {
-            case "": case "toggle": return true;
-            case "show": case "on": case "open": show = true; return true;
-            case "hide": case "off": case "close": show = false; return true;
-            default: return false;
-        }
-    }
+    private static bool TryPanelMode(string args, out bool? show) => ChatCommandReplies.TryPanelMode(args, out show);
 
     /// <summary>
     /// Mini Remote dock verbs: undock / popout / float → true; dock / redock → false.
@@ -1266,43 +1231,156 @@ internal static class RynthCoreChatCommands
             UI.PanelRouter.Toggle(title);
     }
 
-    private static readonly string[] ClassicTabNames = { "main", "monsters", "gear", "buffs", "route", "loot", "meta", "tuning" };
+    /// <summary>Opens or closes an ImGui panel (its bar button), and says which; <paramref name="missing"/> when there's none.</summary>
+    private static void TogglePanel(string title, string label, string missing)
+    {
+        if (!ImGuiBackend.ImGuiPanelHost.HasFace(title))
+        {
+            Fail(missing);
+            return;
+        }
+        bool wasOpen = ImGuiBackend.ImGuiPanelHost.IsOpen(title);
+        UI.PanelRouter.Toggle(title);
+        Reply(ChatCommandReplies.PanelReply(label, null, wasOpen));
+    }
+
+    /// <summary>Settings, opened on <paramref name="tab"/> (or switched to it when open).</summary>
+    private static void OpenSettingsTab(string tab)
+    {
+        string title = ImGuiBackend.Panels.SettingsFace.Title;
+        bool wasOpen = ImGuiBackend.ImGuiPanelHost.IsOpen(title);
+        ImGuiBackend.Panels.SettingsFace.RequestTab(tab);
+        if (!wasOpen)
+            UI.PanelRouter.Toggle(title);
+        Reply(ChatCommandReplies.SettingsTabReply(tab, wasOpen));
+    }
+
+    /// <summary>"/rc settings [tab]": the Settings panel (toggled), or opened on a tab.</summary>
+    private static void SettingsCommand(string tabName)
+    {
+        string title = ImGuiBackend.Panels.SettingsFace.Title;
+        if (!ImGuiBackend.ImGuiPanelHost.HasFace(title))
+        {
+            Fail("The Settings panel isn't available (the ImGui layer is off?).");
+            return;
+        }
+        if (tabName.Length == 0)
+        {
+            TogglePanel(title, "Settings", "The Settings panel isn't available (the ImGui layer is off?).");
+            return;
+        }
+        UI.Data.SettingsTab? tab = Array.Find(UI.Data.SettingsSchema.Tabs, t => t.Name.Equals(tabName, StringComparison.OrdinalIgnoreCase));
+        if (tab != null)
+        {
+            OpenSettingsTab(tab.Name);
+            return;
+        }
+        // As before, Settings opens anyway (on the tab it was on); the reply says the name was wrong.
+        bool wasOpen = ImGuiBackend.ImGuiPanelHost.IsOpen(title);
+        ImGuiBackend.Panels.SettingsFace.RequestTab(tabName);
+        if (!wasOpen)
+            UI.PanelRouter.Toggle(title);
+        Fail($"No Settings tab called '{tabName}' (tabs: {string.Join(", ", Array.ConvertAll(UI.Data.SettingsSchema.Tabs, t => t.Name))}); "
+            + (wasOpen ? "Settings stays on its tab." : "Settings opened on its last tab."));
+    }
 
     /// <summary>"/rc dashboard [classic|modern|tab &lt;name&gt;]": the RynthAi dashboard's look and the Classic look's tab.</summary>
     private static void DashboardCommand(string args)
     {
         string title = ImGuiBackend.Panels.RynthAiFace.Title;
-        string usage = "Usage: /rc dashboard classic|modern|tab <" + string.Join("|", ClassicTabNames) + ">";
+        string usage = ChatCommandReplies.Usage("dashboard");
         if (args.Length == 0)
         {
             Reply("The RynthAi dashboard's look is " + (UI.RynthAiDashboardState.Classic ? "Classic" : "Modern") + ". " + usage);
             return;
         }
+        bool classic;
+        string? tabName = null;
         if (IsVerb(args, "tab", out string tab))
         {
-            int i = Array.FindIndex(ClassicTabNames, n => n.Equals(tab.Trim(), StringComparison.OrdinalIgnoreCase));
-            if (i < 0) { Reply(usage); return; }
+            int i = ChatCommandReplies.ClassicTab(tab);
+            if (i < 0) { Fail(usage); return; }
             UI.RynthAiDashboardState.SetClassicTab(i);
             ImGuiBackend.Panels.RynthAiFace.SwitchLook(classic: true);
+            classic = true;
+            tabName = ChatCommandReplies.ClassicTabNames[i];
         }
-        else if (args.Equals("classic", StringComparison.OrdinalIgnoreCase)) ImGuiBackend.Panels.RynthAiFace.SwitchLook(classic: true);
-        else if (args.Equals("modern", StringComparison.OrdinalIgnoreCase)) ImGuiBackend.Panels.RynthAiFace.SwitchLook(classic: false);
-        else { Reply(usage); return; }
-        if (ImGuiBackend.ImGuiPanelHost.HasFace(title) && !ImGuiBackend.ImGuiPanelHost.IsOpen(title))
+        else if (args.Equals("classic", StringComparison.OrdinalIgnoreCase)) { ImGuiBackend.Panels.RynthAiFace.SwitchLook(classic: true); classic = true; }
+        else if (args.Equals("modern", StringComparison.OrdinalIgnoreCase)) { ImGuiBackend.Panels.RynthAiFace.SwitchLook(classic: false); classic = false; }
+        else { Fail(usage); return; }
+        bool hasDashboard = ImGuiBackend.ImGuiPanelHost.HasFace(title);
+        if (hasDashboard && !ImGuiBackend.ImGuiPanelHost.IsOpen(title))
             ImGuiBackend.ImGuiPanelHost.Open(title);
+        Reply(ChatCommandReplies.DashboardReply(classic, tabName, hasDashboard));
     }
 
     /// <summary>"/rc bounties|guardian [show|hide|toggle]": one of the ILT section's panels.</summary>
     private static void IltPanel(string title, string label, string plugin, string args)
     {
         if (!ImGuiBackend.ImGuiPanelHost.HasFace(title))
-            Reply($"The {label} panel isn't available (the {plugin} plugin isn't installed, or the ImGui layer is off).");
+            Fail($"The {label} panel isn't available (the {plugin} plugin isn't installed, or the ImGui layer is off).");
         else if (!TryPanelMode(args, out bool? show))
-            Reply($"Usage: /rc {label.ToLowerInvariant()} [show|hide|toggle]");
+            Fail($"Usage: /rc {label.ToLowerInvariant()} [show|hide|toggle]");
         else if (show != false && !IltInfo.IsIlt && !ImGuiBackend.ImGuiPanelHost.IsOpen(title))
-            Reply($"{label} is an Infinite Leaftide feature, and this isn't Infinite Leaftide (/rc ilt for why).");
+            Fail($"{label} is an Infinite Leaftide feature, and this isn't Infinite Leaftide (/rc ilt for why).");
         else
+        {
+            bool wasOpen = ImGuiBackend.ImGuiPanelHost.IsOpen(title);
             SetPanelOpen(title, show);
+            Reply(ChatCommandReplies.PanelReply(label + " panel", show, wasOpen));
+        }
+    }
+
+    /// <summary>"/rc miniremote [show|hide|toggle|tab &lt;tab&gt;|section &lt;id&gt;]" (the comment at its verb in Handle).</summary>
+    private static void MiniRemoteCommand(string remoteArgs)
+    {
+        string remoteTitle = ImGuiBackend.Panels.MiniRemoteFace.Title;
+        if (IsVerb(remoteArgs, "tab", out string moved) && MovedTabCommand(moved) is string movedTo)
+        {
+            UI.ServerMenus.Run(movedTo);
+            Reply($"The {moved.Trim().ToLowerInvariant()} tab is RynthOracle's now: ran {movedTo}.");
+        }
+        else if (!ImGuiBackend.ImGuiPanelHost.HasFace(remoteTitle))
+            Fail("The Mini Remote panel isn't available (the ImGui layer is off?).");
+        else if (IsVerb(remoteArgs, "tab", out string tab)
+                 && tab.Length > 0 && ImGuiBackend.Panels.MiniRemoteFace.TryRequestSurface("section:" + tab.Trim().ToLowerInvariant()))
+        {
+            // A RynthAi that publishes sections: its tabs are sections here.
+            ImGuiBackend.ImGuiPanelHost.Open(remoteTitle);
+            Reply($"Mini Remote opened on {tab.Trim().ToLowerInvariant()}.");
+        }
+        else if (IsVerb(remoteArgs, "tab", out tab))
+        {
+            ImGuiBackend.Panels.MiniRemoteFace.RequestSection(UI.Sections.SectionCatalog.RemoteId);
+            ImGuiBackend.ImGuiPanelHost.Open(remoteTitle);
+            UI.Data.RynthAiCommands.ApplyRemoteCommand("hub", tab.Length > 0 ? "tab " + tab : "tab");
+            Reply(tab.Length > 0 ? $"Mini Remote opened; RynthAi was asked for its {tab} tab." : "Mini Remote opened on RynthAi's remote.");
+        }
+        else if (IsVerb(remoteArgs, "section", out string section))
+        {
+            string id = UI.Sections.SectionManifestParser.Id(section);
+            var snap = UI.Sections.SectionRegistry.Current;
+            if (id != UI.Sections.SectionCatalog.RemoteId && snap.Find(id) == null)
+            {
+                var names = new System.Collections.Generic.List<string> { UI.Sections.SectionCatalog.RemoteId };
+                foreach (UI.Sections.SectionView v in snap.Sections) names.Add(v.Id);
+                Fail($"Usage: /rc miniremote section <{string.Join("|", names)}>");
+            }
+            else
+            {
+                ImGuiBackend.Panels.MiniRemoteFace.RequestSection(id);
+                ImGuiBackend.ImGuiPanelHost.Open(remoteTitle);
+                Reply($"Mini Remote opened on section {id}.");
+            }
+        }
+        else if (!TryPanelMode(remoteArgs, out bool? show))
+            Fail(ChatCommandReplies.Usage("miniremote"));
+        else
+        {
+            bool wasOpen = ImGuiBackend.ImGuiPanelHost.IsOpen(remoteTitle);
+            SetPanelOpen(remoteTitle, show);
+            Reply(ChatCommandReplies.PanelReply("Mini Remote", show, wasOpen));
+        }
     }
 
     /// <summary>
@@ -1317,38 +1395,28 @@ internal static class RynthCoreChatCommands
         _ => null,
     };
 
-    private static bool IsVerb(string sub, string verb, out string args)
-    {
-        args = string.Empty;
-        if (sub.Equals(verb, StringComparison.OrdinalIgnoreCase)) return true;
-        if (!sub.StartsWith(verb + " ", StringComparison.OrdinalIgnoreCase)) return false;
-        args = sub.Substring(verb.Length + 1).Trim();
-        return true;
-    }
+    /// <summary>"verb" or "verb args..." (case-insensitive); args trimmed (<see cref="ChatCommandReplies.IsVerb"/>).</summary>
+    private static bool IsVerb(string sub, string verb, out string args) => ChatCommandReplies.IsVerb(sub, verb, out args);
 
     /// <summary>
     /// /rv plates (alias /rc plates): the RynthVision nameplates and combat text
     /// (ImGui/MonsterHud). Alone it toggles the monster plates; on|off, all on|off,
-    /// self|debuffs|others|numbers|gains [sub] [on|off], all|engaged, dist|max|scale|
-    /// opacity|lift &lt;n&gt;, names|hp|level|weak|distance|fade|click [on|off], reset, status.
-    /// Every change is saved.
+    /// self|debuffs|others|numbers|gains [sub] [on|off], debuffs size / self debuffs size &lt;50-200&gt;,
+    /// all|engaged, dist|max|scale|opacity|lift &lt;n&gt;, names|hp|level|weak|distance|fade|click [on|off],
+    /// reset, status. Every change is saved.
     /// </summary>
     private static void HandlePlatesCommand(string args)
     {
-        const string usage = "Usage: /rv plates [on|off] | all on|off | self [numbers|name|firstperson|lock] [on|off] | " +
-                             "self fixed|follow|unlock|reset | " +
-                             "debuffs [on|off] | others [on|off] | numbers [dealt|taken|heals|kills] [on|off] | " +
-                             "gains [xp|lum|radiance] [on|off] | npcs [on|off] | npcs dist <yd>|max <n> | players [on|off] | all|engaged |dist <yd>|max <n>|scale <x>|opacity <x>|lift <m> | " +
-                             "names|hp|level|weak|distance|fade|click [on|off] | reset | status | test";
+        const string usage = ChatCommandReplies.PlatesUsage;
         if (!ImGuiBackend.Hud.HudFeed.VisionInstalled)
         {
-            Reply("RynthVision isn't in the plugin list (launcher, Plugins tab), so its nameplates and combat text are off.");
+            Fail("RynthVision isn't in the plugin list (launcher, Plugins tab), so its nameplates and combat text are off.");
             return;
         }
         if (!ImGuiBackend.Hud.MonsterHudSettings.Loaded)
         {
             ImGuiBackend.Hud.MonsterHudSettings.EnsureLoadQueued();
-            Reply("Nameplate settings are still loading - try again in a moment.");
+            Fail("Nameplate settings are still loading - try again in a moment.");
             return;
         }
 
@@ -1383,11 +1451,25 @@ internal static class RynthCoreChatCommands
                     case "numbers": case "text": S.SelfNumbers = Flag(subValue, S.SelfNumbers); break;
                     case "name": S.SelfName = Flag(subValue, S.SelfName); break;
                     case "firstperson": case "fp": S.SelfHideFirstPerson = Flag(subValue, S.SelfHideFirstPerson); break;
+                    // "Debuffs on you": on|off, or its icon size ("self debuffs size 150").
+                    case "debuffs": case "debuff":
+                        if (subValue != null && subValue.Equals("size", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!S.TryParseDebuffIconSize(parts.Length > 3 ? parts[3] : null, out int sdi))
+                            {
+                                Fail($"Usage: /rv plates self debuffs size {S.MinDebuffIconSize}-{S.MaxDebuffIconSize} (percent; now {S.SelfDebuffIconSize}%)");
+                                return;
+                            }
+                            S.SelfDebuffIconSize = sdi;
+                        }
+                        else S.SelfDebuffs = Flag(subValue, S.SelfDebuffs);
+                        break;
                     // Placement: fixed on screen (drag it while unlocked) or following the character.
                     case "fixed": case "screen": S.SelfPlacement = ImGuiBackend.Hud.SelfPlacement.Fixed; break;
                     case "follow": case "world": S.SelfPlacement = ImGuiBackend.Hud.SelfPlacement.Follow; break;
-                    case "lock": S.SelfLocked = subValue == null || Flag(subValue, S.SelfLocked); break;
-                    case "unlock": S.SelfLocked = false; break;
+                    // Unlocking a plate that follows you fixes it on screen first (only a fixed plate drags).
+                    case "lock": S.SetSelfLocked(subValue == null || Flag(subValue, S.SelfLocked)); break;
+                    case "unlock": S.SetSelfLocked(false); break;
                     case "reset": S.SelfFixedX = S.DefaultSelfFixedX; S.SelfFixedY = S.DefaultSelfFixedY; break;
                     case "position": case "pos":
                     {
@@ -1400,11 +1482,11 @@ internal static class RynthCoreChatCommands
                             "right" => ImGuiBackend.Hud.SelfPlatePosition.Right,
                             _ => null,
                         };
-                        if (p == null) { Reply("usage: /rv plates self position above|below|left|right"); return; }
+                        if (p == null) { Fail("Usage: /rv plates self position above|below|left|right"); return; }
                         S.SelfPosition = p.Value;
                         break;
                     }
-                    default: Reply(usage); return;
+                    default: Fail(usage); return;
                 }
                 break;
             case "click":
@@ -1415,7 +1497,18 @@ internal static class RynthCoreChatCommands
                 S.KeepOnScreen = Flag(value, S.KeepOnScreen); break;
             case "debuffs":
             case "debuff":
-                S.ShowDebuffs = Flag(value, S.ShowDebuffs); break;
+                if (sub == "size")
+                {
+                    // The monster plates' icon size ("debuffs size 150"); your own row's is "self debuffs size".
+                    if (!S.TryParseDebuffIconSize(subValue, out int mdi))
+                    {
+                        Fail($"Usage: /rv plates debuffs size {S.MinDebuffIconSize}-{S.MaxDebuffIconSize} (percent; now {S.MonsterDebuffIconSize}%)");
+                        return;
+                    }
+                    S.MonsterDebuffIconSize = mdi;
+                }
+                else S.ShowDebuffs = Flag(value, S.ShowDebuffs);
+                break;
             case "others":
                 S.ShowOthersDebuff = Flag(value, S.ShowOthersDebuff); break;
             case "numbers":
@@ -1429,12 +1522,12 @@ internal static class RynthCoreChatCommands
                     case "kills": case "kill": case "burst": S.NumKills = Flag(subValue, S.NumKills); break;
                     case "restores": case "stamina": case "mana": S.NumRestores = Flag(subValue, S.NumRestores); break;
                     case "size":
-                        if (!TryNum(subValue, out float nsz)) { Reply("usage: /rv plates numbers size 0.5-2.5"); return; }
+                        if (!TryNum(subValue, out float nsz)) { Fail("Usage: /rv plates numbers size 0.5-2.5"); return; }
                         S.NumSize = Math.Clamp(nsz, S.MinNumSize, S.MaxNumSize); break;
                     case "time": case "duration":
-                        if (!TryNum(subValue, out float ntm)) { Reply("usage: /rv plates numbers time 0.5-3"); return; }
+                        if (!TryNum(subValue, out float ntm)) { Fail("Usage: /rv plates numbers time 0.5-3"); return; }
                         S.NumTime = Math.Clamp(ntm, S.MinNumTime, S.MaxNumTime); break;
-                    default: Reply(usage); return;
+                    default: Fail(usage); return;
                 }
                 break;
             case "gains":
@@ -1442,40 +1535,40 @@ internal static class RynthCoreChatCommands
                 switch (sub)
                 {
                     case "size":
-                        if (!TryNum(subValue, out float gsz)) { Reply("usage: /rv plates gains size 0.5-2.5"); return; }
+                        if (!TryNum(subValue, out float gsz)) { Fail("Usage: /rv plates gains size 0.5-2.5"); return; }
                         S.GainSize = Math.Clamp(gsz, S.MinNumSize, S.MaxNumSize); break;
                     case "time": case "duration":
-                        if (!TryNum(subValue, out float gtm)) { Reply("usage: /rv plates gains time 0.5-3"); return; }
+                        if (!TryNum(subValue, out float gtm)) { Fail("Usage: /rv plates gains time 0.5-3"); return; }
                         S.GainTime = Math.Clamp(gtm, S.MinNumTime, S.MaxNumTime); break;
                     case null: S.Gains = Flag(subValue, S.Gains); break;
                     case "xp": S.GainXp = Flag(subValue, S.GainXp); break;
                     case "lum": case "luminance": S.GainLum = Flag(subValue, S.GainLum); break;
                     case "radiance": S.GainRadiance = Flag(subValue, S.GainRadiance); break;
-                    default: Reply(usage); return;
+                    default: Fail(usage); return;
                 }
                 break;
             case "dist":
             case "range":
-                if (!TryNum(value, out float d)) { Reply(usage); return; }
+                if (!TryNum(value, out float d)) { Fail(usage); return; }
                 S.MaxDistance = Math.Clamp(d, S.MinDistance, S.MaxDistanceLimit);
                 break;
             case "max":
-                if (!TryNum(value, out float n)) { Reply(usage); return; }
+                if (!TryNum(value, out float n)) { Fail(usage); return; }
                 S.MaxPlates = Math.Clamp((int)Math.Round(n), S.MinPlates, S.MaxPlatesLimit);
                 break;
             case "scale":
-                if (!TryNum(value, out float sc)) { Reply(usage); return; }
+                if (!TryNum(value, out float sc)) { Fail(usage); return; }
                 S.Scale = Math.Clamp(sc, S.MinScale, S.MaxScale);
                 break;
             case "opacity":
             case "alpha":
-                if (!TryNum(value, out float o)) { Reply(usage); return; }
+                if (!TryNum(value, out float o)) { Fail(usage); return; }
                 if (o > 1f) o /= 100f;   // "opacity 80" means 80 %
                 S.Opacity = Math.Clamp(o, S.MinOpacity, S.MaxOpacity);
                 break;
             case "lift":
             case "height":
-                if (!TryNum(value, out float h)) { Reply(usage); return; }
+                if (!TryNum(value, out float h)) { Fail(usage); return; }
                 S.HeightLift = Math.Clamp(h, S.MinLift, S.MaxLift);
                 break;
             case "npcs":
@@ -1484,12 +1577,23 @@ internal static class RynthCoreChatCommands
                 {
                     case null: S.NpcNames = Flag(subValue, S.NpcNames); break;
                     case "dist": case "range":
-                        if (!TryNum(subValue, out float nd)) { Reply("usage: /rv plates npcs dist 5-80"); return; }
+                        if (!TryNum(subValue, out float nd)) { Fail("Usage: /rv plates npcs dist 5-80"); return; }
                         S.NpcMaxDistance = Math.Clamp(nd, S.MinNpcDistance, S.MaxNpcDistanceLimit); break;
                     case "max":
-                        if (!TryNum(subValue, out float nm)) { Reply("usage: /rv plates npcs max 1-40"); return; }
+                        if (!TryNum(subValue, out float nm)) { Fail("Usage: /rv plates npcs max 1-40"); return; }
                         S.MaxNpcLabels = Math.Clamp((int)Math.Round(nm), S.MinNpcLabels, S.MaxNpcLabelsLimit); break;
-                    default: Reply(usage); return;
+                    default: Fail(usage); return;
+                }
+                break;
+            case "portals":
+            case "portal":
+                switch (sub)
+                {
+                    case null: S.PortalNames = Flag(subValue, S.PortalNames); break;
+                    case "dist": case "range":
+                        if (!TryNum(subValue, out float pd)) { Fail("Usage: /rv plates portals dist 5-120"); return; }
+                        S.PortalMaxDistance = Math.Clamp(pd, S.MinPortalDistance, S.MaxPortalDistanceLimit); break;
+                    default: Fail(usage); return;
                 }
                 break;
             case "players":
@@ -1515,7 +1619,7 @@ internal static class RynthCoreChatCommands
                 Reply("Sample combat numbers, a kill burst and gains spawned around you.");
                 return;
             default:
-                Reply(usage);
+                Fail(usage);
                 return;
         }
 
@@ -1547,12 +1651,14 @@ internal static class RynthCoreChatCommands
         string[] parts = args.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (parts.Length == 2 && (parts[0].Equals("on", StringComparison.OrdinalIgnoreCase) || parts[0].Equals("off", StringComparison.OrdinalIgnoreCase)))
         {
-            Reply(UiHookRegistry.SetEnabled(parts[1], parts[0].Equals("on", StringComparison.OrdinalIgnoreCase)));
+            string said = UiHookRegistry.SetEnabled(parts[1], parts[0].Equals("on", StringComparison.OrdinalIgnoreCase));
+            if (said.StartsWith("No UI hook called", StringComparison.Ordinal)) Fail(said);
+            else Reply(said);
             return;
         }
         if (parts.Length != 0 && !(parts.Length == 1 && parts[0].Equals("status", StringComparison.OrdinalIgnoreCase)))
         {
-            Reply("Usage: /rc hooks [status] | /rc hooks on|off <name>");
+            Fail("Usage: /rc hooks [status] | /rc hooks on|off <name>");
             return;
         }
         foreach (string line in UiHookRegistry.DescribeLines())
@@ -1571,23 +1677,65 @@ internal static class RynthCoreChatCommands
     {
         if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.ChatDiscordFace.Title))
         {
-            Reply("The Discord relay needs the RynthChat plugin.");
+            Fail("The Discord relay needs the RynthChat plugin.");
             return;
         }
         string verb = args.Trim();
         if (verb.Equals("window", StringComparison.OrdinalIgnoreCase) || verb.Equals("show", StringComparison.OrdinalIgnoreCase)
             || verb.Equals("settings", StringComparison.OrdinalIgnoreCase))
         {
-            UI.PanelRouter.Toggle(ImGuiBackend.Panels.ChatDiscordFace.Title);
+            TogglePanel(ImGuiBackend.Panels.ChatDiscordFace.Title, "Discord relay window", "The Discord relay needs the RynthChat plugin.");
             return;
         }
-        foreach (string line in UI.Data.Discord.ChatDiscord.HandleCommand(verb))
-            Reply(line);
+        ReplyLines(UI.Data.Discord.ChatDiscord.HandleCommand(verb));
     }
 
-    private static void Reply(string text)
+    // ── replies (ChatCommandReplies says where each goes and its colour) ─────
+
+    /// <summary>It worked, or the state now: in chat (green) for the player, the log only for a script.</summary>
+    private static void Reply(string text) => Reply(text, ChatReplyKind.Ok, ChatCommandReplies.ToChat(ChatReplyKind.Ok, _origin));
+
+    /// <summary>It didn't (the usage, an unknown verb, can't): in chat (red) whoever sent the command.</summary>
+    private static void Fail(string text) => Reply(text, ChatReplyKind.Fail, ChatCommandReplies.ToChat(ChatReplyKind.Fail, _origin));
+
+    /// <summary><paramref name="okText"/> when <paramref name="ok"/>, else <paramref name="failText"/> as a failure.</summary>
+    private static void Answer(bool ok, string okText, string failText)
     {
-        RynthLog.Compat($"RynthCoreChatCommands: {text}");
-        AcMainThreadQueue.EnqueueWriteToChat("[RynthCore] " + text, 1);
+        if (ok) Reply(okText);
+        else Fail(failText);
+    }
+
+    /// <summary>
+    /// A module's reply lines as one answer (<see cref="ChatCommandReplies.KindOfLines"/>, or
+    /// <paramref name="kind"/> when the caller knows): when it failed every line goes to chat, so a
+    /// script's failure keeps its context; each line keeps its own colour.
+    /// </summary>
+    private static void ReplyLines(System.Collections.Generic.IEnumerable<string> lines, ChatReplyKind? kind = null)
+    {
+        var list = new System.Collections.Generic.List<string>(lines);
+        ChatReplyKind all = kind ?? ChatCommandReplies.KindOfLines(list);
+        bool toChat = ChatCommandReplies.ToChat(all, _origin);
+        foreach (string l in list)
+            Reply(l, kind ?? ChatCommandReplies.KindOfLine(l), toChat);
+    }
+
+    /// <summary>The command writes its own answer, now or from AC's thread later (VendorTrade's
+    /// "[RC]" lines, AcKeymapLive's result): nothing more to say here.</summary>
+    private static void AnswersItself() => _answered = true;
+
+    /// <summary>A command that threw: the log (with the type) and chat.</summary>
+    private static void Failed(string command, Exception ex)
+    {
+        RynthLog.Compat($"RynthCoreChatCommands: {command} failed - {ex.GetType().Name}: {ex.Message}");
+        Fail(ChatCommandReplies.Failed(command, ex.GetType().Name, ex.Message));
+    }
+
+    /// <summary>The one writer: the log always, chat (AC's main-thread queue) when <paramref name="toChat"/>.</summary>
+    private static void Reply(string text, ChatReplyKind kind, bool toChat)
+    {
+        _answered = true;
+        RynthLog.Compat($"RynthCoreChatCommands: {text}{(toChat ? "" : " (log only: a script's command)")}");
+        if (toChat)
+            AcMainThreadQueue.EnqueueWriteToChat(ChatCommandReplies.ReplyPrefix + text, ChatCommandReplies.ChatType(kind));
     }
 }

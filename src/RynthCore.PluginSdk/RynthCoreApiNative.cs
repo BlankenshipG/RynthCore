@@ -195,12 +195,15 @@ public struct RynthCoreApiNative
     public IntPtr GetActionKeysFn;           // int GetActionKeys(const char* action, char* buffer, int length) -> bytes needed, -1 bad call
     public IntPtr GetIconTextureFn;          // void* GetIconTexture(int kind, uint id) -> ImGui texture id, null while it is made
     public IntPtr KeyCaptureFn;              // int KeyCapture(int op, char* buffer, int length) -> 0 waiting, 1 key (name in buffer), 2 cancelled
-    public IntPtr SetActionKeyFn;            // int SetActionKey(const char* action, const char* key, int op, char* message, int length)
+    public IntPtr SetActionKeyFn;            // int SetActionKey(const char* action, const char* key, int op, char* message, int length); op 0 check, 1 bind, 2 unbind, 3 command hotkey only (after 2026.10.27.1)
     public IntPtr AcPanelFn;                 // int AcPanel(int id, int op) -> op 0: 1 open, 0 closed, -1 none; else 1 queued, -1 refused
     public IntPtr PanelScaleFn;              // int PanelScale(const char* key, int percent) -> percent now, 0 = follows the text size
     public IntPtr DropTargetFn;              // uint DropTarget(const char* window, float x0, y0, x1, y1, int flags, int* dragging) -> dropped object, 0 none
-    public IntPtr GetWindowPlacementFn;      // v91 int GetWindowPlacement(const char* key, float* xywh) -> 1 found, 0 none, -1 bad key / no character
-    public IntPtr SetWindowPlacementFn;      // v91 int SetWindowPlacement(const char* key, float x, y, w, h) -> 1 saved, 0 no character, -1 bad key
+    // v91: a floor under the world's ambient light (drawing only, this client)
+    public IntPtr SetAmbientLightFloorFn;    // int SetAmbientLightFloor(uint rgb) -> 1 hook live, 0 not; 0x00RRGGBB, 0 = none
+    public IntPtr GetAmbientLightFn;         // int GetAmbientLight(uint* client, uint* applied) -> 1 hook live, 0 not
+    public IntPtr GetWindowPlacementFn;      // v93 int GetWindowPlacement(const char* key, float* xywh) -> 1 found, 0 none, -1 bad key / no character
+    public IntPtr SetWindowPlacementFn;      // v93 int SetWindowPlacement(const char* key, float x, y, w, h) -> 1 saved, 0 no character, -1 bad key
 }
 
 /// <summary>

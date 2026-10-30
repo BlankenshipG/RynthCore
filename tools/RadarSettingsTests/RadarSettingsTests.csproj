@@ -25,6 +25,7 @@
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\RadarSnapshotJson.cs" Link="Engine\RadarSnapshotJson.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Panels\MarkerStyleSettings.cs" Link="Engine\MarkerStyleSettings.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\ImGui\Panels\CircleClip.cs" Link="Engine\CircleClip.cs" />
+    <Compile Include="..\..\src\RynthCore.Engine\ImGui\Panels\RadarWheel.cs" Link="Engine\RadarWheel.cs" />
   </ItemGroup>
 
 </Project>

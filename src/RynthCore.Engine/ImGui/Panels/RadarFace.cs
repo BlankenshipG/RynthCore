@@ -85,6 +85,11 @@ internal sealed class RadarFace : IImGuiPanel
     public bool ClickThrough =>
         RadarSettingsStore.CtrlGatedClickThrough && !ImGuiNET.ImGui.GetIO().KeyCtrl && !_hot;
 
+    // Click-through with "Mouse wheel still zooms": the mouse was on the radar this frame, so the
+    // wheel is the radar's (RadarWheel); the engine keeps it from the game.
+    private bool _wheelHere;
+    public bool ClickThroughWantsWheel => _wheelHere;
+
     public void OnShown()
     {
         RadarSettingsStore.Load();
@@ -100,6 +105,8 @@ internal sealed class RadarFace : IImGuiPanel
 
     public void Draw()
     {
+        bool clickThroughNow = ClickThrough;   // what the host gave this frame's window (before UpdateHot moves _hot)
+        _wheelHere = false;
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         Vector2 origin = ImGuiNET.ImGui.GetCursorScreenPos();
         Vector2 size = ImGuiNET.ImGui.GetContentRegionAvail();
@@ -202,12 +209,17 @@ internal sealed class RadarFace : IImGuiPanel
         UpdateHot(view, centre, worldMin, worldMax, gearPos, new Vector2(closePos.X + btn, closePos.Y + btn));
         if (view != null && RadarSettingsStore.ClickToSelect)
             MarkerInput(dl, view, centre, worldMin, worldMax, surfaceClicked);
-        if (ImGuiNET.ImGui.IsItemHovered())
+        // Click-through: the window takes no input, so it is never "hovered"; the wheel is read here
+        // instead when the option says so (RadarWheel.Owns).
+        var wio = ImGuiNET.ImGui.GetIO();
+        _wheelHere = RadarWheel.Owns(RadarSettingsStore.ClickThroughWheelZoom, clickThroughNow, ImGuiPopOuts.InPopOutFrame,
+            wio.WantCaptureMouse, wio.MousePos, origin, frameMax, _round ? new RoundMask(centre, frameR) : null);
+        if (ImGuiNET.ImGui.IsItemHovered() || _wheelHere)
         {
-            float wheel = ImGuiNET.ImGui.GetIO().MouseWheel;
+            float wheel = wio.MouseWheel;
             if (wheel != 0)
             {
-                float next = Math.Clamp(RadarSettingsStore.Zoom + wheel * 0.15f, 0.5f, 6.0f);
+                float next = RadarWheel.Zoomed(RadarSettingsStore.Zoom, wheel);
                 if (next != RadarSettingsStore.Zoom) { RadarSettingsStore.Zoom = next; RadarSettingsStore.Save(); }
             }
         }
@@ -740,6 +752,14 @@ internal sealed class RadarFace : IImGuiPanel
             changed |= Check("Docked click-through (dots still work; Ctrl for the rest)", ref RadarSettingsStore.CtrlGatedClickThrough);
             if (ImGuiNET.ImGui.IsItemHovered())
                 ImGuiNET.ImGui.SetTooltip("On: docked clicks pass through to the game, except on a dot (hover it, click to select) and the two buttons; hold Ctrl to drag or resize.");
+            if (RadarSettingsStore.CtrlGatedClickThrough)
+            {
+                ImGuiNET.ImGui.Indent();
+                changed |= Check("Mouse wheel still zooms the radar", ref RadarSettingsStore.ClickThroughWheelZoom);
+                if (ImGuiNET.ImGui.IsItemHovered())
+                    ImGuiNET.ImGui.SetTooltip("On: with click-through, the wheel over the radar zooms it instead of the game's camera. Clicks still go through to the game.");
+                ImGuiNET.ImGui.Unindent();
+            }
             changed |= Check("Click a dot to select it", ref RadarSettingsStore.ClickToSelect);
             if (ImGuiNET.ImGui.IsItemHovered())
                 ImGuiNET.ImGui.SetTooltip("Left-click a dot to select that object in game. Hover a dot for its name and distance.");

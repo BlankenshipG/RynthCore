@@ -1,6 +1,6 @@
 // ============================================================================
 //  RynthCore.Engine - Plugins/WindowPlacementApi.cs
-//  Plugin API v91 GetWindowPlacement / SetWindowPlacement: a plugin's own floating
+//  Plugin API v93 GetWindowPlacement / SetWindowPlacement: a plugin's own floating
 //  ImGui windows keep their spot per character (UI/WindowPlacementStore).
 // ============================================================================
 

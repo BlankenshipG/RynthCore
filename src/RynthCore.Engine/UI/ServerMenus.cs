@@ -74,13 +74,19 @@ internal static class ServerMenus
 
     /// <summary>
     /// Runs an item's command: an engine "/rc" command directly, anything else through the
-    /// chat dispatcher (plugins' commands, as if typed). Render thread.
+    /// chat dispatcher (plugins' commands, as if typed). Render thread. A click on an engine
+    /// button or menu is a Script's command: what it opens is the answer, so only a failure
+    /// reaches chat.
     /// </summary>
-    public static void Run(string command)
+    /// <param name="showReply">Answer in chat as for a typed command: a click whose result the player
+    /// wants to read (the server window's "Treat this world as ..." prints the server summary). Other
+    /// clicks stay quiet unless they fail.</param>
+    public static void Run(string command, bool showReply = false)
     {
         string cmd = SectionManifestParser.Command(command);
         if (cmd.Length == 0) return;
-        if (Compatibility.RynthCoreChatCommands.TryHandle(cmd)) return;
+        var origin = showReply ? Compatibility.ChatCommandOrigin.Player : Compatibility.ChatCommandOrigin.Script;
+        if (Compatibility.RynthCoreChatCommands.TryHandle(cmd, origin)) return;
         if (cmd.StartsWith("/rc ", StringComparison.OrdinalIgnoreCase))
         {
             RynthLog.UI($"ServerMenus: '{cmd}' is not an engine command.");
@@ -255,8 +261,8 @@ internal static class ServerMenus
         foreach (MenuGroup g in groups)
         {
             if (ImGuiNET.ImGui.MenuItem("Treat this world as " + g.Server.Name + "##srvforce_" + g.Server.Id))
-                Run(ForceCommand(g.Server.Id));
-            ImGuiNET.ImGui.SetItemTooltip("Saved for this character. Undo with /rc server " + g.Server.Id + " auto, or in the Mini Remote's Char section.");
+                Run(ForceCommand(g.Server.Id), showReply: true);
+            SafeImGui.SetItemTooltip("Saved for this character. Undo with /rc server " + g.Server.Id + " auto, or in the Mini Remote's Char section.");
         }
         return true;
     }

@@ -1592,6 +1592,8 @@ public readonly unsafe struct RynthCoreHost
     /// being drawn, <paramref name="width"/> pixels wide and at most <paramref name="room"/> tall (0 = its
     /// own height). Returns the height it wants (pixels), or -1 for another key, an older engine, or a
     /// call outside a docked window's RynthPluginRenderEmbed on AC's render thread.
+    /// 2026-10-27 (engines with v91): also "nameplates" and "combattext", the Vision window's tabs for
+    /// RynthCore's nameplates and combat text (RynthVision's own Vision window), docked or popped out.
     /// </summary>
     public float RenderSettingsDrawer(string key, float width, float room, bool openPinList = false)
     {
@@ -1718,6 +1720,40 @@ public readonly unsafe struct RynthCoreHost
     /// </summary>
     public bool UnbindActionKey(string action, string key, out string message) => CallSetActionKey(action, key, 2, out message) == 1;
 
+    /// <summary>v92: <see cref="BindCommandKeyOnly"/> works (SetActionKey op 3).</summary>
+    public bool HasCommandKeyOnly => HasKeyBinding && _api.Version >= 92;
+
+    /// <summary>
+    /// Binds <paramref name="key"/> ("Ctrl+F5") to a RynthCore chat command (<paramref name="command"/>, starting
+    /// with '/': "/rdef use 3") as an engine hotkey only, for a bar whose slots are its own: the key comes off
+    /// RynthCore's other hotkeys, but AC's keymap is not edited and no client reloads its keys. AC keeps any
+    /// action it has on that key; RynthCore's hotkey takes the key before AC sees it. Done on AC's game thread;
+    /// the result goes to chat. Needs plugin API v92 (SetActionKey op 3, after release 2026.10.27.1): an older
+    /// engine refuses it, and this returns false (why in <paramref name="message"/>), never falling back to
+    /// <see cref="BindActionKey"/>. False too for an action that isn't a command. Any thread.
+    /// </summary>
+    public bool BindCommandKeyOnly(string command, string key, out string message)
+    {
+        if (string.IsNullOrEmpty(command) || command[0] != '/') { message = "Not a RynthCore command (\"/rdef use 3\")."; return false; }
+        if (!HasCommandKeyOnly) { message = "This RynthCore can't bind a command's key on its own (it needs a newer engine)."; return false; }
+        int r = CallSetActionKey(command, key, 3, out message);
+        if (r != 1 && message == "Unknown op.") message = "This RynthCore can't bind a command's key on its own (it needs a newer engine).";
+        return r == 1;
+    }
+
+    /// <summary>
+    /// Removes <paramref name="key"/> from a RynthCore chat command's engine hotkeys (<paramref name="command"/>,
+    /// starting with '/'), the other half of <see cref="BindCommandKeyOnly"/>: AC's keymap is never touched.
+    /// An engine command's unbind has never touched AC's keymap, so this works on any v90 engine (it is
+    /// <see cref="UnbindActionKey"/> for a command); false for an action that isn't a command, or when it
+    /// can't be (why in <paramref name="message"/>). Queued like <see cref="BindActionKey"/>. Any thread.
+    /// </summary>
+    public bool UnbindCommandKeyOnly(string command, string key, out string message)
+    {
+        if (string.IsNullOrEmpty(command) || command[0] != '/') { message = "Not a RynthCore command (\"/rdef use 3\")."; return false; }
+        return CallSetActionKey(command, key, 2, out message) == 1;
+    }
+
     /// <summary>v90: items dragged out of AC's UI can be dropped on a plugin window (<see cref="DropTarget"/>).</summary>
     public bool HasDropTargets => _api.Version >= 90 && _api.DropTargetFn != IntPtr.Zero;
 
@@ -1745,11 +1781,11 @@ public readonly unsafe struct RynthCoreHost
         return item;
     }
 
-    /// <summary>v91: the engine keeps a plugin window's spot per character (<see cref="TryGetWindowPlacement"/>).</summary>
-    public bool HasWindowPlacements => _api.Version >= 91 && _api.GetWindowPlacementFn != IntPtr.Zero && _api.SetWindowPlacementFn != IntPtr.Zero;
+    /// <summary>v93: the engine keeps a plugin window's spot per character (<see cref="TryGetWindowPlacement"/>).</summary>
+    public bool HasWindowPlacements => _api.Version >= 93 && _api.GetWindowPlacementFn != IntPtr.Zero && _api.SetWindowPlacementFn != IntPtr.Zero;
 
     /// <summary>
-    /// v91: where the player left the plugin's own floating window <paramref name="key"/> on this character
+    /// v93: where the player left the plugin's own floating window <paramref name="key"/> on this character
     /// (ImGui screen pixels; a zero size = the window sized itself). False when nothing is saved, no
     /// character is logged in yet, or the engine is older. Keys: up to 96 characters, no '=' or line break;
     /// prefix them with the plugin's name. Any thread. Plugins/Shared SavedWindow wraps this.
@@ -1771,7 +1807,7 @@ public readonly unsafe struct RynthCoreHost
         return true;
     }
 
-    /// <summary>v91: saves window <paramref name="key"/>'s spot for this character (see <see cref="TryGetWindowPlacement"/>). False when not saved.</summary>
+    /// <summary>v93: saves window <paramref name="key"/>'s spot for this character (see <see cref="TryGetWindowPlacement"/>). False when not saved.</summary>
     public bool SetWindowPlacement(string key, System.Numerics.Vector2 pos, System.Numerics.Vector2 size)
     {
         if (!HasWindowPlacements || string.IsNullOrEmpty(key) || key.Length > 96) return false;
@@ -1805,6 +1841,44 @@ public readonly unsafe struct RynthCoreHost
     {
         if (!HasAcPanels) return false;
         return ((delegate* unmanaged[Cdecl]<int, int, int>)_api.AcPanelFn)((int)panel, (int)op) == 1;
+    }
+
+    /// <summary>
+    /// v91: <see cref="SetAmbientLightFloor"/> and <see cref="TryGetAmbientLight"/> (a floor under the
+    /// world's ambient light). True on an engine that has the call; whether its hook is live is what
+    /// SetAmbientLightFloor returns.
+    /// </summary>
+    public bool HasAmbientLight => _api.Version >= 91 && _api.SetAmbientLightFloorFn != IntPtr.Zero && _api.GetAmbientLightFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v91: the least ambient light AC may draw the world with, 0x00RRGGBB (alpha ignored), 0 = none (AC's
+    /// own). Per channel the brighter of AC's and this, from the next frame; drawing only, in this client
+    /// (nothing goes to the server). AC lights dungeons at 0x333333 (20 %), outdoors from the sky. One floor
+    /// for all plugins (the last call wins); the engine clears it when the plugins unload, so a plugin
+    /// clears it itself when it stops wanting it (and in Shutdown). Returns true when the engine's hook is
+    /// live, false when it isn't (an older engine, not installed, or switched off with /rc hooks). Any thread.
+    /// </summary>
+    public bool SetAmbientLightFloor(uint rgb)
+    {
+        if (!HasAmbientLight) return false;
+        return ((delegate* unmanaged[Cdecl]<uint, int>)_api.SetAmbientLightFloorFn)(rgb & 0x00FFFFFFu) == 1;
+    }
+
+    /// <summary>
+    /// v91: the ambient colour AC last asked for (<paramref name="client"/>) and the one drawn
+    /// (<paramref name="applied"/>), 0xAARRGGBB, 0 before the first frame. False when the hook isn't live
+    /// (or the engine is older). Any thread.
+    /// </summary>
+    public bool TryGetAmbientLight(out uint client, out uint applied)
+    {
+        client = 0;
+        applied = 0;
+        if (!HasAmbientLight) return false;
+        uint c = 0, a = 0;
+        int r = ((delegate* unmanaged[Cdecl]<uint*, uint*, int>)_api.GetAmbientLightFn)(&c, &a);
+        client = c;
+        applied = a;
+        return r == 1;
     }
 
     private int CallSetActionKey(string action, string key, int op, out string message)

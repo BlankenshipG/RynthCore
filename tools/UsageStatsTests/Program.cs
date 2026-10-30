@@ -162,7 +162,10 @@ internal static class Program
         Check(server.LastContentType?.StartsWith("application/json") == true, "sent as application/json");
         Check(server.LastUserAgent == "RynthCore-Launcher", "user agent is the launcher's, nothing more");
 
-        Check(!await s.MaybeSendAsync(() => enabled, "2026.10.3.1", plugins, 1, day1.AddHours(1)) && server.Count == 1, "a second check the same day sends nothing");
+        // Later the same UTC day: halfway to midnight (day1 + 1 h crossed into the next day when the
+        // tests ran after 23:00 UTC, 2026-10-28).
+        DateTime laterSameDay = day1 + (day1.Date.AddDays(1) - day1) / 2;
+        Check(!await s.MaybeSendAsync(() => enabled, "2026.10.3.1", plugins, 1, laterSameDay) && server.Count == 1, "a second check the same day sends nothing");
 
         DateTime day2 = day1.Date.AddDays(1).AddHours(1);
         Check(await s.MaybeSendAsync(() => enabled, "2026.10.3.1", plugins, 1, day2) && server.Count == 2, "next day: one more");

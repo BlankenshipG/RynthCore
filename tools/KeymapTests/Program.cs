@@ -105,6 +105,17 @@ internal static class Program
         Unbind();
         RoundTrip();
         Describe();
+        Take();
+        Mods();
+        ChangesRoundTrip();
+        FollowKeepsOwnKeys();
+        FollowTwiceIsNothing();
+        FollowAllOrNothing();
+        FollowOtherMetaNumbers();
+        FollowRecordedGroup();
+        OlderMarker();
+        PendingAndReload();
+        ChangesBadLines();
         RealFile();
         Console.WriteLine($"{_passed} passed, {_failed} failed.");
         return _failed == 0 ? 0 : 1;
@@ -273,6 +284,251 @@ internal static class Program
         Eq(AcKeymapText.Describe("ToggleSpellbookPanel"), "Toggle Spellbook Panel", "camel case");
         Eq(AcKeymapText.Describe("AltF4"), "Alt F4", "a key name");
         Eq(AcKeymapText.Describe("LOGOUT"), "LOGOUT", "all capitals");
+    }
+
+    private static void Take()
+    {
+        List<string> lines = Lines();
+        List<AcKeymapText.Line> t = AcKeymapText.Take(lines, 0, "DIK_F5", 0);
+        Check(t.Count == 1 && t[0].Action == "ToggleSpellbookPanel", "F5 taken off the spellbook");
+        Eq(AcKeymapText.Uses(lines, 0, "DIK_F5", 0).Count, 0, "nothing has F5");
+        Eq(AcKeymapText.Take(lines, 0, "DIK_HOME", 0).Count, 0, "Home: only a text group has it");
+        Eq(Of(lines, "CursorStartOfLine").Count, 1, "the chat box keeps Home");
+        Eq(AcKeymapText.GroupOf(lines, "UseQuickSlot_1", 0, "DIK_1", 2), "QuickslotCommands", "Ctrl+1's group");
+        Eq(AcKeymapText.GroupOf(lines, "UseQuickSlot_1", 0, "DIK_2", 0), "", "a key the action hasn't");
+    }
+
+    private static void Mods()
+    {
+        List<string> lines = Lines();
+        Eq(AcKeymapText.ModsOf(lines, 0), "", "no modifiers");
+        Eq(AcKeymapText.ModsOf(lines, 2), "DIK_LCONTROL|DIK_RCONTROL", "Ctrl by its names");
+        Eq(AcKeymapText.ModsOf(lines, 3), "DIK_LSHIFT+DIK_LCONTROL|DIK_RCONTROL", "Shift+Ctrl");
+        Eq(AcKeymapText.ModsOf(lines, 4), "DIK_LMENU|DIK_RMENU", "Alt (DIK_RALT read as DIK_RMENU)");
+        Eq(AcKeymapText.ModsOf(lines, 0x10), "DIMOFS_BUTTON3", "a mouse button as a metakey");
+        Eq(AcKeymapText.ModsOf(lines, 0x8), "0x00000008", "a bit no metakey names: the raw mask");
+        foreach (uint m in new uint[] { 0, 2, 3, 4, 0x10, 0x8, 0x16 })
+            Check(AcKeymapText.TryMaskOf(lines, AcKeymapText.ModsOf(lines, m), out uint back, out _) && back == m, $"mask 0x{m:X} back from its names");
+        List<string> noAlt = Lines(Sample.Replace("  3 [ 0 DIK_LMENU ]\r\n", "").Replace("  3 [ 0 DIK_RALT ]\r\n", ""));
+        Check(!AcKeymapText.TryMaskOf(noAlt, "DIK_LMENU|DIK_RMENU", out _, out string err) && err.Contains("DIK_LMENU"), "a keymap without Alt: can't");
+    }
+
+    // What AcKeymapLive's changer records for a bind it made (the same calls), as one change.
+    private static AcKeymapText.Edit BindEdit(List<string> lines, string action, string dik, uint meta)
+    {
+        Check(AcKeymapText.Bind(lines, action, 0, dik, meta, out _, out string err), $"changer: bind {action} {dik} ({err})");
+        return new AcKeymapText.Edit(AcKeymapText.EditKind.Bind, action, 0, AcKeymapText.Canonical(dik), AcKeymapText.ModsOf(lines, meta),
+            AcKeymapText.GroupOf(lines, action, 0, dik, meta));
+    }
+
+    private static AcKeymapText.Change One(long stamp, int pid, params AcKeymapText.Edit[] edits) => new(stamp, pid, edits.ToList());
+
+    private static List<AcKeymapText.Change> RoundTrip(List<AcKeymapText.Change> log)
+    {
+        List<AcKeymapText.Change> back = AcKeymapText.ParseChanges(AcKeymapText.FormatChanges(log), out bool older);
+        Check(!older, "a log isn't an older marker");
+        return back;
+    }
+
+    private static void ChangesRoundTrip()
+    {
+        var log = new List<AcKeymapText.Change>
+        {
+            One(1000, 11, new AcKeymapText.Edit(AcKeymapText.EditKind.Bind, "UseQuickSlot_10", 0, "DIK_F5", "", "QuickslotCommands")),
+            One(2000, 12, new AcKeymapText.Edit(AcKeymapText.EditKind.Unbind, "UseQuickSlot_1", 0, "DIK_1", "DIK_LCONTROL|DIK_RCONTROL"),
+                          new AcKeymapText.Edit(AcKeymapText.EditKind.Take, "", 1, "DIMOFS_BUTTON3", "0x00000008")),
+        };
+        string text = AcKeymapText.FormatChanges(log);
+        Check(text.StartsWith(AcKeymapText.ChangesHeader + "\r\n"), "the log starts with its header");
+        Check(text.Contains("\r\n2000 12 take - 1 DIMOFS_BUTTON3 0x00000008 -\r\n"), "a take line: " + text);
+        List<AcKeymapText.Change> back = RoundTrip(log);
+        Eq(back.Count, 2, "two changes back");
+        Check(back.Count == 2 && back[0].Stamp == 1000 && back[0].Pid == 11 && back[0].Edits.SequenceEqual(log[0].Edits), "the first, edit for edit");
+        Check(back.Count == 2 && back[1].Edits.SequenceEqual(log[1].Edits), "the second (two edits, in order)");
+        // Newest, the next stamp (past another clock's), keeping the newest few.
+        Eq(AcKeymapText.Newest(back), 2000L, "newest stamp");
+        Eq(AcKeymapText.NextStamp(back, 5000), 5000L, "now when it is later");
+        Eq(AcKeymapText.NextStamp(back, 1500), 2001L, "past the newest when now is earlier");
+        Eq(AcKeymapText.NextStamp(new List<AcKeymapText.Change>(), 7), 7L, "an empty log: now");
+        var kept = new List<AcKeymapText.Change>();
+        for (int i = 1; i <= 70; i++) kept = AcKeymapText.Append(kept, One(i, 1, new AcKeymapText.Edit(AcKeymapText.EditKind.Take, "", 0, "DIK_F1", "")), 64);
+        Check(kept.Count == 64 && kept[0].Stamp == 7 && kept[^1].Stamp == 70, "the newest 64 kept");
+        Eq(RoundTrip(kept).Count, 64, "a full log reads back");
+        // Out of order in the file: read by stamp.
+        string swapped = AcKeymapText.ChangesHeader + "\r\n"
+                         + "300 5 take - 0 DIK_F2 - -\r\n"
+                         + "100 6 take - 0 DIK_F3 - -\r\n";
+        List<AcKeymapText.Change> s = AcKeymapText.ParseChanges(swapped, out _);
+        Check(s.Count == 2 && s[0].Stamp == 100 && s[1].Stamp == 300, "by stamp");
+    }
+
+    // The player's report: keys changed in Configure Keyboard in one client (unsaved, in memory) came back when
+    // another client changed a key, because every other client loaded the whole file. Now each makes the edits to
+    // its own keys (AC writes them out: here, its own text).
+    private static string ClientB() => Sample
+        .Replace("    ToggleSpellbookPanel [ \"\" [ 0 DIK_F5 ] ]", "    ToggleSpellbookPanel [ \"\" [ 0 DIK_F6 ] ]\r\n    ToggleMapPanel [ \"\" [ 0 DIK_F5 ] ]")
+        .Replace("    ToggleOptionsPanel [ \"\" [ 0 DIK_F11 ] ]", "    ToggleOptionsPanel [ \"\" [ 0 DIK_F12 ] ]")
+        .Replace("    UseQuickSlot_5 [ \"\" [ 0 DIK_5 ] ]\r\n", "");
+
+    private static List<AcKeymapText.Change> ChangesByA()
+    {
+        List<string> a = Lines();   // client A, the changer: its keys (saved first), then its edits
+        var log = new List<AcKeymapText.Change>();
+        log = AcKeymapText.Append(log, One(100, 1, BindEdit(a, "UseQuickSlot_10", "DIK_F5", 0)), 64);
+        log = AcKeymapText.Append(log, One(200, 1, BindEdit(a, "UseQuickSlot_2", "DIK_1", 2)), 64);
+        Check(AcKeymapText.Unbind(a, "MovementForward", 0, "DIK_UPARROW", 0), "changer: Up off forward");
+        log = AcKeymapText.Append(log, One(300, 1, new AcKeymapText.Edit(AcKeymapText.EditKind.Unbind, "MovementForward", 0, "DIK_UPARROW", "")), 64);
+        // A command's key ("/rdef use 20" on Alt+5): off every game action.
+        AcKeymapText.Take(a, 0, "DIK_5", 4);
+        log = AcKeymapText.Append(log, One(400, 1, new AcKeymapText.Edit(AcKeymapText.EditKind.Take, "", 0, "DIK_5", AcKeymapText.ModsOf(a, 4))), 64);
+        return RoundTrip(log);   // as the follower reads it from "<keymap>.rynthcore"
+    }
+
+    private static void FollowKeepsOwnKeys()
+    {
+        List<AcKeymapText.Change> log = ChangesByA();
+        Eq(log.Count, 4, "four changes recorded");
+        List<string> b = Lines(ClientB());
+        List<AcKeymapText.Change> pending = AcKeymapText.Pending(log, 50, 2);
+        Eq(pending.Count, 4, "client B has all four to make");
+        Eq(AcKeymapText.ApplyChanges(b, pending, out string err), 1, "client B makes them (" + err + ")");
+        // The change landed.
+        List<AcKeymapText.Line> s10 = Of(b, "UseQuickSlot_10");
+        Check(s10.Count == 1 && s10[0].Dik == "DIK_F5" && s10[0].Meta == 0 && s10[0].Group == "QuickslotCommands", "B: slot 10 has F5");
+        List<AcKeymapText.Line> s2 = Of(b, "UseQuickSlot_2");
+        Check(s2.Count == 1 && s2[0].Dik == "DIK_1" && s2[0].Meta == 2, "B: slot 2 has Ctrl+1");
+        // A key that conflicted in B's own keys came off.
+        Eq(Of(b, "ToggleMapPanel").Count, 0, "B: its map panel lost F5 to slot 10");
+        List<AcKeymapText.Line> s1 = Of(b, "UseQuickSlot_1");
+        Check(s1.Count == 1 && s1[0].Meta == 0, "B: slot 1 lost Ctrl+1, keeps 1");
+        Eq(Of(b, "UseQuickSlot_14").Count, 0, "B: Alt+5 taken for the command");
+        List<AcKeymapText.Line> fwd = Of(b, "MovementForward");
+        Check(fwd.Count == 1 && fwd[0].Dik == "DIK_W", "B: forward lost Up, keeps W");
+        // B's own keys, different from A's and never in the file, stayed.
+        List<AcKeymapText.Line> book = Of(b, "ToggleSpellbookPanel");
+        Check(book.Count == 1 && book[0].Dik == "DIK_F6", "B: its spellbook stays on F6 (A's was F5)");
+        List<AcKeymapText.Line> opts = Of(b, "ToggleOptionsPanel");
+        Check(opts.Count == 1 && opts[0].Dik == "DIK_F12", "B: its options stay on F12 (A's was F11)");
+        Eq(Of(b, "UseQuickSlot_5").Count, 0, "B: slot 5's key it deleted stays deleted");
+        Eq(Of(b, "CopyText").Count, 1, "B: copy keeps Ctrl+C");
+    }
+
+    private static void FollowTwiceIsNothing()
+    {
+        List<AcKeymapText.Change> log = ChangesByA();
+        List<string> b = Lines(ClientB());
+        Eq(AcKeymapText.ApplyChanges(b, log, out _), 1, "made once");
+        var after = new List<string>(b);
+        Eq(AcKeymapText.ApplyChanges(b, log, out string err), 0, "made again: nothing to do (" + err + ")");
+        Check(after.SequenceEqual(b), "the text is the same");
+        // The changer itself (its keys hold every edit): nothing either.
+        List<string> a = Lines();
+        AcKeymapText.ApplyChanges(a, log, out _);
+        var a1 = new List<string>(a);
+        Eq(AcKeymapText.ApplyChanges(a, log, out _), 0, "the changer's own keys: nothing to do");
+        Check(a1.SequenceEqual(a), "the changer's text is the same");
+    }
+
+    private static void FollowAllOrNothing()
+    {
+        // The second edit can't be made (an action with no group): the first isn't made either.
+        List<string> b = Lines(ClientB());
+        var before = new List<string>(b);
+        var log = new List<AcKeymapText.Change>
+        {
+            One(100, 1, new AcKeymapText.Edit(AcKeymapText.EditKind.Bind, "UseQuickSlot_10", 0, "DIK_F5", "")),
+            One(200, 1, new AcKeymapText.Edit(AcKeymapText.EditKind.Bind, "SomeNewAction", 0, "DIK_F7", "")),
+        };
+        Check(AcKeymapText.ApplyChanges(b, log, out string err) == -1 && err.Contains("SomeNewAction"), "can't: the error names it (" + err + ")");
+        Check(before.SequenceEqual(b), "the keys as they were (no part made)");
+        // A modifier this keymap hasn't: can't, keys as they were.
+        var alt = new List<AcKeymapText.Change> { One(100, 1, new AcKeymapText.Edit(AcKeymapText.EditKind.Bind, "UseQuickSlot_3", 0, "DIK_3", "DIK_LWIN")) };
+        Check(AcKeymapText.ApplyChanges(b, alt, out _) == -1 && before.SequenceEqual(b), "an unknown modifier: can't, nothing made");
+    }
+
+    private static void FollowOtherMetaNumbers()
+    {
+        // B's keymap numbers Ctrl 3 and Alt 2: A's Ctrl+1 is still Ctrl+1 there (mask 0x4, not 0x2).
+        string swappedMeta = ClientB()
+            .Replace("  2 [ 0 DIK_LCONTROL ]\r\n  2 [ 0 DIK_RCONTROL ]\r\n  3 [ 0 DIK_LMENU ]\r\n  3 [ 0 DIK_RALT ]",
+                     "  2 [ 0 DIK_LMENU ]\r\n  2 [ 0 DIK_RALT ]\r\n  3 [ 0 DIK_LCONTROL ]\r\n  3 [ 0 DIK_RCONTROL ]")
+            .Replace("[ 0 DIK_1 ] 0x00000002 ]", "[ 0 DIK_1 ] 0x00000004 ]")
+            .Replace("[ 0 DIK_C ] 0x00000002 ]", "[ 0 DIK_C ] 0x00000004 ]")
+            .Replace("[ 0 DIK_5 ] 0x00000004 ]", "[ 0 DIK_5 ] 0x00000002 ]");
+        List<string> b = Lines(swappedMeta);
+        Check(AcKeymapText.TryMeta(b, HotkeyMods.Ctrl, out uint ctrl, out _) && ctrl == 4, "B's Ctrl is 0x4");
+        Eq(AcKeymapText.ApplyChanges(b, ChangesByA(), out string err), 1, "B makes A's changes (" + err + ")");
+        List<AcKeymapText.Line> s2 = Of(b, "UseQuickSlot_2");
+        Check(s2.Count == 1 && s2[0].Meta == 4, "B: slot 2 has Ctrl+1 by B's numbers");
+        List<AcKeymapText.Line> s1 = Of(b, "UseQuickSlot_1");
+        Check(s1.Count == 1 && s1[0].Meta == 0, "B: slot 1 lost Ctrl+1 (its 0x4)");
+        Eq(Of(b, "UseQuickSlot_14").Count, 0, "B: Alt+5 (its 0x2) taken");
+    }
+
+    private static void FollowRecordedGroup()
+    {
+        // B has no line for the action and it has no default group: the changer's group is where it goes.
+        List<string> b = Lines(ClientB());
+        var log = new List<AcKeymapText.Change>
+            { One(100, 1, new AcKeymapText.Edit(AcKeymapText.EditKind.Bind, "ToggleInventoryPanel", 0, "DIK_I", "", "UICommands")) };
+        Eq(AcKeymapText.ApplyChanges(b, RoundTrip(log), out string err), 1, "bound in the recorded group (" + err + ")");
+        List<AcKeymapText.Line> inv = Of(b, "ToggleInventoryPanel");
+        Check(inv.Count == 1 && inv[0].Group == "UICommands", "in UICommands");
+        // A recorded text group is never used for a game key.
+        List<string> c = Lines(ClientB());
+        var bad = new List<AcKeymapText.Change>
+            { One(100, 1, new AcKeymapText.Edit(AcKeymapText.EditKind.Bind, "ToggleInventoryPanel", 0, "DIK_I", "", "EditControls")) };
+        Eq(AcKeymapText.ApplyChanges(c, bad, out _), -1, "a text group recorded: no group, can't");
+    }
+
+    private static void OlderMarker()
+    {
+        // What an older RynthCore wrote: the keymap's time alone. Known as older, nothing to make.
+        List<AcKeymapText.Change> l = AcKeymapText.ParseChanges("638652816000000000", out bool older);
+        Check(older && l.Count == 0, "an older marker: older, no changes");
+        l = AcKeymapText.ParseChanges("638652816000000000\r\n", out older);
+        Check(older && l.Count == 0, "with a line end too");
+        l = AcKeymapText.ParseChanges("", out older);
+        Check(!older && l.Count == 0, "empty: nothing, not older");
+        l = AcKeymapText.ParseChanges("something else\r\n1 2 take - 0 DIK_F1 - -", out older);
+        Check(!older && l.Count == 0, "not a log: nothing");
+        l = AcKeymapText.ParseChanges("RynthCore keymap changes 1\r\n1 2 take - 0 DIK_F1 - -", out older);
+        Check(!older && l.Count == 0, "a version before 2: nothing");
+        l = AcKeymapText.ParseChanges("RynthCore keymap changes 3\r\n1 2 take - 0 DIK_F1 - -", out older);
+        Check(!older && l.Count == 1, "a later version: the lines it can read");
+    }
+
+    private static void PendingAndReload()
+    {
+        List<AcKeymapText.Change> log = ChangesByA();
+        // The changer (pid 1) never makes its own again; another client what's past what it made.
+        Eq(AcKeymapText.Pending(log, 0, 1).Count, 0, "the changer's own: none");
+        Eq(AcKeymapText.Pending(log, 200, 2).Count, 2, "past 200: two");
+        // After a hot reload the engine starts at what the last one made (its newest): nothing again.
+        Eq(AcKeymapText.Pending(log, AcKeymapText.Newest(log), 2).Count, 0, "after a reload: nothing made again");
+        // A client started after them: none (AC loaded the file with them); one started before: all.
+        Eq(AcKeymapText.Pending(log, 350, 3).Count, 1, "started at 350: the one after");
+        // An empty change is never pending.
+        var empty = new List<AcKeymapText.Change> { new(500, 4, new List<AcKeymapText.Edit>()) };
+        Eq(AcKeymapText.Pending(empty, 0, 2).Count, 0, "an empty change: nothing");
+    }
+
+    private static void ChangesBadLines()
+    {
+        // A change with a line this version can't read is left out whole; the others stay.
+        string text = AcKeymapText.ChangesHeader + "\r\n"
+                      + "100 1 bind UseQuickSlot_1 0 DIK_F1 - QuickslotCommands\r\n"
+                      + "200 1 bind UseQuickSlot_2 0 DIK_F2 - -\r\n"
+                      + "200 1 rebind UseQuickSlot_2 0 DIK_F3 - -\r\n"
+                      + "300 1 take - 0 DIK_F4 - -\r\n"
+                      + "300 1 take - 0 DIK_F4\r\n"
+                      + "400 1 unbind UseQuickSlot_4 0 DIK_F4 DIK_LCONTROL|DIK_RCONTROL -\r\n"
+                      + "garbage\r\n"
+                      + "500 1 bind Bad-Name 0 DIK_F5 - -\r\n"
+                      + "# a note\r\n";
+        List<AcKeymapText.Change> l = AcKeymapText.ParseChanges(text, out _);
+        Check(l.Count == 2 && l[0].Stamp == 100 && l[1].Stamp == 400, "only the whole, readable changes: " + string.Join(",", l.Select(c => c.Stamp)));
+        Check(l.Count == 2 && l[1].Edits[0].Mods == "DIK_LCONTROL|DIK_RCONTROL", "the modifiers kept");
     }
 
     private static void RealFile()

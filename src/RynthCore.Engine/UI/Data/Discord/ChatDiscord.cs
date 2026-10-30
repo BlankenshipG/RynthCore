@@ -644,7 +644,7 @@ internal static class ChatDiscord
                     ? $"No route{(rest.Length > 0 ? $" named '{rest}'" : "s")}. Add one in Chat > gear > Discord (or /rc discord window)."
                     : $"{(verb == "test" ? "Test sent to" : "Resumed")} {n} route(s).");
                 break;
-            default:
+            case "status":
                 reply.Add($"Discord relay: {SwitchLine()} {StatusLine()}");
                 if (s.Characters.Length > 0)
                     reply.Add("  On for: " + string.Join(", ", Array.ConvertAll(s.Characters, c => c.ToString())));
@@ -657,6 +657,10 @@ internal static class ChatDiscord
                                     + (st.LastError.Length > 0 ? $" - {st.LastError}" : string.Empty)));
                 }
                 reply.Add("/rc discord on|off (this character) | window | test [route] | resume [route] | status");
+                break;
+            default:
+                // A word it doesn't take: the usage, not the status (every command answers a typo so).
+                reply.Add("Usage: /rc discord [on|off|status|window|test [route]|resume [route]]");
                 break;
         }
         return reply;

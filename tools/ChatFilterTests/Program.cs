@@ -57,6 +57,7 @@ internal static class Program
         LineColorTags();
         LineColorKinds();
         LineColorDefaultsUnchanged();
+        LineColorRetail();
         LineColorPrecedence();
         LineColorJson();
         SlowRuleRetry();
@@ -482,8 +483,9 @@ internal static class Program
 
     private static void LineColorDefaultsUnchanged()
     {
-        Case("line colours: with nothing set every line looks as before");
+        Case("line colours: with nothing set and Retail colours off every line looks as before");
         ChatLineColors.ResetAll();
+        ChatLineColors.RetailColors = false;
         Check(!ChatLineColors.AnySet && ChatLineColors.ToJson() == null, "nothing set");
         var kinds = ChatLineColors.ChatKinds.Concat(ChatLineColors.ChannelKinds).Select(k => k.Key)
             .Append("chan:Wiki").Append(null).ToArray();
@@ -498,6 +500,46 @@ internal static class Program
             Check(ChatLineColors.EffectiveArgb(k) == OldChannelArgb(k.Tab), $"{k.Label} shows its tab's colour");
         foreach (ChatColorKind k in ChatLineColors.TabKinds)
             Check(ChatLineColors.EffectiveArgb(k) == OldChannelArgb(k.Tab), $"tab {k.Label} shows its built-in colour");
+        foreach (string tab in AllTabsAndOdd)
+            Check(ChatLineColors.Resolve(null, null, tab, 0x07) == OldChannelArgb(tab), $"a magic line in '{tab}' with Retail colours off");
+        ChatLineColors.RetailColors = true;
+    }
+
+    private static void LineColorRetail()
+    {
+        Case("line colours: Retail colours give each kind of line AC's own colour");
+        ChatLineColors.ResetAll();
+        Check(ChatLineColors.RetailColors, "on by default");
+        const uint Magic = 0xFF3FBFFF, Combat = 0xFFFF3F3F, TellIn = 0xFFFFFF3F, White = 0xFFFFFFFF, Purple = 0xFFFF7FFF;
+        Check(ChatLineColors.Resolve(null, null, "Combat", 0x07) == Magic, "magic (0x07): light blue");
+        Check(ChatLineColors.Resolve(null, null, "Combat", 0x11) == Magic, "spellcasting (0x11): light blue");
+        Check(ChatLineColors.Resolve(null, null, "Combat", 0x06) == Combat, "combat (0x06): red");
+        Check(ChatLineColors.Resolve(null, null, "Combat", 0x15) == Combat, "combat enemy (0x15): red");
+        Check(ChatLineColors.Resolve(null, null, "Combat", 0x16) == 0xFFF57572, "combat self (0x16): light red");
+        Check(ChatLineColors.Resolve(null, "tell", "Chat", 0x03) == TellIn, "a tell: yellow");
+        Check(ChatLineColors.Resolve(null, "say", "Chat", 0x02) == White, "speech: white");
+        Check(ChatLineColors.Resolve(null, null, "System", 0x05) == Purple, "system: purple");
+        Check(ChatLineColors.Resolve(null, "allegiance", "Chat", 0x12) == 0xFFEE921E, "allegiance: orange");
+        Check(ChatLineColors.RetailArgb(0x21) != null && ChatLineColors.RetailArgb(0x22) == null && ChatLineColors.RetailArgb(-1) == null,
+            "the table covers 0x00-0x21");
+        Check(ChatLineColors.Resolve(null, null, "Combat", -1) == OldChannelArgb("Combat"), "an unknown type: the tab's colour");
+        Check(ChatLineColors.Resolve(null, null, "Other", 0x40) == OldChannelArgb("Other"), "a type past the table: the tab's colour");
+        Check(ChatLineColors.Resolve(null, null, "Rynth", 0x05) == OldChannelArgb("Rynth"), "a Rynth line keeps its amber");
+        Check(ChatLineColors.Resolve(null, null, "Items", 0x02) == OldChannelArgb("Items"), "an Items line keeps its teal");
+
+        ChatColorKind say = ChatLineColors.ChatKinds.First(k => k.Key == "say");
+        Check(ChatLineColors.EffectiveArgb(say) == White, "the settings show an unset Say as AC's white");
+        ChatColorKind general = ChatLineColors.ChannelKinds.First(k => k.Key == "chan:General");
+        Check(ChatLineColors.EffectiveArgb(general) == 0xFFFF9696, "and an unset channel as AC's channel pink");
+
+        const uint Mine = 0xFF102030, TabMine = 0xFF405060, Rule = 0xFF708090;
+        ChatLineColors.Set("tell", Mine);
+        Check(ChatLineColors.Resolve(null, "tell", "Chat", 0x03) == Mine, "a kind colour the user set wins");
+        ChatLineColors.Set("tab:Combat", TabMine);
+        Check(ChatLineColors.Resolve(null, null, "Combat", 0x07) == TabMine, "a tab colour the user set wins over AC's");
+        Check(ChatLineColors.EffectiveArgb(ChatLineColors.ChatKinds.First(k => k.Key == "emote")) == 0xFFD2D2C8, "other tabs' kinds still AC's (emote grey)");
+        Check(ChatLineColors.Resolve(Rule, "tell", "Chat", 0x03) == Rule, "a rule's colour wins over everything");
+        ChatLineColors.ResetAll();
     }
 
     private static void LineColorPrecedence()

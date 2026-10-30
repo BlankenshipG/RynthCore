@@ -1,7 +1,7 @@
 // ============================================================================
 //  RynthCore.Engine - UI/WindowPlacementStore.cs
 //  Where the player left each plugin's own floating ImGui window (an Item HUD, a
-//  settings window), per character (plugin API v91, Get/SetWindowPlacement).
+//  settings window), per character (plugin API v93, Get/SetWindowPlacement).
 //
 //  Plugin windows saved their spot in imgui.ini, one file every running client
 //  shares: each client loads it at start and later rewrites all of it, so a window

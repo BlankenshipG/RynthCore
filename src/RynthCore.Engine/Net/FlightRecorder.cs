@@ -381,8 +381,11 @@ internal static unsafe class FlightRecorder
                 if (rest.Equals("off", StringComparison.OrdinalIgnoreCase)) { _autoOff = true; return new[] { "Automatic flight dumps off for this session." }; }
                 if (rest.Equals("on", StringComparison.OrdinalIgnoreCase)) { _autoOff = false; return new[] { "Automatic flight dumps on." }; }
                 return new[] { "Usage: /rc flight auto on|off" };
-            default:
+            case "status":
                 return StatusLines();
+            default:
+                // A word it doesn't take: the usage, not the status (every command answers a typo so).
+                return new[] { "Usage: /rc flight [status|mark <text>|on|off|auto on|off]" };
         }
     }
 

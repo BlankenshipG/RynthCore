@@ -1046,6 +1046,7 @@ internal sealed class DamageFace : IImGuiPanel
     {
         var parts = new List<string>();
         foreach (var (field, label, _) in DamageCommands.DebuffDefs) if (v.GetToggle(field)) parts.Add(label);
+        foreach (var (field, _, tip) in DamageCommands.VoidDebuffDefs) if (v.GetToggle(field)) parts.Add(tip[..tip.IndexOf(':')]);
         if (!string.IsNullOrEmpty(v.ExVuln) && !v.ExVuln.Equals("None", StringComparison.OrdinalIgnoreCase)) parts.Add("Extra Vuln: " + v.ExVuln);
         if (!string.IsNullOrWhiteSpace(v.CustomDebuffs)) parts.Add("Yours: " + v.CustomDebuffs);
         return string.Join("\n", parts);
@@ -1089,6 +1090,22 @@ internal sealed class DamageFace : IImGuiPanel
 
         foreach (var (field, label, tip) in DamageCommands.DebuffDefs)
         {
+            bool on = view.GetToggle(field);
+            if (ImGuiNET.ImGui.Checkbox(label + "##db_" + field, ref on))
+            {
+                bool v = on;
+                string f = field;
+                DamageCommands.EditRule(name, rule => rule.SetToggle(f, v));
+            }
+            SafeImGui.SetItemTooltip(tip);
+        }
+
+        // The Void debuffs, two to a row.
+        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "Void Magic");
+        for (int i = 0; i < DamageCommands.VoidDebuffDefs.Length; i++)
+        {
+            var (field, label, tip) = DamageCommands.VoidDebuffDefs[i];
+            if (i % 2 == 1) ImGuiNET.ImGui.SameLine(140);
             bool on = view.GetToggle(field);
             if (ImGuiNET.ImGui.Checkbox(label + "##db_" + field, ref on))
             {

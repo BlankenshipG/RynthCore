@@ -814,8 +814,11 @@ internal static class EngineFrameController
             bool typing = io.WantTextInput || ImGuiTextFocus.MainBoxActive;
             // A plate that is only hovered lets the mouse moves through, so AC's own
             // mouse-over stays current (MonsterHud.MouseMovesToGame, Compatibility/AcMouseOver).
+            // A docked click-through panel under the cursor that zooms with the wheel (the radar's
+            // "Mouse wheel still zooms"): the wheel is its own, clicks and moves still the game's.
             Win32Backend.UpdateCaptureFlags(io.WantCaptureMouse || Hud.MonsterHud.WantsMouse, typing,
-                mouseMovesToGame: !io.WantCaptureMouse && Hud.MonsterHud.MouseMovesToGame);
+                mouseMovesToGame: !io.WantCaptureMouse && Hud.MonsterHud.MouseMovesToGame,
+                wheelToUi: !io.WantCaptureMouse && PanelsLive && ImGuiPanelHost.WheelWanted);
             Compatibility.AcMouseOver.Tick();   // /rc acmouse watch, when on
             // The UI is released (Insert): no text box keeps the keyboard. Keys are not
             // gated by the toggle any more (Win32Backend.UpdateCaptureFlags), so the edit

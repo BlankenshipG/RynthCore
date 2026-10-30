@@ -33,8 +33,10 @@
 //      same scan picks the name-only labels: non-attackable creatures (NPCs,
 //      vendors; summoned pets skipped) within NpcMaxDistance, nearest first,
 //      capped at MaxNpcLabels apart from the plates (and players, if "Player
-//      names" is on). Each object is classified once (Classes). The same tick
-//      polls the player's XP / Luminance for the gain text.
+//      names" is on), and portals' names ("Portal names", 2026-10-28) within
+//      PortalMaxDistance, capped at MaxPortalLabels on their own. Each object
+//      is classified once (Classes, PlateClass: ITEM_TYPE creature / portal).
+//      The same tick polls the player's XP / Luminance for the gain text.
 //    Draw (inside the ImGui frame): every frame each chosen monster's LIVE
 //      position is read (main thread, a handful of objects) and projected with
 //      the engine's camera capture (GameMatrixCapture), so plates stick to
@@ -72,50 +74,27 @@ internal static class MonsterHud
     private const int SnapshotPeriodMs = 250;        // monster list refresh (4 Hz)
     private const double AttackerMemorySec = 20;     // "hit you recently"
     private const double HurtMemorySec = 60;         // "hurt recently" (engaged filter)
-    private const uint TypeCreature = 0x10;          // ITEM_TYPE TYPE_CREATURE
     private const uint BfPlayer = 0x8;               // PublicWeenieDesc BF_PLAYER
     private const uint BfVendor = 0x200;             // PublicWeenieDesc BF_VENDOR
     private const uint PetOwnerIid = 44;             // PropertyInstanceId PetOwner (summoned pets)
     internal const float LandblockSize = 192f;
-    private const int MaxIcons = 5;                  // debuff icons per plate; more shows "+N"
-    private const float BlinkSec = 5f;               // icons blink in their last seconds
 
     // ── Palette (ARGB literals -> ImGui ABGR) ────────────────────────────
     private static readonly uint BarBack = C(0xE00C1118), BarEdge = C(0xFF000000), Tick = C(0x70000000),
         Shine = C(0x38FFFFFF), Trail = C(0xFFF3E2A8), Gold = C(0xFFE6C766), GoldBright = C(0xFFFFD966),
-        GoldGlow = C(0x55E6C766), NameText = C(0xFFF2E8DC), AttackerText = C(0xFFFF8A7A), Outline = C(0xE6000000),
-        HpText = C(0xFFFFFFFF), DimText = C(0xFFB8C4D0), BadgeBack = C(0xD0101820), Leader = C(0x60FFFFFF),
-        HoverEdge = C(0xC0FFFFFF), UnknownFill = C(0xFF5E8A6A), IconBack = C(0xD80B1219), OthersTint = C(0xFFFF8A7A);
+        GoldGlow = C(0x55E6C766), NameText = C(0xFFF2E8DC), AttackerText = C(0xFFFF8A7A),
+        BadgeBack = C(0xD0101820), Leader = C(0x60FFFFFF),
+        HoverEdge = C(0xC0FFFFFF), UnknownFill = C(0xFF5E8A6A);
+    // Also the debuff icon row's (DebuffIconRow): outlines, stack digits, "+N".
+    internal static readonly uint Outline = C(0xE6000000), HpText = C(0xFFFFFFFF), DimText = C(0xFFB8C4D0);
     private static uint BadgeEdge => RynthTheme.Border;
     private static readonly Vector3 HpHigh = new(0x3F, 0xD0, 0x6A), HpMid = new(0xE8, 0xB3, 0x33), HpLow = new(0xE0, 0x4A, 0x4A);
 
-    // Element colours, shared by the "weak to" pill and the vulnerability icons.
-    private static readonly uint ElemSlash = C(0xFFC9D1DB), ElemPierce = C(0xFFD9C19A), ElemBludgeon = C(0xFFB59A7E),
+    // Element colours, shared by the "weak to" pill and the vulnerability icons (DebuffIconRow's tints).
+    internal static readonly uint ElemSlash = C(0xFFC9D1DB), ElemPierce = C(0xFFD9C19A), ElemBludgeon = C(0xFFB59A7E),
         ElemFire = C(0xFFFF7A3D), ElemCold = C(0xFF7FD3FF), ElemLightning = C(0xFFC89BFF), ElemAcid = C(0xFF8FE36A);
 
-    // One glyph and tint per DebuffKind (index = kind).
-    private static readonly string[] KindGlyph =
-    {
-        PhosphorIcons.Fire, PhosphorIcons.Snowflake, PhosphorIcons.Lightning, PhosphorIcons.Flask,
-        PhosphorIcons.Sword, PhosphorIcons.Knife, PhosphorIcons.Hammer,
-        PhosphorIcons.ShieldSlash, PhosphorIcons.MagicWand, PhosphorIcons.ShieldWarning,
-        PhosphorIcons.ArrowFatLinesDown, PhosphorIcons.HeartBreak, PhosphorIcons.Footprints,
-        PhosphorIcons.TrendDown, PhosphorIcons.Skull, PhosphorIcons.ArrowFatDown,
-    };
-    private static readonly uint[] KindTint =
-    {
-        ElemFire, ElemCold, ElemLightning, ElemAcid, ElemSlash, ElemPierce, ElemBludgeon,
-        C(0xFF9FB4C8),   // Imperil: steel
-        C(0xFFB98CFF),   // Magic Yield: violet
-        C(0xFFFFB347),   // melee / missile defense: orange
-        C(0xFFF2D24B),   // attributes: yellow
-        C(0xFFFF6B8A),   // vitals / regen: pink-red
-        C(0xFFA8C66C),   // movement: moss
-        C(0xFF8FB8DE),   // skills: blue-grey
-        C(0xFF7CE08A),   // damage over time: green
-        C(0xFFC8C8C8),   // other
-    };
-    private static readonly string[] StackDigits = { "", "", "2", "3", "4", "5", "6", "7", "8", "9" };
+    // The debuff icons' glyphs, tints and painter are in DebuffIconRow (shared with your own plate).
 
     internal static uint C(uint argb) => RynthTheme.Argb(argb);
 
@@ -160,12 +139,13 @@ internal static class MonsterHud
         public float LastX, LastY, LastZ;
 
         // Debuff icons (this frame)
-        public readonly DebuffIcon[] Icons = new DebuffIcon[MaxIcons];
-        public int IconCount;            // may exceed MaxIcons (overflow)
+        public readonly DebuffIcon[] Icons = new DebuffIcon[DebuffIconRow.MaxIcons];
+        public int IconCount;            // may exceed DebuffIconRow.MaxIcons (overflow)
         public bool Others;              // "debuffed by others" marker
 
         // Layout (this frame)
-        public float Width, Height, BarW, BarH, NameSize, SmallSize, BelowBar, IconSize;
+        public float Width, Height, BarW, BarH, NameSize, SmallSize, BelowBar;
+        public DebuffRowMetrics Row;     // the debuff row's lengths (k x "Debuff icon size")
         public ImFontPtr NameFont, SmallFont;
         public float NameW, BadgeW;
 
@@ -182,6 +162,9 @@ internal static class MonsterHud
     private sealed record WeakTag(string Label, uint Color, string Icon);
 
     private const float DefaultHeadHeight = 2.0f;
+    // Portals: the snapshot has no model height, so a fixed lift over the portal's origin (its foot)
+    // that clears the top of a standard swirl. "Height lift" in the settings adds to it, as to every plate.
+    private const float PortalLabelHeight = 3.5f;
     // A player's health is only known from what the game happened to tell us; a reading older than this is not drawn.
     private const long PlayerBarMemorySec = 90;
     // A size from the table is the top of the model: a hand's width above it for the plate, within sane bounds.
@@ -191,14 +174,16 @@ internal static class MonsterHud
     private static readonly List<Plate> Placed = new(64);
     private static readonly List<(uint Id, float D2)> Candidates = new(128);
     private static readonly List<(uint Id, float D2)> LabelCandidates = new(64);
+    private static readonly List<(uint Id, float D2)> PortalCandidates = new(16);
     private static readonly List<uint> Evict = new(16);
 
     // What each live object is, worked out once per id (item type, BF_PLAYER, BF_VENDOR and
-    // PetOwner never change), so the 4 Hz scan skips non-creatures with one lookup and the
+    // PetOwner never change), so the 4 Hz scan skips other objects with one lookup and the
     // monster pick no longer reads the bitfield live. Attackable is NOT cached: it is read
     // from the snapshot every scan, as before. Entries not seen for a while are pruned.
-    private const byte ClsUnknown = 0, ClsOther = 1, ClsCreature = 2, ClsVendor = 3, ClsPlayer = 4, ClsPet = 5;
-    private const byte ClsCreatureNoPwd = 6;   // a creature whose PWD isn't in the snapshot yet: never cached
+    private const byte ClsUnknown = PlateClass.Unknown, ClsOther = PlateClass.Other, ClsCreature = PlateClass.Creature,
+        ClsVendor = PlateClass.Vendor, ClsPlayer = PlateClass.Player, ClsPet = PlateClass.Pet, ClsPortal = PlateClass.Portal;
+    private const byte ClsCreatureNoPwd = PlateClass.CreatureNoPwd;   // a creature whose PWD isn't in the snapshot yet: never cached
     private struct ObjClass { public byte Cls; public int Seen; }
     private static readonly Dictionary<uint, ObjClass> Classes = new(512);
     private static readonly List<uint> ClassEvict = new(64);
@@ -285,11 +270,14 @@ internal static class MonsterHud
             // "the Drudge you hit" among them) when the plates themselves are off.
             bool monsters = MonsterHudSettings.Enabled;
             bool trackMonsters = monsters || MonsterHudSettings.Numbers;
-            // Name-only labels over NPCs (and, if asked, players): their own switches and cap.
-            bool track = trackMonsters || MonsterHudSettings.NpcNames || MonsterHudSettings.PlayerNames || MonsterHudSettings.PlayerBars;
+            // Name-only labels over NPCs (and, if asked, players) and over portals: their own switches and caps.
+            bool track = trackMonsters || MonsterHudSettings.NpcNames || MonsterHudSettings.PlayerNames || MonsterHudSettings.PlayerBars ||
+                         MonsterHudSettings.PortalNames;
             if (!track) ClearPlates();
             SetDamageSubscription(monsters && MonsterHudSettings.ShowWeakness);
             if (monsters && MonsterHudSettings.ShowDebuffs) PortalSpellTable.EnsureLoadQueued();
+            // Your own plate's "Debuffs on you" row reads it too, plates on or off.
+            if (MonsterHudSettings.SelfPlate && MonsterHudSettings.SelfDebuffs) PortalSpellTable.EnsureLoadQueued();
 
             long now = Stopwatch.GetTimestamp();
             if (now >= _nextSnapshotTicks)
@@ -389,10 +377,16 @@ internal static class MonsterHud
         float npcD2 = npcD * npcD;
         float npcTargetD2 = MathF.Max(npcD2, 100f * 100f);   // a selected NPC keeps its name further out too
         bool targetIsLabel = false;
+        bool portalNames = MonsterHudSettings.PortalNames;
+        float portalD = MonsterHudSettings.PortalMaxDistance;
+        float portalD2 = portalD * portalD;
+        float portalTargetD2 = MathF.Max(portalD2, 100f * 100f);   // and a selected portal
+        bool targetIsPortal = false;
 
         int pass = ++_classPass;
         Candidates.Clear();
         LabelCandidates.Clear();
+        PortalCandidates.Clear();
         uint[] ids = ClientObjectHooks.LiveObjectIds;
         for (int i = 0; i < ids.Length; i++)
         {
@@ -410,9 +404,15 @@ internal static class MonsterHud
             }
             if (cls == ClsOther || cls == ClsUnknown) continue;
 
-            // Monster plate (attackable creature) or name label (NPC / vendor, player)?
-            bool label;
-            if (cls == ClsPlayer)
+            // Monster plate (attackable creature), name label (NPC / vendor, player) or portal name?
+            bool label, portal = false;
+            if (cls == ClsPortal)
+            {
+                // A portal: its name only, from its own list and cap.
+                if (!portalNames) continue;
+                label = portal = true;
+            }
+            else if (cls == ClsPlayer)
             {
                 // Players never get a monster plate (attackable in PK or not).
                 if (!playerNames) continue;
@@ -439,7 +439,13 @@ internal static class MonsterHud
             if (!TryOffset(pCell, cell, out float ox, out float oy)) continue;
             float dx = x + ox - px, dy = y + oy - py, dz = z - pz;
             float d2 = dx * dx + dy * dy + dz * dz;
-            if (label)
+            if (portal)
+            {
+                if (d2 > (id == target ? portalTargetD2 : portalD2)) continue;
+                PortalCandidates.Add((id, d2));
+                if (id == target) targetIsPortal = true;
+            }
+            else if (label)
             {
                 if (d2 > (id == target ? npcTargetD2 : npcD2)) continue;
                 LabelCandidates.Add((id, d2));
@@ -453,6 +459,7 @@ internal static class MonsterHud
         }
         Candidates.Sort(ByD2);
         LabelCandidates.Sort(ByD2);
+        PortalCandidates.Sort(ByD2);
         if ((pass & 63) == 0) PruneClasses(pass);
 
         foreach (Plate p in Plates.Values) p.Chosen = false;
@@ -513,6 +520,28 @@ internal static class MonsterHud
             if (isTarget) targetIsLabel = false;   // found: the cap applies again
         }
 
+        // ── Portal names: their own cap, so a town's NPCs never push them out ──
+        int portalCap = MonsterHudSettings.MaxPortalLabels;
+        int portals = 0;
+        for (int i = 0; i < PortalCandidates.Count; i++)
+        {
+            uint id = PortalCandidates[i].Id;
+            bool isTarget = id == target;
+            if (portals >= portalCap && !isTarget)
+            {
+                if (!targetIsPortal) break;
+                continue;   // keep scanning only to find the target
+            }
+            if (!ClientObjectHooks.TryGetSnapshotName(id, out string name) || name.Length == 0) continue;
+
+            Plate plate = GetPlate(id, RadarKind.Portal);
+            plate.WithBar = false;
+            if (name != plate.Name) plate.Name = name;
+            plate.HeadHeight = PortalLabelHeight;
+            portals++;
+            if (isTarget) targetIsPortal = false;
+        }
+
         // Plates no longer chosen fade out in Draw and are evicted at zero alpha.
     }
 
@@ -531,14 +560,15 @@ internal static class MonsterHud
     }
 
     /// <summary>
-    /// What an object is, from the main-thread snapshots only (no AC call): not a creature,
-    /// a player, a summoned pet, a vendor or another creature. ClsUnknown / ClsCreatureNoPwd
-    /// when the snapshots don't have it yet (asked again next scan).
+    /// What an object is, from the main-thread snapshots only (no AC call): a portal, nothing
+    /// labelled, a player, a summoned pet, a vendor or another creature. ClsUnknown /
+    /// ClsCreatureNoPwd when the snapshots don't have it yet (asked again next scan).
     /// </summary>
     private static byte Classify(uint id)
     {
         if (!ClientObjectHooks.TryGetSnapshotItemType(id, out uint type)) return ClsUnknown;
-        if ((type & TypeCreature) == 0) return ClsOther;
+        byte byType = PlateClass.FromItemType(type);
+        if (byType != ClsCreature) return byType;   // a portal, or nothing that gets a plate or a name
         if (!ClientObjectHooks.TryGetSnapshotPwdInfo(id, out uint bf, out _, out _)) return ClsCreatureNoPwd;
         if ((bf & BfPlayer) != 0) return ClsPlayer;
         if (ClientObjectHooks.TryGetObjectInstanceIdProperty(id, PetOwnerIid, out uint owner) && owner != 0) return ClsPet;
@@ -855,6 +885,7 @@ internal static class MonsterHud
     {
         float monsterMaxD = MonsterHudSettings.MaxDistance;
         float labelMaxD = MonsterHudSettings.NpcMaxDistance;
+        float portalMaxD = MonsterHudSettings.PortalMaxDistance;
         float opacity = MonsterHudSettings.Opacity;
         float userScale = MonsterHudSettings.Scale;
         float lift = MonsterHudSettings.HeightLift;
@@ -925,7 +956,7 @@ internal static class MonsterHud
             }
 
             // ── Alpha / scale targets ──
-            float maxD = label ? labelMaxD : monsterMaxD;
+            float maxD = !label ? monsterMaxD : p.Kind == RadarKind.Portal ? portalMaxD : labelMaxD;
             float t = maxD > 1f ? Math.Clamp(p.Distance / maxD, 0f, 1f) : 0f;
             float distFade = fade ? 1f - 0.55f * SmoothStep(0.45f, 1f, t) : 1f;
             bool show = p.OnScreen && (p.Chosen || p.IsTarget) && !p.Gone;
@@ -1062,7 +1093,7 @@ internal static class MonsterHud
             p.NameFont = ImGuiFonts.Sharp(p.NameSize, bold: true);
             p.NameW = TextWidth(p.NameFont, p.NameSize, p.Name);
             p.BadgeW = 0f;
-            p.IconSize = 0f;
+            p.Row = default;
             if (p.HasBar)
             {
                 // A thin bar under the name, at least the name's width.
@@ -1097,9 +1128,10 @@ internal static class MonsterHud
         p.BadgeW = MonsterHudSettings.ShowLevel && p.LevelText.Length > 0
             ? TextWidth(p.SmallFont, p.SmallSize, p.LevelText) + 8f * k : 0f;
 
-        // Debuff row under the bar: icon + countdown line.
-        p.IconSize = MathF.Round(13f * k);
-        float iconRow = p.IconCount > 0 || p.Others ? p.IconSize + MathF.Round(3f * k) + 3f : 0f;
+        // Debuff row under the bar: icon + countdown line, at its own size (not the text size).
+        p.Row = new DebuffRowMetrics(k, MonsterHudSettings.MonsterDebuffIconSize);
+        bool icons = p.IconCount > 0 || p.Others;
+        float iconRow = icons ? p.Row.Height : 0f;
         p.BelowBar = iconRow + (p.IsTarget ? 9f * k : 3f * k);
 
         float nameLine = p.NameW + (p.BadgeW > 0 ? p.BadgeW + 4f * k : 0f);
@@ -1108,10 +1140,14 @@ internal static class MonsterHud
         // inside the crowd-avoidance box, symmetric so the plate stays centred.
         float side = (p.Weak != null || MonsterHudSettings.ShowDistance) ? 2f * 30f * k * text : 0f;
         p.Width = MathF.Max(p.BarW + side, nameLine) + 8f * k;
+        // Icons made bigger than the default can be wider than the bar: the box (crowding, clicks) holds them.
+        if (icons && p.Row.Scale > 1f)
+            p.Width = p.Row.CoverWidth(p.Width, DebuffIconRow.Width(p.Icons.Length, p.IconCount, p.Others, in p.Row,
+                p.SmallFont, p.SmallSize, ref p.OverflowKey, ref p.OverflowString), 8f * k);
         p.Height = nameH + p.BarH + p.BelowBar;
     }
 
-    /// <summary>A name label's text size: players' or NPCs' (vendors count as NPCs).</summary>
+    /// <summary>A name label's text size: players' or NPCs' (vendors and portals go with NPCs).</summary>
     private static float LabelTextSize(byte kind) =>
         kind == RadarKind.Player ? MonsterHudSettings.PlayerTextSize : MonsterHudSettings.NpcTextSize;
 
@@ -1243,8 +1279,8 @@ internal static class MonsterHud
         var b1 = new Vector2(barR, barBottom);
         float round = MathF.Max(1f, 2f * k);
         bool icons = p.IconCount > 0 || p.Others;
-        float iconTop = barBottom + MathF.Round(3f * k);
-        float pointerTop = icons ? iconTop + p.IconSize + 3f + 2f * k : barBottom + 2f * k;
+        float iconTop = barBottom + p.Row.Above;
+        float pointerTop = icons ? iconTop + p.Row.Icon + p.Row.Below + 2f * k : barBottom + 2f * k;
 
         // Crowd leader: a plate pushed up keeps a faint line down to its monster.
         if (p.Nudge > 10f * uiScale)
@@ -1310,7 +1346,8 @@ internal static class MonsterHud
 
         // Under the bar: the debuff icons.
         if (icons)
-            PaintIcons(dl, p, cx, iconTop, k, a, now);
+            DebuffIconRow.Paint(dl, p.Icons, p.IconCount, p.Others, in p.Row, p.SmallFont, p.SmallSize,
+                ref p.OverflowKey, ref p.OverflowString, cx, iconTop, a, now);
 
         // ── Name line: [level badge] Name ──
         if (p.NameW > 0 || p.BadgeW > 0)
@@ -1394,13 +1431,18 @@ internal static class MonsterHud
     /// <summary>
     /// A bar: black edge, dark track, the chip (what the last drop took), the
     /// gradient fill with a shine line, and optional quarter ticks. Shared with
-    /// the player plate.
+    /// the player plate, whose options can leave out the edge and track
+    /// (<paramref name="track"/>) and the chip (<paramref name="chip"/>);
+    /// monster plates always draw both.
     /// </summary>
     internal static void PaintBar(ImDrawListPtr dl, Vector2 b0, Vector2 b1, float round, float a,
-        float shownRatio, float trailRatio, uint baseCol, bool ticks)
+        float shownRatio, float trailRatio, uint baseCol, bool ticks, bool track = true, bool chip = true)
     {
-        dl.AddRectFilled(b0 - Vector2.One, b1 + Vector2.One, Mul(BarEdge, a * 0.9f), round + 1);
-        dl.AddRectFilled(b0, b1, Mul(BarBack, a), round);
+        if (track)
+        {
+            dl.AddRectFilled(b0 - Vector2.One, b1 + Vector2.One, Mul(BarEdge, a * 0.9f), round + 1);
+            dl.AddRectFilled(b0, b1, Mul(BarBack, a), round);
+        }
 
         float innerW = b1.X - b0.X - 2f;
         var i0 = new Vector2(b0.X + 1, b0.Y + 1);
@@ -1409,7 +1451,7 @@ internal static class MonsterHud
         float shown = Math.Clamp(shownRatio, 0f, 1f);
         float trail = Math.Clamp(trailRatio, 0f, 1f);
 
-        if (trail > shown + 0.002f)
+        if (chip && trail > shown + 0.002f)
             dl.AddRectFilled(new Vector2(i0.X + innerW * shown, i0.Y), new Vector2(i0.X + innerW * trail, innerBottom), Mul(Trail, a * 0.85f));
 
         if (shown > 0.001f)
@@ -1426,84 +1468,6 @@ internal static class MonsterHud
                 float tx = MathF.Round(i0.X + innerW * q * 0.25f);
                 dl.AddLine(new Vector2(tx, i0.Y + 1), new Vector2(tx, innerBottom - 1), Mul(Tick, a), 1f);
             }
-    }
-
-    /// <summary>
-    /// The debuff row, centred under the bar: one icon per kind with a shrinking
-    /// countdown line, blinking in its last seconds; "+N" when more than fit;
-    /// then the "debuffed by others" marker.
-    /// </summary>
-    private static void PaintIcons(ImDrawListPtr dl, Plate p, float cx, float top, float k, float a, long now)
-    {
-        float sz = p.IconSize;
-        float gap = MathF.Max(2f, MathF.Round(2f * k));
-        int count = p.IconCount;
-        int shown = count > MaxIcons ? MaxIcons - 1 : count;
-        int overflow = count - shown;
-        string more = "";
-        float moreW = 0f;
-        if (overflow > 0)
-        {
-            if (overflow != p.OverflowKey)
-            {
-                p.OverflowKey = overflow;
-                p.OverflowString = "+" + overflow.ToString(CultureInfo.InvariantCulture);
-            }
-            more = p.OverflowString;
-            moreW = TextWidth(p.SmallFont, p.SmallSize, more) + 4f * k;
-        }
-        int slots = shown + (p.Others ? 1 : 0);
-        float rowW = slots * sz + Math.Max(0, slots - 1) * gap + (overflow > 0 ? gap + moreW : 0f);
-        float x = MathF.Round(cx - rowW * 0.5f);
-        float glyphPx = MathF.Round(sz * 0.8f);
-        ImFontPtr iconFont = ImGuiFonts.Sharp(glyphPx, bold: false);   // the icons are merged into every bake
-        float lineH = MathF.Max(1f, MathF.Round(1.5f * k));
-
-        for (int i = 0; i < shown; i++)
-        {
-            DebuffIcon ic = p.Icons[i];
-            int kind = (int)ic.Kind;
-            uint tint = kind < KindTint.Length ? KindTint[kind] : KindTint[^1];
-            float remaining = (ic.Expiry - now) / (float)Stopwatch.Frequency;
-            float frac = ic.Duration > 0 ? Math.Clamp(remaining / ic.Duration, 0f, 1f) : 0f;
-            float blink = remaining < BlinkSec ? 0.45f + 0.55f * MathF.Abs(MathF.Cos(remaining * MathF.PI * 2f)) : 1f;
-
-            var i0 = new Vector2(x, top);
-            var i1 = i0 + new Vector2(sz, sz);
-            dl.AddRectFilled(i0, i1, Mul(IconBack, a), 2f * k);
-            dl.AddRect(i0, i1, Mul(tint, a * 0.55f * blink), 2f * k, ImDrawFlags.None, 1f);
-            PhosphorIcons.DrawCentered(dl, iconFont, glyphPx, KindGlyph[kind < KindGlyph.Length ? kind : KindGlyph.Length - 1],
-                i0, new Vector2(sz, sz), Mul(tint, a * blink));
-            if (ic.Stack > 1 && ic.Stack < StackDigits.Length)
-            {
-                string digit = StackDigits[ic.Stack];
-                float ds = MathF.Round(p.SmallSize * 0.85f);
-                var dp = new Vector2(i1.X - TextWidth(p.SmallFont, ds, digit) + 1f, i0.Y - 2f);
-                OutlinedText(dl, p.SmallFont, ds, dp, a, digit);
-                dl.AddText(p.SmallFont, ds, dp, Mul(HpText, a), digit);
-            }
-            // Countdown: a line under the icon that shrinks to nothing at expiry.
-            float ly = i1.Y + 1f;
-            dl.AddRectFilled(new Vector2(i0.X, ly), new Vector2(i1.X, ly + lineH), Mul(Outline, a * 0.8f));
-            if (frac > 0f)
-                dl.AddRectFilled(new Vector2(i0.X, ly), new Vector2(i0.X + MathF.Max(1f, sz * frac), ly + lineH), Mul(tint, a * blink));
-            x += sz + gap;
-        }
-
-        if (overflow > 0)
-        {
-            var mp = new Vector2(x, MathF.Round(top + (sz - p.SmallSize) * 0.5f));
-            OutlinedText(dl, p.SmallFont, p.SmallSize, mp, a, more);
-            dl.AddText(p.SmallFont, p.SmallSize, mp, Mul(DimText, a), more);
-            x += moreW + gap;
-        }
-
-        if (p.Others)
-        {
-            var i0 = new Vector2(x, top);
-            dl.AddRectFilled(i0, i0 + new Vector2(sz, sz), Mul(IconBack, a * 0.8f), 2f * k);
-            PhosphorIcons.DrawCentered(dl, iconFont, glyphPx, PhosphorIcons.UsersThree, i0, new Vector2(sz, sz), Mul(OthersTint, a * 0.8f));
-        }
     }
 
     /// <summary>A soft 1 px outline under text (the text itself is drawn by the caller).</summary>
@@ -1713,12 +1677,13 @@ internal static class MonsterHud
     /// <summary>Chat lines for "/rv plates status": what the overlays see right now. AC's thread.</summary>
     public static string[] DescribeLines()
     {
-        int onScreen = 0, known = 0, labels = 0, labelsOnScreen = 0;
+        int onScreen = 0, known = 0, labels = 0, labelsOnScreen = 0, portals = 0;
         foreach (Plate p in Plates.Values)
         {
             if (p.IsLabel)
             {
                 labels++;
+                if (p.Kind == RadarKind.Portal) portals++;
                 if (p.OnScreen && p.Alpha > 0.01f) labelsOnScreen++;
                 continue;
             }
@@ -1728,7 +1693,7 @@ internal static class MonsterHud
         return new[]
         {
             $"Nameplates: {Plates.Count - labels} tracked, {onScreen} on screen, {known} with health seen; " +
-            $"name labels {labels} ({labelsOnScreen} on screen), {Classes.Count} objects classified; " +
+            $"name labels {labels} ({labelsOnScreen} on screen, {portals} portals), {Classes.Count} objects classified; " +
             $"camera {(GameMatrixCapture.HasCapturedFrame ? "captured" : "not captured")} " +
             $"(frame lb 0x{GameMatrixCapture.FrameLandblock:X4}, viewport {GameMatrixCapture.ViewportWidth}x{GameMatrixCapture.ViewportHeight}); " +
             $"weakness data {(_weakByWcid.Count + _weakByName.Count > 0 ? "loaded" : "none")}.",

@@ -415,6 +415,9 @@ internal static unsafe class Win32Backend
     /// WM_MOUSEMOVE still reaches AC, so AC's own mouse-over follows the cursor (Compatibility/AcMouseOver).
     /// Means nothing while _wantCaptureMouse is false.</summary>
     private static volatile bool _mouseMovesToGame;
+    /// <summary>The mouse wheel only is the UI's: a docked click-through panel under the cursor reads it
+    /// (ImGuiPanelHost.WheelWanted, the radar's "Mouse wheel still zooms"). Clicks and moves still reach AC.</summary>
+    private static volatile bool _wheelToUi;
 
     /// <summary>
     /// True while the game window eats mouse input for the ImGui layer: the capture
@@ -534,6 +537,7 @@ internal static unsafe class Win32Backend
         _hasFocus = false;
         _focusInitialized = false;
         _wantCaptureMouse = false;
+        _wheelToUi = false;
         _wantCaptureKeyboard = false;
         _insertWasDown = false;
         _swallowEnterTail = false;
@@ -629,6 +633,7 @@ internal static unsafe class Win32Backend
             _pendingInput.Clear();
         Array.Clear(_mouseButtons, 0, _mouseButtons.Length);
         _wantCaptureMouse = false;
+        _wheelToUi = false;
         _wantCaptureKeyboard = false;
         if (_hasMouseCapture)
         {
@@ -1084,6 +1089,9 @@ internal static unsafe class Win32Backend
             // A nameplate that is only hovered keeps the clicks but not the moves.
             if (_wantCaptureMouse && IsMouseMessage(msg) && !_heldButtonsBelongToGame
                 && !(msg == WM_MOUSEMOVE && _mouseMovesToGame))
+                return IntPtr.Zero;
+            // The wheel over a click-through panel that zooms with it (it was queued for ImGui above).
+            if (_wheelToUi && (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL))
                 return IntPtr.Zero;
 
             // An ImGui text box is being typed in (io.WantTextInput): keep keys from
@@ -1591,11 +1599,12 @@ internal static unsafe class Win32Backend
     /// <paramref name="mouseMovesToGame"/>: the mouse is wanted only by a nameplate under
     /// the cursor (no ImGui window, no press held); its clicks are eaten, its moves are not.
     /// </summary>
-    public static void UpdateCaptureFlags(bool wantMouse, bool wantTextInput, bool mouseMovesToGame = false)
+    public static void UpdateCaptureFlags(bool wantMouse, bool wantTextInput, bool mouseMovesToGame = false, bool wheelToUi = false)
     {
         bool live = _uiCaptureEnabled && _hasFocus;
         _mouseMovesToGame = mouseMovesToGame;
         _wantCaptureMouse = live && wantMouse;
+        _wheelToUi = live && wheelToUi;
         _wantCaptureKeyboard = wantTextInput;
         ImGuiTextInputActive = wantTextInput;
         if (wantTextInput) _keyboardExpiryLogged = false;
@@ -1606,12 +1615,13 @@ internal static unsafe class Win32Backend
     public static bool UiCaptureEnabled => _uiCaptureEnabled;
 
     public static string DescribeCapture() =>
-        $"wantMouse={_wantCaptureMouse} wantText={_wantCaptureKeyboard} popOutText={ImGuiPopOuts.TextFocusTitle ?? "-"} insertToggle={_uiCaptureEnabled} focus={_hasFocus} heldButtons=0x{_heldMouseButtons:X} heldForGame={_heldButtonsBelongToGame}";
+        $"wantMouse={_wantCaptureMouse} wheelToUi={_wheelToUi} wantText={_wantCaptureKeyboard} popOutText={ImGuiPopOuts.TextFocusTitle ?? "-"} insertToggle={_uiCaptureEnabled} focus={_hasFocus} heldButtons=0x{_heldMouseButtons:X} heldForGame={_heldButtonsBelongToGame}";
 
     /// <summary>No ImGui frame this tick: ImGui wants nothing.</summary>
     public static void ClearCaptureFlags()
     {
         _wantCaptureMouse = false;
+        _wheelToUi = false;
         _wantCaptureKeyboard = false;
         ImGuiTextInputActive = false;
     }
@@ -1636,12 +1646,15 @@ internal static unsafe class Win32Backend
     /// </summary>
     private static void ExpireStaleCaptureFlags()
     {
-        if (!_wantCaptureMouse && !_wantCaptureKeyboard && !ImGuiTextInputActive)
+        if (!_wantCaptureMouse && !_wantCaptureKeyboard && !ImGuiTextInputActive && !_wheelToUi)
             return;
         long now = Stopwatch.GetTimestamp();
         long frame = Volatile.Read(ref _captureFlagsTicks);
-        if (_wantCaptureMouse && now - frame > Stopwatch.Frequency * CaptureStaleMs / 1000)
+        if ((_wantCaptureMouse || _wheelToUi) && now - frame > Stopwatch.Frequency * CaptureStaleMs / 1000)
+        {
             _wantCaptureMouse = false;
+            _wheelToUi = false;
+        }
         if (!_wantCaptureKeyboard && !ImGuiTextInputActive)
             return;
         if (_firstMessageSinceFrameTicks < frame)

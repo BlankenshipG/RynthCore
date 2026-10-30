@@ -616,6 +616,22 @@ internal static class SettingsSchema
             "How big it is: 30% to 250% of normal. \"Text size\" = as big as the panels' text (Text Size above).\nAlso: Ctrl+wheel over it.",
             when: _ => ImGuiBackend.ImGuiPanelHost.HasFace(title));
 
+    // RynthVision's player plate lock (MonsterHudSettings, nameplate_settings.txt): locked unless it is fixed on
+    // screen and unlocked (a plate following the character can't be dragged, so it reads as locked).
+    private static bool SelfPlateLocked()
+    {
+        if (!ImGuiBackend.Hud.MonsterHudSettings.Loaded) { ImGuiBackend.Hud.MonsterHudSettings.EnsureLoadQueued(); return true; }
+        return !ImGuiBackend.Hud.MonsterHudSettings.SelfMovable;
+    }
+
+    // Unlocking a following plate fixes it on screen at its saved spot (SetSelfLocked); saved at once.
+    private static void SetSelfPlateLocked(bool locked)
+    {
+        if (!ImGuiBackend.Hud.MonsterHudSettings.Loaded) { ImGuiBackend.Hud.MonsterHudSettings.EnsureLoadQueued(); return; }
+        ImGuiBackend.Hud.MonsterHudSettings.SetSelfLocked(locked);
+        ImGuiBackend.Hud.MonsterHudSettings.Save();
+    }
+
     private static SettingRow TextSize(string label, string panelTitle) =>
         Combo("   " + label, PanelTextScale.SizeNames, _ => PanelTextScale.GetOwn(panelTitle), (_, v) => PanelTextScale.Set(panelTitle, v),
             "This panel's size: 100% = normal, 10% a step. Also: Ctrl+wheel over the panel.")
@@ -982,6 +998,19 @@ internal static class SettingsSchema
             Bool("Hide retail vitals bar", _ => Compatibility.RetailVitalsHooks.HideRetailVitals,
                 (_, v) => Compatibility.RetailVitalsHooks.HideRetailVitals = v,
                 "Hide the game's own health/stamina/mana bars; the RynthVision player plate and the RynthAi dashboard show them.\nSaved for this PC. Also: /rc ui retailvitals on|off."),
+            // RynthVision's own plate (2026-10-27: players couldn't find how to move it). The same setting as
+            // Vision > Nameplates > Your plate > Lock position, stored by the engine (nameplate_settings.txt).
+            Bool("Lock your vitals plate", _ => SelfPlateLocked(), (_, v) => SetSelfPlateLocked(v),
+                "Your RynthVision plate (the health, stamina and mana bars). Untick it and the plate shows a frame:\n" +
+                "drag it where you want it, then tick this again to lock it there. A plate that follows your character\n" +
+                "is fixed on screen when you untick this. Same as Vision > Nameplates > Your plate > Lock position.\n" +
+                "Also: /rv plates self lock on|off.",
+                when: _ => ImGuiBackend.Hud.HudFeed.VisionInstalled),
+            Note("To move it: untick, drag the plate itself (not where a panel covers it), then tick to lock it.",
+                when: _ => ImGuiBackend.Hud.HudFeed.VisionInstalled && ImGuiBackend.Hud.MonsterHudSettings.SelfPlate),
+            Note("Your plate is turned off: Vision > Nameplates > Your plate > Show your plate.",
+                when: _ => ImGuiBackend.Hud.HudFeed.VisionInstalled && ImGuiBackend.Hud.MonsterHudSettings.Loaded
+                           && !ImGuiBackend.Hud.MonsterHudSettings.SelfPlate),
             Spacer(),
             Section("Toolbar"),
             // Stored by the engine (RetailToolbarHooks, retail_ui.txt beside the vitals), not in the profile.

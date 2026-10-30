@@ -18,15 +18,32 @@
 //       InitKeymap): InitializeKeymap (+0x08, clears), AddKeyMap_(path) (+0x28,
 //       the file), AddKeyMap(0x10000001) and AddKeyMap(1) (+0x2C, the game's
 //       fixed maps from the dat);
-//    4. the file's new time goes in "<keymap>.rynthcore" beside it.
-//  Every other client looks at the file once a second and loads it the same
-//  way when it changed with that time noted. A file a closing client wrote (AC's
-//  own save on shutdown) isn't loaded: that would throw away keys the others
-//  changed in Configure Keyboard and haven't saved, as AC would never do.
+//    4. the edits made (AcKeymapText.Edit: bind K to A / K off A / K off
+//       everything) go in "<keymap>.rynthcore" beside it, one change per stamp.
+//
+//  Following (2026-10-27, a player: keys deleted in Configure Keyboard came back
+//  mid-fight). Every other client looks at "<keymap>.rynthcore" once a second
+//  (and before a change of its own) and makes each change it hasn't made yet to
+//  ITS OWN keys: AC writes them (SaveKeyMap) to a scratch file in %TEMP%, the
+//  same edits go in that text, and the scratch is loaded as above, then
+//  deleted. Its keys changed in Configure Keyboard and not saved stay; the
+//  shared change lands. It never loads the shared file for another client's
+//  change (that file holds the changing client's keys, not its own), so a file
+//  a closing client wrote (AC's own save) is never loaded either. Anything that
+//  fails before the load leaves the keys as they are; an edited scratch that
+//  didn't load is followed by the client's own keys as AC wrote them.
+//  What was made last ("RYNTHCORE_KEYMAP_SEEN", the process's environment)
+//  outlives an engine hot reload, so a reload makes nothing again; a new client
+//  makes only changes newer than its start (AC loaded the file after older ones).
+//  An older RynthCore's marker (the file's time alone: what changed isn't known)
+//  is logged and not loaded: loading the whole file is what lost the keys.
 //
 //  A key for one of RynthCore's own commands (RynthDefective's slots past the
 //  game's 18: "/rdef use 2") is an engine hotkey; it takes its key the same way
-//  (off AC's actions too, so no key shows on two slots).
+//  (off AC's actions too, so no key shows on two slots). Op.BindCommandOnly
+//  (SetActionKey op 3, for RynthDefective's independent bar) sets the engine
+//  hotkey alone: AC's keymap isn't touched, no client loads anything, and the
+//  hotkey simply answers first.
 //
 //  ICIDM::s_cidm (the CInputManager*, by code-xref), the four functions and
 //  PStringBase<char>(const char*) (0x00401340) are found by pattern only, and
@@ -38,6 +55,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -159,10 +177,14 @@ internal static unsafe class AcKeymapLive
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetShortPathNameW(string longPath, StringBuilder shortPath, int size);
 
-    // ── Watching (every client) ──────────────────────────────────────────────
+    // ── Following another client's change (every client) ─────────────────────
 
-    private static DateTime _seenUtc = DateTime.MinValue;
-    private static string _seenFile = string.Empty;
+    private const string SeenEnv = "RYNTHCORE_KEYMAP_SEEN";   // the newest change made here; the process's, so it outlives a hot reload
+    private const int KeepChanges = 64;                      // changes kept in "<keymap>.rynthcore"
+
+    private static long _seenStamp = -1;                     // -1: not read yet (SeenStamp)
+    private static string _markerFile = string.Empty;
+    private static DateTime _markerUtc = DateTime.MinValue;
     private static long _nextCheckMs;
     private static readonly DateTime ProcessStartUtc = SafeStartUtc();
 
@@ -174,61 +196,187 @@ internal static unsafe class AcKeymapLive
 
     private static string MarkerPath(string keymap) => keymap + ".rynthcore";
 
-    private static long ReadMarker(string keymap)
+    /// <summary>
+    /// The newest change this client has made. After an engine hot reload: what the last generation made (so the
+    /// reload makes nothing again). A new client: its start (AC loaded the file after anything older).
+    /// </summary>
+    private static long SeenStamp
     {
-        try
+        get
         {
-            string m = MarkerPath(keymap);
-            return File.Exists(m) && long.TryParse(File.ReadAllText(m).Trim(), out long t) ? t : 0;
+            if (_seenStamp < 0)
+            {
+                string? carried = null;
+                try { carried = Environment.GetEnvironmentVariable(SeenEnv); } catch { }
+                long start = ProcessStartUtc.Ticks;
+                _seenStamp = long.TryParse(carried, NumberStyles.None, CultureInfo.InvariantCulture, out long s) && s > start ? s : start;
+            }
+            return _seenStamp;
         }
-        catch { return 0; }
     }
 
-    /// <summary>Game thread, after AC's tick: the queued changes, then (once a second) another client's change.</summary>
+    private static void MarkSeen(long stamp)
+    {
+        if (stamp <= SeenStamp) return;
+        _seenStamp = stamp;
+        try { Environment.SetEnvironmentVariable(SeenEnv, stamp.ToString(CultureInfo.InvariantCulture)); } catch { }
+    }
+
+    /// <summary>Game thread, after AC's tick: another client's change (once a second, and before one made here), then the queued changes.</summary>
     public static void Tick()
     {
-        if (!CanChange || !LoginLifecycleHooks.HasObservedLoginComplete) return;
+        if (!LoginLifecycleHooks.HasObservedLoginComplete) return;
+        if (CanChange)
+        {
+            long now = Environment.TickCount64;
+            // Before a change of this client's own too: its keys, saved first, then hold the other client's change.
+            if (now >= _nextCheckMs || !Requests.IsEmpty)
+            {
+                _nextCheckMs = now + 1000;
+                try { FollowOthers(); }
+                catch (Exception ex) { RynthLog.Compat($"AcKeymapLive: following another client's key change failed: {ex.GetType().Name}: {ex.Message}"); }
+            }
+        }
+        // An engine hotkey alone (BindCommandOnly, a command's unbind) needs none of AC's functions.
         DrainRequests();
-        if (_dumpTo is { } dump)
+        if (CanChange && _dumpTo is { } dump)
         {
             _dumpTo = null;
             string said = SaveOwn(dump) ? $"AC's keys in memory written to {dump}." : "AC couldn't write its keys there.";
             RynthLog.Compat("AcKeymapLive: " + said);
             AcMainThreadQueue.EnqueueWriteToChat("[RynthCore] " + said, 1);
         }
-        long now = Environment.TickCount64;
-        if (now < _nextCheckMs) return;
-        _nextCheckMs = now + 1000;
+    }
+
+    /// <summary>The changes in "&lt;keymap&gt;.rynthcore" this client hasn't made yet, made to its own keys. Game thread.</summary>
+    private static void FollowOthers()
+    {
+        string file = AcKeymap.FilePath;
+        if (file.Length == 0) return;
+        string marker = MarkerPath(file);
+        if (!File.Exists(marker)) return;
+        DateTime w = File.GetLastWriteTimeUtc(marker);
+        if (w == _markerUtc && string.Equals(marker, _markerFile, StringComparison.OrdinalIgnoreCase)) return;
+        string text;
+        try { text = File.ReadAllText(marker); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return; }   // being written: the next look
+        _markerFile = marker;
+        _markerUtc = w;
+
+        List<AcKeymapText.Change> log = AcKeymapText.ParseChanges(text, out bool older);
+        if (older)
+        {
+            // It says the file changed, not what: loading the whole file would throw away this client's keys changed in
+            // Configure Keyboard and not saved (the bug this replaced). The change is in the file for the next start.
+            if (w > ProcessStartUtc)
+                RynthLog.Compat("AcKeymapLive: an older RynthCore changed a key in another client; not loaded here (the whole file would " +
+                                "replace keys changed in this client and not saved). It is in the keymap for the next start.");
+            return;
+        }
+        List<AcKeymapText.Change> pending = AcKeymapText.Pending(log, SeenStamp, Environment.ProcessId);
+        long newest = AcKeymapText.Newest(log);
+        if (pending.Count > 0)
+        {
+            try { Follow(pending); }
+            catch (Exception ex)
+            {
+                RynthLog.Compat($"AcKeymapLive: another client changed keys; not made here ({ex.GetType().Name}: {ex.Message}), this client's keys are left as they are.");
+            }
+        }
+        MarkSeen(newest);   // made or not (logged), each change is tried once
+    }
+
+    /// <summary>
+    /// Another client's changes, made to this client's own keys: AC writes them to a scratch file, the same edits
+    /// go in, and the scratch is loaded as AC loads its keymap. Anything failing before the load: logged, keys left
+    /// as they are. Game thread.
+    /// </summary>
+    private static void Follow(List<AcKeymapText.Change> pending)
+    {
+        var what = new List<string>();
+        foreach (AcKeymapText.Change c in pending)
+            foreach (AcKeymapText.Edit e in c.Edits) what.Add(AcKeymapText.Describe(e));
+        string changes = string.Join("; ", what);
+
+        IntPtr im = InputManager();
+        if (im == IntPtr.Zero)
+        {
+            RynthLog.Compat($"AcKeymapLive: another client changed keys ({changes}); not made here: the input manager isn't there.");
+            return;
+        }
+        string scratch = Path.Combine(Path.GetTempPath(), $"rynthcore-keymap-{Environment.ProcessId}.keymap");
         try
         {
-            string file = AcKeymap.FilePath;
-            if (file.Length == 0) return;
-            DateTime t = File.GetLastWriteTimeUtc(file);
-            bool first = !string.Equals(file, _seenFile, StringComparison.OrdinalIgnoreCase);
-            if (!first && t == _seenUtc) return;
-            _seenFile = file;
-            _seenUtc = t;
-            // RynthCore's change (the time noted beside it); at the first look, only one made after this client loaded the file.
-            if (ReadMarker(file) != t.Ticks) return;
-            if (first && t <= ProcessStartUtc.AddSeconds(5)) return;
-            Reload(file, "another client changed a key");
+            // There first, so a folder name AC's file functions can't take has a short (8.3) form.
+            File.WriteAllBytes(scratch, Array.Empty<byte>());
+            if (!SaveOwn(scratch))
+            {
+                RynthLog.Compat($"AcKeymapLive: another client changed keys ({changes}); AC couldn't write this client's keys to {scratch}, so they are left as they are.");
+                return;
+            }
+            // Latin-1: AC's bytes back exactly as it wrote them (the edits are ASCII).
+            string own = File.ReadAllText(scratch, Encoding.Latin1);
+            List<string> lines = AcKeymapText.Split(own, out string nl);
+            if (AcKeymapText.Bindings(lines).Count == 0)
+            {
+                RynthLog.Compat($"AcKeymapLive: another client changed keys ({changes}); AC wrote no keys for this client, so they are left as they are.");
+                return;
+            }
+            int r = AcKeymapText.ApplyChanges(lines, pending, out string err);
+            if (r < 0)
+            {
+                RynthLog.Compat($"AcKeymapLive: another client changed keys ({changes}); it can't be made here ({err}), so this client's keys are left as they are.");
+                return;
+            }
+            if (r == 0)
+            {
+                RynthLog.Compat($"AcKeymapLive: another client changed keys ({changes}); this client has them already.");
+                return;
+            }
+            File.WriteAllText(scratch, AcKeymapText.Join(lines, nl), Encoding.Latin1);
+            int loaded = LoadKeys(im, scratch);
+            if (loaded > 0)
+            {
+                AcKeymap.Invalidate();
+                RynthLog.Compat($"AcKeymapLive: another client changed keys; made here too, this client's own keys kept ({changes}).");
+                return;
+            }
+            if (loaded < 0)
+            {
+                RynthLog.Compat($"AcKeymapLive: another client changed keys ({changes}); AC can't open {scratch}, so this client's keys are left as they are.");
+                return;
+            }
+            // The edited keys didn't load (AC cleared them): this client's own back, as AC wrote them; else the file, as AC starts.
+            bool back = false;
+            try
+            {
+                File.WriteAllText(scratch, own, Encoding.Latin1);
+                back = LoadKeys(im, scratch) > 0;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            RynthLog.Compat($"AcKeymapLive: another client changed keys ({changes}); AC didn't load them here - " +
+                            (back ? "this client's own keys loaded again." : "nor this client's own keys: loading the keymap file."));
+            if (!back) Reload(AcKeymap.FilePath, "this client's own keys didn't load");
+            AcKeymap.Invalidate();
         }
-        catch (Exception ex)
+        finally
         {
-            RynthLog.Compat($"AcKeymapLive: watching the keymap failed: {ex.GetType().Name}: {ex.Message}");
+            try { File.Delete(scratch); } catch { }
         }
     }
 
-    /// <summary>Loads the file into AC as AC does when it starts. Game thread.</summary>
-    private static bool Reload(string file, string why)
+    /// <summary>
+    /// AC's keys from <paramref name="file"/> the way gmClient::InitKeymap loads them: InitializeKeymap (clears),
+    /// AddKeyMap_(file), the dat's two fixed maps. 1 loaded; 0 the file didn't load (the game's own keys now); -1
+    /// nothing done (a name AC can't open: the keys as they were). Game thread.
+    /// </summary>
+    private static int LoadKeys(IntPtr im, string file)
     {
-        IntPtr im = InputManager();
-        if (im == IntPtr.Zero) return false;
         IntPtr path = AcString(file);
         if (path == IntPtr.Zero)
         {
             RynthLog.Compat($"AcKeymapLive: AC can't open '{file}' (its name has letters AC's file functions don't take).");
-            return false;
+            return -1;
         }
         IntPtr vt = Marshal.ReadIntPtr(im);
         var init = (delegate* unmanaged[Thiscall]<IntPtr, byte>)Marshal.ReadIntPtr(vt, VtInitialize);
@@ -239,9 +387,19 @@ internal static unsafe class AcKeymapLive
         if (!loaded) init(im);   // as gmClient::InitKeymap: a file that didn't load leaves the game's own keys
         db(im, FixedMapA);
         db(im, FixedMapB);
+        return loaded ? 1 : 0;
+    }
+
+    /// <summary>Loads the shared keymap file into AC as AC does when it starts (this client's own change). Game thread.</summary>
+    private static bool Reload(string file, string why)
+    {
+        IntPtr im = InputManager();
+        if (im == IntPtr.Zero || file.Length == 0) return false;
+        int r = LoadKeys(im, file);
+        if (r < 0) return false;
         AcKeymap.Invalidate();
-        RynthLog.Compat($"AcKeymapLive: keys loaded again from {Path.GetFileName(file)} ({why}){(loaded ? "" : " - the file didn't load: the game's default keys")}.");
-        return loaded;
+        RynthLog.Compat($"AcKeymapLive: keys loaded again from {Path.GetFileName(file)} ({why}){(r > 0 ? "" : " - the file didn't load: the game's default keys")}.");
+        return r > 0;
     }
 
     /// <summary>This client's keys to the file (AC's own writer). Game thread.</summary>
@@ -257,7 +415,8 @@ internal static unsafe class AcKeymapLive
 
     // ── Changing (queued from any thread, done on the game thread) ───────────
 
-    public enum Op { Bind = 1, Unbind = 2 }
+    /// <summary>SetActionKey's ops (0 is Check). BindCommandOnly: an engine command's hotkey alone, AC's keymap untouched.</summary>
+    public enum Op { Bind = 1, Unbind = 2, BindCommandOnly = 3 }
 
     private readonly record struct Request(string Action, string Key, Op Op, long QueuedMs);
 
@@ -312,15 +471,22 @@ internal static unsafe class AcKeymapLive
         return 1;
     }
 
-    /// <summary>Queues binding or unbinding the key; done on the game thread. False (with why) when it can't be.</summary>
+    /// <summary>
+    /// Queues binding or unbinding the key; done on the game thread. False (with why) when it can't be.
+    /// <see cref="Op.BindCommandOnly"/>: an engine command ("/rdef use 3") only; its hotkey alone is set (off
+    /// RynthCore's other hotkeys), AC's keymap is never touched, so it needs none of AC's keymap functions.
+    /// </summary>
     public static bool Enqueue(string action, string keyText, Op op, out string message)
     {
         message = string.Empty;
         action = action.Trim();
         keyText = keyText.Trim();
+        if (op is not (Op.Bind or Op.Unbind or Op.BindCommandOnly)) { message = "Unknown op."; return false; }
         if (!ValidAction(action)) { message = "Not an action."; return false; }
+        if (op == Op.BindCommandOnly && !IsCommand(action)) { message = "Only a RynthCore command (\"/rdef use 3\") takes a key without AC's keymap."; return false; }
         if (keyText.Length == 0 || keyText.Length > 40) { message = "No key."; return false; }
-        if (op == Op.Bind && !HotkeyKeys.TryParse(keyText, out _, out string err)) { message = err; return false; }
+        if (op is Op.Bind or Op.BindCommandOnly && !HotkeyKeys.TryParse(keyText, out _, out string err)) { message = err; return false; }
+        // A command's unbind and BindCommandOnly change only RynthCore's hotkeys.
         if (!CanChange && (!IsCommand(action) || op == Op.Bind)) { message = "This client can't change AC's keys (" + _status + ")"; return false; }
         if (Requests.Count >= 16) { message = "Too many changes at once."; return false; }
         Requests.Enqueue(new Request(action, keyText, op, Environment.TickCount64));
@@ -367,8 +533,8 @@ internal static unsafe class AcKeymapLive
             Backup(file);
             SaveOwn(file);
             List<string> ul = AcKeymapText.Split(File.ReadAllText(file), out string unl);
-            if (!UnbindAc(ul, r.Action, r.Key)) return $"{AcKeymapText.Describe(r.Action)} has no key {r.Key}.";
-            WriteAndLoad(file, ul, unl);
+            if (!UnbindAc(ul, r.Action, r.Key, out AcKeymapText.Edit unbound)) return $"{AcKeymapText.Describe(r.Action)} has no key {r.Key}.";
+            WriteAndLoad(file, ul, unl, new[] { unbound });
             return $"{r.Key} no longer does {AcKeymapText.Describe(r.Action)}.";
         }
 
@@ -378,8 +544,9 @@ internal static unsafe class AcKeymapLive
         if (!command && file.Length == 0) return "There is no AC keymap file to change.";
 
         // AC's side: the key comes off AC's other actions (a command's hotkey would take it before AC anyway).
+        // BindCommandOnly: the hotkey alone; AC keeps its keys (the hotkey answers first), nothing is loaded anywhere.
         var from = new List<string>();
-        if (file.Length > 0 && dik != null)
+        if (r.Op != Op.BindCommandOnly && file.Length > 0 && dik != null)
         {
             List<string> lines = AcKeymapText.Split(File.ReadAllText(file), out string nl);
             bool metaOk = AcKeymapText.TryMeta(lines, combo.Mods, out uint meta, out string metaErr);
@@ -391,14 +558,21 @@ internal static unsafe class AcKeymapLive
                 if (SaveOwn(file)) lines = AcKeymapText.Split(File.ReadAllText(file), out nl);
                 else RynthLog.Compat("AcKeymapLive: couldn't save this client's keys first; changing the file as it is.");
                 List<AcKeymapText.Line> taken;
+                string mods = AcKeymapText.ModsOf(lines, meta);
+                AcKeymapText.Edit edit;
                 if (command)
                 {
-                    taken = AcKeymapText.Uses(lines, 0, dik, meta);
-                    for (int k = taken.Count - 1; k >= 0; k--) lines.RemoveAt(taken[k].Index);
+                    taken = AcKeymapText.Take(lines, 0, dik, meta);
+                    edit = new AcKeymapText.Edit(AcKeymapText.EditKind.Take, string.Empty, 0, AcKeymapText.Canonical(dik), mods);
                 }
-                else if (!AcKeymapText.Bind(lines, r.Action, 0, dik, meta, out taken, out string bindErr)) return bindErr;
+                else
+                {
+                    if (!AcKeymapText.Bind(lines, r.Action, 0, dik, meta, out taken, out string bindErr)) return bindErr;
+                    edit = new AcKeymapText.Edit(AcKeymapText.EditKind.Bind, r.Action, 0, AcKeymapText.Canonical(dik), mods,
+                        AcKeymapText.GroupOf(lines, r.Action, 0, dik, meta));
+                }
                 foreach (AcKeymapText.Line l in taken) from.Add(AcKeymapText.Describe(l.Action));
-                WriteAndLoad(file, lines, nl);
+                WriteAndLoad(file, lines, nl, new[] { edit });
             }
         }
 
@@ -411,32 +585,89 @@ internal static unsafe class AcKeymapLive
         return $"{combo} now does {what}" + (from.Count > 0 ? " (taken from " + string.Join(", ", from) + ")." : ".");
     }
 
-    /// <summary>The edited file written (backed up the first time), its time noted, and loaded here; the others follow within a second.</summary>
-    private static void WriteAndLoad(string file, List<string> lines, string newline)
+    /// <summary>
+    /// The edited file written (backed up the first time) and loaded here, and its edits recorded in
+    /// "&lt;keymap&gt;.rynthcore"; the others make them to their own keys within a second.
+    /// </summary>
+    private static void WriteAndLoad(string file, List<string> lines, string newline, IReadOnlyList<AcKeymapText.Edit> edits)
     {
         Backup(file);
         string tmp = file + ".tmp";
         File.WriteAllText(tmp, AcKeymapText.Join(lines, newline), Encoding.ASCII);
-        File.Move(tmp, file, overwrite: true);
-        DateTime t = File.GetLastWriteTimeUtc(file);
-        File.WriteAllText(MarkerPath(file), t.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        _seenFile = file;
-        _seenUtc = t;
+        MoveOver(tmp, file);
+        try { Record(file, edits); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            RynthLog.Compat($"AcKeymapLive: couldn't note the change for the other clients ({ex.Message}); they get it at their next start.");
+        }
         Reload(file, "a key changed here");
     }
 
-    /// <summary>Removes the action's key: by combo ("Ctrl+1") or by the text GetActionKeys showed ("Mouse4").</summary>
-    private static bool UnbindAc(List<string> lines, string action, string keyText)
+    /// <summary>The change added to "&lt;keymap&gt;.rynthcore" (the newest <see cref="KeepChanges"/> kept), written whole.</summary>
+    private static void Record(string file, IReadOnlyList<AcKeymapText.Edit> edits)
     {
+        string marker = MarkerPath(file);
+        List<AcKeymapText.Change> log = new();
+        try
+        {
+            // An older RynthCore's marker (or none): the log starts here.
+            if (File.Exists(marker)) log = AcKeymapText.ParseChanges(File.ReadAllText(marker), out _);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        long stamp = AcKeymapText.NextStamp(log, DateTime.UtcNow.Ticks);
+        log = AcKeymapText.Append(log, new AcKeymapText.Change(stamp, Environment.ProcessId, new List<AcKeymapText.Edit>(edits)), KeepChanges);
+        string tmp = marker + "." + Environment.ProcessId.ToString(CultureInfo.InvariantCulture) + ".tmp";
+        File.WriteAllText(tmp, AcKeymapText.FormatChanges(log), Encoding.ASCII);
+        try { MoveOver(tmp, marker); }
+        catch
+        {
+            try { File.Delete(tmp); } catch { }
+            throw;
+        }
+        // Made here: never again by this client (nor by its next engine after a hot reload).
+        MarkSeen(stamp);
+        _markerFile = marker;
+        _markerUtc = File.GetLastWriteTimeUtc(marker);
+    }
+
+    /// <summary>Replaces <paramref name="dest"/> with <paramref name="tmp"/>; a few tries, as another client may be reading it that moment.</summary>
+    private static void MoveOver(string tmp, string dest)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(tmp, dest, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (attempt < 5 && ex is IOException or UnauthorizedAccessException)
+            {
+                System.Threading.Thread.Sleep(15);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Removes the action's key: by combo ("Ctrl+1") or by the text GetActionKeys showed ("Mouse4").
+    /// <paramref name="edit"/>: the binding removed, for the other clients.
+    /// </summary>
+    private static bool UnbindAc(List<string> lines, string action, string keyText, out AcKeymapText.Edit edit)
+    {
+        edit = default;
         if (HotkeyKeys.TryParse(keyText, out KeyCombo combo, out _) && AcKeymapText.DikForVk(combo.Vk) is { } dik
             && AcKeymapText.TryMeta(lines, combo.Mods, out uint meta, out _)
             && AcKeymapText.Unbind(lines, action, 0, dik, meta))
+        {
+            edit = new AcKeymapText.Edit(AcKeymapText.EditKind.Unbind, action, 0, AcKeymapText.Canonical(dik), AcKeymapText.ModsOf(lines, meta));
             return true;
+        }
         foreach (AcKeymapText.Line l in AcKeymapText.Bindings(lines))
         {
             if (!l.Action.Equals(action, StringComparison.OrdinalIgnoreCase)) continue;
-            if (AcKeymap.Describe(new AcKeymap.Binding(l.Device, l.Dik, l.Meta)).Equals(keyText, StringComparison.OrdinalIgnoreCase))
-                return AcKeymapText.Unbind(lines, action, l.Device, l.Dik, l.Meta);
+            if (!AcKeymap.Describe(new AcKeymap.Binding(l.Device, l.Dik, l.Meta)).Equals(keyText, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!AcKeymapText.Unbind(lines, action, l.Device, l.Dik, l.Meta)) return false;
+            edit = new AcKeymapText.Edit(AcKeymapText.EditKind.Unbind, action, l.Device, l.Dik, AcKeymapText.ModsOf(lines, l.Meta));
+            return true;
         }
         return false;
     }

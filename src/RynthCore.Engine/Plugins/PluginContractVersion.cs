@@ -33,8 +33,16 @@ internal static class PluginContractVersion
     // v90: windows that draw their own frame (manifest "chrome": "none", "fitHeight"):
     //      PanelDragWithLastItem, SetPanelPopOut, PanelTextSize; GetUiColor's Muted and instrument
     //      shades (KeyFace, Hairline, Inset, Faint), GetUiFont's Dash and Narrow fonts (2026-10-21).
-    // v91: GetWindowPlacement and SetWindowPlacement: a plugin's own floating windows keep their spot
+    // v91: SetAmbientLightFloor and GetAmbientLight: a floor under AC's world ambient light, drawn
+    //      in this client only (D3D9/AmbientLight.cs; RynthVision's dungeon light, 2026-10-27).
+    //      No table change, same release: RenderSettingsDrawer also draws "nameplates" and
+    //      "combattext" (popped out too), the engine-owned tabs of RynthVision's own Vision window.
+    // v92: SetActionKey op 3, a RynthCore command's key as an engine hotkey only (AC's keymap untouched),
+    //      and the SDK's BindCommandKeyOnly / UnbindCommandKeyOnly; no new function or field, but a plugin
+    //      calling them needs this SDK in Runtime\PluginShared (fix/keymap-follow-change, 2026-10-27).
+    // v93: GetWindowPlacement and SetWindowPlacement: a plugin's own floating windows keep their spot
     //      per character (window_state.<server>.<character>.txt) instead of in the imgui.ini every
     //      running client shares and rewrites (2026-10-26).
-    public const uint Current = 91;
+    //      (Was v91 on the test branch; renumbered after upstream's v91 and v92, 2026-10-29.)
+    public const uint Current = 93;
 }

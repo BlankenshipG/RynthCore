@@ -116,7 +116,14 @@ internal static unsafe class ChatCommandDispatcher
         }
     }
 
-    public static bool Dispatch(string? text)
+    /// <summary>A line from a plugin, a command file or the login commands (<see cref="ChatCommandOrigin.Script"/>).</summary>
+    public static bool Dispatch(string? text) => Dispatch(text, ChatCommandOrigin.Script);
+
+    /// <summary>
+    /// Runs a chat line as if typed. <paramref name="origin"/> says who sent it, for the answer of an
+    /// engine /rc command (RynthCoreChatCommands): Player for a RynthCore hotkey, Script for the rest.
+    /// </summary>
+    public static bool Dispatch(string? text, ChatCommandOrigin origin)
     {
         if (string.IsNullOrWhiteSpace(text))
             return false;
@@ -136,7 +143,7 @@ internal static unsafe class ChatCommandDispatcher
         // from the drain, where IsOnMainThread is satisfied and the body
         // below runs directly — so there's only one code path to keep in sync.
         if (!MainThreadGuard.IsOnMainThread())
-            return AcMainThreadQueue.EnqueueChatCommand(text);
+            return AcMainThreadQueue.EnqueueChatCommand(text, origin);
 
         bool outerDispatch = InDispatch;
         InDispatch = true;
@@ -149,7 +156,7 @@ internal static unsafe class ChatCommandDispatcher
             // RynthCore engine commands (/rc ...) are handled before plugin
             // pre-dispatch and before any AC chat routing so they work even
             // when the overlay is hidden and no plugin can eat the line.
-            if (RynthCoreChatCommands.TryHandle(trimmed))
+            if (RynthCoreChatCommands.TryHandle(trimmed, origin))
                 return true;
 
             // Expand shorthand: /s → /say, /t → /tell, /e → /emote
@@ -171,7 +178,15 @@ internal static unsafe class ChatCommandDispatcher
                 _inPluginPreDispatch = true;
                 try
                 {
-                    if (PluginManager.DispatchChatBarEnter(trimmed))
+                    // The player's line (a hotkey's /ra command): a /rc line a plugin runs while it
+                    // handles it is the player's too (RynthCoreChatCommands.PlayerLine).
+                    if (origin == ChatCommandOrigin.Player)
+                    {
+                        using (RynthCoreChatCommands.PlayerLine())
+                            if (PluginManager.DispatchChatBarEnter(trimmed))
+                                return true;
+                    }
+                    else if (PluginManager.DispatchChatBarEnter(trimmed))
                         return true;
                 }
                 catch (Exception ex)
