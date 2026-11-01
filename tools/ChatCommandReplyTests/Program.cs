@@ -104,6 +104,9 @@ internal static class Program
         ("actionstate", "actions", "actionstate now"),
         ("unlockactions", "unlock", "unlockactions now"),
         ("vitals", "hud", "vitals now"),
+        // 2026-11-01: the test branch's verbs, now in the list.
+        ("borderless", "borderless on", "borderless frob"),
+        ("radar", "radar", "radar now"),
     };
 
     private static void EveryVerbValidAndInvalid()
@@ -140,6 +143,9 @@ internal static class Program
     private static readonly (string Verb, string Valid, string Invalid, string Who)[] Handled =
     {
         ("vendor", "vendor list", "vendor frob", "VendorTrade: '[RC] /rc vendor list | info | ...'"),
+        ("chatlinkprobe", "chatlinkprobe 30", "chatlinkprobe frob", "ChatLinkProbe.Command: its usage"),
+        ("switchchar", "switchchar Kelpie", "switchchar", "CharacterCaptureHooks.RequestSwitch: says a name is needed"),
+        ("window", "window reset", "window frob", "the window usage (a failure)"),
         ("ui", "ui list", "ui frob", "HandleUiCommand: its usage"),
         ("discord", "discord status", "discord frob", "ChatDiscord.HandleCommand: its usage"),
         ("plates", "plates status", "plates frob", "HandlePlatesCommand: the plates usage"),
@@ -194,8 +200,9 @@ internal static class Program
             Check(unknown.Problem!.Contains(v.Name, StringComparison.Ordinal), $"the list names {v.Name}");
         ChatVerbCheck bare = ChatCommandReplies.Check("");
         Check(bare.Verb == null && bare.Problem != null && bare.Problem.StartsWith("Usage: /rc <command>.", StringComparison.Ordinal), "'/rc' alone: the usage and the list");
-        Check(ChatCommandReplies.Check("window save").Problem!.StartsWith("Unknown command '/rc window'", StringComparison.Ordinal),
-            "'/rc window save' (sent by /ub window save) is not an engine verb, and now says so");
+        // The test branch's /rc window (reset | save | fill) is an engine verb: '/rc window save' (also what
+        // /ub window save sends) runs it. Before 2026-11-01 the list lacked it and answered "Unknown command".
+        Check(ChatCommandReplies.Check("window save") is { Problem: null, Verb.Name: "window" }, "'/rc window save' runs the engine's window verb");
         Check(ChatCommandReplies.Check("  SKILLS   Show ").Problem == null, "case and spaces as IsVerb takes them");
     }
 

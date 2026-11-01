@@ -249,7 +249,7 @@ internal static class RynthCoreChatCommands
         if (IsVerb(sub, "chatlinkprobe", out string probeArgs))
         {
             try { Reply(ChatLinkProbe.Command(probeArgs)); }
-            catch (Exception ex) { RynthLog.Compat($"RynthCoreChatCommands: /rc chatlinkprobe failed - {ex.GetType().Name}: {ex.Message}"); }
+            catch (Exception ex) { Failed("chatlinkprobe", ex); }
             return;
         }
 
@@ -655,7 +655,7 @@ internal static class RynthCoreChatCommands
                     : "Borderless keeps the framed window's size and spot (set it framed, then turn borderless on).");
             }
             else
-                Reply("Usage: /rc window reset | save | fill on|off  (reset: borderless off, a normal resizable window, centred)");
+                Fail("Usage: /rc window reset | save | fill on|off  (reset: borderless off, a normal resizable window, centred)");
             return;
         }
         // /rc borderless on|off : the Settings > Display toggle (on fills the monitor).
@@ -672,7 +672,7 @@ internal static class RynthCoreChatCommands
                     : "off."));
             }
             else
-                Reply("Usage: /rc borderless on|off  (stuck? /rc window reset)");
+                Fail("Usage: /rc borderless on|off  (stuck? /rc window reset)");
             return;
         }
 

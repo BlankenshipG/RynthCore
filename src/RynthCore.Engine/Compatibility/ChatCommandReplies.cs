@@ -192,6 +192,12 @@ internal static class ChatCommandReplies
         V("sense", "Usage: /rc sense (opens or closes the Sense panel)", NoArgs),
         V("characters", "Usage: /rc characters (opens or closes RynthNet's Characters window)", NoArgs, "chars"),
         V("itemcount", "Usage: /rc itemcount (opens or closes the Item Count panel)", NoArgs, "itemhud"),
+        // The test branch's verbs (listed 2026-11-01: they were answered as unknown before their handlers ran).
+        V("chatlinkprobe", "Usage: /rc chatlinkprobe [seconds|off]", null),
+        V("switchchar", "Usage: /rc switchchar <character name>", null),
+        V("window", "Usage: /rc window reset | save | fill on|off  (reset: borderless off, a normal resizable window, centred)", null),
+        V("borderless", "Usage: /rc borderless on|off  (stuck? /rc window reset)", Words("on", "off")),
+        V("radar", "Usage: /rc radar (opens or closes the Radar panel)", NoArgs),
         V("resetbar", "Usage: /rc resetbar (moves the RynthCore bar back to the top-left corner)", NoArgs, "barreset"),
         V("actionstate", "Usage: /rc actionstate (the client's item-action gates)", NoArgs, "actions"),
         V("unlockactions", "Usage: /rc unlockactions (opens the client's item-action gates now)", NoArgs, "unlock"),
