@@ -1697,14 +1697,45 @@ internal static class ImGuiPanelHost
         string title = entry.Title;
         Vector2 docked = entry.Pos / placeScale;
         Vector2 size = new Vector2(width, height) / placeScale;
+        string caller = _popSpotLogged < 60 ? PopOutCaller() : "";
         UiBackgroundWriter.Enqueue($"persist {title}", () =>
         {
             PanelStateStore.TryGetPanel(title, out PanelStateStore.PanelEntry prior);
             double w = keepSize && prior.Width > 0 ? prior.Width : size.X;
             double h = keepSize && prior.Height > 0 ? prior.Height : size.Y;
+            // Every change of a pop-out's saved spot, with the call that made it (2026-11-01: pop-outs
+            // came up elsewhere at login and nothing said what had saved that spot).
+            if ((int)Math.Round(prior.FloatingLeft) != left || (int)Math.Round(prior.FloatingTop) != top)
+                NotePopOutSpot(title, (int)Math.Round(prior.FloatingLeft), (int)Math.Round(prior.FloatingTop), left, top, width, height, open, caller);
             PanelStateStore.SetPanel(title, new PanelStateStore.PanelEntry(
                 open, docked.X, docked.Y, w, h, true, left, top));
         });
+    }
+
+    private static int _popSpotLogged;
+
+    /// <summary>The calls that led to a pop-out's spot being saved (for the log). AC thread.</summary>
+    private static string PopOutCaller()
+    {
+        try
+        {
+            var st = new System.Diagnostics.StackTrace(1, false);
+            var names = new List<string>();
+            for (int i = 0; i < st.FrameCount && names.Count < 4; i++)
+            {
+                var m = st.GetFrame(i)?.GetMethod();
+                if (m == null || m.Name.StartsWith("<", StringComparison.Ordinal) || m.Name is "Invoke" or "PersistPopped") continue;
+                names.Add((m.DeclaringType?.Name ?? "") + "." + m.Name);
+            }
+            return string.Join(" < ", names);
+        }
+        catch { return ""; }
+    }
+
+    private static void NotePopOutSpot(string title, int fromX, int fromY, int x, int y, int width, int height, bool open, string caller)
+    {
+        if (System.Threading.Interlocked.Increment(ref _popSpotLogged) > 60) return;
+        RynthLog.UI($"ImGuiPanelHost: {title} pop-out spot saved ({fromX},{fromY}) -> ({x},{y}) {width}x{height}{(open ? "" : " (closing)")}{(caller.Length > 0 ? " via " + caller : "")}.");
     }
 
     private static void Persist(Entry entry, bool open, float placeScale, bool floating = false)

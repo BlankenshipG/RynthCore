@@ -1180,6 +1180,26 @@ internal sealed unsafe class LayeredWindow : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// True when a window at this spot is usable where it is: at least half of it on the nearest
+    /// monitor's work area and its top strip (where it is dragged from) reachable there. A window
+    /// that hangs a little past an edge or over the taskbar is left where the player put it
+    /// (2026-11-01: pop-outs moved at every login over a few pixels). Any thread.
+    /// </summary>
+    public static bool MostlyOnScreen(int left, int top, int width, int height)
+    {
+        width = Math.Max(1, width); height = Math.Max(1, height);
+        if (!TryGetWorkArea(left, top, width, height, out int wl, out int wt, out int wr, out int wb)) return true;
+        long ix = Math.Max(0, Math.Min(left + width, wr) - Math.Max(left, wl));
+        long iy = Math.Max(0, Math.Min(top + height, wb) - Math.Max(top, wt));
+        bool half = ix * iy * 2 >= (long)width * height;
+        int strip = Math.Min(height, 24);
+        long sx = ix;   // the top strip spans the same columns
+        long sy = Math.Max(0, Math.Min(top + strip, wb) - Math.Max(top, wt));
+        bool grabbable = sx >= Math.Min(60, width) && sy >= Math.Min(8, strip);
+        return half && grabbable;
+    }
+
     /// <summary>The work area of the monitor nearest a rectangle (screen px). Any thread.</summary>
     public static bool TryGetWorkArea(int left, int top, int width, int height, out int workLeft, out int workTop, out int workRight, out int workBottom)
     {
@@ -1196,14 +1216,15 @@ internal sealed unsafe class LayeredWindow : IDisposable
     }
 
     /// <summary>
-    /// Moves the window back inside the nearest monitor's work area when any of
-    /// it is off the screen. No OnMoved (the caller persists). True when it moved.
+    /// Moves the window back inside the nearest monitor's work area when too much of
+    /// it is off the screen (MostlyOnScreen). No OnMoved (the caller persists). True when it moved.
     /// The window's thread.
     /// </summary>
     public bool EnsureOnScreen()
     {
         if (_disposed || Hwnd == IntPtr.Zero || _dragMode != DragNone) return false;   // a drag ends with its own check
         int x = ScreenLeft, y = ScreenTop;
+        if (MostlyOnScreen(x, y, Width, Height)) return false;
         if (!ClampToWorkArea(ref x, ref y, Width, Height)) return false;
         Move(x, y);
         return true;

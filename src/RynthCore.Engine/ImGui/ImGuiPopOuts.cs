@@ -192,8 +192,11 @@ internal static unsafe class ImGuiPopOuts
         try
         {
             // A saved spot off the screen (a monitor since unplugged, a bad save) comes back on it.
-            if (LayeredWindow.ClampToWorkArea(ref pop.Left, ref pop.Top, pop.Width, pop.Height))
-                RynthLog.UI($"ImGuiPopOuts: {pop.Title}: saved spot was off the screen; moved to ({pop.Left},{pop.Top}).");
+            // One mostly on it stays where the player left it (2026-11-01).
+            int savedLeft = pop.Left, savedTop = pop.Top;
+            if (!LayeredWindow.MostlyOnScreen(pop.Left, pop.Top, pop.Width, pop.Height)
+                && LayeredWindow.ClampToWorkArea(ref pop.Left, ref pop.Top, pop.Width, pop.Height))
+                RynthLog.UI($"ImGuiPopOuts: {pop.Title}: saved spot ({savedLeft},{savedTop}) {pop.Width}x{pop.Height} was off the screen; moved to ({pop.Left},{pop.Top}).");
             var window = new LayeredWindow(pop.Width, pop.Height, pop.Left, pop.Top, Win32Backend.GameHwnd)
             {
                 CaptionHeight = pop.CaptionHeight,
@@ -535,7 +538,10 @@ internal static unsafe class ImGuiPopOuts
                     // Shown, or its picture changed size (the bar grows to its content):
                     // none of it may hang off the screen.
                     if ((!pop.Visible || w != pop.ShownWidth || h != pop.ShownHeight) && window.EnsureOnScreen())
+                    {
+                        RynthLog.UI($"ImGuiPopOuts: {pop.Title}: {w}x{h} was mostly off the screen; pulled onto it at ({window.ScreenLeft},{window.ScreenTop}).");
                         NotifyMoved(pop, window, window.ScreenLeft, window.ScreenTop);
+                    }
                     pop.ShownWidth = w;
                     pop.ShownHeight = h;
                     if (!pop.Visible)
