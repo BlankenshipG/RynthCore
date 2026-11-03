@@ -28,6 +28,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.DotNet.ILCompiler" Version="10.0.14" />
     <ProjectReference Include="..\..\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
     <ProjectReference Include="..\..\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
   </ItemGroup>
