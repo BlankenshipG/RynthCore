@@ -17,19 +17,18 @@
 //  mode just defaults to docked and the screen coords default to 0. A file
 //  without a barlayout= row gives the toolbar one row, no icon limit.
 //
-//  Stored under %LocalAppData%\RynthCore — survives reloads and out-of-game (the
-//  Runtime dir might be wiped during deploy). One file per character since
-//  2026-10-24 (panel_state.<server>.<character>.txt, PanelStatePath): every client
-//  used to rewrite one shared panel_state.txt, so a window came back wherever the
-//  client that saved last had its own. A character's first run starts from the
-//  shared file; a client started outside the launcher still uses it. Written to a
-//  temp file and swapped in, so a client dying mid-write can't leave a cut-off file.
+//  Stored under %LocalAppData%\RynthCore\panel_state.txt — survives reloads
+//  and out-of-game (the Runtime dir might be wiped during deploy). That is the
+//  PC-wide default; in the world a client uses its character's own copy,
+//  layouts\<server>\<character>\panel_state.txt (PanelLayout switches the file
+//  with SwitchTo). Saves are atomic: a temp file, then a replace.
 // ============================================================================
 
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Text;
 using RynthCore.Engine.Plugins;
 
 namespace RynthCore.Engine.UI;
@@ -53,35 +52,57 @@ internal static class PanelStateStore
     private static (double Left, double Top)? _barFloatingPosition;
     private static int _barRows = BarLayout.DefaultRows, _barMaxPerRow = BarLayout.NoLimit;
     private static bool _loaded;
+    private static string? _path;   // the file in use (SwitchTo); null = the PC-wide default
 
-    private static string? _filePath;
-    // Which file the layout was read from, logged once at the first save (Load runs before the log is up).
-    private static string? _loadNote;
-
-    private static string Folder
-        => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RynthCore");
-
-    /// <summary>The layout every client shared before 2026-10-24: a character's first-run start.</summary>
-    private static string SharedFilePath => Path.Combine(Folder, PanelStatePath.SharedFileName);
-
-    /// <summary>This client's layout file (its character's, PanelStatePath), resolved once. Under Sync.</summary>
-    private static string FilePath => _filePath ??= Path.Combine(Folder, ResolveFileName());
-
-    /// <summary>The launcher's character for this process (launch_context_&lt;pid&gt;.json), else the shared name.</summary>
-    private static string ResolveFileName()
+    /// <summary>The PC-wide default file: %LocalAppData%\RynthCore\panel_state.txt.</summary>
+    internal static string DefaultPath
     {
-        try
+        get
         {
-            string context = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "RynthCore", "launch_contexts", $"launch_context_{Environment.ProcessId}.json");
-            if (!File.Exists(context)) return PanelStatePath.SharedFileName;
-            (string server, string character) = PanelStatePath.ParseLaunchContext(File.ReadAllText(context));
-            return PanelStatePath.FileNameFor(server, character);
+            string root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return Path.Combine(root, "RynthCore", "panel_state.txt");
         }
-        catch (Exception ex)
+    }
+
+    private static string FilePath => _path ?? DefaultPath;
+
+    /// <summary>The file in use now (the default, or the character's). Any thread.</summary>
+    internal static string CurrentPath
+    {
+        get { lock (Sync) return FilePath; }
+    }
+
+    /// <summary>
+    /// Panel layout per character (PanelLayout): from now on the store reads and writes
+    /// <paramref name="path"/>. With <paramref name="flushCurrent"/> the file in use is written
+    /// out first (a character's layout being left); the default is never written by a switch.
+    /// Everything in memory is then replaced by <paramref name="path"/>'s contents (none: an empty
+    /// layout). The UI writer's thread, in order with the other saves.
+    /// </summary>
+    internal static void SwitchTo(string path, bool flushCurrent)
+    {
+        lock (Sync)
         {
-            try { RynthLog.UI($"PanelStateStore: launch context unreadable ({ex.GetType().Name}); using the shared layout."); } catch { }
-            return PanelStatePath.SharedFileName;
+            if (flushCurrent && _loaded) Save();
+            Panels.Clear();
+            _barPosition = null;
+            _barFloating = false;
+            _barFloatingPosition = null;
+            _barRows = BarLayout.DefaultRows;
+            _barMaxPerRow = BarLayout.NoLimit;
+            _path = path;
+            _loaded = false;
+            Load();
+        }
+    }
+
+    /// <summary>The file's text for what is in memory now (/rc layout default writes it as the default). Any thread.</summary>
+    internal static string Snapshot()
+    {
+        lock (Sync)
+        {
+            Load();
+            return Format();
         }
     }
 
@@ -198,7 +219,7 @@ internal static class PanelStateStore
         }
     }
 
-    /// <summary>Rewrite this character's layout file from the in-memory snapshot (Settings > Display "Save Layout
+    /// <summary>Rewrite panel_state.txt from the in-memory snapshot (Settings > Display "Save Layout
     /// Now"). An explicit user action, so unlike the automatic saves it is NOT gated by
     /// RememberWindowLayout: it writes even when that is off.</summary>
     public static void Flush()
@@ -218,15 +239,9 @@ internal static class PanelStateStore
         try
         {
             string path = FilePath;
-            // A character's first run: start from the shared layout; saves then go to its own file.
-            string read = File.Exists(path) ? path : SharedFilePath;
-            // Logged at the first save: the first load runs during engine start, before the log is up.
-            _loadNote = read == path
-                ? $"PanelStateStore: window layout in {Path.GetFileName(path)}."
-                : $"PanelStateStore: {Path.GetFileName(path)} is new; it started from {PanelStatePath.SharedFileName}.";
-            if (!File.Exists(read)) return;
+            if (!File.Exists(path)) return;
 
-            foreach (string raw in File.ReadAllLines(read))
+            foreach (string raw in File.ReadAllLines(path))
             {
                 string line = raw.Trim();
                 if (line.Length == 0 || line.StartsWith('#'))
@@ -302,37 +317,27 @@ internal static class PanelStateStore
         if (!force && !EngineSettings.RememberWindowLayout)
             return;
 
-        string path = FilePath;
-        // Written beside it and swapped in: a client dying mid-write left a cut-off file,
-        // which loaded as no layout (every window back at its default).
-        string tmp = $"{path}.{Environment.ProcessId}.tmp";
         try
         {
+            string path = FilePath;
             string? dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
-            using (var sw = new StreamWriter(tmp, append: false))
-                WriteState(sw);
-            File.Move(tmp, path, overwrite: true);
-            if (_loadNote != null)
-            {
-                string note = _loadNote;
-                _loadNote = null;
-                try { RynthLog.UI(note); } catch { }
-            }
+            // Atomic (temp file, then replace): a client that dies mid-save leaves the old file.
+            EngineSettingsFile.WriteAtomic(path, new UTF8Encoding(false).GetBytes(Format()));
         }
         catch (Exception ex)
         {
-            try { File.Delete(tmp); } catch { }
             try { RynthLog.UI($"PanelStateStore: save failed - {ex.Message}"); } catch { }
         }
     }
 
-    /// <summary>The whole layout in the file format above. Under Sync.</summary>
-    private static void WriteState(StreamWriter sw)
+    /// <summary>The file's text for what is in memory (under Sync).</summary>
+    private static string Format()
     {
-        sw.WriteLine("# RynthCore Avalonia panel state — auto-generated, hand-edits OK.");
+        var sw = new StringBuilder();
+        sw.AppendLine("# RynthCore Avalonia panel state — auto-generated, hand-edits OK.");
         if (_barPosition is { } bar)
         {
             // Always emit the extended form if we have any floating state to
@@ -340,25 +345,26 @@ internal static class PanelStateStore
             if (_barFloating || _barFloatingPosition is not null)
             {
                 (double fl, double ft) = _barFloatingPosition ?? (0, 0);
-                sw.WriteLine(FormattableString.Invariant(
+                sw.AppendLine(FormattableString.Invariant(
                     $"bar={bar.Left:0.##},{bar.Top:0.##},{(_barFloating ? "floating" : "docked")},{fl:0.##},{ft:0.##}"));
             }
             else
             {
-                sw.WriteLine(FormattableString.Invariant($"bar={bar.Left:0.##},{bar.Top:0.##}"));
+                sw.AppendLine(FormattableString.Invariant($"bar={bar.Left:0.##},{bar.Top:0.##}"));
             }
         }
 
         // Only when changed: a file that never had the row reads back the same.
         if (_barRows != BarLayout.DefaultRows || _barMaxPerRow != BarLayout.NoLimit)
-            sw.WriteLine("barlayout=" + BarLayout.Format(_barRows, _barMaxPerRow));
+            sw.AppendLine("barlayout=" + BarLayout.Format(_barRows, _barMaxPerRow));
 
         foreach (var kv in Panels)
         {
             PanelEntry e = kv.Value;
-            sw.WriteLine(FormattableString.Invariant(
+            sw.AppendLine(FormattableString.Invariant(
                 $"panel.{kv.Key}={(e.Open ? "open" : "closed")},{e.Left:0.##},{e.Top:0.##},{e.Width:0.##},{e.Height:0.##},{(e.Floating ? "floating" : "docked")},{e.FloatingLeft:0.##},{e.FloatingTop:0.##}"));
         }
+        return sw.ToString();
     }
 
     private static bool TryParseDoubles(string csv, int expected, out double[] values)

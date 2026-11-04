@@ -78,6 +78,8 @@ internal sealed class RynthAiSettings
     // Ranges > Combat Targeting. Null until RynthAi sends them; an older RynthAi leaves them alone.
     public int? TargetSelection { get; set; }
     public bool? TargetLock { get; set; }
+    // Fight the monster I select (RynthAi 2026-11-01). Null: a RynthAi without it; it leaves it alone.
+    public bool? FightSelectedTarget { get; set; }
     public int TargetNoProgressTimeoutSec { get; set; }
     public int GiveQueueIntervalMs { get; set; } = 150;
     // Recharge
@@ -99,6 +101,7 @@ internal sealed class RynthAiSettings
     public bool UseKitsInMagicMode { get; set; } = true;
     public bool PeaceModeForKits { get; set; }
     public int KitMinSuccessPct { get; set; } = 70;
+    public int StaminaKitMinSuccessPct { get; set; } = 70;   // a RynthAi that doesn't send it: 70
     public int EmergencyHealAt { get; set; } = 30;
     public int StaminaToHealthAt { get; set; } = 30;
     public int StaminaToHealthMinStamina { get; set; } = 20;
@@ -250,6 +253,8 @@ internal sealed class RynthAiSettings
     public bool BoostLootPriority { get; set; }
     public bool LootOnlyRareCorpses { get; set; }
     public bool LootJumpEnabled { get; set; }
+    public bool LootChestsMacroOff { get; set; } = true;   // Pickup with macro off; a RynthAi that doesn't send it leaves it on
+    public bool LootChestsMacroOffLeaveOpen { get; set; }   // its "Leave the chest open", off by default
     public int LootJumpHeight { get; set; } = 10;
     public int LootOwnership { get; set; }
     // Recover your own death corpse whole (default on), and travel back to it after a death
@@ -495,7 +500,10 @@ internal sealed record SettingRow(
     Action<RynthAiSettings>? Edit = null,
     // Combo rows whose list changes while the game runs (the Theme picker's saved schemes):
     // asked each time the row draws, in place of Items.
-    Func<string[]>? ItemsNow = null)
+    Func<string[]>? ItemsNow = null,
+    // Button rows that can't be undone: the question a click asks first (asked when it opens);
+    // Click/Edit run only when the player confirms.
+    Func<string>? Confirm = null)
 {
     public bool IsVisible(RynthAiSettings s) => VisibleWhen == null || VisibleWhen(s);
 
@@ -632,6 +640,20 @@ internal static class SettingsSchema
         ImGuiBackend.Hud.MonsterHudSettings.Save();
     }
 
+    // "Grey out what debuffs take" (MonsterHudSettings.SelfDebuffLoss); saved at once.
+    private static bool SelfDebuffLoss()
+    {
+        if (!ImGuiBackend.Hud.MonsterHudSettings.Loaded) { ImGuiBackend.Hud.MonsterHudSettings.EnsureLoadQueued(); return true; }
+        return ImGuiBackend.Hud.MonsterHudSettings.SelfDebuffLoss;
+    }
+
+    private static void SetSelfDebuffLoss(bool on)
+    {
+        if (!ImGuiBackend.Hud.MonsterHudSettings.Loaded) { ImGuiBackend.Hud.MonsterHudSettings.EnsureLoadQueued(); return; }
+        ImGuiBackend.Hud.MonsterHudSettings.SelfDebuffLoss = on;
+        ImGuiBackend.Hud.MonsterHudSettings.Save();
+    }
+
     private static SettingRow TextSize(string label, string panelTitle) =>
         Combo("   " + label, PanelTextScale.SizeNames, _ => PanelTextScale.GetOwn(panelTitle), (_, v) => PanelTextScale.Set(panelTitle, v),
             "This panel's size: 100% = normal, 10% a step. Also: Ctrl+wheel over the panel.")
@@ -653,6 +675,15 @@ internal static class SettingsSchema
 
     private static SettingRow Button(string label, string buttonText, Action click, string? tip = null) =>
         new(SettingKind.Button, label, tip, ButtonText: buttonText, Click: click);
+
+    // A button that runs a RynthAi chat command as if typed (it answers in chat), through RynthAi's
+    // "sendchat" remote command: a one-shot action that has no setting of its own.
+    private static SettingRow ChatButton(string label, string buttonText, string command, string? tip = null) =>
+        Button(label, buttonText, () => RynthAiCommands.ApplyRemoteCommand("sendchat", command), tip);
+
+    // A button that asks first (Settings > Display's layout reset): Click runs once the player confirms.
+    private static SettingRow ConfirmButton(string label, string buttonText, Func<string> confirm, Action click, string? tip = null) =>
+        new(SettingKind.Button, label, tip, ButtonText: buttonText, Click: click, Confirm: confirm);
 
     // A button that edits the settings (the panel saves the result like a typed value).
     private static SettingRow EditButton(string label, string buttonText, Action<RynthAiSettings> edit, string? tip = null) =>
@@ -904,6 +935,18 @@ internal static class SettingsSchema
             Bool("Remember Open Windows and Positions", _ => Plugins.EngineSettings.RememberWindowLayout,
                 (_, v) => Plugins.EngineSettings.RememberWindowLayout = v,
                 "On (default): reopen Rynth panels where you left them and keep the Vision self-plate / ImGui layout.\nOff: do not overwrite the saved layout or reopen panels from the last session. Applies to all your clients.\nThe game window itself: Remember Game Window Position."),
+            // Stored in engine.json for every client (EngineSettings); the layouts themselves by UI/PanelLayout.
+            Bool("Panel Layout Per Character", _ => Plugins.EngineSettings.PanelLayoutPerCharacter,
+                (_, v) => Plugins.EngineSettings.PanelLayoutPerCharacter = v,
+                "On (default): each character keeps its own panel places (docked, popped out, the bar, plugin windows),\nso clients on this PC no longer move each other's panels. A new character starts from the default layout.\nOff: every client shares one layout, as before. /rc layout shows the files in use.\nThis client switches at once; your other clients when they start."),
+            // Whose layout is in use and its folder (/rc layout's first line, short).
+            Status(_ => PanelLayout.SettingsLine()),
+            Button("Layout for New Characters", "Use this character's", () => PanelLayout.MakeDefaultFromSettings(),
+                "Make this character's panel layout the default that new characters start from (/rc layout default).\nCharacters that already have a layout keep their own; the button below puts one back to the default.")
+                with { VisibleWhen = _ => Plugins.EngineSettings.PanelLayoutPerCharacter },
+            ConfirmButton("Reset This Character's Layout", "Reset...", () => PanelLayout.ResetConfirmText(), () => PanelLayout.ResetFromSettings(),
+                "Put this character's panel layout back to the default for new characters: open panels move to the default's places.\nAsks first. Also: /rc layout reset confirm.")
+                with { VisibleWhen = _ => Plugins.EngineSettings.PanelLayoutPerCharacter && PanelLayout.CanResetFromSettings },
             Bool("Remember Game Window Position", _ => Plugins.EngineSettings.RememberAcWindowPosition,
                 (_, v) => Plugins.EngineSettings.RememberAcWindowPosition = v,
                 "On: save the Asheron's Call window's position and size (framed and borderless kept separately) and put it\nback at the next launch.\nOff (default): the game window is never moved."),
@@ -1005,6 +1048,11 @@ internal static class SettingsSchema
                 "drag it where you want it, then tick this again to lock it there. A plate that follows your character\n" +
                 "is fixed on screen when you untick this. Same as Vision > Nameplates > Your plate > Lock position.\n" +
                 "Also: /rv plates self lock on|off.",
+                when: _ => ImGuiBackend.Hud.HudFeed.VisionInstalled),
+            Bool("Grey out what debuffs take", _ => SelfDebuffLoss(), (_, v) => SetSelfDebuffLoss(v),
+                "On your RynthVision plate: while a debuff lowers your maximum health, stamina or mana, the bar keeps its full\n" +
+                "length and the part the debuff takes shows grey at its end, instead of the bar filling up to the lowered maximum.\n" +
+                "Same as Vision > Nameplates > Your plate > Grey out what debuffs take. Also: /rv plates self lost on|off.",
                 when: _ => ImGuiBackend.Hud.HudFeed.VisionInstalled),
             Note("To move it: untick, drag the plate itself (not where a panel covers it), then tick to lock it.",
                 when: _ => ImGuiBackend.Hud.HudFeed.VisionInstalled && ImGuiBackend.Hud.MonsterHudSettings.SelfPlate),
@@ -1164,7 +1212,9 @@ internal static class SettingsSchema
             Int("Stamina To Health Min Stamina", s => s.StaminaToHealthMinStamina, (s, v) => s.StaminaToHealthMinStamina = v, 0, 100, 1,
                 "Cast Stamina to Health only while stamina is over this %, so it doesn't\ndrain you to nothing. Starts at 20."),
             Int("Kit Min Success %", s => s.KitMinSuccessPct, (s, v) => s.KitMinSuccessPct = v, 0, 100, 1,
-                "Use a healing or stamina kit only when its chance to work is at least this %,\nworked out like the server does: Healing skill + the kit's bonus vs. what's missing.\nBelow it, the spell is cast instead. 0 = always use kits. Starts at 70."),
+                "Use a healing kit only when its chance to work is at least this %,\nworked out like the server does: Healing skill + the kit's bonus vs. what's missing.\nBelow it, the spell is cast instead. 0 = always use kits. Starts at 70."),
+            Int("Stamina Kit Min Success %", s => s.StaminaKitMinSuccessPct, (s, v) => s.StaminaKitMinSuccessPct = v, 0, 100, 1,
+                "The same for stamina kits: use one only when its chance to work is at least this %\n(Healing skill + the kit's bonus vs. the stamina missing). Below it Revitalize Self\nor a stamina potion goes instead. 0 = always use stamina kits. Starts at 70."),
             Spacer(),
             Section("Safety Stops"),
             Bool("Stop Macro On Death", s => s.StopMacroOnDeath, (s, v) => s.StopMacroOnDeath = v,
@@ -1346,6 +1396,12 @@ internal static class SettingsSchema
             Bool("Target Lock", s => s.TargetLock ?? true, (s, v) => s.TargetLock = v,
                 "On: keeps the target it picked until it dies, leaves range (Disengage Range), or a higher-priority monster shows up.\n" +
                 "Off: switches whenever another monster is clearly better by the Targeting rule."),
+            Bool("Fight the monster I select", s => s.FightSelectedTarget ?? false, (s, v) => s.FightSelectedTarget = v,
+                "On: in a fight, a monster YOU select (click it, or pick it on the radar or in a Selection window)\n" +
+                "is fought first, ahead of Targeting and Priority, until it dies, can't be reached, or you select\n" +
+                "another monster or deselect. The bot's own selections never count. Ignored (Priority 0) and\n" +
+                "never-attack monsters are not followed (/ra targetlock still forces them). Out to Disengage Range.\n" +
+                "/ra fightselected [on|off]"),
             Spacer(),
             Section("Corpse Acquisition (Yards)"),
             Double("Corpse Max (yd)", s => s.CorpseApproachRangeMax, (s, v) => s.CorpseApproachRangeMax = v, 0.5, 50.0, 0.5, CorpseMaxTip),
@@ -1355,7 +1411,8 @@ internal static class SettingsSchema
 
         new("Navigation", new[]
         {
-            Bool("Boost Nav Priority", s => s.BoostNavPriority, (s, v) => s.BoostNavPriority = v),
+            Bool("Boost Nav Priority", s => s.BoostNavPriority, (s, v) => s.BoostNavPriority = v,
+                "While a nav route runs, only navigate: no hunting, no looting, no fighting back. With no route, at the end of a Once route or in Outdoor Hunt it hunts and loots as usual. Buffs and heals still run."),
             Float(NavPointReachLabel, s => s.FollowNavMin, (s, v) => s.FollowNavMin = v, 0.5f, 20f, 0.1f, NavPointReachTip),
             Spacer(),
             Section("Infinite Leaftide"),
@@ -1477,6 +1534,8 @@ internal static class SettingsSchema
                 "When a buff is due, also recast every other buff with less than this much time left,\nso they land together. Buffs with more time are left alone. Default 1200 (20 minutes).\nAt or below 'Rebuff With', only the expiring buff is recast."),
             Bool("Cast buffs even when an item gives them", s => s.CastBuffsOverItemBuffs, (s, v) => s.CastBuffsOverItemBuffs = v,
                 "Cast your own buff even when worn gear already gives that buff.\nFor servers with buff augments, where your own cast is stronger or lasts longer.\nOn by default: on retail it costs a few extra casts."),
+            ChatButton("Buffs Left Out", "List in chat", "/ra buff skipped",
+                "The buffs RynthAi leaves out because this character can't use them, listed in chat (/ra buff skipped)."),
             Spacer(),
             Section("Protections (untick to skip)"),
             BuffToggles(ProtToggles),
@@ -1508,6 +1567,12 @@ internal static class SettingsSchema
             Bool("Loot Only Rare Corpses", s => s.LootOnlyRareCorpses, (s, v) => s.LootOnlyRareCorpses = v),
             Bool("Learn Unknown Spells", s => s.ReadUnknownScrolls, (s, v) => s.ReadUnknownScrolls = v,
                 "Loots scrolls of spells you don't know and can learn (magic school trained or\nspecialized, skill high enough), and reads them when it's safe. Scrolls already\nin your pack are read too. Needs Enable Looting for corpses."),
+            Bool("Pickup with macro off", s => s.LootChestsMacroOff, (s, v) => s.LootChestsMacroOff = v,
+                "A chest you open is looted by the loaded loot profile even with the macro or Looting off.", gates: true),
+            Bool("   Leave the chest open", s => s.LootChestsMacroOffLeaveOpen, (s, v) => s.LootChestsMacroOffLeaveOpen = v,
+                "When the pickup is done the chest stays open and chat says what was taken, so you can check it\n" +
+                "and take anything your profile missed. Untick it and RynthAi closes the chest when it's done\n" +
+                "(some chests lock again on close).", when: s => s.LootChestsMacroOff),
             Bool("Stop Looting When Pack Full", s => s.StopLootingWhenPackFull, (s, v) => s.StopLootingWhenPackFull = v,
                 "Don't start on another corpse when no pack has a free slot (says so once in chat)."),
             Bool("Jump When Looting", s => s.LootJumpEnabled, (s, v) => s.LootJumpEnabled = v, gates: true),
@@ -1521,6 +1586,12 @@ internal static class SettingsSchema
                 "When your own corpse (\"Corpse of <you>\") is within loot range, open it and take every\nitem on it, whatever the loot profile and Loot From say. Needs Enable Looting.\n/ra owncorpse says where your last corpse is."),
             Bool("Travel Back To My Corpse", s => s.TravelToOwnCorpse, (s, v) => s.TravelToOwnCorpse = v,
                 "After a death, walk back to where you died with RynthNav (outdoor deaths only),\nfighting on the way as usual, recover the corpse, then carry on. Needs the macro\nrunning and RynthNav loaded. /ra owncorpse stop cancels."),
+            ChatButton("Where Is My Corpse", "Say in chat", "/ra owncorpse",
+                "Where your last corpse is, how far, and whether RynthAi is on its way to it (/ra owncorpse)."),
+            ChatButton("Go To My Corpse", "Go", "/ra owncorpse go",
+                "Walk back to your last corpse now with RynthNav and recover it (/ra owncorpse go)."),
+            ChatButton("Stop Going To My Corpse", "Stop", "/ra owncorpse stop",
+                "Stop the walk back to your corpse (/ra owncorpse stop)."),
             Spacer(),
             Section("Inventory Management"),
             Bool("Enable Autostack", s => s.EnableAutostack, (s, v) => s.EnableAutostack = v),
@@ -1530,6 +1601,8 @@ internal static class SettingsSchema
                 "After the salvage queue empties, move same-name bags together so the server merges them."),
             Bool("Combine Bags During Salvage", s => s.CombineBagsDuringSalvage, (s, v) => s.CombineBagsDuringSalvage = v,
                 "When salvaging an item, also add any under-full salvage bag of the same material to the salvage panel."),
+            ChatButton("Tidy Packs Now", "Stack and cram", "/mt autopack",
+                "One pass now: stack what stacks and move items from the main pack into side packs (/mt autopack).\nAutostack and Autocram above do it on their own while they are on."),
             Button("Floating HUDs", "Inventory HUDs...", () => RynthAiCommands.ApplyRemoteCommand("huds", "show"),
                 "Opens the floating pack item count HUD / Mini Remote setup (/ra huds).\nThe Item Count panel is separate (/rc itemcount; Inventory's Count button)."),
             Bool("Salvage Without The Panel", s => s.SalvageWithoutPanel, (s, v) => s.SalvageWithoutPanel = v,
@@ -1605,6 +1678,23 @@ internal static class SettingsSchema
                 "Ticked categories write their trace lines to Trace\\<Category>_<date>.txt (/ra trace <category> on|off)."),
             Note("+log = the category is at Info: its trace lines also go to the normal log. The launcher's Logging page sets Off, Trace or Info."),
             Note("Exceptions always go to exceptions_<date>.txt with full stack traces (throttled). Settings here are for this PC, not the profile."),
+            Spacer(),
+            // Stored in engine.json for every client (EngineSettings.UiCostLog, UiCostThresholdMs; ImGui/UiCost.cs).
+            Section("UI Frame Cost"),
+            Bool("Time the UI frame's parts", _ => Plugins.EngineSettings.UiCostLog,
+                (_, v) => Plugins.EngineSettings.UiCostLog = v,
+                "On (default): every panel, plugin window and overlay is timed as it draws, and a slow UI frame\n" +
+                "writes one [UiCost] line to the log naming its slowest parts (at most one every 5 s). The heartbeat\n" +
+                "adds uitop= with the top 3 while UI frames are slow. Costs a few microseconds a frame. Also: /rc uicost on|off."),
+            Int("   Slow frame (ms)", _ => Plugins.EngineSettings.UiCostThresholdMs,
+                (_, v) => Plugins.EngineSettings.UiCostThresholdMs = v,
+                ImGuiBackend.UiCostModel.MinThresholdMs, ImGuiBackend.UiCostModel.MaxThresholdMs, 5,
+                "A UI frame this long or longer is logged with its breakdown. Default 50. Also: /rc uicost <ms>.",
+                when: _ => Plugins.EngineSettings.UiCostLog),
+            Button("   Breakdown", "Print to chat",
+                () => Compatibility.RynthCoreChatCommands.TryHandle("/rc uicost now", Compatibility.ChatCommandOrigin.Player),
+                "Which parts of the UI frame took the time over the last few seconds, and the slowest frame part by part\n" +
+                "(/rc uicost now)."),
             Spacer(),
             Section("Server"),
             new SettingRow(SettingKind.ServerPick, "Server",

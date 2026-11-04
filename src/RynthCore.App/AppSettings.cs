@@ -89,6 +89,25 @@ internal sealed class AppSettings
     /// </summary>
     public string? AppliedInstallerPluginRegistration { get; set; }
 
+    // ── Headless accounts (InjectionMode.Headless, experimental; HeadlessLaunch) ──
+    // Plain values with "use the default" defaults: launchers without Headless ignore them.
+
+    /// rynth-headless.exe. Empty = &lt;launcher folder&gt;\Headless\rynth-headless.exe.
+    public string HeadlessExePath { get; set; } = string.Empty;
+
+    /// Plugin DLLs every Headless account loads. x64 builds (rynth-headless is a 64-bit
+    /// process), not the x86 ones in PluginDllPaths. Empty = the ones the installer ships in
+    /// &lt;launcher folder&gt;\Headless\plugins (HeadlessLaunch.DefaultPluginPaths: RynthAi).
+    public List<string> HeadlessPluginPaths { get; set; } = [];
+
+    /// The plugins' RynthSuite folder (the run config's suiteDir). Empty = rynth-headless's default,
+    /// %LOCALAPPDATA%\RynthCore\headless.
+    public string HeadlessSuiteDir { get; set; } = string.Empty;
+
+    /// Where rynth-headless writes per-character status files (statusDir). Empty = its default,
+    /// &lt;RynthCore&gt;\Logs\status (the game clients' and the StatusAgent's folder).
+    public string HeadlessStatusDir { get; set; } = string.Empty;
+
     public List<LaunchServerProfile> ServerProfiles { get; set; } = [];
     public List<LaunchAccountProfile> AccountProfiles { get; set; } = [];
 
@@ -96,4 +115,10 @@ internal sealed class AppSettings
     public double? WindowY { get; set; }
     public double? WindowWidth { get; set; }
     public double? WindowHeight { get; set; }
+
+    /// The Headless window's last size and place (HeadlessWindow; null = default, centred).
+    public double? HeadlessWindowX { get; set; }
+    public double? HeadlessWindowY { get; set; }
+    public double? HeadlessWindowWidth { get; set; }
+    public double? HeadlessWindowHeight { get; set; }
 }

@@ -84,7 +84,7 @@ internal static class ImGuiBar
     // Item Count / Mini Remote: under Inventory since 2026-10-16 (no bar icons of their own).
     // Sense: under RynthNav since 2026-10-16 (header toggle + /rc sense).
     private static readonly string[] ImGuiOnlyBarPanels =
-        { Panels.InventoryFace.Title, Panels.SkillsFace.Title };   // Characters: RynthNet's window since 2026-10-21
+        { Panels.InventoryFace.Title, Panels.SkillsFace.Title, Panels.ItemToolFace.Title };   // Characters: RynthNet's window since 2026-10-21
 
     /// <summary>An ImGui-only panel's bar button is wanted: it has a face, and Skills only while Oracle can't host it.</summary>
     private static bool ImGuiOnlyWanted(string title) =>
@@ -114,8 +114,10 @@ internal static class ImGuiBar
         ["Inventory"] = PhosphorIcons.Package,   // not Backpack: the dashboard's Items launcher has that
         ["Log"] = PhosphorIcons.TerminalWindow,
         ["Item Count"] = PhosphorIcons.Bag,
+        ["Item Tool"] = PhosphorIcons.Wrench,
         ["Mini Remote"] = PhosphorIcons.SquaresFour,
         ["Characters"] = PhosphorIcons.UsersThree,
+        ["Item Tool"] = PhosphorIcons.Wrench,   // RynthAi's chest looter + Quick give
         // Plugin windows with a bar button of their own (script windows, by title).
         ["RynthSort"] = PhosphorIcons.SortAscending,
         ["Oracle"] = PhosphorIcons.Sparkle,
@@ -237,6 +239,20 @@ internal static class ImGuiBar
 
     /// <summary>True when the ImGui bar should draw (the ImGui layer on, not popped out).</summary>
     public static bool Visible => ResolveFace() != PanelFace.Avalonia && !Floating;
+
+    /// <summary>
+    /// The panel store now holds another layout (UI/PanelLayout: another character's, the default, or a
+    /// reset): the bar's place, rows and popped-out state are read from it again; a popped-out bar's
+    /// window closes and SyncPopOut opens it at the new layout's spot. AC thread, between frames.
+    /// </summary>
+    public static void OnLayoutSwitched()
+    {
+        Volatile.Write(ref _rowSettings, null);
+        _floating = null;
+        _placed = false;
+        _userMoved = false;
+        if (ImGuiPopOuts.IsPopped(PopOutTitle)) ImGuiPopOuts.Close(PopOutTitle);
+    }
 
     /// <summary>
     /// Opens or closes the bar's own window to match <see cref="PoppedOut"/>. AC

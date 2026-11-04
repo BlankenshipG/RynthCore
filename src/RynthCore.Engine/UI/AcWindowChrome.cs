@@ -497,18 +497,16 @@ internal static class AcWindowChrome
 
         try
         {
-            string iniPath = Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "imgui.ini");
-            Directory.CreateDirectory(RynthCore.Install.RynthInstallPaths.RynthAiDir);
+            // To the imgui.ini of the panel layout in use (this character's, or the PC-wide default).
             if (ImGuiNET.ImGui.GetCurrentContext() != IntPtr.Zero)
-                ImGuiNET.ImGui.SaveIniSettingsToDisk(iniPath);
+                PanelLayout.QueueIniSave(ImGuiNET.ImGui.SaveIniSettingsToMemory(), explicitSave: true);
         }
         catch (Exception ex)
         {
             try { RynthLog.UI($"AcWindowChrome: imgui.ini save failed - {ex.Message}"); } catch { }
         }
 
-        // PanelStateStore writes on every move already; Flush ensures the file exists
-        // even if nothing moved this session (re-write current in-memory state).
+        // Rewrites the layout's panel_state.txt from the in-memory state (even with Remember Open Windows off).
         try { PanelStateStore.Flush(); } catch { /* best-effort */ }
 
         try
