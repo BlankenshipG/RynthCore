@@ -243,10 +243,10 @@ internal static class LootAttrOps
 
     public static string Label(int op) => op switch
     {
-        AtLeast => ">=",
-        Exactly => "=",
-        AtMost => "<=",
-        Not => "not",
+        AtLeast => "at least",
+        Exactly => "is",
+        AtMost => "at most",
+        Not => "is not",
         HasAny => "has any",
         Any => "any",
         HasAll => "has all",

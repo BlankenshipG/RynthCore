@@ -367,7 +367,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         {
             var n = new string[list.Count];
             var id = new int[list.Count];
-            for (int i = 0; i < list.Count; i++) { n[i] = list[i].Name + "  (" + list[i].Id.ToString(CultureInfo.InvariantCulture) + ")"; id[i] = list[i].Id; }
+            for (int i = 0; i < list.Count; i++) { n[i] = list[i].Name; id[i] = list[i].Id; /* names only (2026-11-07) */ }
             return (n, id);
         }
     }
@@ -1245,7 +1245,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         if (c.Lines.Count == 0) return;
         string raw = c.Lines[0].Trim();
         int sel = TryWhole(raw, out int value) ? Array.IndexOf(table.Ids, value) : -1;
-        string shown = sel >= 0 ? table.Items[sel] : "value " + raw;
+        string shown = sel >= 0 ? table.Items[sel] : raw;
         if (PickerButton("##valpick", shown, p, w, h, ro))
         {
             LootEditConditionDto target = c;
