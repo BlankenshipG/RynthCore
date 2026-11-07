@@ -27,6 +27,8 @@ namespace RynthCore.Engine.UI.Data;
 internal sealed class LootEditStateDto
 {
     public long Revision { get; set; }
+    /// <summary>On Infinite Leaftide (added 2026-11-07): the vocabulary must say the same, else it is asked again.</summary>
+    public bool Ilt { get; set; } = true;
     public string Path { get; set; } = string.Empty;
     public string FileName { get; set; } = string.Empty;
     public string Format { get; set; } = string.Empty;
@@ -301,6 +303,8 @@ internal sealed class LootEditItemDraftDto
 
 internal sealed class LootEditVocabDto
 {
+    /// <summary>Built for Infinite Leaftide: the ACECustom keys are offered (added 2026-11-07; true from an older RynthAi).</summary>
+    public bool Ilt { get; set; } = true;
     public List<LootEditNameDto> Actions { get; set; } = new();
     public List<LootEditNodeTypeDto> NodeTypes { get; set; } = new();
     public List<LootEditNameDto> ObjectClasses { get; set; } = new();
@@ -432,6 +436,12 @@ internal sealed unsafe class LootEditSource : UiSource<LootEditView>
                 // The list call may have opened the profile (first look): the state's own revision is current.
                 _lastRevision = unchecked((int)state.Revision);
                 changed = true;
+                // Moved to or from Leaftide: the pickers' keys change with it.
+                if (_vocab != null && _vocab.Ilt != state.Ilt)
+                {
+                    LootEditVocabDto? v = Parse(_getVocab(), LootEditJsonContext.Default.LootEditVocabDto);
+                    if (v != null) _vocab = v;
+                }
             }
         }
 

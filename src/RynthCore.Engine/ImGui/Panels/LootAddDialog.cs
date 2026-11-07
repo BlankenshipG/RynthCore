@@ -86,6 +86,8 @@ internal sealed class LootAddDialog
     private bool _includeT11;
     // No item (the panel's own filter: every attribute, 2026-10-24).
     private bool _blank;
+    // The open group of a long (blank) checklist; the others show only their ticked rows.
+    private string _openGroup = string.Empty;
     // Blank: the rule being edited (-1: a new one) and its name as the editor showed it (2026-11-07).
     private int _editIndex = -1;
     private string _editName = string.Empty;
@@ -180,6 +182,7 @@ internal sealed class LootAddDialog
         _includeT11 = false;
         Array.Clear(_name);
         _choices.Clear();
+        _openGroup = string.Empty;
         _valueBufs.Clear();
         _editingId = string.Empty;
         _draft = null;
@@ -710,12 +713,19 @@ internal sealed class LootAddDialog
         int ticked = rows.FindAll(r => r.On).Count;
         SafeImGui.TextDisabled($"{ticked} of {rows.Count} required (tick what the rule needs)");
 
-        int groups = 0;
+        // One group open at a time, the ticked rows of the others always shown (2026-11-07: the same as
+        // RynthInventory's Global Inventory checklist). A short list (an item's) shows every group.
+        bool fold = rows.Count > 24;
+        if (fold && (_openGroup.Length == 0 || !rows.Exists(r => r.Group == _openGroup))) _openGroup = rows[0].Group;
+        int groups = 0, shownRows = 0;
         string? last = null;
         foreach (LootEditItemAttributeDto r in rows)
+        {
             if (r.Group != last) { groups++; last = r.Group; }
+            if (!fold || r.On || r.Group == _openGroup) shownRows++;
+        }
         float lineH = ImGuiNET.ImGui.GetFrameHeightWithSpacing();
-        float h = Math.Min(rows.Count * lineH + groups * lineH + 8, 300);
+        float h = Math.Min(shownRows * lineH + groups * lineH + 8, 300);
 
         bool changed = false;
         const float opX = 250, valueX = 350;
@@ -726,8 +736,18 @@ internal sealed class LootAddDialog
             if (r.Group != group)
             {
                 group = r.Group;
+                string g = group;
+                int inGroup = rows.FindAll(x => x.Group == g && x.On).Count;
+                bool open = !fold || _openGroup == g;
                 ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Amber);
-                ImGuiNET.ImGui.TextUnformatted(group);
+                string head = (fold ? (open ? "- " : "+ ") : string.Empty) + g
+                    + (inGroup > 0 ? " (" + inGroup.ToString(CultureInfo.InvariantCulture) + ")" : string.Empty);
+                if (fold)
+                {
+                    if (ImGuiNET.ImGui.Selectable(head + "##la_grp_" + g, open, ImGuiSelectableFlags.None, new Vector2(opX - 12, 0)))
+                        _openGroup = open ? string.Empty : g;
+                }
+                else ImGuiNET.ImGui.TextUnformatted(head);
                 ImGuiNET.ImGui.PopStyleColor();
                 ImGuiNET.ImGui.SameLine(opX);
                 if (ImGuiNET.ImGui.SmallButton("all##la_all_" + group)) changed |= TickGroup(rows, group, true);
@@ -735,6 +755,7 @@ internal sealed class LootAddDialog
                 if (ImGuiNET.ImGui.SmallButton("none##la_none_" + group)) changed |= TickGroup(rows, group, false);
             }
 
+            if (fold && !r.On && r.Group != _openGroup) continue;   // a folded group shows its ticked rows only
             bool on = r.On;
             if (ImGuiNET.ImGui.Checkbox(r.Label + "##la_on_" + r.Id, ref on))
             {
