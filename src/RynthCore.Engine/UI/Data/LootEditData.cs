@@ -154,6 +154,9 @@ internal sealed class LootEditItemRequestDto
     public List<uint>? Candidates { get; set; }
     /// <summary>No item (added 2026-10-24): the checklist lists every attribute (the panel's own filter).</summary>
     public bool Blank { get; set; }
+    /// <summary>Blank: edit this rule of the open profile instead of adding one (added 2026-11-07); -1 adds.</summary>
+    public int EditIndex { get; set; } = -1;
+    public string EditName { get; set; } = string.Empty;
     /// <summary>Spells and cantrips added from the standard lists (added 2026-10-24).</summary>
     public List<LootEditItemExtraDto>? Extras { get; set; }
 }
@@ -226,12 +229,17 @@ internal sealed class LootEditItemAttributeDto
     public string Tip { get; set; } = string.Empty;
     /// <summary>The values a named row can take (added 2026-10-24): a list, the picked Id sent as the Value.</summary>
     public List<LootEditNameDto>? Choices { get; set; }
+    /// <summary>The Choices are flags: "has any" / "has all" pick several (added 2026-11-07).</summary>
+    public bool Flags { get; set; }
 }
 
 /// <summary>The checklist's comparison codes (LootSdk LootItemAttributeOp) and how the popup labels them.</summary>
 internal static class LootAttrOps
 {
-    public const int AtLeast = 0, Exactly = 1, AtMost = 2, Not = 3, HasAny = 4, SpellExact = 10, SpellOrBetter = 11, SpellAnyTier = 12;
+    public const int AtLeast = 0, Exactly = 1, AtMost = 2, Not = 3, HasAny = 4, Any = 5, HasAll = 6, SpellExact = 10, SpellOrBetter = 11, SpellAnyTier = 12;
+
+    /// <summary>The ops that pick several flags at once (the value is their sum).</summary>
+    public static bool PicksSeveral(int op) => op is HasAny or HasAll;
 
     public static string Label(int op) => op switch
     {
@@ -240,6 +248,8 @@ internal static class LootAttrOps
         AtMost => "<=",
         Not => "not",
         HasAny => "has any",
+        Any => "any",
+        HasAll => "has all",
         SpellExact => "exact",
         SpellOrBetter => "or better",
         SpellAnyTier => "any tier",
@@ -285,6 +295,8 @@ internal sealed class LootEditItemDraftDto
     public bool Find { get; set; }
     /// <summary>A new rule from the blank checklist (added 2026-11-07; false from an older RynthAi).</summary>
     public bool Blank { get; set; }
+    /// <summary>The rule this draft edits, -1 when it adds one (added 2026-11-07).</summary>
+    public int EditIndex { get; set; } = -1;
 }
 
 internal sealed class LootEditVocabDto

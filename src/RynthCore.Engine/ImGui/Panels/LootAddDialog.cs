@@ -85,6 +85,9 @@ internal sealed class LootAddDialog
     private bool _includeT11;
     // No item (the panel's own filter: every attribute, 2026-10-24).
     private bool _blank;
+    // Blank: the rule being edited (-1: a new one) and its name as the editor showed it (2026-11-07).
+    private int _editIndex = -1;
+    private string _editName = string.Empty;
     // Spells and cantrips added from the standard lists, by their row id (LootItemAttributes.ExtraId).
     private readonly System.Collections.Generic.Dictionary<string, LootEditItemExtraDto> _extras = new();
     // The spell pickers' current picks.
@@ -143,8 +146,20 @@ internal sealed class LootAddDialog
     /// game, resolved once). <paramref name="toOpenProfile"/>: the rule goes to the
     /// profile open in the Loot Editor, else to the one RynthAi loots with.
     /// </summary>
-    public void Open(uint itemId, string itemName, bool toOpenProfile, LootAddMode mode = LootAddMode.AddRule, bool blank = false)
+    /// <summary>
+    /// Edits rule <paramref name="index"/> (named <paramref name="name"/>) of the profile open in the Loot
+    /// Editor with the same checklist (2026-11-07): it starts from the rule's conditions; Save replaces it.
+    /// </summary>
+    public void OpenEdit(int index, string name)
     {
+        Open(0, string.Empty, toOpenProfile: true, LootAddMode.AddRule, blank: true, editIndex: index, editName: name);
+    }
+
+    public void Open(uint itemId, string itemName, bool toOpenProfile, LootAddMode mode = LootAddMode.AddRule, bool blank = false,
+        int editIndex = -1, string editName = "")
+    {
+        _editIndex = blank && mode == LootAddMode.AddRule ? editIndex : -1;
+        _editName = editName ?? string.Empty;
         // Blank: no item, every attribute (the Inventory panel's own filter, and since 2026-11-07 the
         // Loot Editor's Add rule: the same checklist makes the new rule).
         _blank = blank;
@@ -194,6 +209,8 @@ internal sealed class LootAddDialog
                 Choices = _choices.Count == 0 ? null : new System.Collections.Generic.List<LootEditItemChoiceDto>(_choices.Values),
                 Find = filter,
                 Blank = _blank,
+                EditIndex = _editIndex,
+                EditName = _editName,
                 Extras = _extras.Count == 0 ? null : new System.Collections.Generic.List<LootEditItemExtraDto>(_extras.Values),
                 Scope = !filter ? string.Empty : global ? LootFindScopes.Global : LootFindScopes.Inventory,
                 Candidates = op == "item_find" && filter && !global ? Candidates?.Invoke() : null,
@@ -450,7 +467,9 @@ internal sealed class LootAddDialog
         // Wider with the checklist (label, comparison, value on one line).
         float w = _draft?.AttributesSupported == true ? 500 : 380;
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Amber);
-        ImGuiNET.ImGui.TextUnformatted(PhosphorIcons.Plus + (_blank ? " New loot rule" : " Add to loot profile"));
+        ImGuiNET.ImGui.TextUnformatted(_editIndex >= 0
+            ? PhosphorIcons.PencilSimple + " Edit loot rule " + (_editIndex + 1).ToString(CultureInfo.InvariantCulture) + (_editName.Length > 0 ? ": " + _editName : string.Empty)
+            : PhosphorIcons.Plus + (_blank ? " New loot rule" : " Add to loot profile"));
         ImGuiNET.ImGui.PopStyleColor();
         if (_blank) ImGuiNET.ImGui.TextDisabled("Tick what the items must have; add spells and cantrips from the lists.");
         else ImGuiNET.ImGui.TextUnformatted(_itemName.Length > 0 ? _itemName : "the selected item");
@@ -470,7 +489,7 @@ internal sealed class LootAddDialog
             ImGuiNET.ImGui.PopStyleColor();
             return CloseRow(w);
         }
-        if (_blank && !d.Blank)
+        if (_blank && (!d.Blank || d.EditIndex != _editIndex))
         {
             // A RynthAi from before 2026-11-07 answers a blank rule with the selected item's draft.
             ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Red);
@@ -628,19 +647,22 @@ internal sealed class LootAddDialog
         // Add / Cancel.
         Vector2 bp = ImGuiNET.ImGui.GetCursorScreenPos() + new Vector2(0, 4);
         bool canAdd = current && d.Ok && !_adding;
-        string addLabel = _adding ? "Adding..." : PhosphorIcons.Plus + " Add rule";
+        string addLabel = _adding ? (_editIndex >= 0 ? "Saving..." : "Adding...")
+            : _editIndex >= 0 ? PhosphorIcons.Check + " Save rule" : PhosphorIcons.Plus + " Add rule";
         if (Button("##la_add", addLabel, bp, new Vector2(110, 24), canAdd ? Green : Mute, canAdd ? StartBg : BtnFill, canAdd))
         {
             _adding = true;
             Send("item_add");
         }
         if (ImGuiNET.ImGui.IsItemHovered())
-            SafeImGui.SetTooltip(d.InsertAt >= 0
+            SafeImGui.SetTooltip(_editIndex >= 0
+                ? $"Replace rule {_editIndex + 1}, save {d.TargetFile} (old file kept as .bak) and reload it"
+                : d.InsertAt >= 0
                 ? $"Insert at {d.InsertAt + 1} of {d.RuleCount + 1}, save {d.TargetFile} (old file kept as .bak) and reload it"
                 : "Add the rule");
         if (Button("##la_cancel", "Cancel", bp + new Vector2(116, 0), new Vector2(80, 24), Text, BtnFill))
             return CloseNow();
-        if (_blank && EmptyRule != null)
+        if (_blank && EmptyRule != null && _editIndex < 0)
         {
             if (Button("##la_empty", PhosphorIcons.Plus + " Start empty", bp + new Vector2(202, 0), new Vector2(110, 24), Mute, BtnFill))
             {
@@ -728,7 +750,11 @@ internal sealed class LootAddDialog
 
             // The value: a box for numbers, the item's value (by name) for the rest.
             ImGuiNET.ImGui.SameLine(valueX);
-            if (r.Choices != null && r.Choices.Count > 0)
+            if (r.Op == LootAttrOps.Any)
+                SafeImGui.TextDisabled("any value");
+            else if (r.Flags && LootAttrOps.PicksSeveral(r.Op) && r.Choices != null && r.Choices.Count > 0)
+                changed |= FlagsPicker(r, w - valueX - 16);
+            else if (r.Choices != null && r.Choices.Count > 0)
             {
                 // A named value: pick another from its list (material, skill, class...).
                 int cur = int.TryParse(r.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int cv) ? cv : int.MinValue;
@@ -774,6 +800,46 @@ internal sealed class LootAddDialog
         changed |= SpellPickers(w);
         return changed;
     }
+
+    /// <summary>
+    /// A flags row with "has any" / "has all" (2026-11-07, multi imbues): tick several in the list;
+    /// a pick of several ("Any elemental rend") ticks or clears all of its flags. The value sent is
+    /// their sum. True when it changed.
+    /// </summary>
+    private bool FlagsPicker(LootEditItemAttributeDto r, float width)
+    {
+        int cur = int.TryParse(r.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int cv) ? cv : 0;
+        var names = new System.Collections.Generic.List<string>();
+        foreach (LootEditNameDto c in r.Choices!)
+            if (IsSingleFlag(c.Id) && (cur & c.Id) != 0) names.Add(c.Name);
+        string preview = names.Count == 0 ? "(pick)" : string.Join(", ", names);
+        bool changed = false;
+        ImGuiNET.ImGui.SetNextItemWidth(width);
+        if (ImGuiNET.ImGui.BeginCombo("##la_fl_" + r.Id, preview, ImGuiComboFlags.HeightLarge))
+        {
+            int next = cur;
+            foreach (LootEditNameDto c in r.Choices)
+            {
+                bool single = IsSingleFlag(c.Id);
+                bool all = (cur & c.Id) == c.Id;
+                string mark = single ? (all ? "[x] " : "[ ] ") : (all ? "[x] " : (cur & c.Id) != 0 ? "[-] " : "[ ] ");
+                if (ImGuiNET.ImGui.Selectable(mark + c.Name + "##la_flv_" + r.Id + c.Id.ToString(CultureInfo.InvariantCulture), false, ImGuiSelectableFlags.NoAutoClosePopups))
+                    next = all ? next & ~c.Id : next | c.Id;
+            }
+            ImGuiNET.ImGui.EndCombo();
+            if (next != cur && next != 0)
+            {
+                SetChoice(r, value: next.ToString(CultureInfo.InvariantCulture), on: true);
+                r.Value = next.ToString(CultureInfo.InvariantCulture);   // shows at once; RynthAi's answer follows
+                changed = true;
+            }
+        }
+        if (ImGuiNET.ImGui.IsItemHovered())
+            SafeImGui.SetTooltip(r.Op == LootAttrOps.HasAll ? "The item must have every ticked one." : "The item must have at least one of the ticked ones.");
+        return changed;
+    }
+
+    private static bool IsSingleFlag(int v) => v != 0 && (v & (v - 1)) == 0;
 
     /// <summary>
     /// "Add spell" and "Add cantrip": a spell family from the standard creature / life / item

@@ -843,6 +843,25 @@ internal sealed class LootEditorFace : IImGuiPanel
         _keepField.Shown = null;
     }
 
+    /// <summary>The checklist edits saved rules of a .utl profile: nothing unapplied here, nothing unsaved.</summary>
+    private bool CanChecklist(LootEditStateDto s, bool dirty) =>
+        !s.ReadOnly && !dirty && !s.Dirty && _editIndex >= 0 && !string.Equals(s.Format, "json", StringComparison.OrdinalIgnoreCase);
+
+    private string ChecklistWhyNot(LootEditStateDto s, bool dirty) =>
+        s.ReadOnly ? "This profile is read-only here"
+        : string.Equals(s.Format, "json", StringComparison.OrdinalIgnoreCase) ? "Native-format rules are edited here, by hand"
+        : dirty ? "Apply or Revert this rule's changes first (the checklist saves the file)"
+        : s.Dirty ? "Save the profile first (the checklist saves the file)"
+        : "Pick a rule";
+
+    private void OpenChecklist()
+    {
+        if (_state == null || _editIndex < 0) return;
+        string name = _expect ?? _edit?.Name ?? string.Empty;
+        _lootAdd.EmptyRule = null;
+        _lootAdd.OpenEdit(_editIndex, name);
+    }
+
     private void Apply()
     {
         if (_edit == null || _state == null || _state.ReadOnly) return;
@@ -888,6 +907,16 @@ internal sealed class LootEditorFace : IImGuiPanel
         if (Button("##apply", applyL, new Vector2(rx, p.Y), new Vector2(applyW, h), dirty ? Green : Mute, dirty ? StartBg : BtnFill, dirty && !ro))
             Apply();
         ImGuiNET.ImGui.SetItemTooltip("Put these changes in the profile (then Save writes the file)");
+        // The same checklist as Add rule and Filter inventory (2026-11-07).
+        string checkL = PhosphorIcons.ListChecks + " Edit with checklist";
+        float checkW = ButtonWidth(checkL) + 6;
+        rx -= checkW + 8;
+        bool canCheck = CanChecklist(s, dirty);
+        if (Button("##checklist", checkL, new Vector2(rx, p.Y), new Vector2(checkW, h), canCheck ? Teal : Mute, BtnFill, canCheck))
+            OpenChecklist();
+        ImGuiNET.ImGui.SetItemTooltip(canCheck
+            ? "Edit this rule's conditions with the attribute checklist (as Add rule and Filter inventory); what it can't show is kept as written"
+            : ChecklistWhyNot(s, dirty));
         NextLine(p, h + 4);
         Separator(w);
 
@@ -988,9 +1017,17 @@ internal sealed class LootEditorFace : IImGuiPanel
 
         ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
         p = ImGuiNET.ImGui.GetCursorScreenPos();
+        // Add condition: the checklist (2026-11-07), as Add rule; "Raw condition" picks a node type by hand.
         string addL = PhosphorIcons.Plus + " Add condition";
-        if (Button("##add_cond", addL, p, new Vector2(ButtonWidth(addL) + 6, h), ro ? Mute : Teal, BtnFill, !ro && _nodeItems.Length > 0))
-            _picker.Open(new Vector2(p.X, p.Y + h), _nodeItems, -1, i =>
+        bool canCheck = CanChecklist(_state!, EditDirty);
+        float addW = ButtonWidth(addL) + 6;
+        if (Button("##add_cond", addL, p, new Vector2(addW, h), canCheck ? Teal : Mute, BtnFill, canCheck))
+            OpenChecklist();
+        ImGuiNET.ImGui.SetItemTooltip(canCheck ? "Tick more of the checklist's attributes for this rule" : ChecklistWhyNot(_state!, EditDirty));
+        string rawL = PhosphorIcons.PencilSimple + " Raw condition";
+        Vector2 rp = new(p.X + addW + 6, p.Y);
+        if (Button("##add_raw", rawL, rp, new Vector2(ButtonWidth(rawL) + 6, h), ro ? Mute : Text, BtnFill, !ro && _nodeItems.Length > 0))
+            _picker.Open(new Vector2(rp.X, rp.Y + h), _nodeItems, -1, i =>
             {
                 if (_edit == null) return;
                 // Before any DisabledRule node, so the rule's file layout stays VTank's.
