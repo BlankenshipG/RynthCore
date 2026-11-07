@@ -56,7 +56,8 @@ namespace LootAddWireTests
             // The op codes the popup labels are the SDK's LootItemAttributeOp.
             MethodInfo label = opsType.GetMethod("Label", All)!;
             string L(int op) => (string)label.Invoke(null, new object[] { op })!;
-            Check(L(0) == ">=" && L(1) == "=" && L(2) == "<=" && L(3) == "not", "numeric / named ops label as >= = <= not");
+            Check(L(0) == "at least" && L(1) == "is" && L(2) == "at most" && L(3) == "is not", "numeric / named ops label as words (2026-11-07)");
+            Check(L(4) == "has any" && L(5) == "any" && L(6) == "has all", "flag ops: has any, any, has all");
             Check(L(10) == "exact" && L(11) == "or better" && L(12) == "any tier", "spell ops label as exact / or better / any tier");
 
             // ── An older RynthAi: no checklist -> the popup keeps its T11 box ───────────
