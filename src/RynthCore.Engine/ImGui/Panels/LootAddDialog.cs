@@ -67,7 +67,8 @@ internal sealed class LootAddDialog
     };
     private static readonly int[] ActionIds =
         { LootEditVocabulary.Keep, LootEditVocabulary.KeepUpTo, LootEditVocabulary.Salvage, LootEditVocabulary.Sell, LootEditVocabulary.Read };
-    private static readonly string[] ActionLabels = { "Keep", "Keep #", "Salvage", "Sell", "Read" };
+    // "Keep #" + "##a1" would read "###a1" (an id-only label) and lose its "#".
+    private static readonly string[] ActionLabels = { "Keep", "Keep up to", "Salvage", "Sell", "Read" };
 
     private readonly string _id;
     private bool _open, _openRequested, _subscribed;
@@ -131,6 +132,9 @@ internal sealed class LootAddDialog
     /// rule), the popup closes. Null: no such button.
     /// </summary>
     public Action? EmptyRule { get; set; }
+
+    /// <summary>Editing a rule: "Raw editor" closes the popup and opens the rule's raw conditions (index). Null: no button.</summary>
+    public Action<int>? RawEditor { get; set; }
 
     /// <summary>FilterInventory: the items to judge (the panel's), asked when the player presses Filter.</summary>
     public Func<System.Collections.Generic.List<uint>>? Candidates { get; set; }
@@ -662,6 +666,18 @@ internal sealed class LootAddDialog
                 : "Add the rule");
         if (Button("##la_cancel", "Cancel", bp + new Vector2(116, 0), new Vector2(80, 24), Text, BtnFill))
             return CloseNow();
+        if (_editIndex >= 0 && RawEditor != null)
+        {
+            int at = _editIndex;
+            if (Button("##la_raw", PhosphorIcons.Code + " Raw editor", bp + new Vector2(202, 0), new Vector2(110, 24), Mute, BtnFill))
+            {
+                Action<int> open = RawEditor;
+                bool closed = CloseNow();
+                open(at);
+                return closed;
+            }
+            if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip("Edit this rule's conditions one by one, as written in the file");
+        }
         if (_blank && EmptyRule != null && _editIndex < 0)
         {
             if (Button("##la_empty", PhosphorIcons.Plus + " Start empty", bp + new Vector2(202, 0), new Vector2(110, 24), Mute, BtnFill))

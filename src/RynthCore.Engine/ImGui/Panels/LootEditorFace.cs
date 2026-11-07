@@ -709,7 +709,17 @@ internal sealed class LootEditorFace : IImGuiPanel
         // Name | conditions; click to edit.
         float textW = Math.Max(1, right - 4 - x);
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, p.Y));
-        if (ImGuiNET.ImGui.InvisibleButton("##edit", new Vector2(textW, RowH))) OpenRule(index);
+        // Click: the same checklist as Add rule (2026-11-07); the popup's "Raw editor" is the rule view.
+        if (ImGuiNET.ImGui.InvisibleButton("##edit", new Vector2(textW, RowH)))
+        {
+            if (_state != null && !_state.ReadOnly && !_state.Dirty && !string.Equals(_state.Format, "json", StringComparison.OrdinalIgnoreCase))
+            {
+                _lootAdd.EmptyRule = null;
+                _lootAdd.RawEditor = OpenRule;
+                _lootAdd.OpenEdit(index, r.Name);
+            }
+            else OpenRule(index);
+        }
         bool hot = ImGuiNET.ImGui.IsItemHovered();
         if (hot)
         {
@@ -859,6 +869,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         if (_state == null || _editIndex < 0) return;
         string name = _expect ?? _edit?.Name ?? string.Empty;
         _lootAdd.EmptyRule = null;
+        _lootAdd.RawEditor = null;   // already in the rule view
         _lootAdd.OpenEdit(_editIndex, name);
     }
 
