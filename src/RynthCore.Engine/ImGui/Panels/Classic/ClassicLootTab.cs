@@ -36,6 +36,8 @@ internal sealed class ClassicLootTab : IClassicTab
     private float _grab;
     private LootEditStateDto? _filesFor;
     private string[] _files = Array.Empty<string>();
+    // Add: the Loot Editor's new-rule checklist (2026-11-07), the same as Filter inventory.
+    private readonly LootAddDialog _lootAdd = new("##cl_lootadd") { EmptyRule = () => LootEditCommands.Simple("add", -1) };
 
     public void Shown()
     {
@@ -43,7 +45,11 @@ internal sealed class ClassicLootTab : IClassicTab
         UiSources.LootEdit.RequestRefresh();
     }
 
-    public void Hidden() => UiSources.LootEdit.Unsubscribe();
+    public void Hidden()
+    {
+        _lootAdd.Cancel();
+        UiSources.LootEdit.Unsubscribe();
+    }
 
     public float Draw(ClassicContext ctx, Vector2 o, float w)
     {
@@ -170,8 +176,11 @@ internal sealed class ClassicLootTab : IClassicTab
             SafeImGui.SetItemTooltip("Delete the selected rule");
             x += Px(50);
             if (Plate("##cl_add", "Add", new Vector2(x, y)) && editable)
-                LootEditCommands.Simple("add", -1);
-            SafeImGui.SetItemTooltip("Add a new rule at the end (write it in the Loot Editor)");
+            {
+                if (s!.Dirty) LootEditCommands.Simple("add", -1);   // the checklist saves: unsaved edits get the empty rule
+                else _lootAdd.Open(0, string.Empty, toOpenProfile: true, LootAddMode.AddRule, blank: true);
+            }
+            SafeImGui.SetItemTooltip("A new rule at the end from the attribute checklist (the same as Filter inventory)");
             x += Px(50);
             // The selected item, not the selected rule: RynthAi's "Why this loot rule?" window.
             if (x + Px(46) <= o.X + w && Plate("##cl_why", "Why?", new Vector2(x, y)))
@@ -194,6 +203,7 @@ internal sealed class ClassicLootTab : IClassicTab
                 TextClip(dl, o.X + 2 * bw + Px(18), y, Px(32), o.X + w, s.Message, s.MessageOk ? Green : Down, 10);
             y += Px(32);
         }
+        _lootAdd.Draw();
         return y - o.Y;
     }
 

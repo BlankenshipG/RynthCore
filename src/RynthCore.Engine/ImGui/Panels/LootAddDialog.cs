@@ -123,6 +123,12 @@ internal sealed class LootAddDialog
 
     public bool IsOpen => _open;
 
+    /// <summary>
+    /// A blank rule's "Start empty": the Loot Editor adds an empty rule to edit by hand (its old Add
+    /// rule), the popup closes. Null: no such button.
+    /// </summary>
+    public Action? EmptyRule { get; set; }
+
     /// <summary>FilterInventory: the items to judge (the panel's), asked when the player presses Filter.</summary>
     public Func<System.Collections.Generic.List<uint>>? Candidates { get; set; }
 
@@ -139,7 +145,9 @@ internal sealed class LootAddDialog
     /// </summary>
     public void Open(uint itemId, string itemName, bool toOpenProfile, LootAddMode mode = LootAddMode.AddRule, bool blank = false)
     {
-        _blank = blank && mode != LootAddMode.AddRule;
+        // Blank: no item, every attribute (the Inventory panel's own filter, and since 2026-11-07 the
+        // Loot Editor's Add rule: the same checklist makes the new rule).
+        _blank = blank;
         _extras.Clear();
         _itemId = _blank ? 0 : itemId;
         _itemName = itemName ?? string.Empty;
@@ -147,7 +155,7 @@ internal sealed class LootAddDialog
         _mode = mode;
         _finding = _closeRequested = false;
         _findError = string.Empty;
-        _match = mode == LootAddMode.AddRule ? 0 : 2;   // a filter looks for look-alikes
+        _match = mode == LootAddMode.AddRule && !blank ? 0 : 2;   // a filter looks for look-alikes
         _action = 0;
         _keep = -1;
         _includeT11 = false;
@@ -442,9 +450,10 @@ internal sealed class LootAddDialog
         // Wider with the checklist (label, comparison, value on one line).
         float w = _draft?.AttributesSupported == true ? 500 : 380;
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Amber);
-        ImGuiNET.ImGui.TextUnformatted(PhosphorIcons.Plus + " Add to loot profile");
+        ImGuiNET.ImGui.TextUnformatted(PhosphorIcons.Plus + (_blank ? " New loot rule" : " Add to loot profile"));
         ImGuiNET.ImGui.PopStyleColor();
-        ImGuiNET.ImGui.TextUnformatted(_itemName.Length > 0 ? _itemName : "the selected item");
+        if (_blank) ImGuiNET.ImGui.TextDisabled("Tick what the items must have; add spells and cantrips from the lists.");
+        else ImGuiNET.ImGui.TextUnformatted(_itemName.Length > 0 ? _itemName : "the selected item");
         ImGuiNET.ImGui.Separator();
 
         LootEditItemDraftDto? d = _draft;
@@ -459,6 +468,26 @@ internal sealed class LootAddDialog
                 : "Building the rule...");
             ImGuiNET.ImGui.PopTextWrapPos();
             ImGuiNET.ImGui.PopStyleColor();
+            return CloseRow(w);
+        }
+        if (_blank && !d.Blank)
+        {
+            // A RynthAi from before 2026-11-07 answers a blank rule with the selected item's draft.
+            ImGuiNET.ImGui.PushStyleColor(ImGuiCol.Text, Red);
+            ImGuiNET.ImGui.PushTextWrapPos(ImGuiNET.ImGui.GetCursorPosX() + w);
+            ImGuiNET.ImGui.TextUnformatted("This RynthAi is older than the attribute checklist for new rules. Update RynthSuite, or start an empty rule and edit it by hand.");
+            ImGuiNET.ImGui.PopTextWrapPos();
+            ImGuiNET.ImGui.PopStyleColor();
+            if (EmptyRule != null)
+            {
+                Vector2 ep = ImGuiNET.ImGui.GetCursorScreenPos() + new Vector2(0, 4);
+                if (Button("##la_empty_old", PhosphorIcons.Plus + " Start empty", ep, new Vector2(110, 24), Text, BtnFill))
+                {
+                    EmptyRule();
+                    return CloseNow();
+                }
+                ImGuiNET.ImGui.SetCursorScreenPos(ep + new Vector2(0, 28));
+            }
             return CloseRow(w);
         }
 
@@ -483,17 +512,20 @@ internal sealed class LootAddDialog
         }
 
         bool changed = false;
-        // Match.
-        ImGuiNET.ImGui.TextDisabled("Match:");
-        for (int i = 0; i < MatchLabels.Length; i++)
+        // Match (an item's rule only: a blank rule is what is ticked).
+        if (!_blank)
         {
-            ImGuiNET.ImGui.SameLine();
-            if (ImGuiNET.ImGui.RadioButton(MatchLabels[i] + "##m" + i.ToString(CultureInfo.InvariantCulture), d.Match == i) && d.Match != i)
+            ImGuiNET.ImGui.TextDisabled("Match:");
+            for (int i = 0; i < MatchLabels.Length; i++)
             {
-                _match = i;
-                changed = true;
+                ImGuiNET.ImGui.SameLine();
+                if (ImGuiNET.ImGui.RadioButton(MatchLabels[i] + "##m" + i.ToString(CultureInfo.InvariantCulture), d.Match == i) && d.Match != i)
+                {
+                    _match = i;
+                    changed = true;
+                }
+                if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(MatchTips[i]);
             }
-            if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(MatchTips[i]);
         }
 
         if (d.AttributesSupported)
@@ -549,7 +581,7 @@ internal sealed class LootAddDialog
                 changed = true;
             }
             ImGuiNET.ImGui.SameLine();
-            SafeImGui.TextDisabled(d.Stackable ? "(counts stack sizes)" : "(items)");
+            SafeImGui.TextDisabled(d.Stackable || _blank ? "(counts stack sizes)" : "(items)");
         }
 
         // Name.
@@ -608,6 +640,15 @@ internal sealed class LootAddDialog
                 : "Add the rule");
         if (Button("##la_cancel", "Cancel", bp + new Vector2(116, 0), new Vector2(80, 24), Text, BtnFill))
             return CloseNow();
+        if (_blank && EmptyRule != null)
+        {
+            if (Button("##la_empty", PhosphorIcons.Plus + " Start empty", bp + new Vector2(202, 0), new Vector2(110, 24), Mute, BtnFill))
+            {
+                EmptyRule();
+                return CloseNow();
+            }
+            if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip("Add an empty rule at the end and write its conditions by hand");
+        }
         ImGuiNET.ImGui.SetCursorScreenPos(bp + new Vector2(0, 28));
         ImGuiNET.ImGui.Dummy(new Vector2(w, 0));
         return false;

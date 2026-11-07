@@ -231,7 +231,7 @@ internal sealed class LootEditItemAttributeDto
 /// <summary>The checklist's comparison codes (LootSdk LootItemAttributeOp) and how the popup labels them.</summary>
 internal static class LootAttrOps
 {
-    public const int AtLeast = 0, Exactly = 1, AtMost = 2, Not = 3, SpellExact = 10, SpellOrBetter = 11, SpellAnyTier = 12;
+    public const int AtLeast = 0, Exactly = 1, AtMost = 2, Not = 3, HasAny = 4, SpellExact = 10, SpellOrBetter = 11, SpellAnyTier = 12;
 
     public static string Label(int op) => op switch
     {
@@ -239,6 +239,7 @@ internal static class LootAttrOps
         Exactly => "=",
         AtMost => "<=",
         Not => "not",
+        HasAny => "has any",
         SpellExact => "exact",
         SpellOrBetter => "or better",
         SpellAnyTier => "any tier",
@@ -282,6 +283,8 @@ internal sealed class LootEditItemDraftDto
     public string Message { get; set; } = string.Empty;
     /// <summary>A filter's draft (added 2026-10-24).</summary>
     public bool Find { get; set; }
+    /// <summary>A new rule from the blank checklist (added 2026-11-07; false from an older RynthAi).</summary>
+    public bool Blank { get; set; }
 }
 
 internal sealed class LootEditVocabDto

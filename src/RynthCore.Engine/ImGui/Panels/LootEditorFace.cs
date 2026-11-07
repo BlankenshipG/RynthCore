@@ -734,6 +734,13 @@ internal sealed class LootEditorFace : IImGuiPanel
         return changed;
     }
 
+    /// <summary>An empty rule at the end, opened to edit by hand (Add rule before the checklist).</summary>
+    private void AddEmptyRule()
+    {
+        LootEditCommands.Simple("add", -1);
+        Expect(Await.OpenFocus);
+    }
+
     private void Expect(Await kind)
     {
         _await = kind;
@@ -748,12 +755,21 @@ internal sealed class LootEditorFace : IImGuiPanel
         string addLabel = PhosphorIcons.Plus + " Add rule";
         float addW = ButtonWidth(addLabel) + 6;
         bool canAdd = !s.ReadOnly && s.Path.Length > 0;
+        // The same attribute checklist as the Inventory panel's filter (2026-11-07): tick what the items
+        // must have, pick the action; "Start empty" in the popup is the old empty rule to edit by hand.
+        bool canChecklist = canAdd && !s.Dirty;
         if (Button("##add", addLabel, p, new Vector2(addW, h), canAdd ? Green : Mute, canAdd ? StartBg : BtnFill, canAdd))
         {
-            LootEditCommands.Simple("add", -1);
-            Expect(Await.OpenFocus);
+            if (canChecklist)
+            {
+                _lootAdd.EmptyRule = AddEmptyRule;
+                _lootAdd.Open(0, string.Empty, toOpenProfile: true, LootAddMode.AddRule, blank: true);
+            }
+            else AddEmptyRule();   // unsaved edits: the checklist saves, so add the empty rule as before
         }
-        ImGuiNET.ImGui.SetItemTooltip("Add a rule at the end and edit it");
+        ImGuiNET.ImGui.SetItemTooltip(canChecklist
+            ? "A new rule from the attribute checklist (the same as Filter inventory): tick what the items must have, pick the action"
+            : "Add an empty rule at the end and edit it (save your edits first to use the checklist)");
         string itemLabel = PhosphorIcons.Plus + " Add selected item";
         float itemW = ButtonWidth(itemLabel) + 6;
         bool canItem = s.Path.Length > 0 && !s.Dirty && (!s.ReadOnly || s.Format == "json");
