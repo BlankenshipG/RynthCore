@@ -304,8 +304,9 @@ internal static partial class PluginManager
     private static DropTargetCallbackDelegate? _dropTargetCallback;                       // v90
     private static SetAmbientLightFloorCallbackDelegate? _setAmbientLightFloorCallback;   // v91
     private static GetAmbientLightCallbackDelegate? _getAmbientLightCallback;             // v91
-    private static GetWindowPlacementCallbackDelegate? _getWindowPlacementCallback;       // v93
-    private static SetWindowPlacementCallbackDelegate? _setWindowPlacementCallback;       // v93
+    private static GetMonsterHealthCallbackDelegate? _getMonsterHealthCallback;           // v93
+    private static GetWindowPlacementCallbackDelegate? _getWindowPlacementCallback;       // v94
+    private static SetWindowPlacementCallbackDelegate? _setWindowPlacementCallback;       // v94
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -955,7 +956,8 @@ internal static partial class PluginManager
     /// One health observation. <paramref name="healthReply"/>: it is a 0x01C0 UpdateHealth (a QueryHealth
     /// reply or the server's stream); one that answers the nameplates' own probe (HealthProbe) is the
     /// HUD's alone - plugins never asked for it, and a bot must not read someone else's hit on a monster
-    /// it isn't fighting as its own.
+    /// it isn't fighting as its own. (A plugin can still ask for the plates' last reading by id, API v93
+    /// GetMonsterHealth: a number to rank by, not an UpdateHealth event.)
     /// </summary>
     public static void QueueUpdateHealth(uint targetId, float healthRatio, uint currentHealth, uint maxHealth, bool healthReply = false)
     {
@@ -3296,6 +3298,7 @@ internal static partial class PluginManager
         unsafe { _dropTargetCallback ??= ShortcutApi.DropTarget; }
         _setAmbientLightFloorCallback ??= AmbientLight.SetFloor;      // v91
         unsafe { _getAmbientLightCallback ??= AmbientLight.Get; }
+        unsafe { _getMonsterHealthCallback ??= GetMonsterHealthAction; }   // v93
         unsafe { _getWindowPlacementCallback ??= WindowPlacementApi.Get; }
         unsafe { _setWindowPlacementCallback ??= WindowPlacementApi.Set; }
 
@@ -3470,6 +3473,7 @@ internal static partial class PluginManager
         _api.DropTargetFn = Marshal.GetFunctionPointerForDelegate(_dropTargetCallback);
         _api.SetAmbientLightFloorFn = Marshal.GetFunctionPointerForDelegate(_setAmbientLightFloorCallback);
         _api.GetAmbientLightFn = Marshal.GetFunctionPointerForDelegate(_getAmbientLightCallback);
+        _api.GetMonsterHealthFn = Marshal.GetFunctionPointerForDelegate(_getMonsterHealthCallback);
         _api.GetWindowPlacementFn = Marshal.GetFunctionPointerForDelegate(_getWindowPlacementCallback);
         _api.SetWindowPlacementFn = Marshal.GetFunctionPointerForDelegate(_setWindowPlacementCallback);
         RouteApiThroughLoader();
@@ -3669,6 +3673,27 @@ internal static partial class PluginManager
     /// v86: the server list as JSON (UI/Sections/ServerStateJson.cs) from the published snapshot.
     /// Any thread: the snapshot is immutable and the strings are volatile reads. -1 on failure.
     /// </summary>
+    /// <summary>
+    /// v93: the monster plates' last SERVER health reading for <paramref name="id"/> and its age
+    /// (MonsterHudData.TryGetServerHealth; probe replies included, estimates never). The probe replies
+    /// still don't reach plugins as UpdateHealth (QueueUpdateHealth drops them): a plugin asking here
+    /// gets a number, not someone else's hit as its own. Read-only, any thread, no game calls.
+    /// </summary>
+    private static unsafe int GetMonsterHealthAction(uint id, float* ratio, uint* ageMs)
+    {
+        try
+        {
+            bool ok = ImGuiBackend.Hud.MonsterHudData.TryGetServerHealth(id, out float r, out uint age);
+            if (ratio != null) *ratio = ok ? r : -1f;
+            if (ageMs != null) *ageMs = ok ? age : uint.MaxValue;
+            return ok ? 1 : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
     /// <summary>v87: what the player wields (EquipmentTracker). -1 while it can't start.</summary>
     private static unsafe int GetWieldedItemsAction(uint* ids, uint* locations, int max)
     {
@@ -4282,7 +4307,16 @@ internal static partial class PluginManager
     private static int WriteToChat(IntPtr textUtf16, int chatType)
     {
         string? text = textUtf16 != IntPtr.Zero ? Marshal.PtrToStringUni(textUtf16) : null;
-        return ToAbiBool(ClientHelperHooks.WriteToChat(text, chatType));
+        // A colour the plugin armed just before (SendPluginCommand "RynthCore.Chat" nextcolor):
+        // RynthCore's chat draws this line in it; the chat type still decides where it goes.
+        long now = Environment.TickCount64;
+        uint? own = UI.Data.ChatOwnColors.TakeArmed(now);
+        if (own != null && !string.IsNullOrEmpty(text))
+            UI.Data.ChatOwnColors.Lines.Expect(text, chatType, own.Value, now);
+        bool written = ClientHelperHooks.WriteToChat(text, chatType);
+        if (!written && own != null && !string.IsNullOrEmpty(text))
+            UI.Data.ChatOwnColors.Lines.Forget(text, chatType);
+        return ToAbiBool(written);
     }
 
     private static int InvokeChatParser(IntPtr textUtf16)
@@ -4924,6 +4958,13 @@ internal static partial class PluginManager
                 string? action = actionAnsi != IntPtr.Zero ? Marshal.PtrToStringAnsi(actionAnsi) : null;
                 string? value = valueAnsi != IntPtr.Zero ? Marshal.PtrToStringAnsi(valueAnsi) : null;
                 return Net.FlightRecorder.HandlePluginCommand(action, value) ? 1 : 0;
+            }
+            // So does a line's own colour in RynthCore's chat (UI/Data/ChatOwnColors.cs, 2026-11-05).
+            if (name == UI.Data.ChatOwnColors.CommandTarget)
+            {
+                string? action = actionAnsi != IntPtr.Zero ? Marshal.PtrToStringAnsi(actionAnsi) : null;
+                string? value = valueAnsi != IntPtr.Zero ? Marshal.PtrToStringAnsi(valueAnsi) : null;
+                return UI.Data.ChatOwnColors.HandlePluginCommand(action, value, Environment.TickCount64) ? 1 : 0;
             }
 
             IntPtr export = ResolvePluginExport(name, "RynthPluginApplyRemoteCommand");

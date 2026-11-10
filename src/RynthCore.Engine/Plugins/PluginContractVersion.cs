@@ -40,9 +40,16 @@ internal static class PluginContractVersion
     // v92: SetActionKey op 3, a RynthCore command's key as an engine hotkey only (AC's keymap untouched),
     //      and the SDK's BindCommandKeyOnly / UnbindCommandKeyOnly; no new function or field, but a plugin
     //      calling them needs this SDK in Runtime\PluginShared (fix/keymap-follow-change, 2026-10-27).
-    // v93: GetWindowPlacement and SetWindowPlacement: a plugin's own floating windows keep their spot
+    // v93: GetMonsterHealth: the monster plates' last SERVER health reading for an object and its age in ms
+    //      (MonsterHudData.TryGetServerHealth; the plates' round-robin probe replies included, their hit
+    //      estimates never), so a plugin can rank every nearby monster by health while the server streams
+    //      only the queried one. The probe replies still don't reach plugins as UpdateHealth. Read-only,
+    //      any thread (feature/hud-health-for-plugins, 2026-11-07). Note: feature/reload-state,
+    //      feature/engine-events and the branches built on them (unmerged) also use 93 and 94; whichever
+    //      merges second renumbers.
+    // v94: GetWindowPlacement and SetWindowPlacement: a plugin's own floating windows keep their spot
     //      per character (window_state.<server>.<character>.txt) instead of in the imgui.ini every
     //      running client shares and rewrites (2026-10-26).
-    //      (Was v91 on the test branch; renumbered after upstream's v91 and v92, 2026-10-29.)
-    public const uint Current = 93;
+    //      (Was v91 on the test branch; renumbered after upstream's v91 and v92, 2026-10-29, and after upstream's v93 GetMonsterHealth, 2026-11-10.)
+    public const uint Current = 94;
 }

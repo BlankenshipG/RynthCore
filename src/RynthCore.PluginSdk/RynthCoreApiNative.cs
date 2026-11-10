@@ -202,8 +202,10 @@ public struct RynthCoreApiNative
     // v91: a floor under the world's ambient light (drawing only, this client)
     public IntPtr SetAmbientLightFloorFn;    // int SetAmbientLightFloor(uint rgb) -> 1 hook live, 0 not; 0x00RRGGBB, 0 = none
     public IntPtr GetAmbientLightFn;         // int GetAmbientLight(uint* client, uint* applied) -> 1 hook live, 0 not
-    public IntPtr GetWindowPlacementFn;      // v93 int GetWindowPlacement(const char* key, float* xywh) -> 1 found, 0 none, -1 bad key / no character
-    public IntPtr SetWindowPlacementFn;      // v93 int SetWindowPlacement(const char* key, float x, y, w, h) -> 1 saved, 0 no character, -1 bad key
+    // v93: the monster plates' last server health reading per object
+    public IntPtr GetMonsterHealthFn;        // int GetMonsterHealth(uint id, float* ratio, uint* ageMs) -> 1 reading, 0 none
+    public IntPtr GetWindowPlacementFn;      // v94 int GetWindowPlacement(const char* key, float* xywh) -> 1 found, 0 none, -1 bad key / no character
+    public IntPtr SetWindowPlacementFn;      // v94 int SetWindowPlacement(const char* key, float x, y, w, h) -> 1 saved, 0 no character, -1 bad key
 }
 
 /// <summary>

@@ -37,6 +37,8 @@
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatSettingsMerge.cs" Link="Engine\ChatSettingsMerge.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatReplyTab.cs" Link="Engine\ChatReplyTab.cs" />
     <Compile Include="..\..\src\RynthCore.Engine\Compatibility\ServerCommandFallback.cs" Link="Engine\ServerCommandFallback.cs" />
+    <!-- 2026-11-05: a plugin's own colour for a line it writes (RynthAi's Info text colour). -->
+    <Compile Include="..\..\src\RynthCore.Engine\UI\Data\ChatOwnColors.cs" Link="Engine\ChatOwnColors.cs" />
   </ItemGroup>
 
 </Project>

@@ -1781,11 +1781,11 @@ public readonly unsafe struct RynthCoreHost
         return item;
     }
 
-    /// <summary>v93: the engine keeps a plugin window's spot per character (<see cref="TryGetWindowPlacement"/>).</summary>
-    public bool HasWindowPlacements => _api.Version >= 93 && _api.GetWindowPlacementFn != IntPtr.Zero && _api.SetWindowPlacementFn != IntPtr.Zero;
+    /// <summary>v94: the engine keeps a plugin window's spot per character (<see cref="TryGetWindowPlacement"/>).</summary>
+    public bool HasWindowPlacements => _api.Version >= 94 && _api.GetWindowPlacementFn != IntPtr.Zero && _api.SetWindowPlacementFn != IntPtr.Zero;
 
     /// <summary>
-    /// v93: where the player left the plugin's own floating window <paramref name="key"/> on this character
+    /// v94: where the player left the plugin's own floating window <paramref name="key"/> on this character
     /// (ImGui screen pixels; a zero size = the window sized itself). False when nothing is saved, no
     /// character is logged in yet, or the engine is older. Keys: up to 96 characters, no '=' or line break;
     /// prefix them with the plugin's name. Any thread. Plugins/Shared SavedWindow wraps this.
@@ -1807,7 +1807,7 @@ public readonly unsafe struct RynthCoreHost
         return true;
     }
 
-    /// <summary>v93: saves window <paramref name="key"/>'s spot for this character (see <see cref="TryGetWindowPlacement"/>). False when not saved.</summary>
+    /// <summary>v94: saves window <paramref name="key"/>'s spot for this character (see <see cref="TryGetWindowPlacement"/>). False when not saved.</summary>
     public bool SetWindowPlacement(string key, System.Numerics.Vector2 pos, System.Numerics.Vector2 size)
     {
         if (!HasWindowPlacements || string.IsNullOrEmpty(key) || key.Length > 96) return false;
@@ -1879,6 +1879,35 @@ public readonly unsafe struct RynthCoreHost
         client = c;
         applied = a;
         return r == 1;
+    }
+
+    /// <summary>
+    /// v93: <see cref="TryGetMonsterHealth"/> (the monster plates' last server health reading per object).
+    /// </summary>
+    public bool HasMonsterHealth => _api.Version >= 93 && _api.GetMonsterHealthFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v93: the last health ratio (0..1) the server sent for <paramref name="id"/>, as the engine's monster
+    /// plates keep it, and how many ms ago (<paramref name="ageMs"/>). The plates ask the server for the
+    /// monsters around the player round-robin (about one a second; ones in a fight every 2 s, quiet ones
+    /// every 12 s), so this covers monsters whose health the server streams to nobody else here. Those
+    /// probe replies never arrive as UpdateHealth events (a plugin must not count someone else's hit as
+    /// its own): use this for ranking, not for kill or damage tracking. Never the plates' estimates from
+    /// the player's hits. False when the server never sent this object's health, or on an older engine.
+    /// Read-only, any thread.
+    /// </summary>
+    public bool TryGetMonsterHealth(uint id, out float ratio, out uint ageMs)
+    {
+        ratio = -1f;
+        ageMs = uint.MaxValue;
+        if (!HasMonsterHealth || id == 0) return false;
+        float r = -1f;
+        uint age = uint.MaxValue;
+        int ok = ((delegate* unmanaged[Cdecl]<uint, float*, uint*, int>)_api.GetMonsterHealthFn)(id, &r, &age);
+        if (ok != 1 || float.IsNaN(r) || r < 0f) return false;
+        ratio = Math.Min(r, 1f);
+        ageMs = age;
+        return true;
     }
 
     private int CallSetActionKey(string action, string key, int op, out string message)

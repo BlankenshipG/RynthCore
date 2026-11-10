@@ -1016,8 +1016,9 @@ internal struct RynthCoreAPI
     /// (0 = unbound), -1 for a bad call. Any thread. Requires API v90+.</summary>
     public IntPtr GetActionKeysFn;
     /// <summary>v90: <c>void* GetIconTexture(int kind, uint id)</c>: kind 0 icon id, 1 object, 2
-    /// spell: an ImGui texture id, or null while it is made. AC's render thread, in a docked
-    /// window's draw. Requires API v90+.</summary>
+    /// spell, 3 a retail UI picture at its own size, 4 a retail font's glyph sheet as white + alpha
+    /// (3 and 4 2026-11-07, no version bump): an ImGui texture
+    /// id, or null while it is made. AC's render thread, in a docked window's draw. Requires API v90+.</summary>
     public IntPtr GetIconTextureFn;
     /// <summary>v90: <c>int KeyCapture(int op, char* buffer, int length)</c>: op 0 waits for the next key
     /// the player presses (it never reaches AC; Esc cancels), 1 asks (0 waiting, 1 pressed: its name
@@ -1059,11 +1060,20 @@ internal struct RynthCoreAPI
     /// live, 0 when it isn't (both 0). Either pointer may be null. Any thread. Requires API v91+.</summary>
     public IntPtr GetAmbientLightFn;
 
-    /// <summary>v93: <c>int GetWindowPlacement(const char* key, float* xywh)</c>: where the player left the
+    // ── v93: the monster plates' health readings (ImGui/MonsterHud/MonsterHudData.cs) ──
+
+    /// <summary>v93: <c>int GetMonsterHealth(uint id, float* ratio, uint* ageMs)</c>: the last health ratio
+    /// (0..1) the SERVER sent for the object, as the monster plates keep it, and how many ms ago. That
+    /// includes the replies to the plates' own round-robin probes (HealthProbe), which plugins never get
+    /// as UpdateHealth events, and never the plates' estimates from the player's hits. Returns 1 with a
+    /// reading, 0 without (never read; *ratio = -1, *ageMs = 0xFFFFFFFF). Either pointer may be null.
+    /// Read-only, any thread, no game calls. Requires API v93+.</summary>
+    public IntPtr GetMonsterHealthFn;
+    /// <summary>v94: <c>int GetWindowPlacement(const char* key, float* xywh)</c>: where the player left the
     /// plugin's own floating window <c>key</c> on this character (x, y, width, height; ImGui screen pixels,
     /// width/height 0 = sized itself). 1 found, 0 none saved, -1 bad key or no character. Any thread.</summary>
     public IntPtr GetWindowPlacementFn;
-    /// <summary>v93: <c>int SetWindowPlacement(const char* key, float x, float y, float w, float h)</c>: saves it,
+    /// <summary>v94: <c>int SetWindowPlacement(const char* key, float x, float y, float w, float h)</c>: saves it,
     /// per character (window_state.&lt;server&gt;.&lt;character&gt;.txt, not the imgui.ini every client shares).
     /// 1 saved, 0 no character yet, -1 bad key (empty, over 96 chars, '=' or a line break). Any thread.</summary>
     public IntPtr SetWindowPlacementFn;
@@ -1926,6 +1936,7 @@ internal delegate int SetAmbientLightFloorCallbackDelegate(uint rgb);
 internal unsafe delegate int GetAmbientLightCallbackDelegate(uint* client, uint* applied);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetMonsterHealthCallbackDelegate(uint id, float* ratio, uint* ageMs);
 internal unsafe delegate int GetWindowPlacementCallbackDelegate(byte* key, float* xywh);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
