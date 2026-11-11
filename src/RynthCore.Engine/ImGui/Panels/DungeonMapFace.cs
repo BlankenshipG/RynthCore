@@ -325,10 +325,14 @@ internal sealed class DungeonMapFace : IImGuiPanel
             }
         }
 
-        // Visited cells, the player's floor only: 4 floats per strip.
-        if (curVisible && view.VisitedByLayer[cur] is float[] visited)
+        // Visited cells (the walked trail), 4 floats per strip: each floor shown draws its own, the player's floor in
+        // full and the other shown floors dimmed like their walls. RynthAi paints a floor only while you stand on it
+        // (2026-11-11), so a floor above or below shows nothing of where you walked unless you walked it and it's on.
+        for (int k = 0; k < n; k++)
         {
-            uint fill = RynthTheme.Argb(FillVisited);
+            int layer = _drawOrder[k];
+            if (view.VisitedByLayer[layer] is not float[] visited) continue;
+            uint fill = layer == cur ? RynthTheme.Argb(FillVisited) : MulAlpha(FillVisited, DimOtherFloors);
             for (int i = 0; i + 3 < visited.Length; i += 4)
                 FillRect(dl, proj, visited[i], visited[i + 1], visited[i + 2], visited[i + 3], fill, clipMin, clipMax);
         }
