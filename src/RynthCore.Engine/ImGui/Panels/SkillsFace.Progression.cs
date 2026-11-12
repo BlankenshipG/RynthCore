@@ -15,6 +15,7 @@
 // ============================================================================
 
 using System;
+using RynthCore.Engine.Compatibility;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -99,6 +100,15 @@ internal sealed partial class SkillsFace
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6, 4));
         try
         {
+            // Off Infinite Leaftide (2026-11-11, Silentkelpie: "progress should still show for all, but the progress top
+            // section should be hidden unless on leaftide"): the retail XP planner only - no infinite attributes, no
+            // augmentation / enlightenment planners and no word about them.
+            bool ilt = (info != null && info.Available) || IltInfo.IsIlt;
+            if (!ilt)
+            {
+                DrawRetailOnly(w);
+                return;
+            }
             // One Attributes section: retail XP planner + (when supported) infinite-attr raiser.
             DrawAttributes(info?.Attr, w);
             ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
@@ -115,6 +125,20 @@ internal sealed partial class SkillsFace
         finally
         {
             ImGuiNET.ImGui.PopStyleVar();
+        }
+    }
+
+    /// <summary>Off Infinite Leaftide: the retail XP planner, under its own heading.</summary>
+    private void DrawRetailOnly(float w)
+    {
+        Section("Attribute raises", w);
+        ImGuiNET.ImGui.Indent(8);
+        ImGuiNET.ImGui.PushTextWrapPos(ImGuiNET.ImGui.GetCursorPosX() + w - 24);
+        try { DrawRetailXpPlanner(w); }
+        finally
+        {
+            ImGuiNET.ImGui.PopTextWrapPos();
+            ImGuiNET.ImGui.Unindent(8);
         }
     }
 
