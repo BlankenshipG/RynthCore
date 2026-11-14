@@ -562,6 +562,17 @@ if ($SkipDecalBridge) {
 # release.txt — which core release this install is ($release, from -Version at the top).
 Set-Content -Path "$CoreStaging\release.txt" -Value @($release, $Version) -Encoding ASCII
 
+# The PE machine field of a DLL (e_lfanew at 0x3C, then the COFF Machine at PE offset + 4). The game is
+# 32-bit, so the web panel's native loader must be the x86 one (0x14C): the NuGet package also carries
+# win-x64 and win-arm64 copies that would load nowhere.
+function Assert-PeMachine([string]$Path, [int]$Expected) {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 0x40) { throw "$Path is not a PE file (too short)" }
+    $pe = [System.BitConverter]::ToInt32($bytes, 0x3C)
+    if ($pe -lt 0 -or $pe + 6 -gt $bytes.Length) { throw "$Path is not a PE file (bad e_lfanew)" }
+    $machine = [System.BitConverter]::ToUInt16($bytes, $pe + 4)
+    if ($machine -ne $Expected) { throw ("{0}: PE machine 0x{1:X}, expected 0x{2:X}" -f $Path, $machine, $Expected) }
+}
 # Everything a working install needs. The 2026-09-25 public installer went out
 # without the Loader and the SEH trampoline because nothing checked.
 $required = @(
@@ -584,7 +595,9 @@ if (-not $NativeAot) {
     $required += @(
         "$CoreStaging\Runtime\RynthCore.Shim.dll",
         "$CoreStaging\Runtime\dotnet\coreclr.dll",
-        "$CoreStaging\Runtime\dotnet\System.Private.CoreLib.dll"
+        "$CoreStaging\Runtime\dotnet\System.Private.CoreLib.dll",
+        "$CoreStaging\Runtime\Microsoft.Web.WebView2.Core.dll",
+        "$CoreStaging\Runtime\WebView2Loader.dll"
     )
 }
 if ($buildDecalBridge) {
@@ -592,6 +605,9 @@ if ($buildDecalBridge) {
 }
 $missing = @($required | Where-Object { -not (Test-Path $_) })
 if ($missing.Count -gt 0) { throw "Staging is missing required files:`n  $($missing -join "`n  ")" }
+if (-not $NativeAot) {
+    Assert-PeMachine "$CoreStaging\Runtime\WebView2Loader.dll" 0x14C
+}
 
 # Every assembly the launcher's deps.json lists must be staged next to it — a launcher DLL whose
 # deps.json doesn't match is exactly the "Could not load RynthCore.DesktopLog" failure of 2026-10-04.

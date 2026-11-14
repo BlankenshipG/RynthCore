@@ -1,6 +1,6 @@
 // ============================================================================
 //  RynthCore.Engine - UI/AcWindowChrome.cs
-//  Settings > Display helpers for the Asheron's Call game HWND:
+//  Settings > Game Client helpers for the Asheron's Call game HWND:
 //    - Borderless windowed: strip caption / thick frame while leaving the client
 //      windowed (not exclusive fullscreen). Two sizes (Borderless Fills Monitor):
 //        on (default) - fill the monitor the window is on (borderless fullscreen);
@@ -214,7 +214,7 @@ internal static class AcWindowChrome
         }
     }
 
-    /// <summary>Settings > Display "Borderless Fills Monitor" changed: re-place a borderless window
+    /// <summary>Settings > Game Client "Borderless Fills Monitor" changed: re-place a borderless window
     /// (fill: its monitor; kept size: where the framed window was) and save it.</summary>
     public static void ApplyFillMonitorChanged(IntPtr hwnd)
     {
@@ -245,7 +245,7 @@ internal static class AcWindowChrome
     }
 
     /// <summary>
-    /// Settings > Display "Reset Window Borders" and "/rc window reset": borderless off (saved),
+    /// Settings > Game Client "Reset Window Borders" and "/rc window reset": borderless off (saved),
     /// the frame back, and a normal window of a sensible size, centred; the saved placement is
     /// replaced by it (the borderless rect is forgotten) so the next launch isn't stuck either.
     /// For a window stuck too small or off-screen. AC's main thread.
@@ -391,7 +391,7 @@ internal static class AcWindowChrome
         if (++_refills > MaxRefills)
         {
             _refillGaveUp = true;
-            RynthLog.UI("AcWindowChrome: AC keeps re-sizing the borderless window; leaving it (Settings > Display > Reset Window Borders, or \"/rc window reset\", for a normal window).");
+            RynthLog.UI("AcWindowChrome: AC keeps re-sizing the borderless window; leaving it (Settings > Game Client > Reset Window Borders, or \"/rc window reset\", for a normal window).");
             return;
         }
         RynthLog.UI(FormattableString.Invariant(
@@ -486,7 +486,7 @@ internal static class AcWindowChrome
     }
 
     /// <summary>Force-save panels (already on disk via PanelStateStore), AC window,
-    /// Vision self-plate, and ImGui.ini. Used by Settings > Display "Save layout now".</summary>
+    /// Vision self-plate, and ImGui.ini. Used by Settings > Interface "Save Layout Now".</summary>
     public static void SaveLayoutNow()
     {
         IntPtr hwnd = ResolveGameHwnd();

@@ -1278,6 +1278,7 @@ public static class EntryPoint
                 if (HasPluginDll("RynthCore.Plugin.RynthChat.dll"))
                 {
                     ImGuiBackend.Panels.ChatFace.Register();
+                    ImGuiBackend.Panels.ChatWindowFace.RegisterAll();   // "Chat 2".."Chat 7", the extra chat windows
                     ImGuiBackend.Panels.ChatFiltersFace.Register();
                     ImGuiBackend.Panels.ChatDiscordFace.Register();
                 }

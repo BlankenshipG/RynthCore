@@ -11,6 +11,9 @@
 //  draws that asked for one (its manifest's "windows" with "bar", UI/Sections/
 //  PluginWindows.cs; an engine panel such a window has taken over loses its own
 //  button), reload (RL) and pop out.
+//  A plugin window with a "barMenu" (plugin API v95) drops a column of icon buttons below its
+//  bar icon after the mouse rests on it (BarMenuHover: open and close delays); a click runs that
+//  item's chat command. The icon's own click still toggles the window.
 //  A button whose window is open, docked or popped out, draws highlighted in the
 //  theme's accent (RynthTheme.BarButtonOpen*); the ILT and Scripts buttons while
 //  any window in their menu is (UI/BarOpenState.cs; one IsOpen lookup a key).
@@ -22,7 +25,7 @@
 //
 //  The bar's size is its own text size step (PanelTextScale chrome row): the bar's
 //  fonts come from that baked set and its metrics scale by the step's factor. Set it
-//  from the grip's right-click menu, Ctrl+wheel over the bar, Settings > Display or
+//  from the grip's right-click menu, Ctrl+wheel over the bar, Settings > Interface or
 //  /rc ui barsize.
 //
 //  Rows (BarLayout): the player picks how many rows the bar has (1-6) and the most
@@ -51,6 +54,7 @@ using System.Globalization;
 using System.Numerics;
 using System.Threading;
 using ImGuiNET;
+using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.UI;
 using RynthCore.Engine.UI.ScriptWindows;
 
@@ -73,7 +77,17 @@ internal static class ImGuiBar
     // the button toggles it through ScriptWindowRegistry, like the Scripts menu does.
     // OpenKey: the panel whose open state lights the button (BarOpenState.KeyFor).
     private sealed record ButtonInfo(string Title, string Id, string Icon, bool Letter, string Tooltip,
-        string OpenKey, ScriptWindow? Window = null);
+        string OpenKey, ScriptWindow? Window = null, UI.Sections.SectionBarMenuItem[]? Menu = null);
+
+    // The bar icon dropdown (a plugin window's "barMenu"): the timer, last frame's "mouse is over the
+    // dropdown", the menu-bearing buttons' rects this frame, and when the timer was last fed (a gap
+    // means the bar wasn't drawn: start from a closed dropdown).
+    private static readonly BarMenuHover _menuHover = new();
+    private static bool _overMenu;
+    private static readonly List<(ButtonInfo Button, Vector2 Min, Vector2 Max)> _menuRects = new();
+    private const ImGuiWindowFlags MenuFlags = ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.AlwaysAutoResize
+        | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoDocking
+        | ImGuiWindowFlags.NoFocusOnAppearing | ImGuiWindowFlags.NoNav;
 
     // The open check every highlight uses (one set lookup a key), as one delegate: no allocation a frame.
     private static readonly Func<string, bool> IsOpenCheck = ImGuiPanelHost.IsOpen;
@@ -129,7 +143,13 @@ internal static class ImGuiBar
     {
         letter = !PanelIcons.TryGetValue(title, out string? icon);
         if (!letter) return icon!;
-        foreach (char c in title)
+        return FirstLetter(title);
+    }
+
+    /// <summary>The bar's letter fallback: the first letter or digit of <paramref name="text"/>, upper-cased, else "?".</summary>
+    private static string FirstLetter(string text)
+    {
+        foreach (char c in text)
             if (char.IsLetterOrDigit(c)) return char.ToUpperInvariant(c).ToString();
         return "?";
     }
@@ -159,18 +179,21 @@ internal static class ImGuiBar
     private static string[] _scriptKeys = Array.Empty<string>();
     private static string _tooltip = "";
     private static bool _placed;
-    private static Vector2 _pos, _persistedPos;
-    // What may write a new position to the bar= row: the user dragging the grip, or the bar being
-    // pulled back on screen by a size change (a few frames: the window grows a frame late). A clamp
-    // from a smaller AC window leaves the saved position alone.
-    private static bool _userMoved;
-    private static int _lastStep, _sizeWatch;
+    private static Vector2 _pos;
+    // The bar's home (the bar= row, or where the player dragged it) and where that draws: pulled onto
+    // the screen for the bar's size and the display, worked out again from the home whenever either
+    // changes (UI/PanelPlacement). Only the player's drag writes the bar= row (2026-11-12: a pull from
+    // a size change - a text size step, new rows, icons added as plugins load, a font re-bake - stayed
+    // for the session and was saved, so the bar came back moved after a reload or login).
+    private static readonly HomePlace Place = new();
+    private static Vector2 _savedHome;   // the home the bar= row holds (logical units)
+    private static bool _userMoved, _pullLogged;
 
     // The bar's rows and icons-per-row limit (BarLayout). Read from panel_state once, then kept
     // here so a change shows at once (the file is written in the background); one reference, so
     // a reader on another thread never sees half a change.
     private sealed record RowSettings(int Rows, int MaxPerRow);
-    private static RowSettings? _rowSettings, _lastRowSettings;
+    private static RowSettings? _rowSettings;
     // Icons per row as last drawn: where the icons-per-row "-" starts from when there is no limit.
     private static int _shownPerRow = 1;
 
@@ -362,17 +385,18 @@ internal static class ImGuiBar
         {
             var saved = PanelStateStore.BarPosition;
             Vector2 logical = saved.HasValue ? new Vector2((float)saved.Value.Left, (float)saved.Value.Top) : new Vector2(50, 5);
-            _pos = _persistedPos = logical * place;
+            _savedHome = logical;
+            // The size isn't known before its first frame: KeepOnScreen fits it once the window has one.
+            Place.Set(logical * place, Vector2.Zero, ImGuiNET.ImGui.GetIO().DisplaySize);
+            _pos = Place.Drawn;
             ImGuiNET.ImGui.SetNextWindowPos(_pos, ImGuiCond.Always);
             _placed = true;
-            _lastStep = step;   // the size the bar loads at is the baseline, not a change
-            _lastRowSettings = RowLayout;
+            _userMoved = false;
+            _pullLogged = false;
+            RynthLog.UI("ImGuiBar: " + Place.Describe("the bar", saved.HasValue ? "its saved bar row" : "the default spot (no bar row)")
+                + $" Layout {PanelStateStore.CurrentPath}.");
         }
 
-        if (step != _lastStep) { _lastStep = step; _sizeWatch = 4; }
-        // New rows reshape the bar (wider or taller): the same pull back on screen as a new size.
-        RowSettings rowsNow = RowLayout;
-        if (!ReferenceEquals(rowsNow, _lastRowSettings)) { _lastRowSettings = rowsNow; _sizeWatch = 4; }
         PushBarWindowStyle(s);
         ImGuiNET.ImGui.Begin("##rc_bar", BarFlags);
         try
@@ -391,29 +415,36 @@ internal static class ImGuiBar
             PopBarWindowStyle();
         }
 
-        if (!ImGuiNET.ImGui.IsMouseDown(ImGuiMouseButton.Left) && _pos != _persistedPos)
+        // Only the player's drag moves the bar's home and writes the bar= row (once the mouse is up).
+        if (_userMoved && !ImGuiNET.ImGui.IsMouseDown(ImGuiMouseButton.Left))
         {
-            _persistedPos = _pos;
-            if (_userMoved || _sizeWatch > 0)
+            _userMoved = false;
+            Vector2 logical = Place.Home / place;
+            if (logical != _savedHome)
             {
-                Vector2 logical = _pos / place;
+                _savedHome = logical;
                 double left = logical.X, top = logical.Y;
                 UiBackgroundWriter.Enqueue("persist bar", () => PanelStateStore.SetBarPosition(left, top));
                 AvaloniaOverlay.SyncDockedBarPosition(left, top);
             }
-            _userMoved = false;
         }
-        if (_sizeWatch > 0) _sizeWatch--;
     }
 
-    /// <summary>A bigger size or new rows can push the bar's right or bottom end off the screen: pull it back (not while it is being dragged).</summary>
+    /// <summary>
+    /// A bigger size, new rows, icons added as plugins load or a smaller display can push the bar's right or
+    /// bottom end off the screen: drawn from its home, pulled back only as far as needed, and back home once
+    /// it fits again (UI/PanelPlacement). Never saved. Not while it is being dragged.
+    /// </summary>
     private static void KeepOnScreen()
     {
-        Vector2 display = ImGuiNET.ImGui.GetIO().DisplaySize;
-        if (display.X <= 1 || ImGuiNET.ImGui.IsMouseDown(ImGuiMouseButton.Left)) return;
-        Vector2 pos = ImGuiNET.ImGui.GetWindowPos();
-        Vector2 next = Vector2.Clamp(pos, Vector2.Zero, Vector2.Max(Vector2.Zero, display - ImGuiNET.ImGui.GetWindowSize()));
-        if (next != pos) ImGuiNET.ImGui.SetWindowPos(next);
+        if (ImGuiNET.ImGui.IsMouseDown(ImGuiMouseButton.Left) && _userMoved) return;
+        if (!Place.Fit(ImGuiNET.ImGui.GetWindowSize(), ImGuiNET.ImGui.GetIO().DisplaySize)) return;
+        ImGuiNET.ImGui.SetWindowPos(Place.Drawn);
+        if (Place.Pulled && !_pullLogged)
+        {
+            _pullLogged = true;
+            RynthLog.UI("ImGuiBar: " + Place.DescribePull("the bar") + $" (bar row {HomePlace.Xy(_savedHome)}).");
+        }
     }
 
     private static void DrawContent(float s, bool popped)
@@ -445,6 +476,7 @@ internal static class ImGuiBar
             if (display.X > 1)
                 next = Vector2.Clamp(next, Vector2.Zero, Vector2.Max(Vector2.Zero, display - size));
             ImGuiNET.ImGui.SetWindowPos(next);
+            Place.MoveTo(next, size, display);   // the player's spot: the bar's home
             _userMoved = true;
         }
         SafeImGui.SetItemTooltip(_tooltip);
@@ -464,7 +496,9 @@ internal static class ImGuiBar
         SafeImGui.SetItemTooltip(collapsed ? "Show the bar" : "Fold the bar to this button");
         PhosphorIcons.DrawCentered(dl, iconFont, collapsed ? PhosphorIcons.CaretRight : PhosphorIcons.CaretLeft, cPos, caretSize,
             caretHot ? RynthTheme.RcLabel : 0xFF9A9A9Au);
-        if (collapsed) return;
+        double menuNow = ImGuiNET.ImGui.GetTime();
+        _menuRects.Clear();
+        if (collapsed) { _menuHover.Update(null, false, menuNow); _overMenu = false; return; }
 
         // Rows (header): perRow icons a row, each row from iconsX (under the first icon);
         // RL and pop out go at the end of the first row (NextSlot, or after the icons when
@@ -483,6 +517,7 @@ internal static class ImGuiBar
         ImFontPtr letterFont = ImGuiFonts.Get(UiFont.UiBold11);
         // A button whose window is open (docked or popped out) draws in the theme's accent
         // (BarOpenState); a menu button (ILT, Scripts) while any window it lists is open.
+        string? menuHovered = null;
         foreach (ButtonInfo b in _buttons!)
         {
             NextSlot(ref slot, perRow, iconsX, s, iconFont, popped);
@@ -492,7 +527,12 @@ internal static class ImGuiBar
                 if (b.Window != null) ScriptWindowRegistry.PlayerSetVisible(b.Window, !open);
                 else PanelRouter.Toggle(b.Title);
             }
-            SafeImGui.SetItemTooltip(b.Tooltip);
+            if (b.Menu != null)
+            {
+                if (ImGuiNET.ImGui.IsItemHovered()) menuHovered = b.Id;
+                _menuRects.Add((b, ImGuiNET.ImGui.GetItemRectMin(), ImGuiNET.ImGui.GetItemRectMax()));
+            }
+            if (_menuHover.OpenFor != b.Id) SafeImGui.SetItemTooltip(b.Tooltip);   // the dropdown sits where it would show
         }
 
         // Script windows (decision 2): one button with a menu, only while a ShowInBar
@@ -513,6 +553,109 @@ internal static class ImGuiBar
 
         // Drawn after the bar buttons' style is popped, so the menu has the normal look.
         ScriptsMenu(scripts);
+        _menuHover.Update(menuHovered, _overMenu, menuNow);
+        DrawBarMenu(s, square, iconFont, letterFont);
+    }
+
+    /// <summary>
+    /// The bar icon dropdown of the button <see cref="BarMenuHover.OpenFor"/> names: a column of square icon
+    /// buttons flush under the icon (flush above it when that would cross the bottom of the screen), clamped
+    /// to the screen sideways. Its own window, not a popup, so the bar keeps its hover. A click runs the
+    /// item's chat command as the player's. AC thread, inside the bar window.
+    /// </summary>
+    private static void DrawBarMenu(float s, Vector2 square, ImFontPtr iconFont, ImFontPtr letterFont)
+    {
+        _overMenu = false;
+        string? openFor = _menuHover.OpenFor;
+        if (openFor == null) return;
+        ButtonInfo? owner = null;
+        Vector2 min = default, max = default;
+        foreach (var r in _menuRects)
+            if (r.Button.Id == openFor) { owner = r.Button; min = r.Min; max = r.Max; break; }
+        if (owner?.Menu == null || owner.Menu.Length == 0) { _menuHover.Close(); return; }
+
+        UI.Sections.SectionBarMenuItem[] items = owner.Menu;
+        Vector2 display = ImGuiNET.ImGui.GetIO().DisplaySize;
+        float inset = 4f * s;                                                         // WindowPadding (4, 3)
+        float width = square.X + 2f * inset;
+        float height = items.Length * square.Y + (items.Length - 1) * ButtonGap * s + 6f * s;
+        float x = min.X - inset, y = max.Y;                                           // icons straight under the parent
+        if (display.X > 1 && display.Y > 1)
+        {
+            if (y + height > display.Y && min.Y - height >= 0f) y = min.Y - height;   // flush above instead
+            x = Math.Max(0f, Math.Min(x, display.X - width));
+        }
+        ImGuiNET.ImGui.SetNextWindowPos(new Vector2(x, y), ImGuiCond.Always);
+
+        PushBarWindowStyle(s);
+        PushBarButtonStyle(s);
+        bool begun = ImGuiNET.ImGui.Begin("##rc_bar_menu", MenuFlags);
+        bool clicked = false;
+        try
+        {
+            if (begun)
+            {
+                // NoFocusOnAppearing leaves a re-shown menu behind a panel focused since: lift it
+                // every frame (no focus change, so another window's text edit stays active).
+                MenuToFront();
+                _overMenu = ImGuiNET.ImGui.IsWindowHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
+                // ImGui truncates the window's position, which can leave the icons up to a pixel left of
+                // the parent; put each one exactly where the placement meant (the parent's left edge
+                // unless the viewport clamp moved the window). Each new line starts back at the window's
+                // own content edge, so this is set per icon.
+                float iconX = x + inset;
+                foreach (UI.Sections.SectionBarMenuItem item in items)
+                {
+                    ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(iconX, ImGuiNET.ImGui.GetCursorScreenPos().Y));
+                    bool letter = item.Icon.Length == 0;
+                    string glyph = letter ? FirstLetter(item.Tooltip) : item.Icon;
+                    if (IconButton(owner.Id + "_m_" + item.Id, letter ? letterFont : iconFont, glyph, square, RynthTheme.BarText))
+                    {
+                        if (!AcMainThreadQueue.EnqueueChatCommand(item.Command, ChatCommandOrigin.Player))
+                            AcMainThreadQueue.EnqueueWriteToChat("[RynthCore] Bar menu: the chat command queue is full; try again.", 1);
+                        clicked = true;
+                    }
+                    SafeImGui.SetItemTooltip(item.Tooltip);
+                }
+            }
+        }
+        finally
+        {
+            ImGuiNET.ImGui.End();
+            PopBarButtonStyle();
+            PopBarWindowStyle();
+        }
+        if (clicked) { _menuHover.Close(); _overMenu = false; }
+    }
+
+    private static IntPtr _getCurrentWindow, _bringToFront;
+    private static int _frontState;   // 0 = not resolved, 1 = available, -1 = off
+
+    /// <summary>
+    /// Brings the current window (the bar menu) to the display front without focusing it, through
+    /// cimgui's igGetCurrentWindow and igBringWindowToDisplayFront (resolved once, as ImGuiStackGuard
+    /// does). Missing exports: logged once, and the menu keeps its normal order. Inside the menu's Begin.
+    /// </summary>
+    private static unsafe void MenuToFront()
+    {
+        if (_frontState == 0)
+        {
+            _frontState = -1;
+            IntPtr module = EntryPoint.ImGuiNativeHandle;
+            if (module != IntPtr.Zero
+                && System.Runtime.InteropServices.NativeLibrary.TryGetExport(module, "igGetCurrentWindow", out IntPtr get)
+                && System.Runtime.InteropServices.NativeLibrary.TryGetExport(module, "igBringWindowToDisplayFront", out IntPtr bring))
+            {
+                _getCurrentWindow = get;
+                _bringToFront = bring;
+                _frontState = 1;
+            }
+            else
+                RynthLog.UI("ImGuiBar: this cimgui.dll has no igGetCurrentWindow / igBringWindowToDisplayFront exports; the bar menu can draw behind a panel focused since.");
+        }
+        if (_frontState < 0) return;
+        void* window = ((delegate* unmanaged[Cdecl]<void*>)_getCurrentWindow)();
+        if (window != null) ((delegate* unmanaged[Cdecl]<void*, void>)_bringToFront)(window);
     }
 
     /// <summary>
@@ -778,7 +921,7 @@ internal static class ImGuiBar
             bool letter = false;
             string icon = w.Icon.Length > 0 ? w.Icon : IconFor(w.Title, out letter);
             list.Add(new ButtonInfo(w.Title, "##bar_pw_" + w.Plugin + "_" + w.Id, icon, letter, w.Title,
-                BarOpenState.KeyFor(w.Title, null)));
+                BarOpenState.KeyFor(w.Title, null), Menu: w.Menu.Length > 0 ? w.Menu : null));
         }
         // Plugin script windows that asked for a button (RynthSort, Oracle, ...): after the
         // engine's own. Only while the plugin is loaded and has submitted the window.

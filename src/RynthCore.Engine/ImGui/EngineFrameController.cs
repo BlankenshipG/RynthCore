@@ -379,7 +379,7 @@ internal static class EngineFrameController
             MainThreadHangWatchdog.Step = "EndScene: engine pipeline (layout, prefetches, queues)";
             EnsureCore(pDevice);
 
-            // Settings > Display: borderless windowed + AC window placement. Throttled; reads only
+            // Settings > Game Client: borderless windowed + AC window placement. Throttled; reads only
             // here - the window itself is changed from the game WndProc (AcWindowChrome).
             try { UI.AcWindowChrome.Tick(_gameHwnd); }
             catch (Exception ex) { RynthLog.UI($"AcWindowChrome.Tick threw {ex.GetType().Name}: {ex.Message}"); }
@@ -894,6 +894,7 @@ internal static class EngineFrameController
             ImGuiNET.ImGui.NewFrame();
             UiCost.Stop(UiCost.ImGuiNewFrame, cNew);
             frameStarted = true;
+            ImGuiPopOuts.NoteMainFrame();   // _context is current: the frame number pop-out frames share
             // Before any window: a drag from a popped-out Inventory or AC's inventory becomes
             // a payload the client's drop targets (Mini Remote slots) see this frame.
             ItemDragBridge.SubmitMainFrame(io);

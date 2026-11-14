@@ -175,7 +175,7 @@ public struct RynthCoreApiNative
     // v84: every property of an object (/ub propertydump), one record (ObjectProperties.TryParse)
     public IntPtr GetObjectPropertiesFn;     // int GetObjectProperties(uint id, byte* buf, int size) -> record size (copied if <= size), 0 unknown, -1 bad args
     // v85: answer the server's yes/no prompt (craft chance) without the client's dialog
-    public IntPtr ArmConfirmationFn;         // int ArmConfirmation(uint type, int minPercent, int timeoutMs) -> 1 armed, 0 unavailable, -3 bad args
+    public IntPtr ArmConfirmationFn;         // int ArmConfirmation(uint type, int minPercent, int timeoutMs) -> 1 armed, 0 unavailable, -3 bad args; v97: minPercent | 0x100 = the sticky slot (leave below to the client)
     public IntPtr GetLastConfirmationFn;     // int GetLastConfirmation(uint* type, uint* ctx, int* percent, int* outcome, int* ageMs) -> seq
     // v86: which server this is, for every plugin (servers, verdicts, overrides, owning plugins)
     public IntPtr GetServerStateJsonFn;      // int GetServerStateJson(byte* buffer, int capacity) -> UTF-8 byte length (>= capacity: too small)
@@ -204,8 +204,14 @@ public struct RynthCoreApiNative
     public IntPtr GetAmbientLightFn;         // int GetAmbientLight(uint* client, uint* applied) -> 1 hook live, 0 not
     // v93: the monster plates' last server health reading per object
     public IntPtr GetMonsterHealthFn;        // int GetMonsterHealth(uint id, float* ratio, uint* ageMs) -> 1 reading, 0 none
-    public IntPtr GetWindowPlacementFn;      // v94 int GetWindowPlacement(const char* key, float* xywh) -> 1 found, 0 none, -1 bad key / no character
-    public IntPtr SetWindowPlacementFn;      // v94 int SetWindowPlacement(const char* key, float x, y, w, h) -> 1 saved, 0 no character, -1 bad key
+    // v94: a WebView2 web panel over the game window (APPEND-AT-END (ABI); number provisional)
+    public IntPtr WebPanelOpenFn;            // int WebPanelOpen(WebPanelOpenNative*) -> handle > 0, or BadArgs/UrlNotAllowed/NoGameWindow/Unavailable/ShuttingDown
+    public IntPtr WebPanelNavigateFn;        // int WebPanelNavigate(int handle, byte* url) -> 1 queued; -2 off-list; -6 stale
+    public IntPtr WebPanelCloseFn;           // int WebPanelClose(int handle) -> 1 queued, 0 already closed, -6 stale
+    public IntPtr WebPanelGetStateFn;        // int WebPanelGetState(int handle, WebPanelStateNative*) -> Status (non-live handle -> 6 Superseded), -1 bad args
+    // v98: per-character window placements (APPEND-AT-END (ABI))
+    public IntPtr GetWindowPlacementFn;      // v98 int GetWindowPlacement(const char* key, float* xywh) -> 1 found, 0 none, -1 bad key / no character
+    public IntPtr SetWindowPlacementFn;      // v98 int SetWindowPlacement(const char* key, float x, y, w, h) -> 1 saved, 0 no character, -1 bad key
 }
 
 /// <summary>

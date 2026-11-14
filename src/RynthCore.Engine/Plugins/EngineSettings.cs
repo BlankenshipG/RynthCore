@@ -41,15 +41,15 @@ internal static class EngineSettings
     private static bool _serverMessageStream = true;
     private static bool _flightRecorder = true;
     private static bool _insertReleasesUi;
-    // Settings > Display: strip AC window chrome while windowed (default off).
+    // Settings > Game Client: strip AC window chrome while windowed (default off).
     private static bool _borderlessWindowed;
-    // Settings > Display: borderless fills the monitor (default on) or keeps the framed game area.
+    // Settings > Game Client: borderless fills the monitor (default on) or keeps the framed game area.
     private static bool _borderlessFillMonitor = true;
-    // Settings > Display: reopen Rynth panels where they were (default on: panels have always been remembered).
+    // Settings > Interface: reopen Rynth panels where they were (default on: panels have always been remembered).
     private static bool _rememberWindowLayout = true;
-    // Settings > Display: each character keeps its own panel layout (default on; off = the one shared layout).
+    // Settings > Interface: each character keeps its own panel layout (default on; off = the one shared layout).
     private static bool _panelLayoutPerCharacter = true;
-    // Settings > Display: save and restore the AC window's own position and size (default off, opt-in).
+    // Settings > Game Client: save and restore the AC window's own position and size (default off, opt-in).
     private static bool _rememberAcWindowPosition;
     // "LoadAllServerPlugins": hand-set only, written back only when true (PluginManifestGate).
     private static bool _loadAllServerPlugins;
@@ -72,6 +72,8 @@ internal static class EngineSettings
     private static Compatibility.AutoIdMode _autoIdMode = Compatibility.AutoIdPolicy.DefaultMode;
     // "TransitionGate": default true. False = queued game actions are never held for a death / portal.
     private static bool _transitionGate = true;
+    // "WebPanel": default true. False = the v94 web panel calls answer Unavailable (plugins open the system browser).
+    private static bool _webPanel = true;
     private static bool _loaded;
 
     public static IReadOnlyList<string> PluginPaths
@@ -288,7 +290,7 @@ internal static class EngineSettings
     /// its "The server has disconnected" screen (UIFlow mode Disconnected, only a Quit Game
     /// button), the engine closes the client a few seconds later the way the window's close
     /// button does (Compatibility/ServerDisconnectClose.cs), so a launcher's auto-relaunch can
-    /// bring it back. Off: the client stays on that screen. Set in game in Settings > Misc.</summary>
+    /// bring it back. Off: the client stays on that screen. Set in game in Settings > Game Client.</summary>
     public static bool CloseOnServerDisconnect
     {
         get
@@ -416,7 +418,7 @@ internal static class EngineSettings
     /// <summary>"InsertReleasesUi" in engine.json (default false, 2026-10-08): Insert hands the
     /// mouse to the game (the UI/GAME toggle, Win32Backend), for clicking through a Rynth window.
     /// Off, Insert does nothing: a stray press left every Rynth text box unable to keep the
-    /// keyboard, which read as "can't type in Rynth". Set in game in Settings > Display.</summary>
+    /// keyboard, which read as "can't type in Rynth". Set in game in Settings > Hotkeys.</summary>
     public static bool InsertReleasesUi
     {
         get
@@ -436,7 +438,7 @@ internal static class EngineSettings
     /// <summary>"BorderlessWindowed" in engine.json (default false, 2026-10-18): strip the AC
     /// window caption and thick frame while staying windowed. Exclusive fullscreen is left alone,
     /// and chrome is only ever given back to a window this setting stripped (AcWindowChrome).
-    /// Set in game in Settings > Display. From SilentKelpie's PR 6.</summary>
+    /// Set in game in Settings > Game Client. From SilentKelpie's PR 6.</summary>
     public static bool BorderlessWindowed
     {
         get
@@ -457,7 +459,7 @@ internal static class EngineSettings
 
     /// <summary>"BorderlessFillMonitor" in engine.json (default true, 2026-10-17): borderless
     /// windowed fills the monitor the window is on. Off: it keeps the game area where the framed
-    /// window had it (a custom borderless size/spot). Set in game in Settings > Display.</summary>
+    /// window had it (a custom borderless size/spot). Set in game in Settings > Game Client.</summary>
     public static bool BorderlessFillMonitor
     {
         get
@@ -471,14 +473,14 @@ internal static class EngineSettings
             if (_borderlessFillMonitor == value) return;
             _borderlessFillMonitor = value;
             Save("BorderlessFillMonitor");
-            // AcWindowChrome.ApplyFillMonitorChanged (Settings > Display) re-places the window.
+            // AcWindowChrome.ApplyFillMonitorChanged (Settings > Game Client) re-places the window.
         }
     }
 
     /// <summary>"RememberWindowLayout" in engine.json (default true: Rynth panels have always been
     /// remembered). Off: panel_state.txt is not overwritten and open panels are not reopened from
     /// the last session. Does not touch the AC window itself (RememberAcWindowPosition).
-    /// Set in game in Settings > Display.</summary>
+    /// Set in game in Settings > Interface.</summary>
     public static bool RememberWindowLayout
     {
         get
@@ -518,7 +520,7 @@ internal static class EngineSettings
 
     /// <summary>"RememberAcWindowPosition" in engine.json (default false, opt-in): save the Asheron's
     /// Call window's position and size per character and put it back at the next login.
-    /// Set in game in Settings > Display.</summary>
+    /// Set in game in Settings > Game Client.</summary>
     public static bool RememberAcWindowPosition
     {
         get
@@ -555,7 +557,7 @@ internal static class EngineSettings
     /// the player logs out / reaches character select instead of reloading mid-session, for at most
     /// <see cref="HoldReloadInWorldMaxMinutes"/>. A reload asked for by hand (ERl, the bar RL button,
     /// /rc rl, the hotkey) is never held. A workaround for CoreCLR re-init crashes on stacked
-    /// mid-session reloads. Only a true is written to the file. Set in game in Settings > Misc.</summary>
+    /// mid-session reloads. Only a true is written to the file. Set in game in Settings > Game Client.</summary>
     public static bool HoldReloadInWorld
     {
         get
@@ -733,6 +735,26 @@ internal static class EngineSettings
             if (_transitionGate == value) return;
             _transitionGate = value;
             Save("TransitionGate");
+        }
+    }
+
+    /// <summary>"WebPanel" in engine.json (default true): the v94 web panel (WebPanel\WebPanelHost.cs, a
+    /// WebView2 window over the game for DreamWeave's market and tools; CoreCLR engine only). False is the
+    /// kill switch: WebPanelOpen answers Unavailable and plugins open the page in the system browser
+    /// instead. A panel already open stays until it is closed.</summary>
+    public static bool WebPanel
+    {
+        get
+        {
+            EnsureLoaded();
+            return _webPanel;
+        }
+        set
+        {
+            EnsureLoaded();
+            if (_webPanel == value) return;
+            _webPanel = value;
+            Save("WebPanel");
         }
     }
 
@@ -945,6 +967,10 @@ internal static class EngineSettings
                 (tgEl.ValueKind == JsonValueKind.True || tgEl.ValueKind == JsonValueKind.False))
                 _transitionGate = tgEl.GetBoolean();
 
+            if (doc.RootElement.TryGetProperty("WebPanel", out var wpEl) &&
+                (wpEl.ValueKind == JsonValueKind.True || wpEl.ValueKind == JsonValueKind.False))
+                _webPanel = wpEl.GetBoolean();
+
             if (doc.RootElement.TryGetProperty("PreventIdleLogoff", out var pilEl) &&
                 (pilEl.ValueKind == JsonValueKind.True || pilEl.ValueKind == JsonValueKind.False))
             {
@@ -1015,7 +1041,7 @@ internal static class EngineSettings
         "FlightRecorder", "InsertReleasesUi", "BorderlessWindowed", "BorderlessFillMonitor", "RememberWindowLayout",
         "RememberAcWindowPosition", "IltServerNames", "IltHosts", "EnableLargeAddressAlignmentFix",
         "MaxHotReloads", "ReportEndpoint", "CloseOnServerDisconnect", "AutoIdMode", "EnablePluginOverlayWindows", "LoggingLevel",
-        "LoadAllServerPlugins", "TransitionGate",
+        "LoadAllServerPlugins", "TransitionGate", "WebPanel",
         "HoldReloadInWorld", "HoldReloadInWorldMaxMinutes",
         "PanelLayoutPerCharacter",
         "UiCostLog", "UiCostThresholdMs",
@@ -1098,6 +1124,8 @@ internal static class EngineSettings
                     w.WriteBoolean("CloseOnServerDisconnect", false);
                 if (!_transitionGate)      // default true: only a hand-set false is written
                     w.WriteBoolean("TransitionGate", false);
+                if (!_webPanel)            // default true: only a hand-set false is written
+                    w.WriteBoolean("WebPanel", false);
                 if (_loadAllServerPlugins) // default false: only a hand-set true is written
                     w.WriteBoolean("LoadAllServerPlugins", true);
                 if (_maxHotReloads != ReloadCapNotice.DefaultMaxHotReloads)   // only a hand-set value is written

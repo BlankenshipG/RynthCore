@@ -167,14 +167,17 @@ internal sealed unsafe class ChatSource : UiSource<ChatLine[]>
             if (dto.Seq <= _sinceSeq) continue;
             _sinceSeq = dto.Seq;
             string text = StripAcLinks(dto.Text ?? "", out string? linkedName);
+            // A plugin's own colour for it (ChatOwnColors), matched by the text as AC printed it,
+            // and its own colour runs (offsets into that text: kept only while it's unchanged).
+            uint? ownArgb = ChatOwnColors.Lines.Take(dto.Text, dto.Type, Environment.TickCount64, out ChatSpan[]? ownSpans);
             var line = new ChatLine(_nextId++, dto.Ts ?? "", dto.Chan ?? "Other", dto.Type,
                                     dto.Sender is { Length: > 0 } s ? StripAcLinks(s, out _) : linkedName, text)
             {
                 Seq = dto.Seq,
                 Automated = dto.Auto,
                 ReplyTab = ChatModel.ReplyTabs.TabFor(dto.Chan ?? "Other", dto.Auto, Environment.TickCount64),
-                // A plugin's own colour for it (ChatOwnColors), matched by the text as AC printed it.
-                OwnArgb = ChatOwnColors.Lines.Take(dto.Text, dto.Type, Environment.TickCount64),
+                OwnArgb = ownArgb,
+                OwnSpans = ChatOwnColors.ArrivedSpans(ownSpans, dto.Text, text),
             };
             line.Route = router.Evaluate(line, null);
             if (line.Route.Mention) ChatModel.PumpMentionSound();
@@ -711,6 +714,8 @@ internal static class ChatModel
             if (string.Equals(preset.Tab, tab, StringComparison.OrdinalIgnoreCase))
                 preset.Tab = newName;
         if (string.Equals(ActiveChannel, tab, StringComparison.OrdinalIgnoreCase)) ActiveChannel = newName;
+        // The extra chat windows showing it follow (their tabs are saved in the panel layout).
+        RynthCore.Engine.ImGuiBackend.Panels.ChatWindowFace.OnTabRenamed(tab, newName);
         FiltersChanged();
         return true;
     }
@@ -978,9 +983,8 @@ internal static class ChatModel
         ChatHooks.ChatPanelShown = n > 0;
         if (n == 0 && Win32Backend.ChatCaptureActive)
         {
-            // Abandon a half-typed line rather than keep swallowing keys for a closed panel.
+            // Stop swallowing keys for a closed panel; the half-typed line stays, as after Escape.
             Win32Backend.ChatCaptureActive = false;
-            SetInput("", 0, null);
         }
     }
 
@@ -1085,17 +1089,25 @@ internal static class ChatModel
             SetInput("", 0, null);
         };
         Win32Backend.OnChatSend = OnSend;
+        // Escape leaves the line, as retail's chat does: the half-typed text stays in the box
+        // (it used to be erased), and Enter or a click on the box carries on typing it.
         Win32Backend.OnChatCancel = () =>
         {
             _historyIndex = -1;
-            SetInput("", 0, null);
+            InputState s = _input;
+            SetInput(s.Text, s.Cursor, null);
         };
     }
 
+    /// <summary>
+    /// Typing starts again (Enter, or a click on the box): the text left there by Escape is
+    /// kept, with the caret at its end. A sent line was already cleared by OnSend.
+    /// </summary>
     private static void OnActivated()
     {
         _historyIndex = -1;
-        SetInput("", 0, null);
+        string text = _input.Text;
+        SetInput(text, text.Length, null);
     }
 
     /// <summary>

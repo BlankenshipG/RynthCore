@@ -181,7 +181,7 @@ internal static class ChatCommandReplies
         V("progression", "Usage: /rc progression (opens the Progress tab)", NoArgs, "progress"),
         V("spells", "Usage: /rc spells [show|hide|toggle]", PanelArgs),
         V("hotkeys", "Usage: /rc hotkeys (opens Settings > Hotkeys) | /rc hotkeys <verb> (as /rc hotkey)", null),
-        V("diagnostics", "Usage: /rc diagnostics (opens Settings > Diagnostics, the server picker)", NoArgs, "serverpick"),
+        V("diagnostics", "Usage: /rc diagnostics (opens Settings > Game Client, the server picker)", NoArgs, "serverpick"),
         V("settings", "Usage: /rc settings [tab]", null),
         V("shortcuts", "Usage: /rc shortcuts [use <1-18> | set <1-18> [id] | clear <1-18>]", ShortcutsArgs),
         V("keymap", "Usage: /rc keymap check|bind|unbind <action> <key> | dump, e.g. /rc keymap bind UseQuickSlot_10 F11", KeymapArgs),
@@ -205,7 +205,11 @@ internal static class ChatCommandReplies
         V("unlockactions", "Usage: /rc unlockactions (opens the client's item-action gates now)", NoArgs, "unlock"),
         V("vitals", "Usage: /rc vitals (the old vitals HUD is gone: /rv plates self)", NoArgs, "hud"),
         V("layout", "Usage: /rc layout [status] | default | reset [confirm]", LayoutArgs),
+        // The extra chat windows (ImGui/Panels/ChatWindowFace); its handler checks the arguments
+        // (UI/Data/ChatWindows.Parse, whose Usage is this same line).
+        V("chatwindow", "Usage: /rc chatwindow [list] | open [tab] | close <2-7|all> | tab <2-7> <tab>", null, "chatwin", "chatwindows"),
         V("uicost", UiCostUsage, null),
+        V("webpanel", "Usage: /rc webpanel [status|close]  (status is a redacted one-line report; it never opens a URL)", Words("", "status", "close")),
     };
 
     /// <summary>/rc uicost: the UI frame cost breakdown (ImGui/UiCost.cs).</summary>

@@ -934,13 +934,19 @@ internal struct RynthCoreAPI
     /// without the client opening its dialog: Yes when the server's "N percent" is at least
     /// minPercent (or minPercent is 0), else No. One-shot. timeoutMs &lt;= 0 disarms.
     /// 1 armed/disarmed, 0 sender or game-event hook unavailable, -3 bad arguments
-    /// (type 0, minPercent outside 0-100, timeout over 120 s). Any thread. Requires API v85+.</summary>
+    /// (type 0, minPercent outside 0-100, timeout over 120 s). Any thread. Requires API v85+.
+    /// v97: minPercent | 0x100 (ConfirmationArmPolicy.ArmFlagLeaveBelow, minimum 1-100) arms a second,
+    /// sticky slot: a prompt below the minimum (or without a percent) is left to the client instead of
+    /// answered No, and the arm stays armed for later prompts until it times out or is disarmed (the
+    /// flag with timeoutMs &lt;= 0). The one-shot slot goes first; its arm and disarm never touch the
+    /// sticky one. Older engines return -3 for the flag.</summary>
     public IntPtr ArmConfirmationFn;
 
     /// <summary>v85: <c>int GetLastConfirmation(uint* type, uint* contextId, int* percent, int* outcome, int* ageMs)</c>:
     /// the last prompt the server sent: returns its sequence number (0 = none yet); percent -1
     /// when the text has none; outcome 1 shown to the player, 2 answered Yes, 3 answered No,
-    /// 4 the send failed (shown). Any out pointer may be null. Any thread. Requires API v85+.</summary>
+    /// 4 the send failed (shown), 5 (v97) answered Yes by the sticky arm. Any out pointer may be null.
+    /// Any thread. Requires API v85+.</summary>
     public IntPtr GetLastConfirmationFn;
 
     /// <summary>v86: <c>int GetServerStateJson(byte* buffer, int capacity)</c>: which server this is,
@@ -1037,7 +1043,7 @@ internal struct RynthCoreAPI
     public IntPtr AcPanelFn;
     /// <summary>v90: <c>int PanelScale(const char* key, int percent)</c>: how big a frameless window draws
     /// itself, 30-250% of normal (0 asks, -1 = follow the text size again); returns it, 0 = follows the
-    /// text size. Settings > UI > Toolbar sets it too. Any thread. Requires API v90+.</summary>
+    /// text size. Settings > Interface > In The Retail Toolbar's Place sets it too. Any thread. Requires API v90+.</summary>
     public IntPtr PanelScaleFn;
     /// <summary>v90: <c>uint DropTarget(const char* window, float x0, float y0, float x1, float y1, int flags,
     /// int* dragging)</c>: the plugin window takes items dragged out of AC's UI and let go over that rect
@@ -1069,14 +1075,84 @@ internal struct RynthCoreAPI
     /// reading, 0 without (never read; *ratio = -1, *ageMs = 0xFFFFFFFF). Either pointer may be null.
     /// Read-only, any thread, no game calls. Requires API v93+.</summary>
     public IntPtr GetMonsterHealthFn;
-    /// <summary>v94: <c>int GetWindowPlacement(const char* key, float* xywh)</c>: where the player left the
+
+    // ── v94: a WebView2 web panel over the game window (WebPanel\WebPanelApi.cs) ──
+    // No call blocks its caller (AC's main thread, the plugin pump and ImGui draws all call these).
+
+    /// <summary>v94: <c>int WebPanelOpen(WebPanelOpenNative* open)</c>: opens (or replaces) the web panel.
+    /// Returns a handle &gt; 0, or BadArgs / UrlNotAllowed / NoGameWindow / Unavailable / ShuttingDown
+    /// (WebPanelCode). Requires API v94+ (provisional number).</summary>
+    public IntPtr WebPanelOpenFn;
+    /// <summary>v94: <c>int WebPanelNavigate(int handle, byte* url)</c>: 1 queued; -2 off the allowlist
+    /// (opened in the system browser when it is browser-safe); -6 stale handle.</summary>
+    public IntPtr WebPanelNavigateFn;
+    /// <summary>v94: <c>int WebPanelClose(int handle)</c>: 1 queued, 0 already closed, -6 stale handle.</summary>
+    public IntPtr WebPanelCloseFn;
+    /// <summary>v94: <c>int WebPanelGetState(int handle, WebPanelStateNative* state)</c>: the WebPanelStatusCode
+    /// (a handle that is not the live one reads 6 Superseded), -1 bad args.</summary>
+    public IntPtr WebPanelGetStateFn;
+
+    // ── v98: per-character window placements (WindowPlacementApi.cs) ──
+    /// <summary>v98: <c>int GetWindowPlacement(const char* key, float* xywh)</c>: where the player left the
     /// plugin's own floating window <c>key</c> on this character (x, y, width, height; ImGui screen pixels,
     /// width/height 0 = sized itself). 1 found, 0 none saved, -1 bad key or no character. Any thread.</summary>
     public IntPtr GetWindowPlacementFn;
-    /// <summary>v94: <c>int SetWindowPlacement(const char* key, float x, float y, float w, float h)</c>: saves it,
+    /// <summary>v98: <c>int SetWindowPlacement(const char* key, float x, float y, float w, float h)</c>: saves it,
     /// per character (window_state.&lt;server&gt;.&lt;character&gt;.txt, not the imgui.ini every client shares).
     /// 1 saved, 0 no character yet, -1 bad key (empty, over 96 chars, '=' or a line break). Any thread.</summary>
     public IntPtr SetWindowPlacementFn;
+}
+
+/// <summary>v94 WebPanelOpen argument (Pack 4; 48 bytes on x86). Mirrors RynthCore.PluginSdk/WebPanelTypes.cs.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal unsafe struct WebPanelOpenNative
+{
+    /// <summary>sizeof the caller's struct; the engine accepts Size &gt;= OffsetOf(Reserved) (32 on x86).</summary>
+    public uint Size;
+    /// <summary>WebPanelFlags; unknown bits ignored.</summary>
+    public uint Flags;
+    /// <summary>UTF-8 NUL-terminated, at most 4096 bytes, must pass the URL policy's IsAllowed.</summary>
+    public byte* Url;
+    /// <summary>UTF-8, '\n'-separated allowlist (WebPanelUrlPolicy.TryParseAllowlist).</summary>
+    public byte* Allowlist;
+    /// <summary>UTF-8, may be null; at most 256 bytes.</summary>
+    public byte* ProfileKey;
+    /// <summary>UTF-8, may be null; at most 128 bytes.</summary>
+    public byte* Title;
+    /// <summary>0 = 88, else 30..100 (only when no remembered layout).</summary>
+    public int WidthPercent;
+    public int HeightPercent;
+    public fixed uint Reserved[4];
+}
+
+/// <summary>v94 WebPanelGetState result (Pack 4; 48 bytes). Mirrors RynthCore.PluginSdk/WebPanelTypes.cs.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal unsafe struct WebPanelStateNative
+{
+    public uint Size;
+    public int Handle;
+    /// <summary>WebPanelStatusCode.</summary>
+    public int Status;
+    /// <summary>1 Visible, 2 Focused, 4 OpenedInBrowser.</summary>
+    public uint Flags;
+    /// <summary>0 or a negative WebPanelCode (RuntimeMissing / CreateFailed / ProcessFailed).</summary>
+    public int Error;
+    public int LastHttpStatus;
+    public uint NavigationCount;
+    public fixed uint Reserved[5];
+}
+
+/// <summary>v94 return codes of the web panel calls. Append only.</summary>
+internal enum WebPanelCode
+{
+    Queued = 1, AlreadyClosed = 0, BadArgs = -1, UrlNotAllowed = -2, NoGameWindow = -3,
+    Unavailable = -4, ShuttingDown = -5, StaleHandle = -6, RuntimeMissing = -7, CreateFailed = -8, ProcessFailed = -9,
+}
+
+/// <summary>v94 WebPanelStateNative.Status values. Append only.</summary>
+internal enum WebPanelStatusCode
+{
+    None = 0, Starting = 1, Loading = 2, Ready = 3, Closed = 4, Failed = 5, Superseded = 6,
 }
 
 /// <summary>v89 GetUiColor tokens. Append only: plugins compiled against these numbers keep them.</summary>
@@ -1941,6 +2017,18 @@ internal unsafe delegate int GetWindowPlacementCallbackDelegate(byte* key, float
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int SetWindowPlacementCallbackDelegate(byte* key, float x, float y, float w, float h);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int WebPanelOpenCallbackDelegate(WebPanelOpenNative* open);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int WebPanelNavigateCallbackDelegate(int handle, byte* url);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int WebPanelCloseCallbackDelegate(int handle);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int WebPanelGetStateCallbackDelegate(int handle, WebPanelStateNative* state);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate uint VendorBuyCallbackDelegate(uint vendorId, VendorTradeEntryNative* entries, int count);

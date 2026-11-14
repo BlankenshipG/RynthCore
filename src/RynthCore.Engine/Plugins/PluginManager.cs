@@ -305,8 +305,14 @@ internal static partial class PluginManager
     private static SetAmbientLightFloorCallbackDelegate? _setAmbientLightFloorCallback;   // v91
     private static GetAmbientLightCallbackDelegate? _getAmbientLightCallback;             // v91
     private static GetMonsterHealthCallbackDelegate? _getMonsterHealthCallback;           // v93
-    private static GetWindowPlacementCallbackDelegate? _getWindowPlacementCallback;       // v94
-    private static SetWindowPlacementCallbackDelegate? _setWindowPlacementCallback;       // v94
+#if ENGINE_CORECLR
+    private static WebPanelOpenCallbackDelegate? _webPanelOpenCallback;                   // v94
+    private static WebPanelNavigateCallbackDelegate? _webPanelNavigateCallback;           // v94
+    private static WebPanelCloseCallbackDelegate? _webPanelCloseCallback;                 // v94
+    private static WebPanelGetStateCallbackDelegate? _webPanelGetStateCallback;           // v94
+#endif
+    private static GetWindowPlacementCallbackDelegate? _getWindowPlacementCallback;       // v98
+    private static SetWindowPlacementCallbackDelegate? _setWindowPlacementCallback;       // v98
     private static ForceResetBusyCountCallbackDelegate? _forceResetBusyCountCallback;
     private static GetObjectSpellIdsCallbackDelegate? _getObjectSpellIdsCallback;
     private static GetObjectSkillLevelCallbackDelegate? _getObjectSkillBuffedCallback;
@@ -3299,6 +3305,13 @@ internal static partial class PluginManager
         _setAmbientLightFloorCallback ??= AmbientLight.SetFloor;      // v91
         unsafe { _getAmbientLightCallback ??= AmbientLight.Get; }
         unsafe { _getMonsterHealthCallback ??= GetMonsterHealthAction; }   // v93
+#if ENGINE_CORECLR
+        // v94: the AOT engine leaves these slots zero, so HasWebPanel is false there.
+        unsafe { _webPanelOpenCallback ??= WebPanel.WebPanelApi.Open; }
+        unsafe { _webPanelNavigateCallback ??= WebPanel.WebPanelApi.Navigate; }
+        _webPanelCloseCallback ??= WebPanel.WebPanelApi.Close;
+        unsafe { _webPanelGetStateCallback ??= WebPanel.WebPanelApi.GetState; }
+#endif
         unsafe { _getWindowPlacementCallback ??= WindowPlacementApi.Get; }
         unsafe { _setWindowPlacementCallback ??= WindowPlacementApi.Set; }
 
@@ -3474,6 +3487,12 @@ internal static partial class PluginManager
         _api.SetAmbientLightFloorFn = Marshal.GetFunctionPointerForDelegate(_setAmbientLightFloorCallback);
         _api.GetAmbientLightFn = Marshal.GetFunctionPointerForDelegate(_getAmbientLightCallback);
         _api.GetMonsterHealthFn = Marshal.GetFunctionPointerForDelegate(_getMonsterHealthCallback);
+#if ENGINE_CORECLR
+        _api.WebPanelOpenFn = Marshal.GetFunctionPointerForDelegate(_webPanelOpenCallback!);
+        _api.WebPanelNavigateFn = Marshal.GetFunctionPointerForDelegate(_webPanelNavigateCallback!);
+        _api.WebPanelCloseFn = Marshal.GetFunctionPointerForDelegate(_webPanelCloseCallback!);
+        _api.WebPanelGetStateFn = Marshal.GetFunctionPointerForDelegate(_webPanelGetStateCallback!);
+#endif
         _api.GetWindowPlacementFn = Marshal.GetFunctionPointerForDelegate(_getWindowPlacementCallback);
         _api.SetWindowPlacementFn = Marshal.GetFunctionPointerForDelegate(_setWindowPlacementCallback);
         RouteApiThroughLoader();
@@ -4311,12 +4330,30 @@ internal static partial class PluginManager
         // RynthCore's chat draws this line in it; the chat type still decides where it goes.
         long now = Environment.TickCount64;
         uint? own = UI.Data.ChatOwnColors.TakeArmed(now);
-        if (own != null && !string.IsNullOrEmpty(text))
-            UI.Data.ChatOwnColors.Lines.Expect(text, chatType, own.Value, now);
+        // And colour runs ("nextspans", 2026-11-11): every run must fit inside this text, or none is used.
+        UI.Data.ChatSpan[]? spans = UI.Data.ChatOwnColors.TakeArmedSpans(now);
+        if (spans != null && !string.IsNullOrEmpty(text))
+        {
+            spans = UI.Data.ChatOwnColors.FitSpans(spans, UI.Data.ChatOwnColorQueue.Key(text).Length, out string? why);
+            if (why != null) LogChatSpansRefused($"WriteToChat: colour runs dropped, {why}");
+        }
+        bool noted = (own != null || spans != null) && !string.IsNullOrEmpty(text);
+        if (noted)
+            UI.Data.ChatOwnColors.Lines.Expect(text!, chatType, own, spans, now);
         bool written = ClientHelperHooks.WriteToChat(text, chatType);
-        if (!written && own != null && !string.IsNullOrEmpty(text))
-            UI.Data.ChatOwnColors.Lines.Forget(text, chatType);
+        if (!written && noted)
+            UI.Data.ChatOwnColors.Lines.Forget(text!, chatType);
         return ToAbiBool(written);
+    }
+
+    private static int _chatSpansRefused;
+
+    /// <summary>A plugin's bad colour runs: the first few, then one in a hundred (a plugin bug could send one per line).</summary>
+    private static void LogChatSpansRefused(string why)
+    {
+        int n = Interlocked.Increment(ref _chatSpansRefused);
+        if (n <= 5 || n % 100 == 0)
+            RynthLog.Warn($"RynthCore.Chat nextspans: {why} (#{n}; the line keeps its own colour)");
     }
 
     private static int InvokeChatParser(IntPtr textUtf16)
@@ -4964,7 +5001,10 @@ internal static partial class PluginManager
             {
                 string? action = actionAnsi != IntPtr.Zero ? Marshal.PtrToStringAnsi(actionAnsi) : null;
                 string? value = valueAnsi != IntPtr.Zero ? Marshal.PtrToStringAnsi(valueAnsi) : null;
-                return UI.Data.ChatOwnColors.HandlePluginCommand(action, value, Environment.TickCount64) ? 1 : 0;
+                bool ok = UI.Data.ChatOwnColors.HandlePluginCommand(action, value, Environment.TickCount64, out string? why);
+                if (!ok && why != null)
+                    LogChatSpansRefused($"refused '{(value is { Length: > 120 } ? value[..120] + "..." : value)}': {why}");
+                return ok ? 1 : 0;
             }
 
             IntPtr export = ResolvePluginExport(name, "RynthPluginApplyRemoteCommand");

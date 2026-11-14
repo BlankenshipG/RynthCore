@@ -105,7 +105,7 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item><c>/rc hotkeys</c> - opens Settings &gt; Hotkeys. <c>/rc hotkey list | add &lt;combo&gt; &lt;action or
 ///         /command&gt; | remove &lt;combo&gt; | enable|disable &lt;combo&gt; | actions | status | on|off</c> - the user
 ///         hotkeys (<see cref="Hotkeys.HotkeyService"/>; saved for the PC in hotkeys.txt).</item>
-///   <item><c>/rc diagnostics</c> (or <c>/rc serverpick</c>) - opens Settings &gt; Diagnostics, the server
+///   <item><c>/rc diagnostics</c> (or <c>/rc serverpick</c>) - opens Settings &gt; Game Client, the server
 ///         picker: the one place a server is forced for this character (plugins' "Force a server" links).</item>
 ///   <item><c>/rc layout [status] | default | reset [confirm]</c> - the panel layout this client uses
 ///         (<see cref="UI.PanelLayout"/>: its character's own, or the PC-wide default and why) and its files;
@@ -114,6 +114,9 @@ namespace RynthCore.Engine.Compatibility;
 ///   <item><c>/rc uicost [on|off|&lt;ms&gt;|now|status]</c> - the UI frame cost breakdown
 ///         (<see cref="ImGuiBackend.UiCost"/>): timing on or off, the slow-frame threshold, and (now, or
 ///         alone) which parts of the UI frame took the time over the last seconds. Also Settings &gt; Diagnostics.</item>
+///   <item><c>/rc webpanel [status|close]</c> - the in-game web panel (<see cref="WebPanel.WebPanelApi"/>):
+///         status is one redacted line (state, handle, visible/focused, browser pid, free address space);
+///         close closes the panel. It never opens a URL.</item>
 /// </list>
 /// </summary>
 internal static class RynthCoreChatCommands
@@ -122,8 +125,11 @@ internal static class RynthCoreChatCommands
     /// <summary>RynthNet's Characters window (a plugin window: its title is its panel key).</summary>
     private const string CharactersWindowTitle = "Characters";
 
-    /// <summary>The Settings tab with the server picker (UI/Data/SettingsData.cs "Diagnostics").</summary>
-    private const string DiagnosticsTabName = "Diagnostics";
+    /// <summary>
+    /// The Settings tab with the server picker (UI/Data/SettingsData.cs): Game Client since 2026-11-11, Diagnostics
+    /// before. /rc diagnostics still opens it, as plugins link there for the picker.
+    /// </summary>
+    private const string ServerPickTabName = "Game Client";
 
     // The line being handled on this thread: who sent it, and whether it has answered yet.
     [ThreadStatic] private static ChatCommandOrigin _origin;
@@ -427,7 +433,7 @@ internal static class RynthCoreChatCommands
         }
 
         // /rc dashboard [classic|modern|tab <name>] : the RynthAi dashboard's look (the title bar buttons and
-        // Settings > Display), and the Classic look's tab (main, monsters, gear, buffs, route, loot, meta,
+        // Settings > Interface), and the Classic look's tab (main, monsters, gear, buffs, route, loot, meta,
         // tuning); either opens the dashboard. No argument: says which look is on.
         if (IsVerb(sub, "dashboard", out string dashArgs))
         {
@@ -525,14 +531,15 @@ internal static class RynthCoreChatCommands
                 OpenSettingsTab(ImGuiBackend.Panels.HotkeysSettingsUi.TabName);
             return;
         }
-        // /rc diagnostics : Settings > Diagnostics, where a server is forced for this character (the
-        // server picker). The one place to force a server since 2026.10.5.54, so plugins link here.
+        // /rc diagnostics, /rc serverpick : Settings > Game Client, where a server is forced for this character
+        // (the server picker; on Diagnostics until 2026-11-11, hence the name). The one place to force a server
+        // since 2026.10.5.54, so plugins link here.
         if ((IsVerb(sub, "diagnostics", out string diagArgs) || IsVerb(sub, "serverpick", out diagArgs)) && diagArgs.Length == 0)
         {
             if (!ImGuiBackend.ImGuiPanelHost.HasFace(ImGuiBackend.Panels.SettingsFace.Title))
                 Fail("The Settings panel isn't available (the ImGui layer is off?). /rc server <id> auto|on|off works here in chat.");
             else
-                OpenSettingsTab(DiagnosticsTabName);
+                OpenSettingsTab(ServerPickTabName);
             return;
         }
         // /rc settings [tab] : the Settings panel (toggled), or opened on a tab ("/rc settings buffing").
@@ -673,10 +680,24 @@ internal static class RynthCoreChatCommands
             SenseLayoutCommand(senseArgs);   // alone, /rc sense opens or closes the panel (the switch below)
             return;
         }
+        // /rc webpanel [status|close]: diagnostics for the in-game web panel. It never opens a URL
+        // (an arbitrary-URL command would be a phishing vector); every URL in the line is redacted.
+        if (IsVerb(sub, "webpanel", out string webPanelArgs))
+        {
+            HandleWebPanelCommand(webPanelArgs);
+            return;
+        }
         // /rc layout [status] | default | reset [confirm]: this client's panel layout (UI/PanelLayout).
         if (IsVerb(sub, "layout", out string layoutArgs))
         {
             HandleLayoutCommand(layoutArgs);
+            return;
+        }
+        // /rc chatwindow [list] | open [tab] | close <n|all> | tab <n> <tab>: the extra chat windows.
+        if (IsVerb(sub, "chatwindow", out string chatWinArgs) || IsVerb(sub, "chatwin", out chatWinArgs)
+            || IsVerb(sub, "chatwindows", out chatWinArgs))
+        {
+            HandleChatWindowCommand(chatWinArgs);
             return;
         }
         if (IsVerb(sub, "hotkey", out hotkeyArgs) || IsVerb(sub, "hotkeys", out hotkeyArgs))
@@ -691,7 +712,7 @@ internal static class RynthCoreChatCommands
         //   reset - a stuck AC window (borderless too small, off-screen) back to a normal framed,
         //           resizable one, centred; borderless is turned off and the saved spot replaced;
         //   save  - save where the window is now (framed or borderless) for the next launch;
-        //   fill  - Settings > Display "Borderless Fills Monitor".
+        //   fill  - Settings > Game Client "Borderless Fills Monitor".
         if (IsVerb(sub, "window", out string windowArgs))
         {
             string wa = windowArgs.ToLowerInvariant();
@@ -712,7 +733,7 @@ internal static class RynthCoreChatCommands
                 Fail("Usage: /rc window reset | save | fill on|off  (reset: borderless off, a normal resizable window, centred)");
             return;
         }
-        // /rc borderless on|off : the Settings > Display toggle (on fills the monitor).
+        // /rc borderless on|off : the Settings > Game Client toggle (on fills the monitor).
         if (IsVerb(sub, "borderless", out string borderlessArgs))
         {
             if (borderlessArgs.Equals("on", StringComparison.OrdinalIgnoreCase)
@@ -1305,6 +1326,32 @@ internal static class RynthCoreChatCommands
     }
 
     /// <summary>
+    /// /rc chatwindow: the extra chat windows (ImGui/Panels/ChatWindowFace). Alone or list: which
+    /// are open and what they show; open [tab] (alone: the main chat's tab); close &lt;n|all&gt;;
+    /// tab &lt;n&gt; &lt;tab&gt;. Every form answers with what happened, or why not and the usage.
+    /// </summary>
+    private static void HandleChatWindowCommand(string args)
+    {
+        UI.Data.ChatWindowCommand c = UI.Data.ChatWindows.Parse(args);
+        (bool Ok, string Message) r;
+        switch (c.Verb)
+        {
+            case UI.Data.ChatWindowVerb.List:
+                ReplyLines(ImGuiBackend.Panels.ChatWindowFace.Describe(),
+                    ImGuiBackend.Panels.ChatWindowFace.Available ? ChatReplyKind.Ok : ChatReplyKind.Fail);
+                return;
+            case UI.Data.ChatWindowVerb.Open: r = ImGuiBackend.Panels.ChatWindowFace.OpenNew(c.Tab); break;
+            case UI.Data.ChatWindowVerb.Close: r = ImGuiBackend.Panels.ChatWindowFace.Close(c.Number); break;
+            case UI.Data.ChatWindowVerb.CloseAll: r = ImGuiBackend.Panels.ChatWindowFace.CloseAll(); break;
+            case UI.Data.ChatWindowVerb.Tab: r = ImGuiBackend.Panels.ChatWindowFace.ShowTab(c.Number, c.Tab); break;
+            default:
+                Fail(c.Error);
+                return;
+        }
+        Answer(r.Ok, r.Message, r.Message);
+    }
+
+    /// <summary>
     /// "/rc sense compact on|off | collapse on|off | view full|compact|collapsed": the Sense panel's
     /// look (saved in sense.txt), and the look now; alone, compact / collapse / view say the look now.
     /// </summary>
@@ -1362,7 +1409,8 @@ internal static class RynthCoreChatCommands
             TogglePanel(title, "Settings", "The Settings panel isn't available (the ImGui layer is off?).");
             return;
         }
-        UI.Data.SettingsTab? tab = Array.Find(UI.Data.SettingsSchema.Tabs, t => t.Name.Equals(tabName, StringComparison.OrdinalIgnoreCase));
+        // FindTab also takes the names from before the 2026-11-11 regroup ("/rc settings misc" opens General).
+        UI.Data.SettingsTab? tab = UI.Data.SettingsSchema.FindTab(tabName);
         if (tab != null)
         {
             OpenSettingsTab(tab.Name);
@@ -1803,6 +1851,27 @@ internal static class RynthCoreChatCommands
             return;
         }
         ReplyLines(UI.Data.Discord.ChatDiscord.HandleCommand(verb));
+    }
+
+    /// <summary>
+    /// /rc webpanel [status|close]. Status: one redacted line (WebPanelApi.Describe plus the address
+    /// space). Close: closes the live panel (WebPanelApi.Close does not block). Nothing here opens a URL.
+    /// </summary>
+    private static void HandleWebPanelCommand(string args)
+    {
+        string a = args.Trim().ToLowerInvariant();
+        if (a == "close")
+        {
+            int handle = WebPanel.WebPanelApi.LiveHandle;
+            if (handle <= 0) { Reply("web panel: nothing to close."); return; }
+            int rc = WebPanel.WebPanelApi.Close(handle);
+            // 1 = closing, 0 = already closed (the WebPanelCode values); anything else is a refusal or error.
+            if (rc == 1) Reply("web panel: closing.");
+            else if (rc == 0) Reply("web panel: already closed.");
+            else Fail($"web panel: could not close (code {rc}).");
+            return;
+        }
+        Reply(WebPanel.WebPanelApi.Describe() + "; address space " + AddressSpace.Describe());
     }
 
     /// <summary>

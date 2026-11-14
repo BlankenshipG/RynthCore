@@ -203,6 +203,8 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetMergeStackResult     => _api.Version >= 81 && _api.GetMergeStackResultFn     != IntPtr.Zero;
     /// <summary>v85: <see cref="ArmConfirmation"/> and <see cref="TryGetLastConfirmation"/>.</summary>
     public bool HasConfirmationAnswers     => _api.Version >= 85 && _api.ArmConfirmationFn != IntPtr.Zero && _api.GetLastConfirmationFn != IntPtr.Zero;
+    /// <summary>v97: <see cref="ArmConfirmationLeaveBelow"/> (a sticky arm that leaves prompts below its minimum to the client).</summary>
+    public bool HasConfirmationLeaveBelow  => HasConfirmationAnswers && _api.Version >= 97;
     public bool HasGetPluginInterface      => _api.Version >= 68 && _api.GetPluginInterfaceFn      != IntPtr.Zero;
     public bool HasGetLiveObjectIds        => _api.Version >= 69 && _api.GetLiveObjectIdsFn        != IntPtr.Zero;
     public bool HasGetLastUseDone          => _api.Version >= 70 && _api.GetLastUseDoneFn          != IntPtr.Zero;
@@ -652,6 +654,15 @@ public readonly unsafe struct RynthCoreHost
         public const uint YesNo = 7;
     }
 
+    /// <summary>Flags OR'ed into <see cref="ArmConfirmation"/>'s minPercent.</summary>
+    public static class ConfirmationArmFlags
+    {
+        /// <summary>v97: the sticky slot. A prompt below the minimum (or without a percent) is left to the client
+        /// instead of answered No, and the arm stays armed for later prompts until it times out or is disarmed.
+        /// Engines before v97 refuse it (-3).</summary>
+        public const int LeaveBelow = 0x100;
+    }
+
     /// <summary>What happened to the last prompt (<see cref="TryGetLastConfirmation"/>).</summary>
     public static class ConfirmationOutcome
     {
@@ -660,6 +671,7 @@ public readonly unsafe struct RynthCoreHost
         public const int Accepted = 2;   // answered Yes for the plugin
         public const int Declined = 3;   // answered No: the server's percent was below the minimum
         public const int SendFailed = 4; // armed, but the send failed: the client showed it
+        public const int AcceptedSticky = 5; // v97: answered Yes by the sticky arm (ArmConfirmationLeaveBelow)
     }
 
     /// <summary>
@@ -678,9 +690,38 @@ public readonly unsafe struct RynthCoreHost
     }
 
     /// <summary>
-    /// v81: the last prompt the server sent. <paramref name="seq"/> counts them (0 = none yet);
-    /// <paramref name="percent"/> is -1 when the text has none; <paramref name="outcome"/> is a
-    /// <see cref="ConfirmationOutcome"/>. False on an engine before v81.
+    /// v97: a sticky arm for prompts of <paramref name="type"/>: every one that arrives within
+    /// <paramref name="timeoutMs"/> (1-120000) is answered Yes when the server's percent is at least
+    /// <paramref name="minPercent"/> (1-100), with outcome <see cref="ConfirmationOutcome.AcceptedSticky"/>;
+    /// one below it, or without a percent, is left to the client's own dialog (never answered No). The arm
+    /// stays until it times out, <see cref="DisarmConfirmationLeaveBelow"/>, or another sticky arm replaces
+    /// it (one sticky slot per client, shared by every plugin). A one-shot <see cref="ArmConfirmation"/>
+    /// goes first, and its arm or disarm never touches the sticky arm. 1 armed, 0 unavailable, -3 bad
+    /// arguments, and -3 from an engine before v97 (check <see cref="HasConfirmationLeaveBelow"/> first).
+    /// </summary>
+    public int ArmConfirmationLeaveBelow(uint type, int minPercent, int timeoutMs)
+    {
+        if (minPercent < 1 || minPercent > 100 || timeoutMs <= 0)
+            return -3;
+        return ArmConfirmation(type, minPercent | ConfirmationArmFlags.LeaveBelow, timeoutMs);
+    }
+
+    /// <summary>
+    /// v97: drops the sticky arm (<see cref="ArmConfirmationLeaveBelow"/>); a one-shot arm stays. Does
+    /// nothing (0) before v97, where a disarm would clear the one-shot arm instead.
+    /// </summary>
+    public int DisarmConfirmationLeaveBelow(uint type)
+    {
+        if (!HasConfirmationLeaveBelow)
+            return 0;
+        return ArmConfirmation(type, ConfirmationArmFlags.LeaveBelow, 0);
+    }
+
+    /// <summary>
+    /// v85: the last prompt the server sent. <paramref name="seq"/> counts them (0 = none yet);
+    /// <paramref name="contextId"/> is the server's context for it; <paramref name="percent"/> is
+    /// -1 when the text has none; <paramref name="outcome"/> is a <see cref="ConfirmationOutcome"/>.
+    /// False on an engine before v85.
     /// </summary>
     public bool TryGetLastConfirmation(out int seq, out uint type, out int percent, out int outcome, out int ageMs)
     {
@@ -1577,7 +1618,7 @@ public readonly unsafe struct RynthCoreHost
 
     /// <summary>
     /// v90: how big the frameless window <paramref name="key"/> draws itself, in percent of normal
-    /// (30-250; Settings > UI > Toolbar sets it too): <paramref name="percent"/> 0 asks, -1 goes back to
+    /// (30-250; Settings > Interface > In The Retail Toolbar's Place sets it too): <paramref name="percent"/> 0 asks, -1 goes back to
     /// following the text size, 30-250 sets it. Returns it now: 0 = follow the text size (draw at the
     /// fonts' size), -1 on an older engine. Any thread; cheap to ask every frame.
     /// </summary>
@@ -1781,8 +1822,8 @@ public readonly unsafe struct RynthCoreHost
         return item;
     }
 
-    /// <summary>v94: the engine keeps a plugin window's spot per character (<see cref="TryGetWindowPlacement"/>).</summary>
-    public bool HasWindowPlacements => _api.Version >= 94 && _api.GetWindowPlacementFn != IntPtr.Zero && _api.SetWindowPlacementFn != IntPtr.Zero;
+    /// <summary>v98: the engine keeps a plugin window's spot per character (<see cref="TryGetWindowPlacement"/>).</summary>
+    public bool HasWindowPlacements => _api.Version >= 98 && _api.GetWindowPlacementFn != IntPtr.Zero && _api.SetWindowPlacementFn != IntPtr.Zero;
 
     /// <summary>
     /// v94: where the player left the plugin's own floating window <paramref name="key"/> on this character
@@ -1807,7 +1848,7 @@ public readonly unsafe struct RynthCoreHost
         return true;
     }
 
-    /// <summary>v94: saves window <paramref name="key"/>'s spot for this character (see <see cref="TryGetWindowPlacement"/>). False when not saved.</summary>
+    /// <summary>v98: saves window <paramref name="key"/>'s spot for this character (see <see cref="TryGetWindowPlacement"/>). False when not saved.</summary>
     public bool SetWindowPlacement(string key, System.Numerics.Vector2 pos, System.Numerics.Vector2 size)
     {
         if (!HasWindowPlacements || string.IsNullOrEmpty(key) || key.Length > 96) return false;
@@ -1908,6 +1949,119 @@ public readonly unsafe struct RynthCoreHost
         ratio = Math.Min(r, 1f);
         ageMs = age;
         return true;
+    }
+
+    // ── v94: a web panel over the game window (number provisional) ───────────
+
+    /// <summary>
+    /// v94: <see cref="OpenWebPanel"/>, <see cref="NavigateWebPanel"/>, <see cref="CloseWebPanel"/> and
+    /// <see cref="GetWebPanelState"/>. True only on an engine at API 94 or newer that fills all four.
+    /// </summary>
+    public bool HasWebPanel => _api.Version >= 94 && _api.WebPanelOpenFn != IntPtr.Zero && _api.WebPanelNavigateFn != IntPtr.Zero
+                            && _api.WebPanelCloseFn != IntPtr.Zero && _api.WebPanelGetStateFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v94: opens the web panel over the game window (a second call replaces the first). Returns a handle
+    /// &gt; 0, or a <see cref="WebPanelResult"/> (BadArgs for an empty URL or allowlist, more than 16
+    /// entries or a newline inside one; Unavailable on an older engine). Never blocks; the panel loads
+    /// after this returns - poll <see cref="GetWebPanelState"/>. Any thread.
+    /// </summary>
+    public int OpenWebPanel(WebPanelOptions options)
+    {
+        if (options == null || string.IsNullOrEmpty(options.Url) || options.Allowlist == null
+            || options.Allowlist.Count < 1 || options.Allowlist.Count > 16)
+            return (int)WebPanelResult.BadArgs;
+        foreach (string entry in options.Allowlist)
+            if (string.IsNullOrEmpty(entry) || entry.Contains('\n')) return (int)WebPanelResult.BadArgs;
+        if (!HasWebPanel) return (int)WebPanelResult.Unavailable;
+
+        string allowlist = string.Join("\n", options.Allowlist);
+        string profile = options.ProfileKey ?? "";
+        string title = options.Title ?? "";
+        var enc = System.Text.Encoding.UTF8;
+        int nUrl = enc.GetByteCount(options.Url), nAllow = enc.GetByteCount(allowlist);
+        int nProfile = enc.GetByteCount(profile), nTitle = enc.GetByteCount(title);
+        int total = nUrl + nAllow + nProfile + nTitle + 4;
+
+        byte[]? rented = null;
+        Span<byte> buf = total <= 1024 ? stackalloc byte[total] : (rented = System.Buffers.ArrayPool<byte>.Shared.Rent(total)).AsSpan(0, total);
+        try
+        {
+            int o = 0;
+            int oUrl = o; o += enc.GetBytes(options.Url, buf[o..]); buf[o++] = 0;
+            int oAllow = o; o += enc.GetBytes(allowlist, buf[o..]); buf[o++] = 0;
+            int oProfile = o; o += enc.GetBytes(profile, buf[o..]); buf[o++] = 0;
+            int oTitle = o; o += enc.GetBytes(title, buf[o..]); buf[o++] = 0;
+            fixed (byte* b = buf)
+            {
+                var open = new WebPanelOpenNative
+                {
+                    Size = (uint)sizeof(WebPanelOpenNative),
+                    Flags = (uint)options.Flags,
+                    Url = b + oUrl,
+                    Allowlist = b + oAllow,
+                    ProfileKey = nProfile == 0 ? null : b + oProfile,
+                    Title = nTitle == 0 ? null : b + oTitle,
+                    WidthPercent = options.WidthPercent,
+                    HeightPercent = options.HeightPercent,
+                };
+                return ((delegate* unmanaged[Cdecl]<WebPanelOpenNative*, int>)_api.WebPanelOpenFn)(&open);
+            }
+        }
+        finally
+        {
+            if (rented != null) System.Buffers.ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    /// <summary>
+    /// v94: points the panel <paramref name="handle"/> at <paramref name="url"/>. 1 queued; -2
+    /// (UrlNotAllowed) when it is off the allowlist (the engine opens it in the system browser when that is
+    /// safe); -6 (StaleHandle) when the handle is not the live panel. Never blocks. Any thread.
+    /// </summary>
+    public int NavigateWebPanel(int handle, string url)
+    {
+        if (string.IsNullOrEmpty(url)) return (int)WebPanelResult.BadArgs;
+        if (!HasWebPanel) return (int)WebPanelResult.Unavailable;
+        int n = System.Text.Encoding.UTF8.GetByteCount(url);
+        byte[]? rented = null;
+        Span<byte> buf = n + 1 <= 1024 ? stackalloc byte[n + 1] : (rented = System.Buffers.ArrayPool<byte>.Shared.Rent(n + 1)).AsSpan(0, n + 1);
+        try
+        {
+            System.Text.Encoding.UTF8.GetBytes(url, buf);
+            buf[n] = 0;
+            fixed (byte* p = buf)
+                return ((delegate* unmanaged[Cdecl]<int, byte*, int>)_api.WebPanelNavigateFn)(handle, p);
+        }
+        finally
+        {
+            if (rented != null) System.Buffers.ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    /// <summary>v94: closes the panel <paramref name="handle"/>. 1 queued, 0 already closed, -6 stale handle. Never blocks. Any thread.</summary>
+    public int CloseWebPanel(int handle)
+    {
+        if (!HasWebPanel) return (int)WebPanelResult.Unavailable;
+        return ((delegate* unmanaged[Cdecl]<int, int>)_api.WebPanelCloseFn)(handle);
+    }
+
+    /// <summary>
+    /// v94: where the panel <paramref name="handle"/> is. A handle that is not the live panel reads
+    /// Superseded. None (and a default <paramref name="state"/>) on an older engine or bad arguments.
+    /// Any thread.
+    /// </summary>
+    public WebPanelStatus GetWebPanelState(int handle, out WebPanelState state)
+    {
+        state = default;
+        if (!HasWebPanel) return WebPanelStatus.None;
+        WebPanelStateNative native = default;
+        native.Size = (uint)sizeof(WebPanelStateNative);
+        int r = ((delegate* unmanaged[Cdecl]<int, WebPanelStateNative*, int>)_api.WebPanelGetStateFn)(handle, &native);
+        if (r < 0) return WebPanelStatus.None;
+        var status = (WebPanelStatus)native.Status;
+        state = new WebPanelState(native.Handle, status, (WebPanelStateFlags)native.Flags, (WebPanelResult)native.Error, native.LastHttpStatus, native.NavigationCount);
+        return status;
     }
 
     private int CallSetActionKey(string action, string key, int op, out string message)
