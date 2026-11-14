@@ -123,7 +123,7 @@ namespace SettingsLayoutTests
         {
             string[] want =
             {
-                "Interface", "Game Client", "Hotkeys",
+                "Interface", "Game Client", "Graphics", "Hotkeys",   // Graphics: the test branch's per-account AC graphics profile
                 "General", "Recharge", "Combat", "Spell Combat", "Ranges", "Navigation", "Buffing", "Looting", "Inventory", "Vendoring",
                 "Diagnostics",
             };
