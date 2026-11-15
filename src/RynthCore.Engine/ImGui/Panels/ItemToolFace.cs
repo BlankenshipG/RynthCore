@@ -14,6 +14,9 @@
 //                  or NPC in the world (Use selected as target), press Give: every
 //                  such item in your packs is handed over, one give at a time.
 //                  The target's name is shown (PLAYER for a player).
+//                  Amount: how many a round gives (0 = all). Every (s): a round
+//                  again that many seconds after the last ends, until Stop
+//                  (0 = one round). "/ra itemtool giveamount N | giveevery N".
 //
 //  Data: ItemToolSource (RynthPluginGetItemToolJson, 250 ms while open). Buttons
 //  post words to RynthPluginItemToolCommand (ItemToolCommands.Send), the same
@@ -130,7 +133,9 @@ internal sealed class ItemToolFace : IImGuiPanel
     private static void DrawGive(GiveToolState g, float w)
     {
         Label("Quick give", Teal);
-        Wrapped("Hands every matching item in your packs to one player or NPC, one give at a time, until none is left or you press Stop. Never worn gear.", Mute, w);
+        Wrapped(g.AmountMax <= 0
+            ? "Hands every matching item in your packs to one player or NPC, one give at a time, until none is left or you press Stop. Never worn gear."
+            : "Hands the picked item to one player or NPC, one give at a time: Amount of them (0 = all), and again Every so many seconds until you press Stop (0 = once). Never worn gear.", Mute, w);
         Pick("Item:", g.Item, "(none: select the item in your pack)", w);
         Pick("Target:", g.Target, "(none: select the player or NPC in the world)", w);
 
@@ -140,11 +145,54 @@ internal sealed class ItemToolFace : IImGuiPanel
         if (hit == 0) ItemToolCommands.Send("giveitem");
         else if (hit == 1) ItemToolCommands.Send("givetarget");
 
+        DrawGiveNumbers(g, w);
+
         hit = StartStop("##give_run", "Give", "Stop", ready && !g.Running, g.Running, w);
         if (hit == 0) ItemToolCommands.Send("give");
         else if (hit == 1) ItemToolCommands.Send("givestop");
 
         Wrapped(g.Status, g.Running ? Amber : Text, w);
+    }
+
+    // A value just sent, shown until RynthAi reports it back (the snapshot is 250 ms behind).
+    private static int _amountEdit, _everyEdit;
+    private static long _amountSentAt, _everySentAt;
+    private const long GivePendingMs = 2000;
+
+    /// <summary>
+    /// "Amount" and "Every (s)" side by side (2026-11-15). A value goes to RynthAi on Enter or a +/- click
+    /// ("giveamount N", "giveevery N"); a running give takes the amount from its next give and the interval
+    /// from its next round. Hidden for a RynthAi that predates them.
+    /// </summary>
+    private static void DrawGiveNumbers(GiveToolState g, float w)
+    {
+        if (g.AmountMax <= 0) return;
+        float half = Math.Max(70, (w - 10) / 2);
+        float x0 = ImGuiNET.ImGui.GetCursorPosX();
+        Label("Amount (0 = all)", Mute);
+        ImGuiNET.ImGui.SameLine(x0 + half + 10);
+        Label("Every (s, 0 = once)", Mute);
+
+        NumberField("##give_amount", "giveamount", g.Amount, g.AmountMax, ref _amountEdit, ref _amountSentAt, half,
+            "How many a round gives; a stack bigger than what is left is split.\n0 = every one in your packs.\nEnter (or +/-) to set it.");
+        ImGuiNET.ImGui.SameLine(0, 10);
+        NumberField("##give_every", "giveevery", g.EverySec, g.EveryMax, ref _everyEdit, ref _everySentAt, half,
+            "Seconds from the end of one round to the start of the next; it goes on until you press Stop.\nBetween rounds, the target away, a fight or none in your packs only delays the next round.\n0 = one round. Enter (or +/-) to set it.");
+    }
+
+    private static void NumberField(string id, string verb, int current, int max, ref int edit, ref long sentAt, float width, string tip)
+    {
+        long now = Environment.TickCount64;
+        int v = now - sentAt < GivePendingMs && current != edit ? edit : current;
+        ImGuiNET.ImGui.SetNextItemWidth(width);
+        if (ImGuiNET.ImGui.InputInt(id, ref v, 1, 10, ImGuiInputTextFlags.EnterReturnsTrue))
+        {
+            v = Math.Clamp(v, 0, Math.Max(0, max));
+            edit = v;
+            sentAt = now;
+            ItemToolCommands.Send(verb + " " + v.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        SafeImGui.SetItemTooltip(tip);
     }
 
     // ── Pieces ──────────────────────────────────────────────────────────

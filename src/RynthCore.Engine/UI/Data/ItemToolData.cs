@@ -48,6 +48,15 @@ internal sealed class GiveToolState
     [JsonPropertyName("status")]  public string Status { get; set; } = string.Empty;
     [JsonPropertyName("running")] public bool Running { get; set; }
     [JsonPropertyName("given")]   public int Given { get; set; }
+    // Amount (units a round, 0 = all) and Every (seconds between rounds, 0 = one round), 2026-11-15.
+    // AmountMax 0 = a RynthAi that predates them: the panel hides the two fields.
+    [JsonPropertyName("amount")]    public int Amount { get; set; }
+    [JsonPropertyName("everySec")]  public int EverySec { get; set; }
+    [JsonPropertyName("amountMax")] public int AmountMax { get; set; }
+    [JsonPropertyName("everyMax")]  public int EveryMax { get; set; }
+    [JsonPropertyName("rounds")]    public int Rounds { get; set; }
+    [JsonPropertyName("units")]     public int Units { get; set; }
+    [JsonPropertyName("nextInSec")] public long NextInSec { get; set; }
 }
 
 [JsonSerializable(typeof(ItemToolSnapshot))]
@@ -96,7 +105,7 @@ internal static unsafe class ItemToolCommands
 
     /// <summary>
     /// Posts one Item Tool command ("chest set", "chest key", "chest start", "chest stop", "relock N",
-    /// "giveitem", "givetarget", "give", "givestop"). Runs on the pump; RynthAi older than this build has no such
+    /// "giveitem", "givetarget", "give", "givestop", "giveamount N", "giveevery N"). Runs on the pump; RynthAi older than this build has no such
     /// export: the click is logged and dropped.
     /// </summary>
     public static void Send(string words) => UiDataHub.Post("Item Tool " + words, () =>
