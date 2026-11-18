@@ -723,17 +723,21 @@ public readonly unsafe struct RynthCoreHost
     /// -1 when the text has none; <paramref name="outcome"/> is a <see cref="ConfirmationOutcome"/>.
     /// False on an engine before v85.
     /// </summary>
-    public bool TryGetLastConfirmation(out int seq, out uint type, out int percent, out int outcome, out int ageMs)
+    public bool TryGetLastConfirmation(out int seq, out uint type, out uint contextId, out int percent, out int outcome, out int ageMs)
     {
-        seq = 0; type = 0; percent = -1; outcome = 0; ageMs = 0;
+        seq = 0; type = 0; contextId = 0; percent = -1; outcome = 0; ageMs = 0;
         if (!HasConfirmationAnswers)
             return false;
         uint t = 0, ctx = 0;
         int pct = -1, oc = 0, age = 0;
         seq = ((delegate* unmanaged[Cdecl]<uint*, uint*, int*, int*, int*, int>)_api.GetLastConfirmationFn)(&t, &ctx, &pct, &oc, &age);
-        type = t; percent = pct; outcome = oc; ageMs = age;
+        type = t; contextId = ctx; percent = pct; outcome = oc; ageMs = age;
         return true;
     }
+
+    /// <summary>v85: <see cref="TryGetLastConfirmation(out int, out uint, out uint, out int, out int, out int)"/> without the context id.</summary>
+    public bool TryGetLastConfirmation(out int seq, out uint type, out int percent, out int outcome, out int ageMs)
+        => TryGetLastConfirmation(out seq, out type, out _, out percent, out outcome, out ageMs);
 
     /// <summary>
     /// Gives an item to an NPC or another player by sending the F7B1 give

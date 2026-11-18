@@ -949,14 +949,23 @@ namespace EngineSettingsTests
             Eq(DecideSave(true, true, true, LogoutRect, InGame, ref pending, t0).Action, AcWindowPlacementRule.SaveAction.LoginShrink, "Save Layout Now on the login-size window: refused");
         }
 
-        // Source guard: every SetWindowPos on the AC window keeps AC's size (R-20261115-160655-1201).
+        // Source guard: AC's window is never given a size of its own (R-20261115-160655-1201: a restored smaller
+        // window crops the picture and leaves the HUD out of reach). Upstream keeps the size with SWP_NOSIZE. The
+        // test branch's AcWindowChrome (2026-11-17 merge) sizes the window on purpose (Borderless Fills Monitor, a
+        // framed window sized for the resolution), so the guard there is: one SetWindowPos (MoveTo), a restore that
+        // takes only the saved position with the size from AC's resolution, and borderless sized from the
+        // resolution or the monitor.
         private static void AcWindowChromeNeverResizes()
         {
             string source = File.ReadAllText(FindUp(Path.Combine("src", "RynthCore.Engine", "UI", "AcWindowChrome.cs")));
             var calls = Regex.Matches(source, @"^\s*(?:=>\s*)?SetWindowPos\(hwnd,[^;]*;", RegexOptions.Multiline | RegexOptions.Singleline);
-            Check(calls.Count >= 2, $"found the SetWindowPos calls ({calls.Count})");
-            foreach (Match m in calls)
-                Check(m.Value.Contains("SwpNosize"), "SetWindowPos keeps AC's size: " + Regex.Replace(m.Value.Trim(), @"\s+", " "));
+            Check(calls.Count >= 1, $"found the SetWindowPos calls ({calls.Count})");
+            Check(Regex.IsMatch(source, @"private static void MoveTo\(IntPtr hwnd, RECT r\) =>\s*SetWindowPos\(hwnd,"), "the only window move is MoveTo");
+            Check(calls.Count == 1, $"no SetWindowPos outside MoveTo ({calls.Count})");
+            Match restore = Regex.Match(source, @"private static void TryRestorePlacement\(IntPtr hwnd\)\s*\{(?<body>.*?)\n    \}", RegexOptions.Singleline);
+            Check(restore.Success, "found TryRestorePlacement");
+            Check(restore.Groups["body"].Value.Contains("TryFramedSizeForResolution("), "the restore's size comes from AC's resolution, not the saved rect");
+            Check(source.Contains("BorderlessAtResolution(") && source.Contains("IsLoginScreenSize("), "borderless sized from the resolution; the login-screen size never restored");
         }
 
         private static void PlacementFilesArePerClient()
