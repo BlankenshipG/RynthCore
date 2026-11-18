@@ -96,6 +96,9 @@ internal sealed class RynthAiSettings
     public bool? TargetLock { get; set; }
     // Fight the monster I select (RynthAi 2026-11-01). Null: a RynthAi without it; it leaves it alone.
     public bool? FightSelectedTarget { get; set; }
+    // Melee through walls (RynthAi 2026-11-15, on by default). Null until RynthAi sends it; a save from an
+    // engine with the row never sends null over an older RynthAi's value (it leaves an absent one alone).
+    public bool? MeleeThroughWalls { get; set; }
     public int TargetNoProgressTimeoutSec { get; set; }
     public int GiveQueueIntervalMs { get; set; } = 150;
     // Recharge
@@ -286,6 +289,7 @@ internal sealed class RynthAiSettings
     public bool LootJumpEnabled { get; set; }
     public bool LootChestsMacroOff { get; set; } = true;   // Pickup with macro off; a RynthAi that doesn't send it leaves it on
     public bool LootChestsMacroOffLeaveOpen { get; set; }   // its "Leave the chest open", off by default
+    public bool? LootNearbyChests { get; set; }             // Loot Nearby Chests (off by default); null until RynthAi sends it
     // Looting rows since 2026-11-11, null until RynthAi sends them (a save then sends null, which RynthAi
     // leaves alone): Loot Mode (0 the loot profile, 1 rares and needed mana stones only), the Item Tool's
     // chest relock wait (s), and Loot By Name (names separated by |, and the radius in yards).
@@ -1426,7 +1430,7 @@ internal static class SettingsSchema
             Int("Emergency Heal At", s => s.EmergencyHealAt, (s, v) => s.EmergencyHealAt = v, 0, 100, 1,
                 "At or under this health %, out of Magic mode a healing kit is used ahead of the\nnormal Heal At chain (kit, Heal Self, potion), and while a spell cast is pending a kit\nor potion is used. Stamina to Health has its own line below. 0 = off. Starts at 30."),
             Int("Stamina To Health At", s => s.StaminaToHealthAt, (s, v) => s.StaminaToHealthAt = v, 0, 100, 1,
-                "At or under this health %, cast Stamina to Health Self ahead of the normal\nHeal At chain (out of Magic mode a kit is tried first). If it can't be cast,\nthe normal chain (kit, Heal Self, potion) runs. 0 = never cast it. Starts at 30."),
+                "At or under this health %, cast Stamina to Health Self ahead of the normal\nHeal At chain. Set it above Emergency Heal At to make it your emergency heal:\nbetween the two lines the spell goes first, kit or no kit. At or under Emergency\nHeal At, out of Magic mode a kit is tried first. If it can't be cast, the normal\nchain (kit, Heal Self, potion) runs. 0 = never cast it. Starts at 30."),
             Int("Stamina To Health Min Stamina", s => s.StaminaToHealthMinStamina, (s, v) => s.StaminaToHealthMinStamina = v, 0, 100, 1,
                 "Cast Stamina to Health only while stamina is over this %, so it doesn't\ndrain you to nothing. Starts at 20."),
             Int("Kit Min Success %", s => s.KitMinSuccessPct, (s, v) => s.KitMinSuccessPct = v, 0, 100, 1,
@@ -1492,6 +1496,14 @@ internal static class SettingsSchema
                 "another monster or deselect. The bot's own selections never count. Ignored (Priority 0) and\n" +
                 "never-attack monsters are not followed (/ra targetlock still forces them). Out to Disengage Range.\n" +
                 "/ra fightselected [on|off]"),
+            Bool("Melee through walls", s => s.MeleeThroughWalls ?? true, (s, v) => s.MeleeThroughWalls = v,
+                "On: melee reaches a monster within 4 m even when the line of sight test says a wall is in the way\n" +
+                "(a corner, a pillar, a thin dungeon wall: melee lands where the test is too strict). Not across a\n" +
+                "building's wall: one of you inside its rooms and the other outside is left to the hunt, which walks\n" +
+                "in through a door.\n" +
+                "Off: a monster behind a wall is never a melee target for being close; it is treated like any monster\n" +
+                "out of sight. On by default. /ra meleewalls [on|off]",
+                when: s => s.MeleeThroughWalls.HasValue),
             Int("Attempts Before Blacklist", s => s.BlacklistAttempts, (s, v) => s.BlacklistAttempts = v, 1, 20, 1,
                 "How many failed attack attempts on a mob before it gets blacklisted."),
             Int("Blacklist Timeout (sec)", s => s.BlacklistTimeoutSec, (s, v) => s.BlacklistTimeoutSec = v, 5, 120, 5,
@@ -1831,6 +1843,13 @@ internal static class SettingsSchema
                 "When the pickup is done the chest stays open and chat says what was taken, so you can check it\n" +
                 "and take anything your profile missed. Untick it and RynthAi closes the chest when it's done\n" +
                 "(some chests lock again on close).", when: s => s.LootChestsMacroOff),
+            Bool("Loot Nearby Chests", s => s.LootNearbyChests ?? false, (s, v) => s.LootNearbyChests = v,
+                "While the macro runs with Looting on and you're not fighting, walks to a chest within loot range\n" +
+                "(Corpse Max range), opens it and loots it by your loot profile, then leaves it alone until it resets\n" +
+                "(it locks again, or the chest relock wait passes). A locked chest: a key you carry that fits is used;\n" +
+                "else a lockpick, if your Lockpick skill gives you at least 50% against its lock; else it's skipped\n" +
+                "and tried again in 10 minutes. Corpses come first. Off by default. Status: /ra chests.",
+                when: s => s.LootNearbyChests.HasValue),
             Int("Chest relock wait (s)", s => s.ChestRelockWaitSec ?? 125, (s, v) => s.ChestRelockWaitSec = v, 5, 600, 5,
                 "The Item Tool's chest key looter: the next key goes into a chest this long after it was opened (sooner when the\n" +
                 "chest shows locked again). 125 covers ACE's usual chest reset (120 s); a chest that resets sooner can use less.\n" +
