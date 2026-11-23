@@ -21,6 +21,7 @@ using System.Globalization;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Engine.Compatibility;
+using RynthCore.Engine.UI;
 using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
@@ -302,6 +303,7 @@ internal sealed partial class InventoryFace
         }
         ImGuiNET.ImGui.Separator();
         SelectionMenuItems(clicked);
+        TradeShopMenuItems();
         if (!idle) ImGuiNET.ImGui.TextDisabled("(an item action is waiting)");
     }
 
@@ -317,6 +319,29 @@ internal sealed partial class InventoryFace
             _multi.Single(clicked.Id);
             _selected = clicked.Id;
         }
+    }
+
+    /// <summary>Add the picked item(s) to RynthAi's Trade Shop catalog (/ra tradeshop addids).</summary>
+    private void TradeShopMenuItems()
+    {
+        int n = _multi.Count > 0 ? _multi.Count : (_selected != 0 ? 1 : 0);
+        if (n <= 0) return;
+        string label = n == 1 ? "Add to Trade Shop" : "Add " + n.ToString(CultureInfo.InvariantCulture) + " to Trade Shop";
+        if (!ImGuiNET.ImGui.MenuItem(label)) return;
+        var ids = new List<uint>();
+        if (_multi.Count > 0)
+        {
+            foreach (uint id in _multi.Ids)
+                if (id != 0) ids.Add(id);
+        }
+        else if (_selected != 0)
+            ids.Add(_selected);
+        if (ids.Count == 0) return;
+        // Decimal object ids; Trade Shop opens the window and lists them at 1p for editing.
+        string cmd = "/ra tradeshop addids " + string.Join(",", ids);
+        ServerMenus.Run(cmd);
+        ServerMenus.Run("/ra tradeshop ui on");
+        SafeImGui.SetItemTooltip("Lists the selection in the Trade Shop catalog (edit prices there).");
     }
 
     // ── Status and pieces ───────────────────────────────────────────────

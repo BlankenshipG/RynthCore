@@ -227,6 +227,8 @@ internal sealed partial class InventoryFace
         if (ImGuiNET.ImGui.MenuItem("Item Count", "/rc itemcount", countOpen)) ToggleItemCount();
         if (ImGuiNET.ImGui.MenuItem("Global Inventory", "/ginv", ginvOpen)) ToggleGlobalInventory();
         if (!ScriptWindowRegistry.Has(GlobalInventoryKey)) ImGuiNET.ImGui.SetItemTooltip("Needs the RynthInventory plugin");
+        if (ImGuiNET.ImGui.MenuItem("Trade Shop", "/ra tradeshop ui")) ToggleTradeShop();
+        SafeImGui.SetItemTooltip(TradeShopTip);
         ImGuiNET.ImGui.EndPopup();
     }
 
@@ -304,6 +306,14 @@ internal sealed partial class InventoryFace
             _vaultOpen = false;
         }
 
+        // Trade Shop Storefront — always present (catalog prices + conversion rates).
+        if (lay.Shop.Present)
+        {
+            if (TitleToggle("##inv_tradeshop", PhosphorIcons.Storefront, At(lay.Shop), btn, false))
+                ToggleTradeShop();
+            SafeImGui.SetItemTooltip(TradeShopTip);
+        }
+
         // Related panels: Mini Remote, RynthSort, Item Count, Global Inventory.
         switch (lay.Mode)
         {
@@ -339,7 +349,7 @@ internal sealed partial class InventoryFace
                 if (TitleToggle("##inv_more", PhosphorIcons.DotsThree, At(lay.More), btn,
                         MiniRemoteOpen || RynthSortOpen || ItemCountOpen || GlobalInventoryOpen))
                     _openMore = true;
-                ImGuiNET.ImGui.SetItemTooltip("Mini Remote, RynthSort, Item Count, Global Inventory");
+                ImGuiNET.ImGui.SetItemTooltip("Mini Remote, RynthSort, Item Count, Global Inventory, Trade Shop");
                 break;
         }
         RelatedMenu();

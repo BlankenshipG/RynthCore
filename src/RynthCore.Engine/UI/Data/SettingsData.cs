@@ -1282,6 +1282,16 @@ internal static class SettingsSchema
                 "How long a held reload waits for you to leave the world before it reloads anyway (default 10).",
                 when: _ => Plugins.EngineSettings.HoldReloadInWorld),
             Spacer(),
+            Section("VirindiTank"),
+            // Every server (was Mini Remote / ILT Hub Gear only). Copies files into RynthAi folders and merges MyMonsters.
+            Button("Import VirindiTank profiles", "Import...",
+                () => RynthAiCommands.ApplyRemoteCommand("sendchat", "/ra vtimport"),
+                "Opens the VirindiTank Import window: pick Monsters, Loot, Nav, Meta and Settings profiles folders, then Import.\n"
+                + "Copies into RynthAi (LootProfiles / NavProfiles / MetaFiles); .usd profiles → SettingsProfiles;\n"
+                + "optional MyMonsters merge into this character.\n"
+                + "Also: /ra vtimport (window) or /ra vtimport go [files] (default folders, no window)."),
+            Note("Was under Mini Remote / ILT Hub Gear. Choose up to five source folders (Browse…), or fill from the VirindiTank default."),
+            Spacer(),
             Section("Server"),
             new SettingRow(SettingKind.ServerPick, "Server",
                 "Which server this character counts as. Auto detects it (the connect host, the world name the server announces, RynthILT).\n"

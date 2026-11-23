@@ -259,6 +259,7 @@ internal static class Program
         yield return ("Tools", l.Tools);
         yield return ("Modern", l.Modern);
         yield return ("Vault", l.Vault);
+        yield return ("Shop", l.Shop);
         yield return ("Remote", l.Remote);
         yield return ("Sort", l.Sort);
         yield return ("Count", l.Count);
@@ -278,6 +279,7 @@ internal static class Program
             Check(present[i - 1].Slot.Right <= present[i].Slot.X + 0.001f,
                 $"{tag}: {present[i - 1].Name} does not overlap {present[i].Name} ({present[i - 1].Slot.Right} vs {present[i].Slot.X})");
         Eq(l.Vault.Present, vault, $"{tag}: Vault present iff the server has it");
+        Check(l.Shop.Present, $"{tag}: Trade Shop Storefront is on the bar");
         bool extrasShown = l.Mode is TitleExtrasMode.Text or TitleExtrasMode.Icons;
         Eq(l.Remote.Present && l.Sort.Present && l.Count.Present && l.GInv.Present, extrasShown, $"{tag}: all four related buttons or none");
         Eq(l.More.Present, l.Mode == TitleExtrasMode.Menu, $"{tag}: the more button iff Menu mode");
@@ -325,9 +327,11 @@ internal static class Program
         Eq(InventoryTitleLayout.Compute(276f * 1.5f, 1.5f, true, 130f * 1.5f).Mode, TitleExtrasMode.Menu, "retail at 1.5x + Vault: more menu");
 
         // The case from the review: 190 px of text buttons used to push Vault to x=-44 at 300 / scale 1.
+        // Trade Shop sits left of Vault; title room is a bit tighter than the pre-Shop layout (~100 px).
         var r = InventoryTitleLayout.Compute(276f, 1f, true, 130f);
         Check(r.Vault.X > 100f && r.Vault.Right <= r.Smaller.X, $"Vault sits just left of the toggles at retail width (x={r.Vault.X})");
-        Check(r.TitleWidth >= 100f, $"and the title keeps {r.TitleWidth} px at retail width");
+        Check(r.Shop.Present && r.Shop.Right <= r.Vault.X, $"Shop sits left of Vault (x={r.Shop.X})");
+        Check(r.TitleWidth >= 80f, $"and the title keeps {r.TitleWidth} px at retail width");
 
         // Everything is relative to the bar: scaling the bar scales the positions (whole-pixel rounding aside).
         var a = InventoryTitleLayout.Compute(276f, 1f, true, 130f);
@@ -350,8 +354,10 @@ internal static class Program
             Check(l.TitleWidth >= 0f, $"w={barW}: title width never negative");
         }
         // Far too narrow for the toggles: Vault is clamped at the left edge, never negative; no related buttons.
+        // Trade Shop is dropped so it does not pile on top of the pinned Vault.
         var tiny = InventoryTitleLayout.Compute(60f, 1f, true, 130f);
         Check(tiny.Vault.Present && tiny.Vault.X == 0f, "a 60 px bar: Vault pinned at x=0, not negative");
+        Check(!tiny.Shop.Present, "a 60 px bar: Trade Shop dropped (no room left of Vault)");
         Eq(tiny.Mode, TitleExtrasMode.None, "a 60 px bar: no related buttons");
         Check(tiny.TitleWidth >= 0f, "a 60 px bar: title width not negative");
         var noVault = InventoryTitleLayout.Compute(60f, 1f, false, 130f);
@@ -408,6 +414,7 @@ internal static class Program
         yield return ("Close", h.Close);
         yield return ("Classic", h.Classic);
         yield return ("Vault", h.Vault);
+        yield return ("Shop", h.Shop);
         yield return ("Remote", h.Remote);
         yield return ("Sort", h.Sort);
         yield return ("Count", h.Count);
@@ -417,32 +424,32 @@ internal static class Program
 
     private static void HeaderVault()
     {
-        Console.WriteLine("Modern header: the Vault button");
+        Console.WriteLine("Modern header: Vault + Trade Shop Storefront");
 
-        // Without a vault the plan is exactly the old one, so the header is unchanged off Aelrynth.
+        // Without a vault, ChooseHeader still reserves Trade Shop (24 px) before the related buttons.
         foreach (float free in new[] { -30f, 0f, 10f, 24f, 40f, 90f, 100f, 130f, 300f })
             foreach (float cw in new[] { 0f, 30f, 50f, 80f })
             {
                 var plan = InventoryTitleLayout.ChooseHeader(free, cw, vault: false);
-                TitleExtrasMode old = InventoryTitleLayout.ChooseHeaderExtras(free, cw, out bool oldCount);
-                Check(!plan.Vault && plan.Extras == old && plan.ShowCount == oldCount, $"no vault: same as ChooseHeaderExtras (free {free}, count {cw})");
+                TitleExtrasMode old = InventoryTitleLayout.ChooseHeaderExtras(free - InventoryTitleLayout.HeaderShopW, cw, out bool oldCount);
+                Check(!plan.Vault && plan.Extras == old && plan.ShowCount == oldCount, $"no vault: Shop reserved then ChooseHeaderExtras (free {free}, count {cw})");
             }
 
-        // With a vault the Vault takes its 24 px first; the rest shares what is left.
+        // With a vault: Vault + Shop take 48 px first; the rest shares what is left.
+        const float reservedVaultShop = 24f + 24f; // HeaderVaultW + HeaderShopW
         Eq(InventoryTitleLayout.ChooseHeader(300f, 50f, true).Extras, TitleExtrasMode.Icons, "lots of room + vault: four icons");
-        Eq(InventoryTitleLayout.ChooseHeader(96f + 60f + 24f - 1f, 50f, true).Extras, TitleExtrasMode.Menu, "one px short of icons + vault: the menu");
-        Eq(InventoryTitleLayout.ChooseHeader(96f + 60f + 24f, 50f, true).Extras, TitleExtrasMode.Icons, "icons + count + vault just fit");
-        Eq(InventoryTitleLayout.ChooseHeader(24f + 24f + 60f, 50f, true).Extras, TitleExtrasMode.Menu, "vault + menu + count");
-        var tight = InventoryTitleLayout.ChooseHeader(24f + 24f, 50f, true);
-        Check(tight.Vault && tight.Extras == TitleExtrasMode.Menu && !tight.ShowCount, "vault + menu, the count text dropped");
-        var tiny = InventoryTitleLayout.ChooseHeader(24f, 50f, true);
-        Check(tiny.Vault && tiny.Extras == TitleExtrasMode.None && !tiny.ShowCount, "room for the vault only: no menu, no count");
+        Eq(InventoryTitleLayout.ChooseHeader(96f + 60f + reservedVaultShop - 1f, 50f, true).Extras, TitleExtrasMode.Menu, "one px short of icons + vault + shop: the menu");
+        Eq(InventoryTitleLayout.ChooseHeader(96f + 60f + reservedVaultShop, 50f, true).Extras, TitleExtrasMode.Icons, "icons + count + vault + shop just fit");
+        Eq(InventoryTitleLayout.ChooseHeader(reservedVaultShop + 24f + 60f, 50f, true).Extras, TitleExtrasMode.Menu, "vault + shop + menu + count");
+        var tight = InventoryTitleLayout.ChooseHeader(reservedVaultShop + 24f, 50f, true);
+        Check(tight.Vault && tight.Extras == TitleExtrasMode.Menu && !tight.ShowCount, "vault + shop + menu, the count text dropped");
+        var tiny = InventoryTitleLayout.ChooseHeader(reservedVaultShop, 50f, true);
+        Check(tiny.Vault && tiny.Extras == TitleExtrasMode.None && !tiny.ShowCount, "room for vault + shop only: no menu, no count");
         foreach (float free in new[] { 20f, 0f, -40f, float.NaN, float.NegativeInfinity })
             Check(InventoryTitleLayout.ChooseHeader(free, 50f, true).Vault, $"the Vault is kept whatever the room ({free})");
 
         // Every supported width (the panel's minimum is 140 px) and a range of left-hand text widths:
-        // the Vault is present, inside the header, clear of the other buttons, and nothing drawn right of the
-        // pyreals overlaps anything else. Without a vault the geometry is the one the header always had.
+        // Vault (when asked) and Shop are present, inside the header, clear of the other buttons.
         int checkedLayouts = 0;
         for (float w = 140f; w <= 800f; w += 1f)
             foreach (float leftEnd in new[] { 80f, 120f, 150f, 200f })
@@ -467,6 +474,8 @@ internal static class Program
                         Check(ok, $"{tag}: buttons inside the header and not overlapping");
 
                         Check(h.Plan.Vault == vault && h.Vault.Present == vault, $"{tag}: the Vault button exists exactly when asked for");
+                        Check(h.Shop.Present && h.Shop.W >= 22f, $"{tag}: Trade Shop Storefront is always present");
+                        Check(h.Shop.Right <= (vault ? h.Vault.X : h.Classic.X) + 0.001f, $"{tag}: Shop sits left of Vault/Classic");
                         if (vault)
                         {
                             Check(h.Vault.Right <= h.Classic.X + 0.001f && h.Vault.X >= 0f, $"{tag}: Vault sits left of the Classic button, inside the header");
@@ -478,30 +487,31 @@ internal static class Program
                         else
                         {
                             Check(h.Classic.X == w - 46 && h.Close.X == w - 22, $"{tag}: Close / Classic where they always were");
-                            if (h.Plan.Extras == TitleExtrasMode.Icons) Check(h.GInv.X == w - 46 - 24 && h.Remote.X == w - 46 - 96, $"{tag}: the four icons where they always were");
-                            if (h.Plan.Extras == TitleExtrasMode.Menu) Check(h.More.X == w - 46 - 24, $"{tag}: the menu button where it always was");
+                            Check(h.Shop.X == w - 46 - 24, $"{tag}: Shop right beside Classic when there is no Vault");
+                            if (h.Plan.Extras == TitleExtrasMode.Icons) Check(h.GInv.X == h.Shop.X - 24 && h.Remote.X == h.Shop.X - 96, $"{tag}: the four icons start left of Shop");
+                            if (h.Plan.Extras == TitleExtrasMode.Menu) Check(h.More.X == h.Shop.X - 24, $"{tag}: the menu button sits left of Shop");
                         }
                         // Related buttons / count never reach back over the pyreals when there was room for them.
                         TitleSlot? leftmost = h.Plan.Extras == TitleExtrasMode.Icons ? h.Remote : h.Plan.Extras == TitleExtrasMode.Menu ? h.More : null;
                         if (leftmost is { } lm)
                             Check(lm.X >= leftEnd + 4f - 0.001f, $"{tag}: related buttons start clear of the pyreals text");
                         if (h.Plan.ShowCount)
-                            Check(h.CountX + cw <= (leftmost?.X ?? (vault ? h.Vault.X : h.Classic.X)) + 0.001f, $"{tag}: the count text sits left of the buttons");
+                            Check(h.CountX + cw <= (leftmost?.X ?? h.Shop.X) + 0.001f, $"{tag}: the count text sits left of the buttons");
                     }
         Check(checkedLayouts > 10000, $"swept the layouts ({checkedLayouts})");
 
-        // At the retail width (302 px) and the usual left-hand text the Vault is a button, and so are the
-        // rest that fit: a worked example.
+        // At the retail width (302 px) and the usual left-hand text: Vault, Shop, and the menu that fits.
         var r = InventoryHeaderLayout.Compute(302f, 150f, 50f, vault: true);
         Check(r.Vault.Present && r.Vault.X == 302f - 46 - 24, "302 px: Vault right beside the Classic button");
+        Check(r.Shop.Present && r.Shop.X == r.Vault.X - 24, "302 px: Shop left of Vault");
         Eq(r.Plan.Extras, TitleExtrasMode.Menu, "302 px with a vault: related panels fold into the menu");
-        Check(r.More.Present && r.More.Right <= r.Vault.X, "...left of the Vault");
+        Check(r.More.Present && r.More.Right <= r.Shop.X, "...left of Shop");
         var wide = InventoryHeaderLayout.Compute(600f, 150f, 50f, vault: true);
         Eq(wide.Plan.Extras, TitleExtrasMode.Icons, "600 px with a vault: four icons");
-        Check(wide.Vault.X == 600f - 46 - 24 && wide.GInv.X == wide.Vault.X - 24, "...the icons start just left of the Vault");
+        Check(wide.Vault.X == 600f - 46 - 24 && wide.Shop.X == wide.Vault.X - 24 && wide.GInv.X == wide.Shop.X - 24, "...icons start just left of Shop");
 
-        // Garbage in, no crash and the Vault still present.
+        // Garbage in, no crash and the Vault / Shop still present.
         var bad = InventoryHeaderLayout.Compute(float.NaN, float.NaN, float.NaN, vault: true);
-        Check(bad.Vault.Present, "NaN sizes: the Vault slot exists (the caller never draws a header this small)");
+        Check(bad.Vault.Present && bad.Shop.Present, "NaN sizes: Vault and Shop slots exist (the caller never draws a header this small)");
     }
 }

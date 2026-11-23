@@ -241,6 +241,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
 
     private const string MiniRemoteTip = "Mini Remote (/rc miniremote): remote, sections and HUDs";
     private const string ItemCountTip = "Item Count (/rc itemcount): how many of each named item you carry";
+    private const string TradeShopTip = "Trade Shop (/ra tradeshop ui): priced catalog, conversion rates, Mode 1/2";
     private static string RynthSortTip() => ScriptWindowRegistry.Has(RynthSortKey)
         ? "RynthSort (/rsort): pack sort rules and auto-sort"
         : "RynthSort (/rsort) - needs the RynthSort plugin";
@@ -282,10 +283,13 @@ internal sealed partial class InventoryFace : IImGuiPanel
     /// <summary>Opens or closes RynthSort (same as /rsort).</summary>
     private static void ToggleRynthSort() => ToggleScriptWindow(RynthSortKey, "/rsort");
 
+    /// <summary>Opens or closes RynthAi's Trade Shop editor (same as /ra tradeshop ui).</summary>
+    private static void ToggleTradeShop() => ServerMenus.Run("/ra tradeshop ui");
+
     // The "more" menu both looks use when their bar is too short for the four buttons.
     private bool _openMore;
 
-    /// <summary>The "more" popup: the four related panels as menu lines (checked while open). Draw where its button was.</summary>
+    /// <summary>The "more" popup: related panels as menu lines (checked while open). Draw where its button was.</summary>
     private void RelatedMenu()
     {
         if (_openMore)
@@ -308,6 +312,9 @@ internal sealed partial class InventoryFace : IImGuiPanel
             if (ImGuiNET.ImGui.MenuItem("Global Inventory", "/ginv", GlobalInventoryOpen))
                 ToggleGlobalInventory();
             SafeImGui.SetItemTooltip(GlobalInventoryTip());
+            if (ImGuiNET.ImGui.MenuItem("Trade Shop", "/ra tradeshop ui"))
+                ToggleTradeShop();
+            SafeImGui.SetItemTooltip(TradeShopTip);
             ImGuiNET.ImGui.EndPopup();
         }
         PopMenuStyle();
@@ -346,9 +353,8 @@ internal sealed partial class InventoryFace : IImGuiPanel
         ImGuiNET.ImGui.SetItemTooltip("Classic look (the retail inventory window)");
 
         // Related panels (Mini Remote, RynthSort, Item Count, Global Inventory): four icons when the room
-        // left of the Classic / Close buttons holds them, else one "more" menu, else none (the Character
-        // menu has them all). The item count text gives way last. On Aelrynth the Vault button sits next
-        // to the Classic button and takes its room first: it is never dropped
+        // left of Classic / Close / Vault / Trade Shop holds them, else one "more" menu, else none (the
+        // Character menu has them all). Trade Shop and Vault are never dropped.
         // (UI/InventoryTitleLayout.InventoryHeaderLayout, tested in tools/BarDeclutterTests).
         float cw = ImGuiNET.ImGui.CalcTextSize(_countText).X;
         float leftEnd = x + 20 + ImGuiNET.ImGui.CalcTextSize(view.PyrealText).X + 6;
@@ -379,9 +385,18 @@ internal sealed partial class InventoryFace : IImGuiPanel
             if (IconButton("##inv_more", PhosphorIcons.DotsThree, At(hl.More), btn22,
                     MiniRemoteOpen || RynthSortOpen || ItemCountOpen || GlobalInventoryOpen ? Teal : Amber, BtnFill, font: UiFont.Ui11))
                 _openMore = true;
-            ImGuiNET.ImGui.SetItemTooltip("Mini Remote, RynthSort, Item Count, Global Inventory");
+            ImGuiNET.ImGui.SetItemTooltip("Mini Remote, RynthSort, Item Count, Global Inventory, Trade Shop");
         }
         RelatedMenu();
+
+        // Trade Shop (always): priced catalog + conversion rates (/ra tradeshop ui).
+        if (hl.Shop.Present)
+        {
+            if (IconButton("##inv_tradeshop", PhosphorIcons.Storefront, At(hl.Shop), btn22,
+                    Amber, BtnFill, font: UiFont.Ui11))
+                ToggleTradeShop();
+            SafeImGui.SetItemTooltip(TradeShopTip);
+        }
 
         // Vault (Aelrynth only): the grid shows the account vault instead of the packs.
         if (hl.Plan.Vault)
@@ -1348,6 +1363,7 @@ internal sealed partial class InventoryFace : IImGuiPanel
             if (!it.IsPack) MiniRemoteMenu(it);
             ImGuiNET.ImGui.Separator();
             SelectionMenuItems(it);
+            TradeShopMenuItems();
             if (!idle)
                 ImGuiNET.ImGui.TextDisabled("(an item action is waiting)");
         }

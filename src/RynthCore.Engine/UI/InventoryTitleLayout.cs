@@ -35,7 +35,7 @@ internal readonly record struct InventoryTitleLayout(
     TitleExtrasMode Mode,
     float Btn,
     TitleSlot Smaller, TitleSlot Bigger, TitleSlot Tools, TitleSlot Modern,
-    TitleSlot Vault,
+    TitleSlot Vault, TitleSlot Shop,
     TitleSlot Remote, TitleSlot Sort, TitleSlot Count, TitleSlot GInv,
     TitleSlot More,
     float TitleLeft, float TitleRight)
@@ -48,13 +48,14 @@ internal readonly record struct InventoryTitleLayout(
     /// <summary>The title's room (TitleRight - TitleLeft), never negative.</summary>
     public float TitleWidth => Math.Max(0f, TitleRight - TitleLeft);
 
-    /// <summary>The left edge of everything drawn left of the title (Vault and the related buttons): the drag surface ends here.</summary>
+    /// <summary>The left edge of everything drawn left of the title (Vault / Shop / related): the drag surface ends here.</summary>
     public float LeftmostX
     {
         get
         {
             float x = Math.Min(Modern.X, Smaller.X);
             if (Vault.Present) x = Math.Min(x, Vault.X);
+            if (Shop.Present) x = Math.Min(x, Shop.X);
             if (Mode is TitleExtrasMode.Text or TitleExtrasMode.Icons) x = Math.Min(x, Remote.X);
             if (Mode == TitleExtrasMode.Menu) x = Math.Min(x, More.X);
             return x;
@@ -96,6 +97,16 @@ internal readonly record struct InventoryTitleLayout(
             float vx = Math.Max(0f, edge - vw - VaultGap * s);
             vaultSlot = new TitleSlot(vx, vw);
             edge = vx;
+        }
+
+        // Trade Shop Storefront — always present on real panels (opens /ra tradeshop ui).
+        // Dropped only when the bar is too narrow to sit left of Vault without going off-panel.
+        TitleSlot shopSlot = default;
+        float shopX = edge - btn - VaultGap * s;
+        if (shopX >= 0f)
+        {
+            shopSlot = new TitleSlot(shopX, btn);
+            edge = shopX;
         }
 
         // The room left of `edge` is shared by the title and the related buttons. The title is owed
@@ -148,12 +159,14 @@ internal readonly record struct InventoryTitleLayout(
         }
 
         float titleRight = Math.Max(pad, groupLeft - TitleGap * s);
-        return new InventoryTitleLayout(mode, btn, smaller, bigger, tools, modern, vaultSlot,
+        return new InventoryTitleLayout(mode, btn, smaller, bigger, tools, modern, vaultSlot, shopSlot,
             remote, sort, count, ginv, more, pad, titleRight);
     }
 
     /// <summary>Header (Modern look) buttons: four 22 px icons at a 24 px pitch, or one "more" button.</summary>
     public const float HeaderIconsW = 96, HeaderMenuW = 24, HeaderCountGap = 10;
+    /// <summary>Trade Shop Storefront icon (always placed, like Vault) — 22 px at a 24 px pitch.</summary>
+    public const float HeaderShopW = 24;
 
     /// <summary>
     /// The Modern header's related-panel buttons for <paramref name="freeW"/> pixels between the pyreals
@@ -177,15 +190,14 @@ internal readonly record struct InventoryTitleLayout(
     public const float HeaderVaultW = 24;
 
     /// <summary>
-    /// <see cref="ChooseHeaderExtras"/> with the Vault button in the picture: when <paramref name="vault"/>
-    /// the Vault takes its 24 px first and is never dropped (it is the only way into the vault in the Modern
-    /// look); the four related buttons, the "more" menu and the count text share what is left, as before.
-    /// Without a vault the result is exactly ChooseHeaderExtras'.
+    /// <see cref="ChooseHeaderExtras"/> with Vault and Trade Shop reserved: both take 24 px each and are
+    /// never dropped; the four related buttons / "more" menu and the count text share what is left.
     /// </summary>
     internal static HeaderPlan ChooseHeader(float freeW, float countW, bool vault)
     {
         if (!float.IsFinite(freeW)) freeW = 0f;
-        TitleExtrasMode extras = ChooseHeaderExtras(vault ? freeW - HeaderVaultW : freeW, countW, out bool showCount);
+        float reserved = HeaderShopW + (vault ? HeaderVaultW : 0f);
+        TitleExtrasMode extras = ChooseHeaderExtras(freeW - reserved, countW, out bool showCount);
         return new HeaderPlan(vault, extras, showCount);
     }
 
@@ -215,16 +227,15 @@ internal readonly record struct HeaderPlan(bool Vault, TitleExtrasMode Extras, b
 /// <summary>The Modern header's button positions, header-relative pixels (add the header's left edge).</summary>
 internal readonly record struct InventoryHeaderLayout(
     HeaderPlan Plan,
-    TitleSlot Close, TitleSlot Classic, TitleSlot Vault,
+    TitleSlot Close, TitleSlot Classic, TitleSlot Vault, TitleSlot Shop,
     TitleSlot Remote, TitleSlot Sort, TitleSlot Count, TitleSlot GInv, TitleSlot More,
     float RightEdge, float CountX)
 {
     public const float Btn = 22, Pitch = 24;
 
     /// <summary>
-    /// Right to left: Close, Classic, the Vault (when there is one), then four related icons or the
-    /// "more" button, then the count text. <paramref name="w"/> is the header's width, <paramref name="leftEnd"/>
-    /// where the pyreals text ends (header-relative), <paramref name="countW"/> the count text's width.
+    /// Right to left: Close, Classic, Vault (when present), Trade Shop (always), then four related
+    /// icons or the "more" button, then the count text.
     /// </summary>
     public static InventoryHeaderLayout Compute(float w, float leftEnd, float countW, bool vault)
     {
@@ -245,6 +256,10 @@ internal readonly record struct InventoryHeaderLayout(
             anchor = vaultSlot.X;
         }
 
+        // Trade Shop Storefront — always present (opens /ra tradeshop ui).
+        var shop = new TitleSlot(anchor - Pitch, Btn);
+        anchor = shop.X;
+
         TitleSlot remote = default, sort = default, count = default, ginv = default, more = default;
         float rightEdge = anchor - 2;
         if (plan.Extras == TitleExtrasMode.Icons)
@@ -260,7 +275,7 @@ internal readonly record struct InventoryHeaderLayout(
             more = new TitleSlot(anchor - Pitch, Btn);
             rightEdge = more.X - 2;
         }
-        return new InventoryHeaderLayout(plan, close, classic, vaultSlot, remote, sort, count, ginv, more,
+        return new InventoryHeaderLayout(plan, close, classic, vaultSlot, shop, remote, sort, count, ginv, more,
             rightEdge, rightEdge - countW - 4);
     }
 }
