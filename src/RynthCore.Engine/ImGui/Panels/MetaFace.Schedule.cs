@@ -56,7 +56,7 @@ internal sealed partial class MetaFace
         Separator(w);
         if (sc == null)
         {
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), "  This RynthAi has no Meta Manager (update RynthAi).");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "  This RynthAi has no Meta Manager (update RynthAi).");
             return;
         }
 
@@ -83,12 +83,12 @@ internal sealed partial class MetaFace
 
         Separator(w);
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
-        const float newW = 80;
+        float newW = BtnW(PhosphorIcons.Plus + " New Rule", 80);
         if (Button(PhosphorIcons.Plus + " New Rule##sched_new", new Vector2(p.X, p.Y), new Vector2(newW, 24), TextDim, NewFill, Green))
             OpenScheduleEditor(-1, new ScheduleRuleDto { Meta = FirstMetaFile() });
         if (sc.Rules.Count > 0)
         {
-            if (Button(PhosphorIcons.ArrowCounterClockwise + " Re-arm all##sched_reset", new Vector2(p.X + newW + 4, p.Y), new Vector2(86, 24),
+            if (Button(PhosphorIcons.ArrowCounterClockwise + " Re-arm all##sched_reset", new Vector2(p.X + newW + 4, p.Y), new Vector2(BtnW(PhosphorIcons.ArrowCounterClockwise + " Re-arm all", 86), 24),
                     Mute, BtnFill, BtnBord))
                 MetaCommands.Simple("mm_reset", -1);
             ImGuiNET.ImGui.SetItemTooltip("Clear every rule's fired / error / holding state");
@@ -166,7 +166,7 @@ internal sealed partial class MetaFace
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, y));
         TextBox(id, buf, boxW, "", ImGuiInputTextFlags.CharsDecimal, out _);
         bool done = ImGuiNET.ImGui.IsItemDeactivatedAfterEdit();
-        ImGuiNET.ImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);
         if (done && int.TryParse(Utf8(buf).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int n))
             commit(n);
         x += boxW + 3;
@@ -183,9 +183,9 @@ internal sealed partial class MetaFace
             : sc.LastPollMs == 0 ? "Waiting for the first /myquests."
             : $"{sc.QuestCount} quest timer(s), /myquests {Span(now - sc.LastPollMs)} ago.";
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(sc.ServerDisabled ? 0xFFE8B333 : 0xFFC8D6E4), Fit(poll, w));
+        SafeImGui.TextColored(RynthTheme.Vec(sc.ServerDisabled ? 0xFFE8B333 : 0xFFC8D6E4), Fit(poll, w));
         if (sc.LastSwitch.Length > 0)
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6),
+            SafeImGui.TextColored(RynthTheme.Vec(0xFF26D9E6),
                 Fit($"Last: {sc.LastSwitch}{(sc.LastSwitchMs > 0 ? $", {Span(now - sc.LastSwitchMs)} ago" : "")}", w));
         ImGuiNET.ImGui.PopFont();
     }
@@ -195,8 +195,8 @@ internal sealed partial class MetaFace
         if (sc.Rules.Count == 0)
         {
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), "  No rules. New Rule: when a timer runs out, load a meta.");
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), "  The first due rule (top to bottom) wins.");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "  No rules. New Rule: when a timer runs out, load a meta.");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "  The first due rule (top to bottom) wins.");
             return;
         }
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
@@ -207,7 +207,7 @@ internal sealed partial class MetaFace
             ScheduleRuleDto r = sc.Rules[i];
             bool first = i == sc.FirstMatch && sc.Enabled;
             Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
-            dl.AddRectFilled(p, p + new Vector2(w, h), i % 2 == 0 ? PanelBg : RowAlt);
+            dl.AddRectFilled(p, p + new Vector2(w, h), i % 2 == 0 ? StripeA : StripeB);
             ImGuiNET.ImGui.PushID(1000 + i);
             bool changed = false;
             float x = p.X + 1;
@@ -220,7 +220,7 @@ internal sealed partial class MetaFace
                 r.Enabled = !r.Enabled;
                 MetaCommands.Simple("mm_rule_enabled", i, r.Enabled ? "true" : "false");
             }
-            ImGuiNET.ImGui.SetItemTooltip(r.Enabled ? "On - click to turn this rule off" : "Off - click to turn it on");
+            SafeImGui.SetItemTooltip(r.Enabled ? "On - click to turn this rule off" : "Off - click to turn it on");
             x += 16;
             if (IconButton("##up", PhosphorIcons.ArrowUp, new Vector2(x + 1, p.Y + 2), new Vector2(16, 16), Mute, BtnFill, BtnBord, enabled: i > 0))
             {
@@ -245,7 +245,7 @@ internal sealed partial class MetaFace
                 if (IconButton("##cd", running ? PhosphorIcons.Stop : PhosphorIcons.Play, new Vector2(x + 1, p.Y + 2), new Vector2(16, 16),
                         running ? Amber : Green, BtnFill, BtnBord))
                     MetaCommands.Simple(running ? "mm_countdown_stop" : "mm_countdown_start", i);
-                ImGuiNET.ImGui.SetItemTooltip(running ? "Stop the countdown" : $"Start the countdown ({Num(r.Minutes)} min)");
+                SafeImGui.SetItemTooltip(running ? "Stop the countdown" : $"Start the countdown ({Num(r.Minutes)} min)");
             }
             else if (r.Fired || (r.State ?? "").StartsWith("error", StringComparison.Ordinal) || (r.State ?? "").Contains("holding"))
             {
@@ -270,7 +270,7 @@ internal sealed partial class MetaFace
             if (ImGuiNET.ImGui.IsItemHovered())
             {
                 ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-                ImGuiNET.ImGui.SetTooltip(RuleTooltip(r, i, first));
+                SafeImGui.SetTooltip(RuleTooltip(r, i, first));
             }
             ImGuiNET.ImGui.PopID();
             if (changed) return;   // the list changed: draw it again next frame
@@ -367,7 +367,7 @@ internal sealed partial class MetaFace
         ScheduleRuleDto r = _schedRule;
 
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), _schedEdit == -1 ? "New rule" : $"Edit rule {_schedEdit + 1}");
+        SafeImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), _schedEdit == -1 ? "New rule" : $"Edit rule {_schedEdit + 1}");
         ImGuiNET.ImGui.PopFont();
 
         FieldLabel("When:");
@@ -428,7 +428,7 @@ internal sealed partial class MetaFace
             else MetaCommands.Send(new MetaCmd { Op = "mm_update", Index = _schedEdit, ScheduleRule = send });
             _schedEdit = -2;
         }
-        if (!valid) ImGuiNET.ImGui.SetItemTooltip(r.Meta.Length == 0 ? "Pick a meta to load" : "Name the quest");
+        if (!valid) SafeImGui.SetItemTooltip(r.Meta.Length == 0 ? "Pick a meta to load" : "Name the quest");
         if (Button("Cancel##sched_cancel", new Vector2(b.X + sw + 6, b.Y), new Vector2(60, 22), Mute, BtnFill, BtnBord))
             _schedEdit = -2;
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(b.X, b.Y + 22));
@@ -436,7 +436,7 @@ internal sealed partial class MetaFace
         if (_schedEdit >= 0)
         {
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D6E4), "Saving re-arms the rule (clears fired / error).");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "Saving re-arms the rule (clears fired / error).");
             ImGuiNET.ImGui.PopFont();
         }
         ImGuiNET.ImGui.EndChild();

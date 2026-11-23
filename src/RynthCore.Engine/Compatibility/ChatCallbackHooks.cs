@@ -308,7 +308,7 @@ internal static class ChatCallbackHooks
         // Not inside our own reprint of a held line: that line was already offered here when
         // it first arrived (and wasn't ours, or it wouldn't have been held), so offering it
         // again could take a stale line for the answer to a request sent since.
-        if (line != null && _replayDepth == 0 && EatOwnReply(line))
+        if (line != null && _replayDepth == 0 && EatOwnReply(line, chatType))
             return 0;
 
         // 2. Hold the line until the plugins have heard it (IncomingChatHold.cs): AC prints it
@@ -338,8 +338,19 @@ internal static class ChatCallbackHooks
             // Fall through and print. (If the line was handed over, it isn't handed over twice.)
         }
 
-        // 3. Call original
-        int result = pOriginal(thisPtr, text, chatType, unknown, stringInfo);
+        // 3. Call original (/rc chatlinkprobe: with coordinates as AC links, when AC strings can be built)
+        int result;
+        string? linked = _replayReady && stringInfo == IntPtr.Zero && MainThreadGuard.IsOnMainThread() ? ChatLinkProbe.LinkCoords(raw) : null;
+        if (linked != null)
+        {
+            fixed (char* chars = linked)
+            {
+                var wide = OutgoingWidePString.Create((ushort*)chars);
+                try { result = pOriginal(thisPtr, (IntPtr)(&wide), chatType, unknown, stringInfo); }
+                finally { wide.Dispose(); }
+            }
+        }
+        else result = pOriginal(thisPtr, text, chatType, unknown, stringInfo);
 
         // 4. Queue AFTER original returns — game state is consistent
         if (line != null && !handedOver)
@@ -349,9 +360,12 @@ internal static class ChatCallbackHooks
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool EatOwnReply(string line)
+    private static bool EatOwnReply(string line, uint chatType)
     {
-        try { return MasteryFeed.OnIncomingLine(line); }
+        // Server replies only: a line in a player's chat type is someone typing "~ael1 ..." or
+        // "Unknown command: ..." to feed the readers or hide their own chat.
+        if (Net.ChatOrigin.IsPlayerAuthored(chatType)) return false;
+        try { return MasteryFeed.OnIncomingLine(line) || VaultFeed.OnIncomingLine(line); }
         catch { return false; }
     }
 
@@ -422,7 +436,9 @@ internal static class ChatCallbackHooks
         _replayDepth++;
         try
         {
-            fixed (char* chars = h.Raw) // .NET strings end in a NUL, as the PStringBase ctor needs
+            // /rc chatlinkprobe: coordinates printed as AC links (plugins already heard the original).
+            string shown = ChatLinkProbe.LinkCoords(h.Raw) ?? h.Raw;
+            fixed (char* chars = shown) // .NET strings end in a NUL, as the PStringBase ctor needs
             {
                 var wide = OutgoingWidePString.Create((ushort*)chars);
                 try
@@ -558,14 +574,30 @@ internal static class ChatCallbackHooks
                 _lastOutgoingSource = commandSource;
             }
 
+            // Typed in AC's own chat bar (not a line Dispatch is sending: a plugin's, or RynthChat's
+            // box, which marks it itself): a /command's reply also shows in RynthChat's open tab,
+            // as when it is typed in RynthChat's box (ChatReplyTab). 2026-10-26: /fship typed in
+            // AC's bar printed in AC's chat but sat only under RynthChat's All and System.
+            if (!ChatCommandDispatcher.InDispatch && line != null)
+            {
+                try { UI.Data.ChatModel.ReplyTabs.NoteSent(line, UI.Data.ChatModel.CurrentTab(), Environment.TickCount64); }
+                catch { }
+            }
+
             // RynthCore engine commands (/rc ...) — consume before plugins or
             // AC see the line so the user never broadcasts "/rc resetbar" and
-            // a hidden overlay bar stays recoverable.
-            if (RynthCoreChatCommands.TryHandle(line))
+            // a hidden overlay bar stays recoverable. Typed by the player: every
+            // reply goes to chat.
+            if (RynthCoreChatCommands.TryHandle(line, ChatCommandOrigin.Player))
                 return 1;
 
-            if (PluginManager.DispatchChatBarEnter(line))
-                return 1;
+            // A /rc line a plugin runs while it handles this one (RynthAi's /ra videopatch) is the
+            // player's too, so it answers in chat.
+            using (RynthCoreChatCommands.PlayerLine())
+            {
+                if (PluginManager.DispatchChatBarEnter(line))
+                    return 1;
+            }
 
             return _originalOutgoingChat!(thisPtr, text, commandSource);
         }

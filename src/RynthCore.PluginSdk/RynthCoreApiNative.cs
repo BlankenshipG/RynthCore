@@ -162,8 +162,56 @@ public struct RynthCoreApiNative
     public IntPtr GetTrainingInfoFn;         // int GetTrainingInfo(TrainingInfoNative* info, TrainingEntryNative* entries, int max) -> entries there are
     public IntPtr RaiseFn;                   // int Raise(uint kind, uint stype, uint ranks, long expectedXp, long* xpSent) -> RaiseResult
     public IntPtr TrainSkillFn;              // int TrainSkill(uint stype, int expectedCredits) -> RaiseResult
-    // v80: outcome of the latest merge-stack request (cdecl thunk); was v77 on QOL-items
+    // v80: real slot order of a container's items, and moves that land at a slot
+    public IntPtr GetContainerOrderFn;       // int GetContainerOrder(uint container, int slotKind, uint* ids, int max) -> count, -1 unknown
+    public IntPtr PutItemInContainerFn;      // int PutItemInContainer(uint item, uint container, int placement) -> 1 sent, 0 refused, -1 unbound
+    // v81: outcome of the latest merge-stack request (cdecl thunk); was v77 on QOL-items, v80 on sk
     public IntPtr GetMergeStackResultFn;     // int GetMergeStackResult(uint src, uint tgt, int* amount, int* ageMs)
+    // v82: salvage without the salvage panel (the 0x027D game action, AC's own sender)
+    public IntPtr SalvageDirectFn;           // int SalvageDirect(uint tool, uint* ids, int count) -> count sent, 0 refused, -1 unbound
+    // v83: ghost creatures (objects the client draws but the server no longer has for this player)
+    public IntPtr GetObjectServerAgeFn;      // int GetObjectServerAge(uint id) -> ms since the server's last message about it, -1 none
+    public IntPtr RemoveClientObjectFn;      // int RemoveClientObject(uint id) -> 1 removed, 2 queued, 0 refused, -1 unbound
+    // v84: every property of an object (/ub propertydump), one record (ObjectProperties.TryParse)
+    public IntPtr GetObjectPropertiesFn;     // int GetObjectProperties(uint id, byte* buf, int size) -> record size (copied if <= size), 0 unknown, -1 bad args
+    // v85: answer the server's yes/no prompt (craft chance) without the client's dialog
+    public IntPtr ArmConfirmationFn;         // int ArmConfirmation(uint type, int minPercent, int timeoutMs) -> 1 armed, 0 unavailable, -3 bad args; v97: minPercent | 0x100 = the sticky slot (leave below to the client)
+    public IntPtr GetLastConfirmationFn;     // int GetLastConfirmation(uint* type, uint* ctx, int* percent, int* outcome, int* ageMs) -> seq
+    // v86: which server this is, for every plugin (servers, verdicts, overrides, owning plugins)
+    public IntPtr GetServerStateJsonFn;      // int GetServerStateJson(byte* buffer, int capacity) -> UTF-8 byte length (>= capacity: too small)
+    // v87: what the player wields, from the server's messages (the client's own fields go stale)
+    public IntPtr GetWieldedItemsFn;         // int GetWieldedItems(uint* ids, uint* locations, int max) -> count, -1 not ready
+    // v89: plugin windows (RynthCore docs/PLUGIN_WINDOWS.md): the engine's look, and panels by key
+    public IntPtr GetUiColorFn;              // uint GetUiColor(int token) -> ABGR, 0 unknown
+    public IntPtr GetUiFontFn;               // void* GetUiFont(int font) -> ImFont*, null unknown / off AC's thread
+    public IntPtr SetPanelOpenFn;            // int SetPanelOpen(const char* key, int mode) -> 1 open, 0 closed, -1 no such panel
+    // v90: plugin windows that draw their own frame ("chrome": "none")
+    public IntPtr PanelDragWithLastItemFn;   // void PanelDragWithLastItem(void): the panel being drawn follows a drag of ImGui's last item
+    public IntPtr SetPanelPopOutFn;          // int SetPanelPopOut(const char* key, int mode) -> 1 popped out, 0 docked, -1 no such open panel
+    public IntPtr PanelTextSizeFn;           // int PanelTextSize(const char* key, int delta) -> text size in % (100..250), -1 no such panel
+    public IntPtr RenderSettingsDrawerFn;    // float RenderSettingsDrawer(const char* key, float width, float room, int flags) -> wanted height, -1 unknown
+    public IntPtr GetShortcutsFn;            // int GetShortcuts(uint* objectIds, uint* spellIds, int max) -> 18, or 0 out of the world
+    public IntPtr ShortcutActionFn;          // int ShortcutAction(int op, int slot, uint objectId) -> 1 queued, 0 refused
+    public IntPtr GetActionKeysFn;           // int GetActionKeys(const char* action, char* buffer, int length) -> bytes needed, -1 bad call
+    public IntPtr GetIconTextureFn;          // void* GetIconTexture(int kind, uint id) -> ImGui texture id, null while it is made
+    public IntPtr KeyCaptureFn;              // int KeyCapture(int op, char* buffer, int length) -> 0 waiting, 1 key (name in buffer), 2 cancelled
+    public IntPtr SetActionKeyFn;            // int SetActionKey(const char* action, const char* key, int op, char* message, int length); op 0 check, 1 bind, 2 unbind, 3 command hotkey only (after 2026.10.27.1)
+    public IntPtr AcPanelFn;                 // int AcPanel(int id, int op) -> op 0: 1 open, 0 closed, -1 none; else 1 queued, -1 refused
+    public IntPtr PanelScaleFn;              // int PanelScale(const char* key, int percent) -> percent now, 0 = follows the text size
+    public IntPtr DropTargetFn;              // uint DropTarget(const char* window, float x0, y0, x1, y1, int flags, int* dragging) -> dropped object, 0 none
+    // v91: a floor under the world's ambient light (drawing only, this client)
+    public IntPtr SetAmbientLightFloorFn;    // int SetAmbientLightFloor(uint rgb) -> 1 hook live, 0 not; 0x00RRGGBB, 0 = none
+    public IntPtr GetAmbientLightFn;         // int GetAmbientLight(uint* client, uint* applied) -> 1 hook live, 0 not
+    // v93: the monster plates' last server health reading per object
+    public IntPtr GetMonsterHealthFn;        // int GetMonsterHealth(uint id, float* ratio, uint* ageMs) -> 1 reading, 0 none
+    // v94: a WebView2 web panel over the game window (APPEND-AT-END (ABI); number provisional)
+    public IntPtr WebPanelOpenFn;            // int WebPanelOpen(WebPanelOpenNative*) -> handle > 0, or BadArgs/UrlNotAllowed/NoGameWindow/Unavailable/ShuttingDown
+    public IntPtr WebPanelNavigateFn;        // int WebPanelNavigate(int handle, byte* url) -> 1 queued; -2 off-list; -6 stale
+    public IntPtr WebPanelCloseFn;           // int WebPanelClose(int handle) -> 1 queued, 0 already closed, -6 stale
+    public IntPtr WebPanelGetStateFn;        // int WebPanelGetState(int handle, WebPanelStateNative*) -> Status (non-live handle -> 6 Superseded), -1 bad args
+    // v98: per-character window placements (APPEND-AT-END (ABI))
+    public IntPtr GetWindowPlacementFn;      // v98 int GetWindowPlacement(const char* key, float* xywh) -> 1 found, 0 none, -1 bad key / no character
+    public IntPtr SetWindowPlacementFn;      // v98 int SetWindowPlacement(const char* key, float x, y, w, h) -> 1 saved, 0 no character, -1 bad key
 }
 
 /// <summary>

@@ -32,6 +32,8 @@ C:\Games\RynthSuite\<Plugin>\ ← each plugin as a managed assembly + its depend
 | Loader/Shim change, clients running | `scripts\Publish-EngineCoreClr.ps1` — the in-use copies are renamed aside; new launches get the new ones |
 | Installer | `installer\Build-Installer.ps1` (release plugins stay NativeAOT: the new engine loads them) |
 | Hot-reload test on a local server | `scripts\Test-ClrWorld.ps1 -Reloads 3` (see its header) |
+| Every offline test (RynthCore, RynthSuite, RynthServers) | `scripts\Run-AllTests.ps1` (`-Only <folder>` for one); `installer\Publish-Update.ps1` runs it and won't publish if one fails |
+| RynthAi in game (buffing, a kill, looting, missile crafting) | `scripts\Run-GameTest.ps1` (logs a test character in, runs RynthSuite's `GameTests\RynthSelfTest.af`, prints PASS / FAIL / SKIP; see its header) |
 | Why didn't a generation unload? | `tools\AlcRoots <pid>` (build it: `dotnet build tools\AlcRoots -c Release`) |
 
 `-NativeAot` on `Deploy-RynthCore.ps1` and `Build-Installer.ps1` builds the old NativeAOT engine,

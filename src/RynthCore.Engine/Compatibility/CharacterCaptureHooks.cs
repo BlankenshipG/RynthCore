@@ -51,6 +51,17 @@ internal static class CharacterCaptureHooks
     private const int AutoLoginPollIntervalMs = 600;
     private const int AutoLoginPollHardTimeoutMs = 120_000;
     private const int AutoLoginDirectFailsBeforeClick = 4;
+
+    // Bounced back to char-select (2026-10-13): a client relaunched right after a crash got
+    // into the world and was sent back to char-select 7 s later (the server still held the
+    // old session), and auto-login had already stood down, so it sat there for 5 hours.
+    // After entering the world the poll now watches for BounceWindowMs; back at char-select
+    // inside that window it waits (BounceRetryBaseMs x the bounce count, at most
+    // BounceRetryMaxMs) and logs on again, up to MaxBounceRetries times.
+    private const int BounceWindowMs = 90_000;
+    private const int BounceRetryBaseMs = 20_000;
+    private const int BounceRetryMaxMs = 120_000;
+    private const int MaxBounceRetries = 8;
     private static int _autoLoginPollStarted;
 
     // Native character-list capture. The 0xF658 packet path is dead (see above),
@@ -101,6 +112,118 @@ internal static class CharacterCaptureHooks
     // or relaunch.
     private static int _autoLoginEverFired;
 
+    // ── Character switch on request (/rc switchchar <name>) ─────────────────────
+    // 2026-10-25: RynthInventory's trade logs a mule account onto the character that holds
+    // the items. In the world: CPlayerSystem::LogOffCharacter(false) (as the Log Out button),
+    // then at char-select the same native LogOnCharacter the launch auto-login drives. The
+    // launch auto-login stands down for good once a switch has been asked for, so its
+    // bounce watch never logs the launch character back on over the switch.
+    private const int SwitchLogoffWaitMs = 30_000;
+    private const int SwitchLogOnTimeoutMs = 90_000;
+    private const int SwitchReissueMs = 5_000;
+    private static string? _switchTarget;
+
+    /// <summary>A /rc switchchar is running (logging off, or logging the new character on).</summary>
+    internal static bool SwitchInProgress => Volatile.Read(ref _switchTarget) != null;
+
+    /// <summary>
+    /// Logs this client onto <paramref name="name"/> (one of this account's characters): logs
+    /// the current character off first when in the world. AC's main thread (the chat
+    /// command). Returns the line for the player.
+    /// </summary>
+    internal static string RequestSwitch(string name)
+    {
+        name = name.Trim();
+        if (name.Length == 0)
+            return "Usage: /rc switchchar <character name>";
+        string? running = Interlocked.CompareExchange(ref _switchTarget, name, null);
+        if (running != null)
+            return $"Already switching to {running}.";
+
+        Interlocked.Exchange(ref _autoLoginEverFired, 1);
+        CharacterManagementHooks.TryGetCurrentMode(out int mode);
+        bool inWorld = mode == GamePlayUIMode;
+        if (inWorld)
+        {
+            if (!LogoffOriginProbe.TryRequestLogOff(out string why))
+            {
+                Volatile.Write(ref _switchTarget, null);
+                return "Can't log off to switch: " + why;
+            }
+        }
+        else if (mode != CharacterManagementUIMode)
+        {
+            Volatile.Write(ref _switchTarget, null);
+            return "Not in the world or at character select yet.";
+        }
+
+        RynthLog.Info($"CharacterCapture: switch to '{name}' requested ({(inWorld ? "logging off first" : "at char-select")}).");
+        EngineThreads.Start("RynthCore.SwitchCharacter", () => SwitchLoop(name));
+        return inWorld ? $"Logging off to switch to {name}." : $"Logging on {name}.";
+    }
+
+    private static void SwitchLoop(string target)
+    {
+        try
+        {
+            // Wait for char-select (the logoff takes ~6 s).
+            long start = Environment.TickCount64;
+            while (true)
+            {
+                if (!EngineThreads.Sleep(250)) return;
+                if (CharacterManagementHooks.TryGetCurrentMode(out int m) && m == CharacterManagementUIMode)
+                    break;
+                if (Environment.TickCount64 - start > SwitchLogoffWaitMs)
+                {
+                    RynthLog.Warn($"CharacterCapture: switch to '{target}' gave up: not at char-select {SwitchLogoffWaitMs / 1000}s after the logoff.");
+                    return;
+                }
+            }
+
+            // Same settle time the launch auto-login gives char-select before logging on.
+            if (!EngineThreads.Sleep(AutoLoginDelayMs)) return;
+            TryCaptureNativeCharacterList();
+
+            long logOnStart = Environment.TickCount64;
+            long lastIssue = 0;
+            string status = string.Empty;
+            while (true)
+            {
+                CharacterManagementHooks.TryGetCurrentMode(out int mode);
+                if (mode == GamePlayUIMode)
+                {
+                    RynthLog.Info($"CharacterCapture: switched to '{target}'.");
+                    return;
+                }
+                long now = Environment.TickCount64;
+                if (mode == CharacterManagementUIMode && (lastIssue == 0 || now - lastIssue >= SwitchReissueMs))
+                {
+                    if (CharacterManagementHooks.TryLogOnCharacter(target, out string matched, out uint avatarId, out status))
+                    {
+                        lastIssue = now;
+                        RynthLog.Info($"CharacterCapture: switch issued LogOnCharacter for '{matched}' (avatar 0x{avatarId:X8}).");
+                    }
+                    else
+                        RynthLog.Verbose($"CharacterCapture: switch to '{target}' - {status}");
+                }
+                if (now - logOnStart > SwitchLogOnTimeoutMs)
+                {
+                    RynthLog.Warn($"CharacterCapture: switch to '{target}' gave up after {SwitchLogOnTimeoutMs / 1000}s at char-select. Last status: {status}");
+                    return;
+                }
+                if (!EngineThreads.Sleep(AutoLoginPollIntervalMs)) return;
+            }
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"CharacterCapture: switch loop crashed - {ex.Message}");
+        }
+        finally
+        {
+            Volatile.Write(ref _switchTarget, null);
+        }
+    }
+
     /// <summary>
     /// Starts the character-list capture poll (always) and the poll-driven
     /// auto-login worker. Call once from InitWorker. Auto-login no-ops if no
@@ -148,17 +271,38 @@ internal static class CharacterCaptureHooks
         long charSelectFirstSeenTick = 0;
         int directFailCount = 0;
         bool issuedDirect = false;
+        int bounces = 0;
+        string status = string.Empty;
 
         try
         {
             while (EngineThreads.Sleep(AutoLoginPollIntervalMs))
             {
 
-                if (LoginLifecycleHooks.HasObservedLoginComplete)
+                bool loginComplete = LoginLifecycleHooks.HasObservedLoginComplete;
+                bool inWorld = CharacterManagementHooks.TryGetCurrentMode(out int worldMode) && worldMode == GamePlayUIMode;
+                if (loginComplete || inWorld)
                 {
-                    RynthLog.Info($"CharacterCapture: Auto-login complete for '{targetCharacter}' (LoginComplete observed).");
-                    Interlocked.Exchange(ref _autoLoginEverFired, 1);
-                    return;
+                    RynthLog.Info($"CharacterCapture: '{targetCharacter}' is in the world ({(loginComplete ? "LoginComplete observed" : "GamePlayUI")}); watching {BounceWindowMs / 1000}s for a bounce back to char-select.");
+                    if (!WatchForBounce(targetCharacter))
+                    {
+                        Interlocked.Exchange(ref _autoLoginEverFired, 1);
+                        return;   // stayed in the world (or the engine is stopping)
+                    }
+                    if (++bounces > MaxBounceRetries)
+                    {
+                        RynthLog.Warn($"CharacterCapture: '{targetCharacter}' was sent back to char-select {bounces} times; auto-login gives up.");
+                        Interlocked.Exchange(ref _autoLoginEverFired, 1);
+                        return;
+                    }
+                    int waitMs = Math.Min(BounceRetryBaseMs * bounces, BounceRetryMaxMs);
+                    RynthLog.Warn($"CharacterCapture: '{targetCharacter}' was sent back to char-select right after entering the world (bounce {bounces}/{MaxBounceRetries}, probably the server still holding the last session); logging on again in {waitMs / 1000}s.");
+                    if (!WaitAtCharSelect(waitMs))
+                        continue;   // the player went in by hand: the next pass watches that
+                    charSelectFirstSeenTick = 0;
+                    directFailCount = 0;
+                    issuedDirect = false;
+                    continue;
                 }
 
                 // One-shot: if the (currently dead) packet path ever fires and
@@ -173,11 +317,7 @@ internal static class CharacterCaptureHooks
                     continue; // UIFlow not ready yet — keep waiting.
 
                 if (mode == GamePlayUIMode)
-                {
-                    RynthLog.Compat($"CharacterCapture: Poll stopping for '{targetCharacter}' - client already in GamePlayUI.");
-                    Interlocked.Exchange(ref _autoLoginEverFired, 1);
-                    return;
-                }
+                    continue;   // the in-world watch at the top of the loop takes it
 
                 if (mode != CharacterManagementUIMode)
                 {
@@ -199,7 +339,7 @@ internal static class CharacterCaptureHooks
                 // Direct path: read AC's native CharacterSet and call LogOnCharacter.
                 // No packet required. Retries every tick if it didn't take.
                 if (CharacterManagementHooks.TryLogOnCharacter(
-                        targetCharacter, out string matched, out uint avatarId, out int slotIndex, out string status))
+                        targetCharacter, out string matched, out uint avatarId, out int slotIndex, out status))
                 {
                     if (!issuedDirect)
                     {
@@ -245,6 +385,39 @@ internal static class CharacterCaptureHooks
         {
             Interlocked.Exchange(ref _autoLoginPollStarted, 0);
         }
+    }
+
+    /// <summary>
+    /// In the world: true if the client is back at char-select within BounceWindowMs,
+    /// false once it has stayed in the world that long (or the engine is stopping).
+    /// </summary>
+    private static bool WatchForBounce(string targetCharacter)
+    {
+        long since = Environment.TickCount64;
+        while (EngineThreads.Sleep(1000))
+        {
+            if (Environment.TickCount64 - since >= BounceWindowMs)
+            {
+                RynthLog.Info($"CharacterCapture: Auto-login complete for '{targetCharacter}' ({BounceWindowMs / 1000}s in the world).");
+                return false;
+            }
+            if (CharacterManagementHooks.TryGetCurrentMode(out int mode) && mode == CharacterManagementUIMode)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>Waits <paramref name="ms"/> at char-select; false if the client entered the world meanwhile.</summary>
+    private static bool WaitAtCharSelect(int ms)
+    {
+        long until = Environment.TickCount64 + ms;
+        while (Environment.TickCount64 < until)
+        {
+            if (!EngineThreads.Sleep(1000)) return false;
+            if (CharacterManagementHooks.TryGetCurrentMode(out int mode) && mode == GamePlayUIMode)
+                return false;
+        }
+        return true;
     }
 
     private static void StartCharacterListCapturePoll()
@@ -495,7 +668,8 @@ internal static class CharacterCaptureHooks
         return (characters, slotCount);
     }
 
-    private static (string accountName, string serverName, string targetCharacter) ReadLaunchContext()
+    // Also read by Graphics/AcGraphics.cs (which account's graphics profile applies before login).
+    internal static (string accountName, string serverName, string targetCharacter) ReadLaunchContext()
     {
         try
         {

@@ -110,7 +110,12 @@
     <Grid Grid.Row="1" ColumnDefinitions="3*,Auto,2*">
       <TabControl x:Name="MainTabs" Grid.Column="0" Margin="14,0,0,0" Padding="0">
         <TabItem Header="Launcher">
-          <ScrollViewer>
+          <!-- Named so the tab keeps the player's scroll position (MainWindow.KeepLauncherScroll);
+               * rows inside this scroll must not be used (they claim infinite height and clip
+               Updates/Launch Targets). -->
+          <ScrollViewer x:Name="LauncherScroll"
+                        VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled">
             <StackPanel Spacing="12" Margin="6">
               <!-- Updates: the card is built by UpdateCardModel (MainWindow.RefreshUpdateCard). -->
               <Border x:Name="UpdateCardBorder" Background="#132028" CornerRadius="16" Padding="18"
@@ -126,6 +131,8 @@
                       <Button x:Name="UpdateCardActionButton" IsVisible="False" Margin="0,0,8,6"
                               Background="#26C1A6" Foreground="#0B1218" FontWeight="SemiBold" />
                       <Button x:Name="CheckUpdatesButton" Content="Check for updates" Margin="0,0,0,6" />
+                      <Button x:Name="RollbackButton" Content="Roll back…" Margin="8,0,0,6" IsVisible="False"
+                              ToolTip.Tip="Go back to an earlier RynthCore release if this one broke something. Updates then wait for a newer release." />
                     </WrapPanel>
                   </Grid>
                   <StackPanel x:Name="UpdateCardWhatsNewPanel" Spacing="2" IsVisible="False" />
@@ -138,6 +145,17 @@
                   </Grid>
                   <Button x:Name="UpdateCardNewPluginsButton" IsVisible="False" HorizontalAlignment="Left"
                           Background="Transparent" BorderThickness="0" Padding="0" Foreground="#F2C14E" />
+                </StackPanel>
+              </Border>
+
+              <!-- The World Map's optional sizes (MainWindow.RefreshMapPacksCard; the feed's "mappacks"). -->
+              <Border x:Name="MapPacksCard" Background="#132028" CornerRadius="16" Padding="18" IsVisible="False"
+                      BorderBrush="#243742" BorderThickness="1">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="World map detail" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
+                  <TextBlock TextWrapping="Wrap" Foreground="#9AA8B3"
+                             Text="The in-game World Map comes in sizes. The standard one is installed with RynthNav; the sharper ones are optional downloads. The map uses the best size you have installed, and its Show menu lets you switch between them." />
+                  <StackPanel x:Name="MapPacksPanel" Spacing="8" />
                 </StackPanel>
               </Border>
 
@@ -166,9 +184,11 @@
                 </StackPanel>
               </Border>
 
+              <!-- All-Auto rows: a * row under an outer ScrollViewer expands wrongly and
+                   pushes Updates + Launch Targets above the clip (unreachable by scroll). -->
               <Grid ColumnDefinitions="*,Auto,*">
                 <Border Grid.Column="0" Background="#132028" CornerRadius="16" Padding="18" MinWidth="260">
-                  <Grid RowDefinitions="Auto,Auto,*,Auto">
+                  <Grid RowDefinitions="Auto,Auto,Auto,Auto">
                     <TextBlock Text="Server Profiles" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
                     <TextBlock Grid.Row="1"
                                Text="Create and edit emulator/server definitions here."
@@ -178,6 +198,7 @@
                     <ListBox Grid.Row="2"
                              x:Name="ServerProfilesList"
                              MinHeight="200"
+                             MaxHeight="280"
                              Background="#0F161D"
                              BorderBrush="#243742"
                              Foreground="#EAF0F4"
@@ -196,7 +217,7 @@
                               Background="Transparent" />
 
                 <Border Grid.Column="2" Background="#132028" CornerRadius="16" Padding="18" MinWidth="260">
-                  <Grid RowDefinitions="Auto,Auto,*,Auto">
+                  <Grid RowDefinitions="Auto,Auto,Auto,Auto">
                     <TextBlock Text="Account Profiles" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
                     <TextBlock Grid.Row="1"
                                Text="Passwords are saved encrypted for this Windows user."
@@ -206,6 +227,7 @@
                     <ListBox Grid.Row="2"
                              x:Name="AccountProfilesList"
                              MinHeight="200"
+                             MaxHeight="280"
                              Background="#0F161D"
                              BorderBrush="#243742"
                              Foreground="#EAF0F4"
@@ -298,7 +320,7 @@
               <Border Background="#132028" CornerRadius="16" Padding="18">
                 <StackPanel Spacing="8">
                   <TextBlock Text="Plugins" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
-                  <TextBlock Text="The plugins RynthCore loads. Untick one to skip it; the X takes it out of the list (its files stay on disk). RynthSuite plugins you don't have are under Available plugins below; Add Plugin is for any other plugin DLL."
+                  <TextBlock Text="The plugins RynthCore loads. Untick one to skip it; the X takes it out of the list (its files stay on disk). RynthSuite plugins you don't have are under Available plugins below; plugins for one game server are on the Server plugins tab. Add Plugin is for any other plugin DLL."
                              TextWrapping="Wrap"
                              Foreground="#9AA8B3" />
                   <StackPanel x:Name="PluginLoadoutPanel" Spacing="10" />
@@ -313,6 +335,36 @@
                              TextWrapping="Wrap"
                              Foreground="#9AA8B3" />
                   <StackPanel x:Name="AvailablePluginsPanel" Spacing="10" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+
+        <!-- Server plugins: one per game server, kept apart from the regular plugins. RynthCore loads
+             one only when you connect to its server, so installing several costs nothing elsewhere. -->
+        <TabItem x:Name="ServerPluginsTab" Header="Server plugins">
+          <ScrollViewer>
+            <StackPanel Spacing="12" Margin="6">
+              <Border Background="#132028" CornerRadius="16" Padding="18">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="Your server plugins" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
+                  <TextBlock Text="Extras for one game server each. RynthCore loads a server plugin only when you connect to its server; everywhere else it stays off. Untick one to skip it; the X takes it out of the list (its files stay on disk)."
+                             TextWrapping="Wrap"
+                             Foreground="#9AA8B3" />
+                  <TextBlock x:Name="ServerPluginsEmptyText" Text="No server plugins installed."
+                             Foreground="#6F7F8A" IsVisible="False" />
+                  <StackPanel x:Name="ServerPluginLoadoutPanel" Spacing="10" />
+                </StackPanel>
+              </Border>
+              <Border Background="#132028" CornerRadius="16" Padding="18">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="Available server plugins" FontSize="16" FontWeight="SemiBold" Foreground="#26C1A6" />
+                  <TextBlock x:Name="AvailableServerPluginsHint"
+                             Text="Server plugins you can add appear here after the first update check."
+                             TextWrapping="Wrap"
+                             Foreground="#9AA8B3" />
+                  <StackPanel x:Name="AvailableServerPluginsPanel" Spacing="10" />
                 </StackPanel>
               </Border>
             </StackPanel>
@@ -335,10 +387,32 @@
                     <TextBox x:Name="EnginePathTextBox" Watermark="C:\Games\RynthCore\Runtime\RynthCore.Engine.dll" />
                     <TextBlock Text="Extra Launch Arguments" Foreground="#EAF0F4" />
                     <TextBox x:Name="LaunchArgumentsTextBox"
-                             Watermark="Optional arguments appended by the host"
-                             AcceptsReturn="True"
-                             MinHeight="64"
+                             Watermark="Optional arguments added after each account's login"
+                             ToolTip.Tip="Added to the end of every launch's command line, after the account, password and server the profiles set. It can't contain -a, -v, -h, -p or -rodat: set those in the account and server profiles. One line."
+                             AcceptsReturn="False"
                              TextWrapping="Wrap" />
+                    <TextBlock Text="Headless client (experimental)" Foreground="#26C1A6" FontWeight="SemiBold" Margin="0,6,0,0" />
+                    <TextBlock Text="For accounts set to Headless (experimental): no game window, rynth-headless.exe logs in and runs the 64-bit plugins below (empty = the RynthAi that comes with RynthCore). ACE servers only."
+                               TextWrapping="Wrap"
+                               Foreground="#9AA8B3" />
+                    <TextBlock Text="rynth-headless.exe" Foreground="#EAF0F4" />
+                    <TextBox x:Name="HeadlessExePathTextBox"
+                             Watermark="Empty = Headless\rynth-headless.exe beside the launcher" />
+                    <TextBlock Text="Headless plugins (64-bit DLLs, one per line)" Foreground="#EAF0F4" />
+                    <TextBox x:Name="HeadlessPluginPathsTextBox"
+                             Watermark="Empty = Headless\plugins\RynthAi (comes with RynthCore)"
+                             ToolTip.Tip="Loaded by every Headless account. Empty = the 64-bit plugins that come with RynthCore, in Headless\plugins beside the launcher (RynthAi). rynth-headless is a 64-bit process: list only x64 builds here, never the ones in the Plugins tab."
+                             AcceptsReturn="True"
+                             TextWrapping="NoWrap"
+                             MinHeight="56" />
+                    <Button x:Name="ShowHeadlessWindowButton"
+                            Content="Show headless clients"
+                            ToolTip.Tip="Opens the Headless window: what each headless character is doing (vitals, target, place, XP, chat and its log), with a command box, macro on/off and log out."
+                            HorizontalAlignment="Left" />
+                    <Button x:Name="StopHeadlessButton"
+                            Content="Log out headless clients"
+                            ToolTip.Tip="A headless client has no window to close: this asks every running rynth-headless.exe to log its character out and exit (closed after 20 s if it doesn't). With AutoLaunch on, uncheck the account first or it is started again."
+                            HorizontalAlignment="Left" />
                     <Button x:Name="SavePathsButton"
                             Content="Save Runtime Paths"
                             HorizontalAlignment="Left" />
@@ -359,6 +433,18 @@
                     <CheckBox x:Name="AllowMultipleClientsCheckBox" Content="Allow multiple clients" />
                     <CheckBox x:Name="SkipIntroVideosCheckBox" Content="Skip intro videos" />
                     <CheckBox x:Name="SkipLoginLogosCheckBox" Content="Skip login logos" />
+                    <CheckBox x:Name="EnableDxvkCheckBox"
+                              Content="Enable DXVK (Vulkan D3D9) for AC clients"
+                              ToolTip.Tip="Copies DXVK's 32-bit d3d9.dll next to acclient.exe so AC renders through Vulkan. Rynth forces the software overlay path under DXVK. Off by default. Requires a restart of AC after toggle. Package: &lt;RynthCore&gt;\Runtime\dxvk\ (installer or Fetch)." />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <Button x:Name="FetchDxvkButton"
+                              Content="Fetch / update DXVK"
+                              ToolTip.Tip="Downloads the latest official DXVK release (x32 d3d9.dll) into Runtime\dxvk. Then enable the checkbox (or re-launch) to install it beside AC." />
+                      <TextBlock x:Name="DxvkCacheStatusText"
+                                 VerticalAlignment="Center"
+                                 Foreground="#9AA8B3"
+                                 Text="DXVK: not cached" />
+                    </StackPanel>
                     <CheckBox x:Name="AutoInjectAfterLaunchCheckBox" Content="Auto inject after launch" />
                     <CheckBox x:Name="WatchForAcStartCheckBox"
                               Content="Auto-inject into externally-launched AC"
@@ -410,9 +496,6 @@
                   <TextBlock Text="These flags are read by RynthCore.Engine on each AC client launch. They write to %APPDATA%\RynthCore\engine.json — other engine flags in that file are preserved untouched."
                              TextWrapping="Wrap"
                              Foreground="#9AA8B3" />
-                  <CheckBox x:Name="EnableDcompOverlayCheckBox"
-                            Content="Use DComp overlay (experimental, GPU-rendered)"
-                            ToolTip.Tip="When ON, the engine starts the new DirectComposition overlay instead of the production AvaloniaOverlay. Mutually exclusive — Avalonia is single-app-per-process. Toggle takes effect on next AC client launch (a hot reload won't switch overlays)." />
                   <CheckBox x:Name="EnableImGuiBackendCheckBox"
                             Content="ImGui panels (preview)"
                             ToolTip.Tip="When ON, the engine runs its in-client ImGui layer, which docked panels move to as their ImGui versions are finished (choose per panel with /rc ui). Popped-out panels stay Avalonia windows. Costs nothing while no ImGui panel is open. Takes effect on next AC client launch or engine reload (RL)." />
@@ -468,6 +551,10 @@
                             ToolTip.Tip="Drags the in-game RynthCore overlay bar back to the top-left corner. Use this if the bar was moved off-screen and can no longer be reached. Applies to every running RynthCore client." />
                     <Button x:Name="CheckDecalBridgeButton" Content="Check Decal bridge" Margin="0,0,8,8"
                             ToolTip.Tip="For Decal + RynthCore (experimental): checks whether a client started now will load the RynthCore Decal bridge - where Decal reads its plugin list on this PC, whether the bridge is listed and enabled there, Decal's version and its .NET part. Changes nothing unless you press Repair." />
+                    <Button x:Name="RepairDecalButton" Content="Repair Decal" Margin="0,0,8,8"
+                            ToolTip.Tip="For Decal plugins that don't show up: Windows can make Decal read an old per-user copy of its settings (left by an earlier RynthCore, or by Decal itself), which hides plugins installed since. This backs that copy up to a .reg file in %APPDATA%\RynthCore and removes it, after asking. Close Asheron's Call first." />
+                    <Button x:Name="FixFolderPermissionsButton" Content="Fix folder permissions" Margin="0,0,8,8"
+                            ToolTip.Tip="When RynthAi metas, navs, loot or settings profiles don't save: gives your Windows account write access to the RynthSuite and RynthCore folders and clears read-only on their files (one administrator prompt). Also tells you when Windows Security's Controlled folder access is blocking the game client." />
                   </WrapPanel>
                   <TextBlock Text="Manual inject target scope follows the 'Inject all running AC sessions' launch behavior toggle. Reset Overlay Bar signals all running RynthCore clients via the dispatch file."
                              TextWrapping="Wrap"
@@ -544,6 +631,10 @@
                      Background="#0F161D"
                      BorderBrush="#243742"
                      Foreground="#EAF0F4" />
+            <Button x:Name="SessionsHeadlessButton"
+                    Content="Headless clients"
+                    ToolTip.Tip="Headless characters have no game window: this window shows what they are doing, their chat and log, and takes commands."
+                    HorizontalAlignment="Left" />
           </StackPanel>
         </Border>
       </StackPanel>

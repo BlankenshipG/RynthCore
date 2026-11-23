@@ -179,15 +179,15 @@ internal static class DecalBridgeCheck
     }
 
     /// <summary>
-    /// What the installer (and every update) writes, so a client finds the bridge whatever
-    /// its rights (installer\RynthCore.iss: <see cref="DecalBridgeRegistration.RegisterMachineWide"/>
+    /// Where a registration goes (the launcher's, and the installer's for a user with a
+    /// Decal + RynthCore account: installer\RynthCore.iss, <see cref="DecalBridgeRegistration.RegisterMachineWide"/>
     /// elevated, <see cref="DecalBridgeRegistration.InstallPerUser"/> as the installing user):
     ///   - Machine: always (when Decal is installed). Elevated and unvirtualized clients read
     ///     only HKLM; a virtualized client without a per-user copy reads HKLM too.
     ///   - PerUser: only into a per-user copy that ALREADY exists. A virtualized client then
-    ///     reads that copy and nothing else, so the HKLM entry is hidden from it. Creating a
-    ///     copy that doesn't exist would be harmful: it would hide every HKLM filter added later
-    ///     (a Decal plugin installed for all users) from this user's non-elevated clients.
+    ///     reads that copy and nothing else, so the HKLM entry is hidden from it. A copy is never
+    ///     created: it would hide every HKLM filter added later (a Decal plugin installed for all
+    ///     users) from this user's non-elevated clients. Repair Decal removes an existing one.
     /// </summary>
     public static (bool Machine, bool PerUser) PlanInstall(IDecalCheckHost host)
     {
@@ -262,7 +262,7 @@ internal static class DecalBridgeCheck
             r.NeedsMachineWideRegistration = !where.PerUser;
             r.Add(Level.Fail, $"Decal will not load the bridge: {entryProblem} in {whereText}." +
                 (where.PerUser
-                    ? " Repair (or a Decal + RynthCore launch) registers it for your Windows user."
+                    ? " Repair (or a Decal + RynthCore launch) adds it there and to the list for all users (Windows may ask for administrator permission once)."
                     : " That key is shared by all users: Repair adds it there once and Windows asks for administrator permission."));
         }
 
@@ -303,7 +303,7 @@ internal static class DecalBridgeCheck
             List<string> hidden = HiddenMachineFilters(host, where.Path);
             if (hidden.Count > 0)
                 r.Add(Level.Warn, "Hidden from AC by your per-user filter list (in HKLM, not in the copy): " + string.Join(", ", hidden) +
-                    ". If 'World Object Filter' is among them, VTank won't start.");
+                    ". If 'World Object Filter' is among them, VTank won't start. Recovery Actions > Repair Decal removes the per-user copy (after a backup).");
         }
 
         // 7. Decal's .NET surrogate: Decal must be able to create it, and must not have it disabled.

@@ -191,13 +191,24 @@ internal static class PlayerPhysicsHooks
 
     /// <summary>
     /// The per-frame main-thread pose copy (cell, cell-local origin, yaw quaternion
-    /// qw/qz and AC's heading, 0 = North, clockwise), read from any thread without
-    /// calling into AC. headingValid is false while AC's get_heading isn't bound;
-    /// derive the heading from qw/qz then. False when nothing valid is published.
+    /// qw/qz and GetPlayerHeading's value, 0 = East, counter-clockwise: see HeadingMath),
+    /// read from any thread without calling into AC. headingValid is false while AC's
+    /// get_heading isn't bound. False when nothing valid is published. Against a map
+    /// bearing use <see cref="TryGetPlayerCompassSnapshot"/>.
     /// </summary>
     public static bool TryGetPlayerPoseSnapshot(out uint objCellId, out float x, out float y, out float z,
                                                 out float qw, out float qz, out bool headingValid, out float heading)
         => TryReadPoseSnapshot(out objCellId, out x, out y, out z, out qw, out _, out _, out qz, out headingValid, out heading);
+
+    /// <summary>Your compass heading (0 = North, clockwise) from the pose snapshot's quaternion; any thread, no AC call.</summary>
+    public static bool TryGetPlayerCompassSnapshot(out float heading)
+    {
+        heading = 0;
+        if (!TryReadPoseSnapshot(out _, out _, out _, out _, out float qw, out _, out _, out float qz, out _, out _))
+            return false;
+        heading = HeadingMath.CompassFromYaw(qw, qz);
+        return true;
+    }
 
     public static bool TryGetPlayerPose(
         out uint objCellId,
@@ -385,7 +396,7 @@ internal static class PlayerPhysicsHooks
         // Park the heading in the coalesced slot instead; AcMainThreadQueue.Drain
         // calls back in here on the main thread (and falls back to the
         // CommandInterpreter turn there when there is no player, as before).
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueDirectHeading(decalHeadingDeg);
 
         int n = System.Threading.Interlocked.Increment(ref _setHeadingCalls);
@@ -457,7 +468,7 @@ internal static class PlayerPhysicsHooks
         // raw write racing AC's own motion-graph tick is a guaranteed torn
         // write, not just an AV risk. Reachable off-thread via Jumper.cs's
         // ReleaseJump on the Decal-coexistence pump thread.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueLaunchJumpWithMotion(shift, holdW, holdX, holdZ, holdC);
 
         if (!TryGetCMotionInterp(out IntPtr cmi))
@@ -623,9 +634,10 @@ internal static class PlayerPhysicsHooks
         return BitConverter.Int32BitsToSingle(bits);
     }
 
-    // CPhysicsObj heading is rotated 90 degrees from the Decal/VTank basis
-    // used by old RynthAi Actions.Heading. Normalize here so plugins can stay
-    // on the original T1 heading math.
+    // AC's get_heading is already a compass value (0 = North, clockwise); 90 - it is
+    // 0 = East, counter-clockwise, which GetPlayerHeading has always returned and the
+    // radar and world map draw with. Kept as it is for them; a bearing wants
+    // HeadingMath.CompassFromYaw (measured 2026-10-20, see HeadingMath).
     private static float NormalizeDecalHeading(float physicsHeading)
     {
         return NormalizeDegrees(90f - physicsHeading);

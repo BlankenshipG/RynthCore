@@ -15,6 +15,69 @@ namespace RynthCore.Engine.Plugins;
 /// <summary>Current API version. Bump when adding fields to RynthCoreAPI (and the SDK's RynthCoreApiNative).</summary>
 internal static class PluginContractVersion
 {
-    // v80: GetMergeStackResult (was v77 on QOL-items, renumbered after upstream's v77-v79).
-    public const uint Current = 80;
+    // v81: GetMergeStackResult (was v77 on QOL-items, then v80; renumbered after upstream's v77-v80).
+    // v82: SalvageDirect (salvage without the salvage panel; was v81 on feature/salvage-direct).
+    // v83: GetObjectServerAge and RemoveClientObject (ghost creatures, 2026-10-12).
+    // v84: GetObjectProperties (every property of an object, for /ub propertydump; 2026-10-13).
+    // v85: ArmConfirmation and GetLastConfirmation (answer the server's yes/no prompt, e.g. the
+    //      craft chance, for a plugin; from SilentKelpie's build, 2026-10-15).
+    // v86: GetServerStateJson (the server list, active server and owning plugins for every plugin;
+    //      server plugins declare their server in their manifest; from SilentKelpie's build).
+    // v87: GetWieldedItems (what the player wields and where, from the server's wield / contain /
+    //      drop messages: EquipmentTracker; the client's own fields go stale, 2026-10-18).
+    // v88: managed plugins find their common dependencies in Runtime\PluginShared (installed with
+    //      RynthCore), so the update feed ships each managed plugin as one DLL; releases build the
+    //      plugins managed (collectible: a reload frees them) and they declare minEngineApi 88.
+    // v89: plugin windows: GetUiColor, GetUiFont and SetPanelOpen (the engine hosts the windows
+    //      a plugin's sections manifest declares; the plugin draws them; docs/PLUGIN_WINDOWS.md).
+    // v90: windows that draw their own frame (manifest "chrome": "none", "fitHeight"):
+    //      PanelDragWithLastItem, SetPanelPopOut, PanelTextSize; GetUiColor's Muted and instrument
+    //      shades (KeyFace, Hairline, Inset, Faint), GetUiFont's Dash and Narrow fonts (2026-10-21).
+    // v91: SetAmbientLightFloor and GetAmbientLight: a floor under AC's world ambient light, drawn
+    //      in this client only (D3D9/AmbientLight.cs; RynthVision's dungeon light, 2026-10-27).
+    //      No table change, same release: RenderSettingsDrawer also draws "nameplates" and
+    //      "combattext" (popped out too), the engine-owned tabs of RynthVision's own Vision window.
+    // v92: SetActionKey op 3, a RynthCore command's key as an engine hotkey only (AC's keymap untouched),
+    //      and the SDK's BindCommandKeyOnly / UnbindCommandKeyOnly; no new function or field, but a plugin
+    //      calling them needs this SDK in Runtime\PluginShared (fix/keymap-follow-change, 2026-10-27).
+    // v93: GetMonsterHealth: the monster plates' last SERVER health reading for an object and its age in ms
+    //      (MonsterHudData.TryGetServerHealth; the plates' round-robin probe replies included, their hit
+    //      estimates never), so a plugin can rank every nearby monster by health while the server streams
+    //      only the queried one. The probe replies still don't reach plugins as UpdateHealth. Read-only,
+    //      any thread (feature/hud-health-for-plugins, 2026-11-07). Note: feature/reload-state,
+    //      feature/engine-events and the branches built on them (unmerged) also use 93 and 94; whichever
+    //      merges second renumbers.
+    // v94: WebPanelOpen, WebPanelNavigate, WebPanelClose and WebPanelGetState: a WebView2 web panel over the
+    //      game window (WebPanel\WebPanelApi.cs; DreamWeave's in-game market and tools), appended after v93's
+    //      GetMonsterHealth (was v93 on up/web-panel; renumbered after upstream's v93). The number is
+    //      PROVISIONAL: the unmerged branches named under v93 also use 94; whichever merges second renumbers.
+    // v95: no table change. SectionManifest.cs reads a plugin window's "barMenu" (a hover dropdown on its
+    //      bar icon: up to 6 items of id, tooltip, icon and a /command the engine runs on click). Engines
+    //      before v95 ignore the key (was v94 on up/bar-menu; renumbered after upstream's v93). The number
+    //      is PROVISIONAL, as 94 is: whichever merges second renumbers.
+    /// <summary>The API version that added the "barMenu" manifest key; a plugin declaring it pins its own copy against this.</summary>
+    public const uint BarMenu = 95;
+
+    // v96: RESERVED for another contributor's request slot (jump-loot resend); not used here.
+    // v97: no table change. ArmConfirmation takes ConfirmationArmPolicy.ArmFlagLeaveBelow (0x100) OR'ed into
+    //      minPercent: a second, sticky slot. A prompt at or above its minimum is answered Yes, one below it (or
+    //      without a percent) is left to the client's dialog instead of answered No, and the arm stays armed for
+    //      the next prompt until it times out (120 s at most) or is disarmed (the flag with timeoutMs <= 0). The
+    //      v85 one-shot slot goes first, and a one-shot arm or disarm never touches the sticky one. Outcome 5
+    //      (AcceptedSticky): the sticky arm said Yes (RynthAi's "Auto-confirm crafting", 2026-11-11). Engines
+    //      before v97 refuse the flag as bad arguments (-3), so a plugin fails cleanly there. The SDK's
+    //      HasConfirmationLeaveBelow / ArmConfirmationLeaveBelow / DisarmConfirmationLeaveBelow. PROVISIONAL like
+    //      94 and 95 (feature/auto-confirm-craft): whichever merges second renumbers (never onto 96).
+    /// <summary>The API version whose ArmConfirmation takes the leave-below (sticky) flag.</summary>
+    public const uint ConfirmationLeaveBelow = 97;
+
+    // v98: GetWindowPlacement and SetWindowPlacement: a plugin's own floating windows keep their spot
+    //      per character (window_state.<server>.<character>.txt) instead of in the imgui.ini every
+    //      running client shares and rewrites (2026-10-26). Appended after v94's web panel slots.
+    //      (Was v91 on the test branch; renumbered after upstream's v91 and v92, 2026-10-29, to v94 after
+    //      upstream's v93 GetMonsterHealth, 2026-11-10, and to v98 after upstream's v94-v97, 2026-11-14.)
+    /// <summary>The API version that added Get/SetWindowPlacement.</summary>
+    public const uint WindowPlacements = 98;
+
+    public const uint Current = 98;
 }

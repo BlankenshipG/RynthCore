@@ -1,7 +1,7 @@
 // ============================================================================
 //  RynthCore.Engine - ImGui/MonsterHud/MonsterHudSettingsUi.cs
 //  The RynthVision overlay settings, drawn as two tabs of the Vision panel
-//  (Panels/VisionFace.cs): "Nameplates" (monster plates, NPC / player names,
+//  (Panels/VisionFace.cs): "Nameplates" (monster plates, NPC / player / portal names,
 //  debuff icons, your plate, look) and "Combat text" (numbers, kill burst, gains). Square toggle
 //  dots and amber section headers; sliders save when the drag ends. Values
 //  live engine-side in MonsterHudSettings. AC's render thread, inside the
@@ -16,9 +16,18 @@ namespace RynthCore.Engine.ImGuiBackend.Hud;
 
 internal static class MonsterHudSettingsUi
 {
-    private static readonly uint Amber = C(0xFFE8B333), TextDim = C(0xFFF2F7FC), Mute = C(0xFFB8C8D8),
-        ToggleOn = C(0xFF33FF33), ToggleOff = C(0xFF334455), BtnBord = C(0xFF34587A), BtnFill = C(0xFF16283A);
+    private static readonly uint ToggleOn = C(0xFF33FF33), ToggleOff = C(0xFF334455);
+    private static uint Amber => RynthTheme.Highlight;
+    private static uint TextDim => RynthTheme.Text;
+    private static uint Mute => RynthTheme.TextMuted;
+    private static uint BtnBord => RynthTheme.Border;
+    private static uint BtnFill => RynthTheme.Button;
     private static uint C(uint argb) => RynthTheme.Argb(argb);
+
+    private static readonly string PortalNamesTip =
+        "The portal's name above it, in the radar's portal colour (purple by default), at the NPC name size. " +
+        $"The nearest {MonsterHudSettings.MaxPortalLabels}, counted on their own so NPC names never crowd them out; " +
+        "click one to select the portal. Chat: /rv plates portals [on|off], /rv plates portals dist <yd>.";
 
     private static bool Loading(float w)
     {
@@ -58,6 +67,14 @@ internal static class MonsterHudSettingsUi
             MonsterHudSettings.MinDistance, MonsterHudSettings.MaxDistanceLimit, "%.0f", w);
         changed |= SliderI("Max plates", ref MonsterHudSettings.MaxPlates,
             MonsterHudSettings.MinPlates, MonsterHudSettings.MaxPlatesLimit, w);
+        changed |= Toggle("Refresh others' health", ref MonsterHudSettings.RefreshOthersHealth,
+            "The server only keeps the selected (or fought) monster's health up to date. On: the HUD also asks for " +
+            "the other plates' health, one monster at a time - first the ones in the fight, then any it hasn't seen - " +
+            "and hands the live feed straight back to your target. Two small queries per refresh. " +
+            "Off: only your target's plate is live. Chat: /rv plates refresh [on|off], /rv plates refresh <seconds>.");
+        if (MonsterHudSettings.RefreshOthersHealth)
+            changed |= SliderF("Refresh every (s)", ref MonsterHudSettings.HealthRefreshSec,
+                HealthProbe.MinIntervalSec, HealthProbe.MaxIntervalSec, "%.1f s", w);
 
         Section("On the plate", w);
         changed |= Toggle("Name", ref MonsterHudSettings.ShowNames, null);
@@ -75,7 +92,7 @@ internal static class MonsterHudSettingsUi
         changed |= SizeSlider("Text size", ref MonsterHudSettings.MonsterTextSize, MonsterHudSettings.MinTextSize, MonsterHudSettings.MaxTextSize, w,
             "The monster plate's text: name, level badge, HP numbers, weak-to pill and distance (1.00x = the default).");
 
-        Section("Names over NPCs and players", w);
+        Section("Names over NPCs, players and portals", w);
         changed |= Toggle("NPC names", ref MonsterHudSettings.NpcNames,
             "The name over vendors, quest givers, town criers and other NPCs: yellow, vendors gold (the radar's colours). " +
             "Name only, no health bar; click one to select it. Chat: /rv plates npcs.");
@@ -84,11 +101,17 @@ internal static class MonsterHudSettingsUi
         changed |= SliderI("Max names", ref MonsterHudSettings.MaxNpcLabels,
             MonsterHudSettings.MinNpcLabels, MonsterHudSettings.MaxNpcLabelsLimit, w);
         changed |= SizeSlider("NPC name size", ref MonsterHudSettings.NpcTextSize, MonsterHudSettings.MinTextSize, MonsterHudSettings.MaxTextSize, w,
-            "Text size of the names over NPCs and vendors (1.00x = the default). Names have no bar.");
+            "Text size of the names over NPCs and vendors, and over portals (1.00x = the default). Names have no bar.");
         changed |= Toggle("Player names", ref MonsterHudSettings.PlayerNames,
             "The name over other players too (blue), within the same distance and count. Chat: /rv plates players.");
+        changed |= Toggle("Player health bars", ref MonsterHudSettings.PlayerBars,
+            "A health bar under other players' names (and their name, even with Player names off). The game only tells you a player's health " +
+            "once you select them or they share it (fellowship), so a bar shows from then on; others keep just the name. Chat: /rv plates playerbars.");
         changed |= SizeSlider("Player name size", ref MonsterHudSettings.PlayerTextSize, MonsterHudSettings.MinTextSize, MonsterHudSettings.MaxTextSize, w,
             "Text size of the names over other players (1.00x = the default). Names have no bar.");
+        changed |= Toggle("Portal names", ref MonsterHudSettings.PortalNames, PortalNamesTip);
+        changed |= SliderF("Portal name distance (yd)", ref MonsterHudSettings.PortalMaxDistance,
+            MonsterHudSettings.MinPortalDistance, MonsterHudSettings.MaxPortalDistanceLimit, "%.0f", w);
         Note("Names count apart from the monster plates, so they never push one out; the nearest win.", w);
 
         Section("Debuffs", w);
@@ -98,18 +121,44 @@ internal static class MonsterHudSettingsUi
         changed |= Toggle("Debuffed by others", ref MonsterHudSettings.ShowOthersDebuff,
             "A small marker when an appraisal shows a lowered attribute or vital that none of your own debuffs explains. " +
             "It only updates when the monster is appraised (your combat target is appraised often).", sub: true);
+        changed |= PercentSlider("Debuff icon size", ref MonsterHudSettings.MonsterDebuffIconSize,
+            MonsterHudSettings.MinDebuffIconSize, MonsterHudSettings.MaxDebuffIconSize, w,
+            "How big the debuff icons on monster plates are (100% = the default): the icons, their countdown lines, " +
+            "the stack digits and \"+N\". On its own: the text size doesn't change it. On top of Look > Scale. " +
+            "Chat: /rv plates debuffs size 50-200.");
 
         Section("Your plate", w);
         changed |= Toggle("Show your plate", ref MonsterHudSettings.SelfPlate,
             "Your own health, stamina and mana bars: fixed on screen, or following your character. Chat: /rv plates self.");
         changed |= Toggle("Numbers on your bars", ref MonsterHudSettings.SelfNumbers, "\"cur / max\" inside each bar (taller bars).", sub: true);
         changed |= Toggle("Your name", ref MonsterHudSettings.SelfName, null, sub: true);
+        changed |= Toggle("Debuffs on you", ref MonsterHudSettings.SelfDebuffs,
+            "Icons under your mana bar for harmful spells on you (vulnerabilities, Imperil, Magic Yield, attribute and skill debuffs...), " +
+            "the monster plates' icons: one per kind, a line that runs out with the spell, blinking in its last 5 seconds, \"+N\" when more than fit. " +
+            "Only shows while you have one. Chat: /rv plates self debuffs.", sub: true);
+        changed |= Toggle("Grey out what debuffs take", ref MonsterHudSettings.SelfDebuffLoss,
+            "While a debuff lowers your maximum health, stamina or mana (Endurance or Self lowered, a spell on the vital itself), " +
+            "the bar keeps its full length and the part the debuff takes shows grey at its end, instead of the bar filling up " +
+            "to the lowered maximum. The numbers stay what the game says. Vitae isn't counted. Chat: /rv plates self lost.", sub: true);
+        changed |= PercentSlider("Your debuff icon size", ref MonsterHudSettings.SelfDebuffIconSize,
+            MonsterHudSettings.MinDebuffIconSize, MonsterHudSettings.MaxDebuffIconSize, w,
+            "How big the icons under your bars are (100% = the default), apart from the monster plates' and from " +
+            "Your text size. On top of Look > Scale. Chat: /rv plates self debuffs size 50-200.");
         changed |= SizeSlider("Your bar width", ref MonsterHudSettings.SelfBarWidth, MonsterHudSettings.MinBarWidth, MonsterHudSettings.MaxBarWidth, w,
             "How wide your health, stamina and mana bars are (1.00x = the default).");
         changed |= SizeSlider("Your bar height", ref MonsterHudSettings.SelfBarHeight, MonsterHudSettings.MinBarHeight, MonsterHudSettings.MaxBarHeight, w,
             "How tall (thick) each of your bars is (1.00x = the default). The numbers need a bar at least 8 px tall.");
         changed |= SizeSlider("Your text size", ref MonsterHudSettings.SelfTextSize, MonsterHudSettings.MinTextSize, MonsterHudSettings.MaxTextSize, w,
             "Your plate's text: the cur / max numbers and your name (1.00x = the default).");
+        // The plate's shading, piece by piece (your plate only; the monster plates keep theirs).
+        changed |= Toggle("Dark track behind the bars", ref MonsterHudSettings.SelfBarTrack,
+            "The dark background and thin black edge behind each of your bars. Off: only the coloured fill shows.", sub: true);
+        changed |= Toggle("Damage trail", ref MonsterHudSettings.SelfBarChip,
+            "The pale gold strip that shows what a drop just took, then drains away.", sub: true);
+        changed |= Toggle("Text outline", ref MonsterHudSettings.SelfTextOutline,
+            "The thin black outline around your numbers and your name.", sub: true);
+        changed |= Toggle("Band behind the numbers", ref MonsterHudSettings.SelfNumberBand,
+            "The dark band behind the cur / max numbers (with Numbers on your bars).", sub: true);
 
         bool fixedOn = MonsterHudSettings.SelfPlacement == SelfPlacement.Fixed;
         if (Toggle("Fixed on screen", ref fixedOn,
@@ -125,9 +174,10 @@ internal static class MonsterHudSettingsUi
             bool locked = MonsterHudSettings.SelfLocked;
             if (Toggle("Lock position", ref locked,
                     "Locked, the plate can't be grabbed or clicked, so play never moves it. " +
-                    "Untick it, then drag the plate (it shows a frame) and tick it again. Chat: /rv plates self lock on|off.", indent: 32))
+                    "Untick it, then drag the plate (it shows a frame) and tick it again. Also in Settings > Interface > Your Vitals. " +
+                    "Chat: /rv plates self lock on|off.", indent: 32))
             {
-                MonsterHudSettings.SelfLocked = locked;
+                MonsterHudSettings.SetSelfLocked(locked);
                 changed = true;
             }
             if (unlocked)
@@ -162,18 +212,22 @@ internal static class MonsterHudSettingsUi
         changed |= SliderF("Scale", ref MonsterHudSettings.Scale, MonsterHudSettings.MinScale, MonsterHudSettings.MaxScale, "%.2f", w);
         changed |= Toggle("Keep on screen", ref MonsterHudSettings.KeepOnScreen,
             "When the camera closes in (walls), plates and numbers stay pinned to the screen edge instead of leaving it. Chat: /rv plates onscreen.");
+        changed |= Toggle("Hide behind walls", ref MonsterHudSettings.HideBehindWalls,
+            "No plate or name (and no click) for monsters, NPCs, players and portals you can't see because of building " +
+            "or dungeon walls: in another room, another building, or outdoors where no doorway shows them. " +
+            "Off: everything in range gets one. Chat: /rv plates walls.");
         changed |= SliderF("Opacity", ref MonsterHudSettings.Opacity, MonsterHudSettings.MinOpacity, MonsterHudSettings.MaxOpacity, "%.2f", w);
         changed |= SliderF("Height lift (m)", ref MonsterHudSettings.HeightLift, MonsterHudSettings.MinLift, MonsterHudSettings.MaxLift, "%.1f", w);
         changed |= Toggle("Fade and shrink with distance", ref MonsterHudSettings.FadeWithDistance, null);
 
         ImGuiNET.ImGui.Dummy(new Vector2(0, 8));
-        if (SmallButton("Reset bar and text sizes"))
+        if (SmallButton("Reset bar, text and icon sizes"))
         {
             MonsterHudSettings.ResetSizes();   // saves
             changed = false;
         }
         if (ImGuiNET.ImGui.IsItemHovered())
-            ImGuiNET.ImGui.SetTooltip("Every plate type's bar width, bar height and text size back to 1.00x.");
+            SafeImGui.SetTooltip("Every plate type's bar width, bar height and text size back to 1.00x, and both debuff icon sizes to 100%.");
         ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
         if (SmallButton("Reset all to defaults"))
         {
@@ -246,7 +300,7 @@ internal static class MonsterHudSettingsUi
         if (ImGuiNET.ImGui.IsItemHovered())
         {
             ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-            if (tip != null) ImGuiNET.ImGui.SetTooltip(tip);
+            if (tip != null) SafeImGui.SetTooltip(tip);
         }
         if (clicked) value = radio || !value;
         dl.AddRectFilled(p + new Vector2(0, 2), p + new Vector2(12, 14), value ? ToggleOn : ToggleOff, 2);
@@ -267,7 +321,16 @@ internal static class MonsterHudSettingsUi
     {
         BeginSliderRow(label, w);
         bool changed = ImGuiNET.ImGui.SliderFloat("##v", ref value, min, max, "%.2fx", ImGuiSliderFlags.AlwaysClamp);
-        if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(tip);
+        if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(tip);
+        return EndSliderRow(changed);
+    }
+
+    /// <summary>A percent slider ("100%" = the default look) with a tooltip. Labels are the ids: keep them unique.</summary>
+    private static bool PercentSlider(string label, ref int value, int min, int max, float w, string tip)
+    {
+        BeginSliderRow(label, w);
+        bool changed = ImGuiNET.ImGui.SliderInt("##v", ref value, min, max, "%d%%", ImGuiSliderFlags.AlwaysClamp);
+        if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(tip);
         return EndSliderRow(changed);
     }
 

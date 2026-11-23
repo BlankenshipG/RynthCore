@@ -84,6 +84,9 @@ param(
     # Explicit path to the RynthSuite repo root. When omitted, defaults to the
     # sibling directory of RynthCore (i.e. ..\RynthSuite relative to this repo).
     [string]$RynthSuiteRoot = "",
+    # Explicit path to the RynthServers repo root (rynth's server plugins: RynthILT and one per
+    # server). When omitted, defaults to the sibling directory ..\RynthServers.
+    [string]$RynthServersRoot = "",
     # Version string injected into the installer (yyyy.m.d.n). When omitted,
     # the version defined in RynthCore.iss is used as-is.
     [string]$Version = "",
@@ -102,7 +105,13 @@ param(
     # Makes the bridge mandatory: no Decal means a failed build rather than a skipped bridge.
     [switch]$IncludeDecalBridge,
     # Decal's install folder, when not the default C:\Program Files (x86)\Decal 3.0.
-    [string]$DecalDir = ""
+    [string]$DecalDir = "",
+    # Managed (collectible) plugins, built by Publish-Update.ps1 (engine API 88): the folder of the
+    # plugins' common dependencies, staged into Runtime\PluginShared, and the managed RynthAi DLL,
+    # used instead of the NativeAOT RynthAi build. NativeAOT plugins can never be unloaded, so each
+    # reload kept a copy of every one (220-450 MB of address space per reload, 2026-10-19).
+    [string]$PluginSharedDir = "",
+    [string]$RynthAiDll = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -189,6 +198,10 @@ $ProjectsRoot = Split-Path $RepoRoot -Parent           # e.g. C:\Projects
 if (-not $RynthSuiteRoot) {
     $RynthSuiteRoot = "$ProjectsRoot\RynthSuite"
 }
+# RynthServers root (server plugins since 2026-10-21): explicit param, else the sibling convention.
+if (-not $RynthServersRoot) {
+    $RynthServersRoot = "$ProjectsRoot\RynthServers"
+}
 
 # ── Source state (release builds) ───────────────────────────────────────────
 # A deployment package must map to exact commits. Tracked changes outside
@@ -233,16 +246,31 @@ $LootEditorPublish    = "$RynthSuiteRoot\Tools\RynthCore.LootEditor\bin\$Configu
 $MonsterEditorPublish = "$RynthSuiteRoot\Tools\RynthCore.MonsterEditor\bin\$Configuration\net10.0\win-x86\publish"
 
 # Experimental RynthSuite plugins (optional installer components). Each installs to
-# <RynthSuite>\<Name>\RynthCore.Plugin.<Name>.dll and keeps its own semantic version.
+# <RynthSuite>\<Name>\RynthCore.Plugin.<Name>.dll. One with a <Version> in its csproj keeps that
+# semantic version; the rest take the release calver (Test-OwnVersion).
 $ExperimentalPlugins = @('RynthChat', 'RynthJuice', 'RynthNav', 'RynthTracker', 'RynthVision', 'UbRythai')
 # Project folders that don't follow Plugins\RynthCore.Plugin.<Name>\ (ub-Rythai keeps its own sub-tree).
 $ExperimentalProjectDirs = @{ 'UbRythai' = "$RynthSuiteRoot\Plugins\ub-Rythai\RynthCore.Plugin.UbRythai" }
 function Get-ExperimentalDir([string]$Name) {
     if ($ExperimentalProjectDirs.ContainsKey($Name)) { return $ExperimentalProjectDirs[$Name] }
+    # RynthILT and the per-server plugins live in RynthServers (rynth, 2026-10-21).
+    if ($Name -eq 'RynthILT' -or $ServerPlugins -contains $Name) { return "$RynthServersRoot\Plugins\RynthCore.Plugin.$Name" }
     return "$RynthSuiteRoot\Plugins\RynthCore.Plugin.$Name"
 }
 function Get-ExperimentalProject([string]$Name) { "$(Get-ExperimentalDir $Name)\RynthCore.Plugin.$Name.csproj" }
+# Only a plugin whose csproj sets its own <Version> (RynthJuice, UbRythai) keeps it; the others
+# (RynthNav, RynthChat, RynthTracker, RynthVision) would read 1.0.0, so they get the release calver.
+function Test-OwnVersion([string]$Name) { [bool](Select-String -Path (Get-ExperimentalProject $Name) -Pattern '<Version>' -Quiet) }
 function Get-ExperimentalPublish([string]$Name) { "$(Get-ExperimentalDir $Name)\bin\$Configuration\net10.0-windows\win-x86\publish" }
+
+# RynthSuite companion plugins (installer components, on in a Full install). Same layout as the
+# experimental ones: <RynthSuite>\<Name>\RynthCore.Plugin.<Name>.dll, from Plugins\RynthCore.Plugin.<Name>\.
+# They carry no <Version> of their own, so they get the release calver (-p:Version) like the engine.
+# Server plugins (RynthServers): installed with the suite and registered with the launcher; RynthCore
+# loads only the one for the server you connect to (PluginManifestGate), so each one's features show
+# only on its own server. RynthILT is the Infinite Leaftide one.
+$ServerPlugins = @('RynthAChard', 'RynthAelrynth', 'RynthColdeve', 'RynthConquest', 'RynthDerptide', 'RynthDreamWeave', 'RynthEversong', 'RynthFrostACE', 'RynthFrostcull', 'RynthLeafDawn', 'RynthLeafdawning', 'RynthLevistras', 'RynthPortalStorm', 'RynthReefcull', 'RynthSundering', 'RynthThistlecrown', 'RynthThreads')
+$SuitePlugins = @('RynthOracle', 'RynthILT', 'RynthInventory', 'RynthSort') + $ServerPlugins
 # RynthNav's starter portal list (shipped into <RynthCore>\NavData, never overwritten).
 $NavPortalsTsv = "$RynthSuiteRoot\Tools\RynthNav.PortalGraph\Data\portals.tsv"
 
@@ -256,7 +284,8 @@ $SuiteStaging = "$StagingRoot\suite"
 # The managed loader project is only built for -NativeAot; the default uses the native C loader.
 $allProjects = @($LauncherProject, $EngineProject, $PluginProject, $LootEditorProject, $MonsterEditorProject) +
                @(if ($NativeAot) { $LoaderProject }) +
-               @($ExperimentalPlugins | ForEach-Object { Get-ExperimentalProject $_ })
+               @($ExperimentalPlugins | ForEach-Object { Get-ExperimentalProject $_ }) +
+               @($SuitePlugins | ForEach-Object { Get-ExperimentalProject $_ })
 foreach ($p in $allProjects) {
     if (-not (Test-Path $p)) {
         throw "Project not found: $p`nUpdate paths in Build-Installer.ps1 if your repo layout differs."
@@ -285,11 +314,15 @@ if (-not $SkipBuild) {
     }
     # (Default: the CoreCLR engine and native loader are built straight into staging below.)
 
-    # ── 4. RynthAi plugin (NativeAOT; keeps its own version) ─────────────────
-    Write-Host ""
-    Write-Host "[4/7] Publishing RynthAi plugin (NativeAOT)..." -ForegroundColor Cyan
-    dotnet publish $PluginProject -c $Configuration
-    if ($LASTEXITCODE -ne 0) { throw "Plugin publish failed (exit $LASTEXITCODE)" }
+    # ── 4. RynthAi plugin (NativeAOT; keeps its own version; a managed RynthAi from Publish-Update replaces it) ──
+    if (-not $RynthAiDll) {
+        Write-Host ""
+        Write-Host "[4/7] Publishing RynthAi plugin (NativeAOT)..." -ForegroundColor Cyan
+        # Its plugin version is RynthAiVersionCommand.HandWrittenVersion; the DLL's ProductVersion
+        # takes the release calver so an installed file never reads 1.0.0.
+        dotnet publish $PluginProject -c $Configuration @VersionArgs
+        if ($LASTEXITCODE -ne 0) { throw "Plugin publish failed (exit $LASTEXITCODE)" }
+    }
 
     # ── 5. Loot Editor (self-contained Avalonia tool) ─────────────────────────
     Write-Host ""
@@ -310,9 +343,22 @@ if (-not $SkipBuild) {
     Write-Host ""
     Write-Host "[7/7] Publishing experimental plugins (NativeAOT)..." -ForegroundColor Cyan
     foreach ($name in $ExperimentalPlugins) {
+        $ownVersion = Test-OwnVersion $name
+        Write-Host "  $name$(if ($ownVersion) { ' (own version)' } else { '' })"
+        $publishDir = (Get-ExperimentalPublish $name) + '/'
+        # @(...) keeps it an array: a bare if/else unrolls one item to a string, which splats char by char.
+        $pluginVersionArgs = @(if (-not $ownVersion) { $VersionArgs })
+        dotnet publish (Get-ExperimentalProject $name) -c $Configuration "-p:PublishDir=$publishDir" @pluginVersionArgs
+        if ($LASTEXITCODE -ne 0) { throw "$name publish failed (exit $LASTEXITCODE)" }
+    }
+
+    # ── 7b. RynthSuite companion plugins (NativeAOT; release calver) ──────────
+    Write-Host ""
+    Write-Host "[7b/7] Publishing RynthSuite plugins (NativeAOT)..." -ForegroundColor Cyan
+    foreach ($name in $SuitePlugins) {
         Write-Host "  $name"
         $publishDir = (Get-ExperimentalPublish $name) + '/'
-        dotnet publish (Get-ExperimentalProject $name) -c $Configuration "-p:PublishDir=$publishDir"
+        dotnet publish (Get-ExperimentalProject $name) -c $Configuration "-p:PublishDir=$publishDir" @VersionArgs
         if ($LASTEXITCODE -ne 0) { throw "$name publish failed (exit $LASTEXITCODE)" }
     }
 }
@@ -398,6 +444,41 @@ if ((Test-Path $sehSrc) -and (Get-SehSourceTime) -gt (Get-Item $sehDll).LastWrit
 }
 Copy-Item $sehDll "$CoreStaging\Runtime\" -Force
 
+# DXVK x32 cache (optional launcher "Enable DXVK"): seed Runtime\dxvk so a fresh
+# install can toggle without GitHub. Prefer a local drop-in stage, else fetch latest.
+$dxvkDest = "$CoreStaging\Runtime\dxvk"
+$dxvkBuild = "C:\Games\RynthCore\build\dxvk-dropin\extract"
+Write-Host "Seeding Runtime\dxvk (x32 d3d9 for launcher Enable DXVK)..." -ForegroundColor Cyan
+New-Item -ItemType Directory -Force -Path $dxvkDest | Out-Null
+$seeded = $false
+if (Test-Path "$dxvkBuild") {
+    $localDll = Get-ChildItem $dxvkBuild -Recurse -Filter "d3d9.dll" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Directory.Name -eq "x32" } | Select-Object -First 1
+    if ($localDll) {
+        $verFile = Join-Path $localDll.Directory.Parent.FullName ".." # unused; read from folder name
+        $folderVer = if ($localDll.Directory.Parent.Name -match 'dxvk-(\d+\.\d+\.\d+)') { $Matches[1] } else { "local" }
+        Copy-Item $localDll.FullName "$dxvkDest\d3d9.dll" -Force
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        [IO.File]::WriteAllText("$dxvkDest\version.txt", $folderVer, $utf8)
+        $seeded = $true
+        Write-Host "  Seeded from build drop-in ($folderVer)."
+    }
+}
+if (-not $seeded -and (Test-Path "C:\Games\RynthCore\Runtime\dxvk\d3d9.dll")) {
+    Copy-Item "C:\Games\RynthCore\Runtime\dxvk\*" $dxvkDest -Force
+    $seeded = $true
+    Write-Host "  Seeded from live Runtime\dxvk."
+}
+if (-not $seeded) {
+    try {
+        & "$RepoRoot\scripts\Fetch-Dxvk.ps1" -Target $dxvkDest
+        $seeded = $true
+    }
+    catch {
+        Write-Warning "DXVK seed skipped (fetch failed): $($_.Exception.Message). Launcher can still Fetch at runtime."
+    }
+}
+
 # Engine Native subfolder (NativeAOT layout)
 if ($NativeAot -and (Test-Path "$EnginePublish\Native")) {
     foreach ($file in (Get-ChildItem "$EnginePublish\Native" -File)) {
@@ -411,16 +492,24 @@ Copy-PublishTree $LootEditorPublish "$CoreStaging\Tools\LootEditor"
 
 # RynthAi plugin DLL → <RynthSuite>\RynthAi (next to its data dirs; the installer hands the
 # path to the launcher via HKA\Software\Rynth\PendingPluginRegistration).
-$pluginDll = "$PluginPublish\RynthCore.Plugin.RynthAi.dll"
+$pluginDll = if ($RynthAiDll) { $RynthAiDll } else { "$PluginPublish\RynthCore.Plugin.RynthAi.dll" }
 if (-not (Test-Path $pluginDll)) { throw "Plugin DLL not found at: $pluginDll" }
 Copy-Item $pluginDll "$SuiteStaging\RynthAi\" -Force
+
+# The managed plugins' common dependencies (engine API 88: ManagedPlugins looks in Runtime\PluginShared).
+if ($PluginSharedDir) {
+    if (-not (Test-Path $PluginSharedDir)) { throw "PluginShared folder not found at: $PluginSharedDir" }
+    New-Item -ItemType Directory -Path "$CoreStaging\Runtime\PluginShared" -Force | Out-Null
+    Copy-Item "$PluginSharedDir\*" "$CoreStaging\Runtime\PluginShared\" -Force
+    Write-Host "  Runtime\PluginShared: $((Get-ChildItem "$CoreStaging\Runtime\PluginShared" -File).Count) file(s)"
+}
 
 # Monster Editor → <RynthSuite>\RynthAi\MonsterEditor (RynthAi's dashboard launches it from there)
 Copy-PublishTree $MonsterEditorPublish "$SuiteStaging\RynthAi\MonsterEditor"
 
 # Experimental plugins → <RynthSuite>\<Name>\RynthCore.Plugin.<Name>.dll (the NativeAOT DLL is self-contained;
 # cimgui.dll is provided by the engine's Runtime folder).
-foreach ($name in $ExperimentalPlugins) {
+foreach ($name in @($ExperimentalPlugins) + @($SuitePlugins)) {
     $dll = Join-Path (Get-ExperimentalPublish $name) "RynthCore.Plugin.$name.dll"
     if (-not (Test-Path $dll)) { throw "$name DLL not found at: $dll" }
     New-Item -ItemType Directory -Path "$SuiteStaging\$name" -Force | Out-Null
@@ -473,6 +562,17 @@ if ($SkipDecalBridge) {
 # release.txt — which core release this install is ($release, from -Version at the top).
 Set-Content -Path "$CoreStaging\release.txt" -Value @($release, $Version) -Encoding ASCII
 
+# The PE machine field of a DLL (e_lfanew at 0x3C, then the COFF Machine at PE offset + 4). The game is
+# 32-bit, so the web panel's native loader must be the x86 one (0x14C): the NuGet package also carries
+# win-x64 and win-arm64 copies that would load nowhere.
+function Assert-PeMachine([string]$Path, [int]$Expected) {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 0x40) { throw "$Path is not a PE file (too short)" }
+    $pe = [System.BitConverter]::ToInt32($bytes, 0x3C)
+    if ($pe -lt 0 -or $pe + 6 -gt $bytes.Length) { throw "$Path is not a PE file (bad e_lfanew)" }
+    $machine = [System.BitConverter]::ToUInt16($bytes, $pe + 4)
+    if ($machine -ne $Expected) { throw ("{0}: PE machine 0x{1:X}, expected 0x{2:X}" -f $Path, $machine, $Expected) }
+}
 # Everything a working install needs. The 2026-09-25 public installer went out
 # without the Loader and the SEH trampoline because nothing checked.
 $required = @(
@@ -489,13 +589,15 @@ $required = @(
     "$SuiteStaging\RynthAi\RynthCore.Plugin.RynthAi.dll",
     "$SuiteStaging\RynthAi\MonsterEditor\RynthCore.MonsterEditor.exe",
     "$StagingRoot\navdata\portals.tsv"
-) + @($ExperimentalPlugins | ForEach-Object { "$SuiteStaging\$_\RynthCore.Plugin.$_.dll" })
+) + @(@($ExperimentalPlugins) + @($SuitePlugins) | ForEach-Object { "$SuiteStaging\$_\RynthCore.Plugin.$_.dll" })
 # The unloadable engine also needs its shim and the app-local CoreCLR runtime.
 if (-not $NativeAot) {
     $required += @(
         "$CoreStaging\Runtime\RynthCore.Shim.dll",
         "$CoreStaging\Runtime\dotnet\coreclr.dll",
-        "$CoreStaging\Runtime\dotnet\System.Private.CoreLib.dll"
+        "$CoreStaging\Runtime\dotnet\System.Private.CoreLib.dll",
+        "$CoreStaging\Runtime\Microsoft.Web.WebView2.Core.dll",
+        "$CoreStaging\Runtime\WebView2Loader.dll"
     )
 }
 if ($buildDecalBridge) {
@@ -503,6 +605,9 @@ if ($buildDecalBridge) {
 }
 $missing = @($required | Where-Object { -not (Test-Path $_) })
 if ($missing.Count -gt 0) { throw "Staging is missing required files:`n  $($missing -join "`n  ")" }
+if (-not $NativeAot) {
+    Assert-PeMachine "$CoreStaging\Runtime\WebView2Loader.dll" 0x14C
+}
 
 # Every assembly the launcher's deps.json lists must be staged next to it — a launcher DLL whose
 # deps.json doesn't match is exactly the "Could not load RynthCore.DesktopLog" failure of 2026-10-04.
@@ -551,6 +656,13 @@ if ($Version) {
         }
     }
 }
+
+# No file we ship may carry the ReadOnly attribute (a read-only source - a git checkout on a
+# read-only share, a file copied off an ISO - would otherwise land read-only on the player's PC,
+# where the launcher's updater and RynthAi can't overwrite it). 2026-10-13.
+$readOnly = @(Get-ChildItem "$ScriptDir\staging" -Recurse -File -Force | Where-Object { $_.IsReadOnly })
+foreach ($f in $readOnly) { $f.IsReadOnly = $false }
+if ($readOnly.Count -gt 0) { Write-Host "  Cleared read-only on $($readOnly.Count) staged file(s)." -ForegroundColor Yellow }
 
 # ── Inno Setup ───────────────────────────────────────────────────────────────
 # Auto-detect ISCC if not specified: try standard install location then user-local.
@@ -667,6 +779,7 @@ if ($Version -and -not $NoPackage) {
         'RynthAi plugin'           = "$SuiteStaging\RynthAi\RynthCore.Plugin.RynthAi.dll"
         'Monster Editor'           = "$SuiteStaging\RynthAi\MonsterEditor\RynthCore.MonsterEditor.exe"
     }
+    foreach ($name in $SuitePlugins) { $componentFiles["$name plugin"] = "$SuiteStaging\$name\RynthCore.Plugin.$name.dll" }
     foreach ($name in $ExperimentalPlugins) { $componentFiles["$name (experimental)"] = "$SuiteStaging\$name\RynthCore.Plugin.$name.dll" }
     $components = foreach ($kv in $componentFiles.GetEnumerator()) {
         $vi = (Get-Item $kv.Value).VersionInfo

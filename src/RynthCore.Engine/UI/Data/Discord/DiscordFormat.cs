@@ -1,8 +1,8 @@
 // ============================================================================
 //  RynthCore.Engine - UI/Data/Discord/DiscordFormat.cs
 //  Pure helpers for the Discord relay: Markdown escaping, line formatting,
-//  message packing, credential-shape checks, the character / keyword filters
-//  and reading a chat line's "HH:mm:ss" time. No I/O; covered by
+//  message packing, credential-shape checks and the keyword filter.
+//  No I/O; covered by
 //  tools/ChatDiscordTests.
 // ============================================================================
 
@@ -183,37 +183,29 @@ internal static class DiscordFormat
         return false;
     }
 
-    /// <summary>True when <paramref name="character"/> may relay: the list is blank, or it names the character.</summary>
-    public static bool CharacterAllowed(string onlyCharacters, string character)
-    {
-        var names = SplitList(onlyCharacters);
-        if (names.Count == 0) return true;
-        string me = (character ?? string.Empty).Trim().TrimStart('+');
-        if (me.Length == 0) return false;
-        foreach (string n in names)
-            if (string.Equals(n.TrimStart('+'), me, StringComparison.OrdinalIgnoreCase)) return true;
-        return false;
-    }
-
-    /// <summary>Removes <paramref name="secret"/> from an error text before it is shown or logged.</summary>
-    public static string Redact(string text, string? secret)
-    {
-        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(secret)) return text ?? string.Empty;
-        return text.Replace(secret, "***", StringComparison.Ordinal);
-    }
+    // Unanchored: a webhook's token after /webhooks/{id}/, and anything shaped like a bot token.
+    private static readonly Regex RxWebhookTokenAnywhere = new(
+        @"(?<=webhooks/\d{15,22}/)[A-Za-z0-9_\-]{30,100}", RegexOptions.CultureInvariant);
+    private static readonly Regex RxBotTokenAnywhere = new(
+        @"(?<![A-Za-z0-9_\-])[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{4,}\.[A-Za-z0-9_\-]{20,}(?![A-Za-z0-9_\-])", RegexOptions.CultureInvariant);
 
     /// <summary>
-    /// The local time a chat line was printed, from its "HH:mm:ss" stamp, on the day closest to
-    /// <paramref name="now"/> (a stamp more than a minute in the future is from yesterday).
-    /// <paramref name="now"/> when the stamp can't be read.
+    /// Removes credentials from an error text before it is shown or logged: <paramref name="secret"/>
+    /// (the webhook URL or bot token in use) whole, the webhook's bare token on its own, and anything
+    /// else shaped like a webhook token or a bot token.
     /// </summary>
-    public static DateTime LineTime(string? stamp, DateTime now)
+    public static string Redact(string text, string? secret)
     {
-        if (string.IsNullOrEmpty(stamp)
-            || !TimeSpan.TryParseExact(stamp.Trim(), @"hh\:mm\:ss", CultureInfo.InvariantCulture, out TimeSpan tod))
-            return now;
-        DateTime t = now.Date + tod;
-        if (t > now.AddMinutes(1)) t = t.AddDays(-1);
-        return t;
+        if (string.IsNullOrEmpty(text)) return string.Empty;
+        string t = text;
+        if (!string.IsNullOrEmpty(secret))
+        {
+            string sec = secret.Trim();
+            if (sec.Length > 0) t = t.Replace(sec, "***", StringComparison.Ordinal);
+            Match m = RxWebhook.Match(sec.TrimEnd('/'));
+            if (m.Success) t = t.Replace(m.Groups["token"].Value, "***", StringComparison.Ordinal);
+        }
+        t = RxWebhookTokenAnywhere.Replace(t, "***");
+        return RxBotTokenAnywhere.Replace(t, "***");
     }
 }

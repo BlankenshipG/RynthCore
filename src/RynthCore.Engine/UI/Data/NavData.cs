@@ -13,6 +13,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using RynthCore.Engine.ImGuiBackend.Hud;
 using System.Text.Json.Serialization;
 
 namespace RynthCore.Engine.UI.Data;
@@ -50,6 +51,9 @@ internal sealed class NavPayload
     public double TrailYards { get; set; }
     /// <summary>The last route edit's result, for a few seconds after it (empty otherwise).</summary>
     public string EditStatus { get; set; } = string.Empty;
+    /// <summary>Map editing commands RynthAi understands (addPointAt, movePointTo, setActive): 1 from
+    /// RynthAi 2026-10-12. Older plugins omit it (0) and the Dungeon Map doesn't offer editing.</summary>
+    public int MapEdit { get; set; }
 
     /// <summary>A copy a face may change (its own point list); the points themselves are shared.</summary>
     public NavPayload Clone()
@@ -76,6 +80,9 @@ internal sealed class NavCmd
     public double Seconds { get; set; }                // addPause
     public double Yards { get; set; }                  // simplifyRoute tolerance
     public bool Reverse { get; set; }                  // trailToRoute: backtrack
+    public double NS { get; set; }                     // addPointAt / movePointTo: nav coordinates
+    public double EW { get; set; }
+    public double Z { get; set; }                      // nav Z (world Z / 240)
 }
 
 [JsonSerializable(typeof(NavPayload))]
@@ -132,7 +139,11 @@ internal static class NavCommands
     {
         "Replace route with the trail (walk it again)",
         "Replace route with a backtrack (walk it back)",
+        "Clear the trail (start a new one from here)",
     };
+
+    /// <summary>The <see cref="TrailChoices"/> entry that wipes the trail (/ra navtrail clear) instead of making a route.</summary>
+    public const int TrailClearChoice = 2;
 
     /// <summary>Route picker index for the plugin's RouteType (1 Circular, 2 Linear, 3 Follow, else Once).</summary>
     public static int RouteIndex(int routeType) => routeType switch { 1 => 1, 2 => 2, 3 => 3, _ => 0 };
@@ -152,12 +163,41 @@ internal static class NavCommands
         5175, 5330, 5541, 6150, 6321, 6322,
     };
 
-    public static readonly string[] RecallLabels = BuildRecallLabels();
-
-    private static string[] BuildRecallLabels()
+    /// <summary>
+    /// "Lifestone Recall (1635)": the recall spells by name (2026-10-08: they showed as
+    /// "Spell 1635 (1635)"). The names come from the client's spell table, which loads in the
+    /// background, so the list is rebuilt until every name is known.
+    /// </summary>
+    public static string[] RecallLabels
     {
+        get
+        {
+            if (_recallLabels == null || !_recallLabelsNamed)
+            {
+                PortalSpellTable.EnsureLoadQueued();
+                _recallLabels = BuildRecallLabels(out _recallLabelsNamed);
+            }
+            return _recallLabels;
+        }
+    }
+
+    private static string[]? _recallLabels;
+    private static bool _recallLabelsNamed;
+
+    private static string[] BuildRecallLabels(out bool allNamed)
+    {
+        allNamed = true;
         var labels = new string[RecallIds.Length];
-        for (int i = 0; i < labels.Length; i++) labels[i] = $"Spell {RecallIds[i]} ({RecallIds[i]})";
+        for (int i = 0; i < labels.Length; i++)
+        {
+            if (PortalSpellTable.TryGetName((uint)RecallIds[i], out string name) && name.Length > 0)
+                labels[i] = $"{name} ({RecallIds[i]})";
+            else
+            {
+                labels[i] = $"Spell {RecallIds[i]} ({RecallIds[i]})";
+                allNamed = false;
+            }
+        }
         return labels;
     }
 

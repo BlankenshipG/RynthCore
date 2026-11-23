@@ -50,9 +50,27 @@ internal static class Program
             Run(nameof(ReadsResourceFromPe32AndPe32Plus), ReadsResourceFromPe32AndPe32Plus);
             Run(nameof(NoResourceAndNotAPe), NoResourceAndNotAPe);
             Run(nameof(GatePlanFromFiles), GatePlanFromFiles);
+            Run(nameof(ServerBlockParsesAndRoundTrips), ServerBlockParsesAndRoundTrips);
+            Run(nameof(ServerBlockRejectsBadIds), ServerBlockRejectsBadIds);
+            Run(nameof(ServerHostMatching), ServerHostMatching);
+            Run(nameof(ServerGateKeepsOnlyTheHostsPlugin), ServerGateKeepsOnlyTheHostsPlugin);
+            Run(nameof(ServerGateFailsOpen), ServerGateFailsOpen);
+            Run(nameof(ServerGatePlanFromFiles), ServerGatePlanFromFiles);
             Run(nameof(SdkApiVersionCannotDrift), SdkApiVersionCannotDrift);
             Run(nameof(TrainingStructsMirror), TrainingStructsMirror);
+            Run(nameof(ContainerOrderSlots), ContainerOrderSlots);
+            Run(nameof(WebPanelFieldsAppended), WebPanelFieldsAppended);
+            Run(nameof(WebPanelStructsMatch), WebPanelStructsMatch);
+            Run(nameof(WebPanelCodesMatch), WebPanelCodesMatch);
+            Run(nameof(HasWebPanel_FalseOnOldOrPartialTable), HasWebPanel_FalseOnOldOrPartialTable);
+            Run(nameof(ConfirmationLeaveBelow_SdkMatchesEngine), ConfirmationLeaveBelow_SdkMatchesEngine);
             Run(nameof(ManifestAttributeDrivesRuntimeMinimum), ManifestAttributeDrivesRuntimeMinimum);
+            Run(nameof(DedupeSamePathTwice), DedupeSamePathTwice);
+            Run(nameof(DedupeCaseAndSlashes), DedupeCaseAndSlashes);
+            Run(nameof(DedupeSameNameTwoFolders), DedupeSameNameTwoFolders);
+            Run(nameof(DedupeAgainstAlreadyLoaded), DedupeAgainstAlreadyLoaded);
+            Run(nameof(DedupeKeepsOrderAndText), DedupeKeepsOrderAndText);
+            Run(nameof(PrefetchListOrderAndScope), PrefetchListOrderAndScope);
             foreach (string dll in args)
                 Run("Plugin " + Path.GetFileName(dll), () => CheckBuiltPlugin(dll));
         }
@@ -435,12 +453,124 @@ internal static class Program
         Check(none.Log.Any(l => l.Contains("no plugin has a manifest")), "said once");
     }
 
+    // ── Server plugins (the manifest's "server" block and the load gate) ────
+
+    private static RynthPluginManifest S(string name, string id, string[] hosts, params string[] worlds)
+    {
+        var m = M(name);
+        m.Server = new RynthPluginServer { Id = id, Name = name, Hosts = hosts.ToList(), WorldNames = worlds.ToList() };
+        return m;
+    }
+
+    private static void ServerBlockParsesAndRoundTrips()
+    {
+        var m = RynthPluginManifest.Parse("""
+            { "name": "RynthColdeve", "minEngineApi": 66,
+              "server": { "id": "Coldeve", "name": "Coldeve", "hosts": ["play.coldeve.ac", "", 5], "worldNames": ["Coldeve"] } }
+            """);
+        Check(m.Server != null, "server block read");
+        Eq(m.Server!.Id, "coldeve", "id lower-cased");
+        Eq(string.Join(",", m.Server.Hosts), "play.coldeve.ac", "blank and non-string hosts dropped");
+        Eq(string.Join(",", m.Server.WorldNames), "Coldeve", "world names");
+        var back = RynthPluginManifest.Parse(m.ToJson());
+        Eq(back.Server?.Id, "coldeve", "round trip id");
+        Eq(back.Server?.Hosts.Count, 1, "round trip hosts");
+        Check(RynthPluginManifest.Parse("""{ "name": "RynthAi" }""").Server == null, "no block, not a server plugin");
+        Check(!M("RynthAi").ToJson().Contains("\"server\""), "no server block written for other plugins");
+    }
+
+    private static void ServerBlockRejectsBadIds()
+    {
+        string[] bad =
+        {
+            """{ "name": "X", "server": "coldeve" }""",
+            """{ "name": "X", "server": { "name": "No id" } }""",
+            """{ "name": "X", "server": { "id": "has space" } }""",
+            """{ "name": "X", "server": { "id": "ok", "hosts": "not-an-array" } }""",
+        };
+        foreach (string json in bad)
+            Check(RynthPluginManifest.TryParse(json, out string err) == null && err.Length > 0, $"refused: {json}");
+    }
+
+    private static void ServerHostMatching()
+    {
+        var ilt = new RynthPluginServer { Id = "ilt", Hosts = { "infiniteleaftide.online" } };
+        Check(ilt.MatchesHost("game.infiniteleaftide.online", out string hit) && hit == "infiniteleaftide.online", "a host under the name");
+        Check(ilt.MatchesHost("INFINITELEAFTIDE.ONLINE.", out _), "case and trailing dot ignored");
+        Check(!ilt.MatchesHost("notinfiniteleaftide.online", out _), "not a suffix without the dot");
+        var ip = new RynthPluginServer { Id = "aelrynth", Hosts = { "144.217.84.148" } };
+        Check(ip.MatchesHost("144.217.84.148", out _), "an IP matches itself");
+        Check(!ip.MatchesHost("1.144.217.84.148", out _), "an IP never matches as a suffix");
+        var wild = new RynthPluginServer { Id = "x", Hosts = { "*.ddns.net" } };
+        Check(wild.MatchesHost("frostcull.ddns.net", out _), "wildcard");
+        Check(!wild.MatchesHost("", out _), "no host, no match");
+    }
+
+    private static void ServerGateKeepsOnlyTheHostsPlugin()
+    {
+        var list = new List<PluginCandidate>
+        {
+            C("RynthAi", M("RynthAi")),
+            C("RynthChat"),
+            C("RynthColdeve", S("RynthColdeve", "coldeve", new[] { "play.coldeve.ac" }, "Coldeve")),
+            C("RynthLeafDawn", S("RynthLeafDawn", "leafdawn", new[] { "leafdawn.hopto.org" }, "LeafDawn")),
+            C("RynthLeafdawning", S("RynthLeafdawning", "leafdawning", new[] { "leafdawning.duckdns.org" }, "Leafdawning")),
+        };
+        var log = new List<string>();
+        HashSet<string> skip = PluginManifestGate.SelectServerPlugins(list, "leafdawn.hopto.org", false, log);
+        Eq(skip.Count, 2, "the two other server plugins are left out");
+        Check(skip.Contains(list[2].Key) && skip.Contains(list[4].Key), "Coldeve and Leafdawning left out");
+        Check(!skip.Contains(list[0].Key) && !skip.Contains(list[1].Key), "other plugins always load");
+        Check(log.Any(l => l.Contains("RynthColdeve") && l.Contains("not loaded")), "logged why");
+        Eq(PluginManifestGate.SelectServerPlugins(list, "leafdawn.hopto.org", true, log).Count, 0, "LoadAllServerPlugins keeps every one");
+    }
+
+    private static void ServerGateFailsOpen()
+    {
+        var list = new List<PluginCandidate>
+        {
+            C("RynthColdeve", S("RynthColdeve", "coldeve", new[] { "play.coldeve.ac" })),
+            C("RynthFrostcull", S("RynthFrostcull", "frostcull", new[] { "frostcull.ddns.net" })),
+        };
+        var log = new List<string>();
+        Eq(PluginManifestGate.SelectServerPlugins(list, "", false, log).Count, 0, "no connect host: all load");
+        Eq(PluginManifestGate.SelectServerPlugins(list, "10.0.0.5", false, log).Count, 0, "a host nobody lists: all load");
+        Check(log.Any(l => l.Contains("none lists host 10.0.0.5")), "said why");
+    }
+
+    private static void ServerGatePlanFromFiles()
+    {
+        string dir = Path.Combine(_root, "servers");
+        Directory.CreateDirectory(dir);
+        string P(string name) => Path.Combine(dir, $"RynthCore.Plugin.{name}.dll");
+        File.Copy(ThisDll, P("RynthAi"));
+        Embed(P("RynthAi"), M("RynthAi").ToJson());
+        File.Copy(ThisDll, P("RynthILT"));
+        Embed(P("RynthILT"), S("RynthILT", "ilt", new[] { "infiniteleaftide.online" }, "*Leaftide*").ToJson());
+        File.Copy(ThisDll, P("RynthAelrynth"));
+        Embed(P("RynthAelrynth"), S("RynthAelrynth", "aelrynth", new[] { "144.217.84.148" }, "Aelrynth*").ToJson());
+
+        var paths = new[] { P("RynthAi"), P("RynthILT"), P("RynthAelrynth") };
+        PluginManifestGate.LoadPlan onIlt = PluginManifestGate.Plan(paths, Api, null, "game.infiniteleaftide.online");
+        Eq(string.Join(",", onIlt.Load.Select(l => RynthPluginManifest.NameFromFile(l.Path))), "RynthAi,RynthILT", "on ILT");
+        Eq(onIlt.SkippedForServer.Count, 1, "Aelrynth's plugin skipped");
+        // The skipped one keeps its manifest: Options > Diagnostics lists its server, and forcing it loads it.
+        Eq(onIlt.SkippedServerPlugins.Count, 1, "skipped server plugin kept with its manifest");
+        Eq(onIlt.SkippedServerPlugins[0].Manifest.Server?.Id ?? "", "aelrynth", "its server id");
+        Eq(onIlt.SkippedServerPlugins[0].Path, P("RynthAelrynth"), "its path");
+        Eq(onIlt.Refused.Count, 0, "skipping is not a refusal (no chat notice)");
+        Check(onIlt.Log.Any(l => l.Contains("server ilt")), "the manifest line names the server");
+        PluginManifestGate.LoadPlan onAelrynth = PluginManifestGate.Plan(paths, Api, null, "144.217.84.148");
+        Eq(string.Join(",", onAelrynth.Load.Select(l => RynthPluginManifest.NameFromFile(l.Path))), "RynthAi,RynthAelrynth", "on Aelrynth");
+    }
+
     // ── The SDK's version ────────────────────────────────────────────────────
 
     private static void SdkApiVersionCannotDrift()
     {
         Eq(RynthCoreHost.CurrentApiVersion, PluginContractVersion.Current, "RynthCoreHost.CurrentApiVersion");
         Check(RynthCoreHost.BaselineApiVersion <= RynthCoreHost.CurrentApiVersion, "baseline at or below current");
+        Check(PluginContractVersion.BarMenu <= PluginContractVersion.Current, "BarMenu (the barMenu manifest key's version) is at or below current");
 
         // The SDK's copy of the table must reach as far as the engine's (same field count, same size).
         int sdkFields = typeof(RynthCoreApiNative).GetFields().Length;
@@ -453,6 +583,165 @@ internal static class Program
         Match match = Regex.Match(File.ReadAllText(targets), @"<RynthCoreSdkApiVersion>(\d+)</RynthCoreSdkApiVersion>");
         Check(match.Success, "targets declare RynthCoreSdkApiVersion");
         Eq(match.Success ? uint.Parse(match.Groups[1].Value) : 0u, PluginContractVersion.Current, "RynthCoreSdkApiVersion in RynthCore.PluginSdk.targets");
+
+        // Release (shared-SDK) builds raise a minimum below the managed-plugin API to the SDK's API
+        // (Publish-Update.ps1 checks for this rule before building).
+        string targetsText = File.ReadAllText(targets);
+        Match managed = Regex.Match(targetsText, @"<RynthCoreManagedPluginApi>(\d+)</RynthCoreManagedPluginApi>");
+        Check(managed.Success && uint.Parse(managed.Groups[1].Value) == 88u, "targets: managed plugins need API 88 (RynthCoreManagedPluginApi)");
+        Check(targetsText.Contains("'$(RynthPluginSharedSdk)' == 'true'") &&
+              targetsText.Contains("MinEngineApi=\"$(_RynthPluginEffectiveMinEngineApi)\"") &&
+              targetsText.Contains("<_Parameter1>$(_RynthPluginEffectiveMinEngineApi)</_Parameter1>"),
+            "targets: the manifest and the runtime attribute both use the derived minimum");
+    }
+
+    // v94: the web panel's four slots are appended right after GetMonsterHealthFn, in order, on both sides.
+    private static void WebPanelFieldsAppended()
+    {
+        string[] slots = { "WebPanelOpenFn", "WebPanelNavigateFn", "WebPanelCloseFn", "WebPanelGetStateFn" };
+        string prev = "GetMonsterHealthFn";
+        foreach (string slot in slots)
+        {
+            Eq((int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>(slot),
+               (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>(prev) + IntPtr.Size, "engine " + slot + " right after " + prev);
+            Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>(slot),
+               (int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>(prev) + IntPtr.Size, "SDK " + slot + " right after " + prev);
+            prev = slot;
+        }
+        Eq(typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(2 + 4).Last(), "GetMonsterHealthFn", "engine table: GetMonsterHealthFn precedes the four (v98's two placement slots follow them)");
+        Eq(typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(2 + 4).Last(), "GetMonsterHealthFn", "SDK table: GetMonsterHealthFn precedes the four (v98's two placement slots follow them)");
+    }
+
+    private static void StructMirror(Type engine, Type sdk, int size)
+    {
+        Eq(Marshal.SizeOf(engine), size, "engine " + engine.Name + " size");
+        Eq(Marshal.SizeOf(sdk), size, "SDK " + sdk.Name + " size");
+        var ef = engine.GetFields().Select(f => f.Name).ToArray();
+        var sf = sdk.GetFields().Select(f => f.Name).ToArray();
+        Check(ef.SequenceEqual(sf), engine.Name + " field names/order match: " + string.Join(",", ef) + " vs " + string.Join(",", sf));
+        foreach (string f in ef)
+            Eq((int)Marshal.OffsetOf(sdk, f), (int)Marshal.OffsetOf(engine, f), engine.Name + "." + f + " offset");
+    }
+
+    // v94: the SDK's WebPanelOpenNative/WebPanelStateNative are the engine's, byte for byte.
+    private static void WebPanelStructsMatch()
+    {
+        int p = IntPtr.Size;
+        StructMirror(typeof(RynthCore.Engine.Plugins.WebPanelOpenNative), typeof(RynthCore.PluginSdk.WebPanelOpenNative), 8 + 4 * p + 8 + 16);
+        StructMirror(typeof(RynthCore.Engine.Plugins.WebPanelStateNative), typeof(RynthCore.PluginSdk.WebPanelStateNative), 48);
+        Eq((int)Marshal.OffsetOf<RynthCore.Engine.Plugins.WebPanelOpenNative>("Reserved"), 8 + 4 * p + 8, "engine WebPanelOpenNative.Reserved offset (32 on x86)");
+        // The 32-bit AC client's contract: 48 bytes, Reserved at 32 (only checked when this run is x86).
+        if (IntPtr.Size == 4)
+        {
+            Eq(Marshal.SizeOf<RynthCore.Engine.Plugins.WebPanelOpenNative>(), 48, "x86 engine WebPanelOpenNative size");
+            Eq(Marshal.SizeOf<RynthCore.PluginSdk.WebPanelOpenNative>(), 48, "x86 SDK WebPanelOpenNative size");
+            Eq((int)Marshal.OffsetOf<RynthCore.Engine.Plugins.WebPanelOpenNative>("Reserved"), 32, "x86 engine WebPanelOpenNative.Reserved offset");
+            Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.WebPanelOpenNative>("Reserved"), 32, "x86 SDK WebPanelOpenNative.Reserved offset");
+            Eq(Marshal.SizeOf<RynthCore.Engine.Plugins.WebPanelStateNative>(), 48, "x86 engine WebPanelStateNative size");
+            Eq(Marshal.SizeOf<RynthCore.PluginSdk.WebPanelStateNative>(), 48, "x86 SDK WebPanelStateNative size");
+        }
+        Console.WriteLine($"  (WebPanelStructsMatch ran with IntPtr.Size={IntPtr.Size})");
+    }
+
+    // v94: every code value agrees between the engine's enums and the SDK's.
+    private static void WebPanelCodesMatch()
+    {
+        Dictionary<string, long> Vals(Type t) => Enum.GetNames(t).ToDictionary(n => n, n => Convert.ToInt64(Enum.Parse(t, n)));
+        var engine = Vals(typeof(RynthCore.Engine.Plugins.WebPanelCode));
+        var sdk = Vals(typeof(RynthCore.PluginSdk.WebPanelResult));
+        Eq(sdk.Count, engine.Count, "WebPanelCode vs WebPanelResult member count");
+        foreach (var kv in engine)
+            Check(sdk.TryGetValue(kv.Key, out long v) && v == kv.Value, "WebPanelResult." + kv.Key + " = " + kv.Value);
+        var es = Vals(typeof(RynthCore.Engine.Plugins.WebPanelStatusCode));
+        var ss = Vals(typeof(RynthCore.PluginSdk.WebPanelStatus));
+        Eq(ss.Count, es.Count, "WebPanelStatusCode vs WebPanelStatus member count");
+        foreach (var kv in es)
+            Check(ss.TryGetValue(kv.Key, out long v) && v == kv.Value, "WebPanelStatus." + kv.Key + " = " + kv.Value);
+        Eq((uint)RynthCore.PluginSdk.WebPanelStateFlags.Visible, 1u, "state flag Visible");
+        Eq((uint)RynthCore.PluginSdk.WebPanelStateFlags.Focused, 2u, "state flag Focused");
+        Eq((uint)RynthCore.PluginSdk.WebPanelStateFlags.OpenedInBrowser, 4u, "state flag OpenedInBrowser");
+        Eq((uint)RynthCore.PluginSdk.WebPanelFlags.FallbackToBrowser, 1u, "open flag FallbackToBrowser");
+        Eq((uint)RynthCore.PluginSdk.WebPanelFlags.PageKeepsEscape, 2u, "open flag PageKeepsEscape");
+    }
+
+    // v94: HasWebPanel needs Version >= 94 AND all four slots (an old engine's table is shorter and the
+    // runtime copies the full new-size struct, so slots past its end are garbage, not zero).
+    private static void HasWebPanel_FalseOnOldOrPartialTable()
+    {
+        IntPtr x = (IntPtr)0xDEAD;
+        RynthCoreHost Host(uint version, IntPtr a, IntPtr b, IntPtr c, IntPtr d)
+            => new RynthCoreHost(new RynthCoreApiNative { Version = version, WebPanelOpenFn = a, WebPanelNavigateFn = b, WebPanelCloseFn = c, WebPanelGetStateFn = d });
+        Check(!Host(93, x, x, x, x).HasWebPanel, "Version 93 with garbage slots: false");
+        Check(!Host(94, IntPtr.Zero, x, x, x).HasWebPanel, "Open zero: false");
+        Check(!Host(94, x, IntPtr.Zero, x, x).HasWebPanel, "Navigate zero: false");
+        Check(!Host(94, x, x, IntPtr.Zero, x).HasWebPanel, "Close zero: false");
+        Check(!Host(94, x, x, x, IntPtr.Zero).HasWebPanel, "GetState zero: false");
+        Check(Host(94, x, x, x, x).HasWebPanel, "Version 94, all four: true");
+        var old = Host(93, x, x, x, x);
+        Eq(old.OpenWebPanel(new WebPanelOptions { Url = "https://a.example/", Allowlist = new[] { "a.example" } }), (int)WebPanelResult.Unavailable, "Open without the API: Unavailable");
+        Eq(old.NavigateWebPanel(1, "https://a.example/"), (int)WebPanelResult.Unavailable, "Navigate without the API: Unavailable");
+        Eq(old.CloseWebPanel(1), (int)WebPanelResult.Unavailable, "Close without the API: Unavailable");
+        Eq(old.GetWebPanelState(1, out var st), WebPanelStatus.None, "GetState without the API: None");
+        Eq(st.Handle, 0, "GetState without the API: default state");
+        // Bad arguments are refused before the engine is called (the slots hold garbage, so a call would crash).
+        var live = Host(94, x, x, x, x);
+        Eq(live.OpenWebPanel(new WebPanelOptions { Url = "", Allowlist = new[] { "a" } }), (int)WebPanelResult.BadArgs, "empty URL: BadArgs");
+        Eq(live.OpenWebPanel(new WebPanelOptions { Url = "https://a/", Allowlist = Array.Empty<string>() }), (int)WebPanelResult.BadArgs, "empty allowlist: BadArgs");
+        Eq(live.OpenWebPanel(new WebPanelOptions { Url = "https://a/", Allowlist = new[] { "a\nb" } }), (int)WebPanelResult.BadArgs, "newline in an entry: BadArgs");
+        Eq(live.NavigateWebPanel(1, ""), (int)WebPanelResult.BadArgs, "navigate empty URL: BadArgs");
+    }
+
+    // v97: ArmConfirmation's leave-below flag (no table change). The SDK's flag is the engine's, the Has*
+    // needs Version >= 97 and both v85 slots, a bad minimum is refused before the engine is called, and an
+    // engine before v97 (v85's argument check) refuses the flag as bad arguments.
+    private static unsafe void ConfirmationLeaveBelow_SdkMatchesEngine()
+    {
+        Eq(RynthCoreHost.ConfirmationArmFlags.LeaveBelow, RynthCore.Engine.Compatibility.ConfirmationArmPolicy.ArmFlagLeaveBelow, "SDK flag = engine flag");
+        Eq(PluginContractVersion.ConfirmationLeaveBelow, 97u, "ConfirmationLeaveBelow is 97 (96 is reserved)");
+        Check(PluginContractVersion.ConfirmationLeaveBelow <= PluginContractVersion.Current, "ConfirmationLeaveBelow at or below current");
+
+        IntPtr x = (IntPtr)0xDEAD;
+        RynthCoreHost Host(uint version, IntPtr arm, IntPtr last)
+            => new RynthCoreHost(new RynthCoreApiNative { Version = version, ArmConfirmationFn = arm, GetLastConfirmationFn = last });
+        Check(Host(96, x, x).HasConfirmationAnswers, "v96: one-shot answers");
+        Check(!Host(96, x, x).HasConfirmationLeaveBelow, "v96: no leave-below");
+        Check(!Host(97, IntPtr.Zero, x).HasConfirmationLeaveBelow, "v97, Arm slot zero: false");
+        Check(!Host(97, x, IntPtr.Zero).HasConfirmationLeaveBelow, "v97, GetLast slot zero: false");
+        Check(Host(97, x, x).HasConfirmationLeaveBelow, "v97, both slots: true");
+        // Refused before the (garbage) slot is called.
+        Eq(Host(97, x, x).ArmConfirmationLeaveBelow(5, 0, 60_000), -3, "minimum 0: bad arguments");
+        Eq(Host(97, x, x).ArmConfirmationLeaveBelow(5, 101, 60_000), -3, "minimum 101: bad arguments");
+
+        IntPtr oldArm = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int, int, int>)&OldEngineArm;
+        IntPtr newArm = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int, int, int>)&NewEngineArm;
+        _lastArmMin = 0;
+        Eq(Host(96, oldArm, x).ArmConfirmationLeaveBelow(5, 100, 60_000), -3, "an engine before v97 refuses the flag");
+        Eq(Host(97, newArm, x).ArmConfirmationLeaveBelow(5, 100, 60_000), 1, "a v97 engine arms it");
+        Eq(_lastArmMin, 100 | 0x100, "the minimum reaches the engine with the flag");
+        Eq(Host(97, newArm, x).ArmConfirmation(5, 100, 15_000), 1, "a one-shot arm on a v97 engine, as before");
+        Eq(RynthCoreHost.ConfirmationOutcome.AcceptedSticky, 5, "outcome 5: the sticky arm's Yes (ABI)");
+        // The sticky disarm: the flag with timeout 0 on a v97 engine; nothing on an older one (whose disarm
+        // would clear the one-shot arm instead; the garbage slot shows it is not called).
+        _lastArmMin = 0;
+        Eq(Host(97, newArm, x).DisarmConfirmationLeaveBelow(5), 1, "v97: sticky disarm");
+        Eq(_lastArmMin, 0x100, "sent as the flag alone");
+        Eq(Host(96, x, x).DisarmConfirmationLeaveBelow(5), 0, "v96: not called");
+        Eq(Host(97, x, x).ArmConfirmationLeaveBelow(5, 100, 0), -3, "a zero timeout is not a disarm here");
+    }
+
+    private static int _lastArmMin;
+
+    // ConfirmationResponder.Arm's checks before v97.
+    [System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
+    private static int OldEngineArm(uint type, int minPercent, int timeoutMs)
+        => timeoutMs <= 0 ? 1 : type == 0 || minPercent < 0 || minPercent > 100 || timeoutMs > 120_000 ? -3 : 1;
+
+    // v97: the engine's own check.
+    [System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
+    private static int NewEngineArm(uint type, int minPercent, int timeoutMs)
+    {
+        _lastArmMin = minPercent;
+        return timeoutMs <= 0 ? 1 : RynthCore.Engine.Compatibility.ConfirmationArmPolicy.Validate(type, minPercent, timeoutMs, out _, out _);
     }
 
     // v79: the SDK's copies of the training structs must be the engine's, byte for byte.
@@ -468,11 +757,116 @@ internal static class Program
             Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.TrainingEntryNative>(f.Name), (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.TrainingEntryNative>(f.Name), "TrainingEntryNative." + f.Name + " offset");
         Eq(RynthCore.PluginSdk.TrainingInfoFlags.Busy, RynthCore.Engine.Plugins.TrainingInfoFlags.Busy, "info flag bits");
         Eq(RynthCore.PluginSdk.TrainingEntryFlags.Trainable, RynthCore.Engine.Plugins.TrainingEntryFlags.Trainable, "entry flag bits");
-        // The three v79 slots, then v80's GetMergeStackResultFn, end the table in this order.
-        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).TakeLast(4).ToArray();
-        Check(names.SequenceEqual(new[] { "GetTrainingInfoFn", "RaiseFn", "TrainSkillFn", "GetMergeStackResultFn" }), "v79 then v80 slots last: " + string.Join(",", names));
-        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).TakeLast(4).ToArray();
-        Check(sdkNames.SequenceEqual(names), "SDK v79 and v80 slots in the same order");
+        // The three v79 slots follow v78's, then v80's two and v81's GetMergeStackResultFn (v82-v91 follow:
+        // eleven slots to v89, then v90's thirteen, v91's two, v93's one, v94's four and v98's two).
+        var names = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).SkipLast(33).TakeLast(6).ToArray();
+        Check(names.SequenceEqual(new[] { "GetTrainingInfoFn", "RaiseFn", "TrainSkillFn", "GetContainerOrderFn", "PutItemInContainerFn", "GetMergeStackResultFn" }),
+            "v79, v80 then v81 slots last: " + string.Join(",", names));
+        var sdkNames = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SkipLast(33).TakeLast(6).ToArray();
+        Check(sdkNames.SequenceEqual(names), "SDK v79, v80 and v81 slots in the same order");
+    }
+
+    // v80: GetContainerOrder and PutItemInContainer come right before v81's slot, engine and SDK alike;
+    // v81: GetMergeStackResult, v82: SalvageDirect, v83: the ghost-creature pair, v84: GetObjectProperties,
+    // v85: the confirmation pair, v86: GetServerStateJson last.
+    // The whole table has the same field names in the same order on both sides, and the same size.
+    private static void ContainerOrderSlots()
+    {
+        var all = typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name).ToArray();
+        var sdkAll = typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).ToArray();
+        // v98: the per-character window placements end the table (2026-10-26; v91 on the test branch, v94 after
+        // upstream's v93, v98 after upstream's v94-v97, 2026-11-14); upstream's v94 web panel slots right before them.
+        string[] v98 = { "GetWindowPlacementFn", "SetWindowPlacementFn" };
+        Check(all.TakeLast(v98.Length).SequenceEqual(v98), "v98 slots last: " + string.Join(",", all.TakeLast(v98.Length)));
+        Check(sdkAll.TakeLast(v98.Length).SequenceEqual(v98), "SDK v98 slots last: " + string.Join(",", sdkAll.TakeLast(v98.Length)));
+        foreach (string slot in v98)
+            Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>(slot),
+               (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>(slot), slot + " offset");
+        // v94: the web panel's four slots come right before them.
+        string[] v94 = { "WebPanelOpenFn", "WebPanelNavigateFn", "WebPanelCloseFn", "WebPanelGetStateFn" };
+        Check(all.SkipLast(v98.Length).TakeLast(v94.Length).SequenceEqual(v94), "v94 slots before v98: " + string.Join(",", all.SkipLast(v98.Length).TakeLast(v94.Length)));
+        Check(sdkAll.SkipLast(v98.Length).TakeLast(v94.Length).SequenceEqual(v94), "SDK v94 slots before v98: " + string.Join(",", sdkAll.SkipLast(v98.Length).TakeLast(v94.Length)));
+        all = all.SkipLast(v98.Length + v94.Length).ToArray();
+        sdkAll = sdkAll.SkipLast(v98.Length + v94.Length).ToArray();
+        // v93: the monster plates' health readings end the table (2026-11-07), right after v91's two.
+        Check(all.Last() == "GetMonsterHealthFn", "v93 slot last: " + all.Last());
+        Check(sdkAll.Last() == "GetMonsterHealthFn", "SDK v93 slot last: " + sdkAll.Last());
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("GetMonsterHealthFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetMonsterHealthFn"), "GetMonsterHealthFn offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetMonsterHealthFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetAmbientLightFn") + IntPtr.Size, "GetMonsterHealthFn right after GetAmbientLightFn");
+        all = all.SkipLast(1).ToArray();
+        sdkAll = sdkAll.SkipLast(1).ToArray();
+        // v91: the ambient light floor's two slots end the table (2026-10-27); the checks after these are
+        // on the table before them.
+        string[] v91 = { "SetAmbientLightFloorFn", "GetAmbientLightFn" };
+        Check(all.TakeLast(v91.Length).SequenceEqual(v91), "v91 slots last: " + string.Join(",", all.TakeLast(v91.Length)));
+        Check(sdkAll.TakeLast(v91.Length).SequenceEqual(v91), "SDK v91 slots last: " + string.Join(",", sdkAll.TakeLast(v91.Length)));
+        foreach (string slot in v91)
+            Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>(slot),
+               (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>(slot), slot + " offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("SetAmbientLightFloorFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("DropTargetFn") + IntPtr.Size, "SetAmbientLightFloorFn right after DropTargetFn");
+        all = all.SkipLast(v91.Length).ToArray();
+        sdkAll = sdkAll.SkipLast(v91.Length).ToArray();
+        // v90: the frameless-window slots and the settings drawers end the table; the checks after these
+        // are on the table before them.
+        string[] v90 = { "PanelDragWithLastItemFn", "SetPanelPopOutFn", "PanelTextSizeFn", "RenderSettingsDrawerFn",
+                         "GetShortcutsFn", "ShortcutActionFn", "GetActionKeysFn", "GetIconTextureFn", "KeyCaptureFn", "SetActionKeyFn", "AcPanelFn", "PanelScaleFn", "DropTargetFn" };
+        Check(all.TakeLast(v90.Length).SequenceEqual(v90), "v90 slots last: " + string.Join(",", all.TakeLast(v90.Length)));
+        Check(sdkAll.TakeLast(v90.Length).SequenceEqual(v90), "SDK v90 slots last: " + string.Join(",", sdkAll.TakeLast(v90.Length)));
+        foreach (string slot in v90)
+            Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>(slot),
+               (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>(slot), slot + " offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("PanelDragWithLastItemFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("SetPanelOpenFn") + IntPtr.Size, "PanelDragWithLastItemFn right after SetPanelOpenFn");
+        var names = all.SkipLast(v90.Length).ToArray();
+        var sdkNames = sdkAll.SkipLast(v90.Length).ToArray();
+        // v81's GetMergeStackResultFn follows v80's two slots.
+        Check(names.SkipLast(12).TakeLast(2).SequenceEqual(new[] { "GetContainerOrderFn", "PutItemInContainerFn" }), "v80 slots before v81's to v85's: " + string.Join(",", names.SkipLast(12).TakeLast(2)));
+        Check(sdkNames.SkipLast(12).TakeLast(2).SequenceEqual(names.SkipLast(12).TakeLast(2)), "SDK v80 slots in the same order");
+        Check(names.SkipLast(10).Last() == "SalvageDirectFn", "v82 slot before v83's");
+        // v83: GetObjectServerAge and RemoveClientObject (ghost creatures), then v84's slot.
+        Check(names.SkipLast(8).TakeLast(2).SequenceEqual(new[] { "GetObjectServerAgeFn", "RemoveClientObjectFn" }), "v83 slots before v84's: " + string.Join(",", names.SkipLast(8).TakeLast(2)));
+        // v84: GetObjectProperties (every property of an object, /ub propertydump), then v85's two.
+        Check(names.SkipLast(7).Last() == "GetObjectPropertiesFn", "v84 slot before v85's: " + names.SkipLast(7).Last());
+        // v85: ArmConfirmation and GetLastConfirmation (the server's yes/no prompts), then v86's slot.
+        Check(names.SkipLast(5).TakeLast(2).SequenceEqual(new[] { "ArmConfirmationFn", "GetLastConfirmationFn" }), "v85 slots before v86's: " + string.Join(",", names.SkipLast(5).TakeLast(2)));
+        // v86: GetServerStateJson (which server this is, for every plugin), then v87's slot.
+        Check(names.SkipLast(4).Last() == "GetServerStateJsonFn", "v86 slot before v87's: " + names.SkipLast(4).Last());
+        // v87: GetWieldedItems (what the player wields, from the server's messages), then v89's three.
+        Check(names.SkipLast(3).Last() == "GetWieldedItemsFn", "v87 slot before v89's: " + names.SkipLast(3).Last());
+        // v89: plugin windows (the engine's look, panels by key) end the table before v90's.
+        Check(names.TakeLast(3).SequenceEqual(new[] { "GetUiColorFn", "GetUiFontFn", "SetPanelOpenFn" }), "v89 slots before v90's: " + string.Join(",", names.TakeLast(3)));
+        Check(typeof(RynthCore.PluginSdk.RynthCoreApiNative).GetFields().Select(f => f.Name).SequenceEqual(typeof(RynthCore.Engine.Plugins.RynthCoreAPI).GetFields().Select(f => f.Name)), "SDK table has the engine's slots in the same order");
+        Eq(Marshal.SizeOf<RynthCore.PluginSdk.RynthCoreApiNative>(), Marshal.SizeOf<RynthCore.Engine.Plugins.RynthCoreAPI>(), "SDK table size = engine table size");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("PutItemInContainerFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("PutItemInContainerFn"), "PutItemInContainerFn offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("SalvageDirectFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("SalvageDirectFn"), "SalvageDirectFn offset");
+        // ClientHelperHooks.MaxSalvageDirectItems (engine side, not linked here) is 100 too.
+        Eq(RynthCore.PluginSdk.RynthCoreHost.MaxSalvageDirectItems, 100, "SalvageDirect item cap");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("RemoveClientObjectFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("RemoveClientObjectFn"), "RemoveClientObjectFn offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("GetObjectPropertiesFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetObjectPropertiesFn"), "GetObjectPropertiesFn offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetObjectPropertiesFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("RemoveClientObjectFn") + IntPtr.Size, "GetObjectPropertiesFn right after RemoveClientObjectFn");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("ArmConfirmationFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("ArmConfirmationFn"), "ArmConfirmationFn offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("ArmConfirmationFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetObjectPropertiesFn") + IntPtr.Size, "ArmConfirmationFn right after GetObjectPropertiesFn");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("GetLastConfirmationFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetLastConfirmationFn"), "GetLastConfirmationFn offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("GetServerStateJsonFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetServerStateJsonFn"), "GetServerStateJsonFn offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>("GetWieldedItemsFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetWieldedItemsFn"), "GetWieldedItemsFn offset");
+        foreach (string slot in new[] { "GetUiColorFn", "GetUiFontFn", "SetPanelOpenFn" })
+            Eq((int)Marshal.OffsetOf<RynthCore.PluginSdk.RynthCoreApiNative>(slot),
+               (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>(slot), slot + " offset");
+        Eq((int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetUiColorFn"),
+           (int)Marshal.OffsetOf<RynthCore.Engine.Plugins.RynthCoreAPI>("GetWieldedItemsFn") + IntPtr.Size, "GetUiColorFn right after GetWieldedItemsFn");
     }
 
     private sealed class ProbePlugin : RynthCore.PluginCore.RynthPluginBase { }
@@ -487,6 +881,115 @@ internal static class Program
         // ... and an assembly without one (RynthCore.PluginSdk itself has none) gets the baseline.
         Check(typeof(RynthCoreHost).Assembly.GetCustomAttributes(typeof(RynthPluginManifestAttribute), false).Length == 0,
               "the SDK assembly carries no manifest attribute");
+    }
+
+    // ── PluginPaths de-duplication (PluginPathDedupe; Silentkelpie, rynth PR #1) ──
+
+    private const string SuiteDir = @"C:\Games\RynthSuite\Plugins";
+    private const string OtherDir = @"D:\Old\RynthSuite";
+
+    private static void DedupeSamePathTwice()
+    {
+        string ai = Path.Combine(SuiteDir, "RynthCore.Plugin.RynthAi.dll");
+        string chat = Path.Combine(SuiteDir, "RynthCore.Plugin.RynthChat.dll");
+        var r = PluginPathDedupe.Dedupe(new[] { ai, chat, ai });
+        Eq(string.Join("|", r.Load), ai + "|" + chat, "loads each once, in order");
+        Eq(r.Skipped.Count, 1, "one skipped");
+        Check(r.Skipped[0].SameFile && r.Skipped[0].Path == ai && r.Skipped[0].KeptPath == ai, "repeat flagged as the same file");
+        Check(r.Skipped[0].Message.Contains("listed twice") && !r.Skipped[0].Message.Contains("conflict"), "repeat is not called a conflict: " + r.Skipped[0].Message);
+    }
+
+    private static void DedupeCaseAndSlashes()
+    {
+        string ai = SuiteDir + @"\RynthCore.Plugin.RynthAi.dll";
+        string[] spellings =
+        {
+            ai.ToUpperInvariant(),
+            ai.Replace('\\', '/'),
+            @"C:\Games\RynthSuite\Plugins\..\Plugins\.\rynthcore.plugin.rynthai.DLL",
+            "  " + ai + "  ",
+        };
+        foreach (string other in spellings)
+        {
+            var r = PluginPathDedupe.Dedupe(new[] { ai, other });
+            Eq(r.Load.Count, 1, $"'{other}' loads once");
+            Check(r.Skipped.Count == 1 && r.Skipped[0].SameFile, $"'{other}' is the same file, not a conflict");
+        }
+        Eq(PluginPathDedupe.Normalize("C:/Games/RynthSuite/Plugins/"), @"C:\Games\RynthSuite\Plugins", "normalize: slashes and trailing separator");
+    }
+
+    private static void DedupeSameNameTwoFolders()
+    {
+        string first = Path.Combine(SuiteDir, "RynthCore.Plugin.RynthAi.dll");
+        string second = Path.Combine(OtherDir, "rynthcore.plugin.rynthai.dll");
+        string nav = Path.Combine(OtherDir, "RynthCore.Plugin.RynthNav.dll");
+        var r = PluginPathDedupe.Dedupe(new[] { first, nav, second });
+        Eq(string.Join("|", r.Load), first + "|" + nav, "the first listed wins; other plugins in that folder still load");
+        Eq(r.Skipped.Count, 1, "one skipped");
+        PluginPathDedupe.Skipped s = r.Skipped[0];
+        Check(!s.SameFile && !s.KeptAlreadyLoaded, "flagged as a conflict between two copies");
+        Eq(s.KeptPath, first, "kept path");
+        Check(s.Message.StartsWith("plugin conflict") && s.Message.Contains(first) && s.Message.Contains(second) && s.Message.Contains("listed first"),
+              "warning names both copies and which won: " + s.Message);
+
+        // Reversed order: the other one wins. First listed is the rule, not a folder preference.
+        var rev = PluginPathDedupe.Dedupe(new[] { second, first });
+        Eq(rev.Load.Single(), second, "reversed: the first listed wins");
+    }
+
+    private static void DedupeAgainstAlreadyLoaded()
+    {
+        string loaded = Path.Combine(SuiteDir, "RynthCore.Plugin.RynthAi.dll");
+        string copy = Path.Combine(OtherDir, "RynthCore.Plugin.RynthAi.dll");
+        var r = PluginPathDedupe.Dedupe(new[] { loaded.ToLowerInvariant(), copy }, new[] { loaded });
+        Eq(r.Load.Count, 0, "nothing new to load");
+        Eq(r.Skipped.Count, 2, "both skipped");
+        Check(r.Skipped[0].SameFile && r.Skipped[0].KeptAlreadyLoaded && r.Skipped[0].Message.Contains("already loaded"), "same file as a loaded plugin");
+        Check(!r.Skipped[1].SameFile && r.Skipped[1].KeptAlreadyLoaded && r.Skipped[1].Message.Contains("already loaded"), "a second copy of a loaded plugin is a conflict");
+    }
+
+    private static void DedupeKeepsOrderAndText()
+    {
+        string[] paths =
+        {
+            Path.Combine(SuiteDir, "RynthCore.Plugin.RynthChat.dll"),
+            "",
+            Path.Combine(SuiteDir, "RynthCore.Plugin.RynthAi.dll"),
+            Path.Combine(SuiteDir, "RynthCore.Plugin.RynthNav.dll"),
+        };
+        var r = PluginPathDedupe.Dedupe(paths);
+        Eq(string.Join("|", r.Load), paths[0] + "|" + paths[2] + "|" + paths[3], "no duplicates: everything loads, as listed, text unchanged");
+        Eq(r.Skipped.Count, 0, "nothing skipped");
+        Eq(PluginPathDedupe.Dedupe(Array.Empty<string>()).Load.Count, 0, "empty list");
+    }
+
+    // ── Prefetch file list (src\RynthCore.Engine\Plugins\PluginFilePrefetchList.cs) ──
+
+    private static void PrefetchListOrderAndScope()
+    {
+        string suite = Path.Combine(_root, "prefetch");
+        string ai = Path.Combine(suite, "RynthAi"), chat = Path.Combine(suite, "RynthChat"), shared = Path.Combine(suite, "PluginShared");
+        foreach (string d in new[] { ai, chat, shared, Path.Combine(ai, "Sub") }) Directory.CreateDirectory(d);
+        void Touch(string path) => File.WriteAllText(path, "x");
+        string aiDll = Path.Combine(ai, "RynthCore.Plugin.RynthAi.dll"), chatDll = Path.Combine(chat, "RynthCore.Plugin.RynthChat.dll");
+        Touch(aiDll); Touch(Path.Combine(ai, "RynthCore.Plugin.RynthAi.pdb")); Touch(Path.Combine(ai, "ImGui.NET.dll"));
+        Touch(Path.Combine(ai, "settings.json")); Touch(Path.Combine(ai, "Sub", "Nested.dll"));
+        Touch(chatDll); Touch(Path.Combine(chat, "ImGui.NET.dll"));
+        Touch(Path.Combine(shared, "RynthCore.PluginSdk.dll")); Touch(Path.Combine(shared, "RynthCore.PluginSdk.pdb"));
+
+        string[] listed = { chatDll, Path.Combine(suite, "Missing", "RynthCore.Plugin.Missing.dll"), Path.Combine(ai, "RYNTHCORE.PLUGIN.RYNTHAI.DLL"), "" };
+        List<string> files = PluginFilePrefetchList.Build(listed, shared);
+        string Rel(string f) => Path.GetRelativePath(suite, f).Replace('\\', '/');
+        string got = string.Join("|", files.Select(Rel));
+        Eq(Rel(files[0]), "RynthChat/RynthCore.Plugin.RynthChat.dll", "listed plugins first, in list order");
+        Check(Rel(files[1]).Equals("RynthAi/RynthCore.Plugin.RynthAi.dll", StringComparison.OrdinalIgnoreCase), $"second listed plugin second: {got}");
+        Eq(files.Count(f => f.EndsWith("RynthCore.Plugin.RynthAi.dll", StringComparison.OrdinalIgnoreCase)), 1, "a plugin listed in another case is opened once");
+        Check(files.Any(f => Rel(f) == "RynthAi/RynthCore.Plugin.RynthAi.pdb") && files.Any(f => Rel(f) == "RynthAi/ImGui.NET.dll")
+              && files.Any(f => Rel(f) == "RynthChat/ImGui.NET.dll"), $"each plugin folder's DLLs and PDBs: {got}");
+        Check(!files.Any(f => f.EndsWith(".json")) && !files.Any(f => f.Contains("Nested")), $"no other files, no subfolders: {got}");
+        Check(!files.Any(f => f.Contains("Missing")), "a missing plugin adds nothing");
+        Eq(Rel(files[^1]), "PluginShared/RynthCore.PluginSdk.dll", "the shared folder's DLLs last, without PDBs");
+        Eq(PluginFilePrefetchList.Build(Array.Empty<string>(), null).Count, 0, "nothing listed, nothing opened");
     }
 
     private static string FindUp(string relative)

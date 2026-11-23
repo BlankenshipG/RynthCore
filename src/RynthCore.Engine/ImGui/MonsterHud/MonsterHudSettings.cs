@@ -49,6 +49,20 @@ internal static class MonsterHudSettings
     public static float HeightLift = 0.0f;       // extra metres above the estimated head height
     /// <summary>A left-click on a monster plate selects that monster in game.</summary>
     public static bool ClickToSelect = true;
+    /// <summary>
+    /// "Hide behind walls" (2026-11-04, report R-20261105-020337-67aa): no plate or label (and no click) for
+    /// an object the player can't see because of building or dungeon walls (PlateSight). Off: every object
+    /// in range gets one, as before.
+    /// </summary>
+    public static bool HideBehindWalls = true;
+    /// <summary>
+    /// "Refresh others' health" (2026-10-31): the server streams health only for the selected / queried
+    /// monster, so the HUD asks for the other plates' health itself, one monster per HealthRefreshSec
+    /// (HealthProbe). Off: only the selected / queried monster's plate is live.
+    /// </summary>
+    public static bool RefreshOthersHealth = true;
+    /// <summary>Seconds between two of those health queries (HealthProbe's range).</summary>
+    public static float HealthRefreshSec = HealthProbe.DefaultIntervalSec;
 
     // Name-only labels over NPCs (vendors in gold) and, optionally, other players.
     // Counted apart from MaxPlates so they never push a monster plate out.
@@ -56,6 +70,17 @@ internal static class MonsterHudSettings
     public static float NpcMaxDistance = 30f;    // yards; short so a town isn't a wall of text
     public static int MaxNpcLabels = 15;
     public static bool PlayerNames = false;
+    /// <summary>A health bar under other players' names, for those whose health the client has been told (selected, fellowship).</summary>
+    public static bool PlayerBars = false;
+    /// <summary>
+    /// The name over portals (2026-10-28), in the radar's portal colour. On by default: portals are few and
+    /// the label is only the name. Their own distance and count, so NPC names never crowd them out.
+    /// </summary>
+    public static bool PortalNames = true;
+    public static float PortalMaxDistance = DefaultPortalDistance;   // yards; portals are worth seeing from further than NPCs
+    public const float DefaultPortalDistance = 60f;
+    /// <summary>At most this many portal names (nearest first; a selected portal always keeps its own). Not a setting.</summary>
+    public const int MaxPortalLabels = 12;
 
     // Debuff icons on the monster plates (PlateDebuffs).
     public static bool ShowDebuffs = true;
@@ -77,6 +102,23 @@ internal static class MonsterHudSettings
     public static float SelfFixedX = DefaultSelfFixedX, SelfFixedY = DefaultSelfFixedY;
     /// <summary>Just under a third-person character, clear of the chat in the bottom-left corner.</summary>
     public const float DefaultSelfFixedX = 0.5f, DefaultSelfFixedY = 0.68f;
+    // Your plate's look (2026-10-27), each piece on its own; all on = the look before they existed.
+    // Your plate only: the monster plates share the bar painter but always draw all of it.
+    /// <summary>The dark track and 1 px black edge behind each of your bars.</summary>
+    public static bool SelfBarTrack = true;
+    /// <summary>The pale gold "chip" that shows what a drop took, then drains.</summary>
+    public static bool SelfBarChip = true;
+    /// <summary>The black outline around your plate's text (numbers, name).</summary>
+    public static bool SelfTextOutline = true;
+    /// <summary>The dark band behind the "cur / max" numbers.</summary>
+    public static bool SelfNumberBand = true;
+    /// <summary>"Debuffs on you": icons for harmful spells on you under your mana bar (only while you have one).</summary>
+    public static bool SelfDebuffs = true;
+    /// <summary>
+    /// "Grey out what debuffs take" (2026-11-02): each bar spans your maximum without the harmful spells on you,
+    /// and what they take off it shows grey at the bar's end, instead of the bar filling up to the lowered maximum.
+    /// </summary>
+    public static bool SelfDebuffLoss = true;
 
     // Combat text (CombatText): floating numbers and the kill burst.
     public static bool Numbers = true;
@@ -107,7 +149,7 @@ internal static class MonsterHudSettings
     // NPC and player names are name-only labels (no bar), so they only have a text size.
     /// <summary>Monster plates: the health bar's width and height, and their text (name, level, HP, weak-to, distance).</summary>
     public static float MonsterBarWidth = 1.0f, MonsterBarHeight = 1.0f, MonsterTextSize = 1.0f;
-    /// <summary>Name labels over NPCs and vendors.</summary>
+    /// <summary>Name labels over NPCs and vendors, and over portals.</summary>
     public static float NpcTextSize = 1.0f;
     /// <summary>Name labels over other players.</summary>
     public static float PlayerTextSize = 1.0f;
@@ -116,12 +158,21 @@ internal static class MonsterHudSettings
     public const float MinBarWidth = 0.5f, MaxBarWidth = 2.5f;
     public const float MinBarHeight = 0.5f, MaxBarHeight = 3.0f;
     public const float MinTextSize = 0.5f, MaxTextSize = 2.0f;
+    /// <summary>
+    /// "Debuff icon size" (2026-10-28), in percent of the icons' size before it existed (100 = unchanged), on
+    /// top of Look > Scale: the monster plates' row and your own plate's "Debuffs on you" row, each on its own
+    /// and apart from every text size. The icon, its glyph, countdown line, stack digit, "+N" and spacing all
+    /// follow it (DebuffRowMetrics).
+    /// </summary>
+    public static int MonsterDebuffIconSize = DefaultDebuffIconSize, SelfDebuffIconSize = DefaultDebuffIconSize;
+    public const int DefaultDebuffIconSize = 100, MinDebuffIconSize = 50, MaxDebuffIconSize = 200;
 
     // ── Ranges (shared by the Settings face, the command and Load) ──────
     public const float MinDistance = 5f, MaxDistanceLimit = 120f;
     public const int MinPlates = 1, MaxPlatesLimit = 60;
     public const float MinNpcDistance = 5f, MaxNpcDistanceLimit = 80f;
     public const int MinNpcLabels = 1, MaxNpcLabelsLimit = 40;
+    public const float MinPortalDistance = 5f, MaxPortalDistanceLimit = 120f;
     public const float MinScale = 0.6f, MaxScale = 2.0f;
     public const float MinOpacity = 0.2f, MaxOpacity = 1.0f;
     public const float MinLift = -1.5f, MaxLift = 3.0f;
@@ -188,6 +239,11 @@ internal static class MonsterHudSettings
                 case "scale": if (TryF(val, out float s)) Scale = Math.Clamp(s, MinScale, MaxScale); break;
                 case "opacity": if (TryF(val, out float o)) Opacity = Math.Clamp(o, MinOpacity, MaxOpacity); break;
                 case "clickSelect": ClickToSelect = val == "1"; break;
+                case "hideBehindWalls": HideBehindWalls = val == "1"; break;
+                case "refreshOthersHealth": RefreshOthersHealth = val == "1"; break;
+                case "healthRefreshSec":
+                    if (TryF(val, out float hr)) HealthRefreshSec = Math.Clamp(hr, HealthProbe.MinIntervalSec, HealthProbe.MaxIntervalSec);
+                    break;
                 case "heightLift": if (TryF(val, out float h)) HeightLift = Math.Clamp(h, MinLift, MaxLift); break;
                 case "npcNames": NpcNames = val == "1"; break;
                 case "npcDistance": if (TryF(val, out float nd)) NpcMaxDistance = Math.Clamp(nd, MinNpcDistance, MaxNpcDistanceLimit); break;
@@ -196,6 +252,9 @@ internal static class MonsterHudSettings
                         MaxNpcLabels = Math.Clamp(nm, MinNpcLabels, MaxNpcLabelsLimit);
                     break;
                 case "playerNames": PlayerNames = val == "1"; break;
+                case "playerBars": PlayerBars = val == "1"; break;
+                case "portalNames": PortalNames = val == "1"; break;
+                case "portalDistance": if (TryF(val, out float pd)) PortalMaxDistance = Math.Clamp(pd, MinPortalDistance, MaxPortalDistanceLimit); break;
                 case "showDebuffs": ShowDebuffs = val == "1"; break;
                 case "showOthersDebuff": ShowOthersDebuff = val == "1"; break;
                 case "selfPlate": SelfPlate = val == "1"; break;
@@ -206,6 +265,12 @@ internal static class MonsterHudSettings
                 case "selfLocked": SelfLocked = val == "1"; break;
                 case "selfFixedX": if (TryF(val, out float fx)) SelfFixedX = Math.Clamp(fx, 0f, 1f); break;
                 case "selfFixedY": if (TryF(val, out float fy)) SelfFixedY = Math.Clamp(fy, 0f, 1f); break;
+                case "selfBarTrack": SelfBarTrack = val == "1"; break;
+                case "selfBarChip": SelfBarChip = val == "1"; break;
+                case "selfTextOutline": SelfTextOutline = val == "1"; break;
+                case "selfNumberBand": SelfNumberBand = val == "1"; break;
+                case "selfDebuffs": SelfDebuffs = val == "1"; break;
+                case "selfDebuffLoss": SelfDebuffLoss = val == "1"; break;
                 case "numbers": Numbers = val == "1"; break;
                 case "numDealt": NumDealt = val == "1"; break;
                 case "numTaken": NumTaken = val == "1"; break;
@@ -230,11 +295,37 @@ internal static class MonsterHudSettings
                 case "selfBarWidth": if (TryF(val, out float sbw)) SelfBarWidth = Math.Clamp(sbw, MinBarWidth, MaxBarWidth); break;
                 case "selfBarHeight": if (TryF(val, out float sbh)) SelfBarHeight = Math.Clamp(sbh, MinBarHeight, MaxBarHeight); break;
                 case "selfTextSize": if (TryF(val, out float sts)) SelfTextSize = Math.Clamp(sts, MinTextSize, MaxTextSize); break;
+                case "monsterDebuffIconSize":
+                    if (int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out int mdi))
+                        MonsterDebuffIconSize = Math.Clamp(mdi, MinDebuffIconSize, MaxDebuffIconSize);
+                    break;
+                case "selfDebuffIconSize":
+                    if (int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out int sdi))
+                        SelfDebuffIconSize = Math.Clamp(sdi, MinDebuffIconSize, MaxDebuffIconSize);
+                    break;
             }
         }
     }
 
     private static bool TryF(string s, out float v) => float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+
+    /// <summary>
+    /// A typed debuff icon size (/rv plates debuffs size, /rv plates self debuffs size) as a percent in range:
+    /// "150", "150%", or a factor "1.5" / "1.5x" (up to 3 reads as a factor). False for junk.
+    /// </summary>
+    internal static bool TryParseDebuffIconSize(string? text, out int percent)
+    {
+        percent = DefaultDebuffIconSize;
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        string t = text.Trim();
+        bool factor = false;
+        if (t.EndsWith('%')) t = t[..^1].TrimEnd();
+        else if (t.EndsWith('x') || t.EndsWith('X')) { t = t[..^1].TrimEnd(); factor = true; }
+        if (!TryF(t, out float v) || !float.IsFinite(v)) return false;
+        if (factor || v <= 3f) v *= 100f;
+        percent = (int)MathF.Round(Math.Clamp(v, MinDebuffIconSize, MaxDebuffIconSize));
+        return true;
+    }
 
     /// <summary>Writes the settings in the background. Any thread.</summary>
     public static void Save() => UiBackgroundWriter.Enqueue("nameplate settings", SaveNow);
@@ -273,10 +364,16 @@ internal static class MonsterHudSettings
         sw.WriteLine(FormattableString.Invariant($"opacity={Opacity:0.##}"));
         sw.WriteLine(FormattableString.Invariant($"heightLift={HeightLift:0.##}"));
         sw.WriteLine($"clickSelect={B(ClickToSelect)}");
+        sw.WriteLine($"hideBehindWalls={B(HideBehindWalls)}");
+        sw.WriteLine($"refreshOthersHealth={B(RefreshOthersHealth)}");
+        sw.WriteLine(FormattableString.Invariant($"healthRefreshSec={HealthRefreshSec:0.##}"));
         sw.WriteLine($"npcNames={B(NpcNames)}");
         sw.WriteLine(FormattableString.Invariant($"npcDistance={NpcMaxDistance:0.#}"));
         sw.WriteLine(FormattableString.Invariant($"npcMax={MaxNpcLabels}"));
         sw.WriteLine($"playerNames={B(PlayerNames)}");
+        sw.WriteLine($"playerBars={B(PlayerBars)}");
+        sw.WriteLine($"portalNames={B(PortalNames)}");
+        sw.WriteLine(FormattableString.Invariant($"portalDistance={PortalMaxDistance:0.#}"));
         sw.WriteLine($"showDebuffs={B(ShowDebuffs)}");
         sw.WriteLine($"showOthersDebuff={B(ShowOthersDebuff)}");
         sw.WriteLine($"selfPlate={B(SelfPlate)}");
@@ -287,6 +384,12 @@ internal static class MonsterHudSettings
         sw.WriteLine($"selfLocked={B(SelfLocked)}");
         sw.WriteLine(FormattableString.Invariant($"selfFixedX={SelfFixedX:0.####}"));
         sw.WriteLine(FormattableString.Invariant($"selfFixedY={SelfFixedY:0.####}"));
+        sw.WriteLine($"selfBarTrack={B(SelfBarTrack)}");
+        sw.WriteLine($"selfBarChip={B(SelfBarChip)}");
+        sw.WriteLine($"selfTextOutline={B(SelfTextOutline)}");
+        sw.WriteLine($"selfNumberBand={B(SelfNumberBand)}");
+        sw.WriteLine($"selfDebuffs={B(SelfDebuffs)}");
+        sw.WriteLine($"selfDebuffLoss={B(SelfDebuffLoss)}");
         sw.WriteLine($"numbers={B(Numbers)}");
         sw.WriteLine($"numDealt={B(NumDealt)}");
         sw.WriteLine($"numTaken={B(NumTaken)}");
@@ -311,6 +414,8 @@ internal static class MonsterHudSettings
         sw.WriteLine(FormattableString.Invariant($"selfBarWidth={SelfBarWidth:0.##}"));
         sw.WriteLine(FormattableString.Invariant($"selfBarHeight={SelfBarHeight:0.##}"));
         sw.WriteLine(FormattableString.Invariant($"selfTextSize={SelfTextSize:0.##}"));
+        sw.WriteLine(FormattableString.Invariant($"monsterDebuffIconSize={MonsterDebuffIconSize}"));
+        sw.WriteLine(FormattableString.Invariant($"selfDebuffIconSize={SelfDebuffIconSize}"));
     }
 
     private static string B(bool v) => v ? "1" : "0";
@@ -320,11 +425,14 @@ internal static class MonsterHudSettings
     {
         Enabled = true; MaxDistance = 35f; MaxPlates = 20; Filter = PlateFilter.All;
         ShowNames = true; ShowHpNumbers = true; ShowDistance = false; ShowLevel = true; ShowWeakness = true;
-        FadeWithDistance = true; Scale = 1.0f; Opacity = 0.9f; HeightLift = 0f; ClickToSelect = true;
+        FadeWithDistance = true; Scale = 1.0f; Opacity = 0.9f; HeightLift = 0f; ClickToSelect = true; HideBehindWalls = true;
+        RefreshOthersHealth = true; HealthRefreshSec = HealthProbe.DefaultIntervalSec;
         ShowDebuffs = true; ShowOthersDebuff = true;
-        NpcNames = true; NpcMaxDistance = 30f; MaxNpcLabels = 15; PlayerNames = false;
+        NpcNames = true; NpcMaxDistance = 30f; MaxNpcLabels = 15; PlayerNames = false; PlayerBars = false;
+        PortalNames = true; PortalMaxDistance = DefaultPortalDistance;
         SelfPlate = true; SelfNumbers = false; SelfName = false; SelfHideFirstPerson = true;
         SelfPlacement = SelfPlacement.Fixed; SelfLocked = true; SelfFixedX = DefaultSelfFixedX; SelfFixedY = DefaultSelfFixedY;
+        SelfBarTrack = true; SelfBarChip = true; SelfTextOutline = true; SelfNumberBand = true; SelfDebuffs = true; SelfDebuffLoss = true;
         Numbers = true; NumDealt = true; NumTaken = true; NumHeals = true; NumKills = true;
         NumSize = 1.0f; NumTime = 1.0f; NumRestores = true; KeepOnScreen = true;
         GainSize = 1.0f; GainTime = 1.0f; SelfPosition = SelfPlatePosition.Above;
@@ -333,7 +441,7 @@ internal static class MonsterHudSettings
         Save();
     }
 
-    /// <summary>Every plate type's bar and text size back to 1 (and saved). Render / chat thread.</summary>
+    /// <summary>Every plate type's bar and text size back to 1, the debuff icon sizes to 100 % (and saved). Render / chat thread.</summary>
     public static void ResetSizes()
     {
         ResetSizesNoSave();
@@ -345,6 +453,7 @@ internal static class MonsterHudSettings
         MonsterBarWidth = 1.0f; MonsterBarHeight = 1.0f; MonsterTextSize = 1.0f;
         NpcTextSize = 1.0f; PlayerTextSize = 1.0f;
         SelfBarWidth = 1.0f; SelfBarHeight = 1.0f; SelfTextSize = 1.0f;
+        MonsterDebuffIconSize = DefaultDebuffIconSize; SelfDebuffIconSize = DefaultDebuffIconSize;
     }
 
     /// <summary>The fixed plate back to its default spot (and saved). Render / chat thread.</summary>
@@ -355,11 +464,27 @@ internal static class MonsterHudSettings
         Save();
     }
 
+    /// <summary>
+    /// Locks or unlocks your plate (not saved: the caller saves). Only a plate fixed on screen can be
+    /// dragged, so unlocking one that follows your character fixes it on screen first, at its saved
+    /// spot. True when that switch happened. Render / chat thread.
+    /// </summary>
+    public static bool SetSelfLocked(bool locked)
+    {
+        SelfLocked = locked;
+        if (locked || SelfPlacement == SelfPlacement.Fixed) return false;
+        SelfPlacement = SelfPlacement.Fixed;
+        return true;
+    }
+
+    /// <summary>Your plate can be dragged right now: fixed on screen and unlocked.</summary>
+    public static bool SelfMovable => SelfPlacement == SelfPlacement.Fixed && !SelfLocked;
+
     /// <summary>Every master switch at once ("/rv plates all on|off").</summary>
     public static void SetAll(bool on)
     {
-        Enabled = on; ShowDebuffs = on; SelfPlate = on; Numbers = on; Gains = on; NpcNames = on;
-        if (!on) PlayerNames = false;   // "all on" leaves player names as chosen (off by default)
+        Enabled = on; ShowDebuffs = on; SelfPlate = on; Numbers = on; Gains = on; NpcNames = on; PortalNames = on;
+        if (!on) { PlayerNames = false; PlayerBars = false; }   // "all on" leaves player names and bars as chosen (off by default)
     }
 
     /// <summary>One line for chat: the current state.</summary>
@@ -367,15 +492,19 @@ internal static class MonsterHudSettings
         $"RynthVision nameplates: monsters {(Enabled ? "ON" : "OFF")} ({(Filter == PlateFilter.Engaged ? "engaged only" : "all monsters")}, " +
         $"{MaxDistance:0}yd, max {MaxPlates}, scale {Scale:0.##}, opacity {Opacity:0.##}, lift {HeightLift:0.#}m; " +
         $"names {OnOff(ShowNames)}, hp {OnOff(ShowHpNumbers)}, level {OnOff(ShowLevel)}, weak {OnOff(ShowWeakness)}, " +
-        $"distance {OnOff(ShowDistance)}, fade {OnOff(FadeWithDistance)}, click to select {OnOff(ClickToSelect)}), debuffs {OnOff(ShowDebuffs)} (others {OnOff(ShowOthersDebuff)}); " +
-        $"NPC names {OnOff(NpcNames)} ({NpcMaxDistance:0}yd, max {MaxNpcLabels}), player names {OnOff(PlayerNames)}; " +
+        $"distance {OnOff(ShowDistance)}, fade {OnOff(FadeWithDistance)}, click to select {OnOff(ClickToSelect)}, hide behind walls {OnOff(HideBehindWalls)}, " +
+        $"refresh others' health {(RefreshOthersHealth ? $"every {HealthRefreshSec:0.0#} s" : "off")}), debuffs {OnOff(ShowDebuffs)} (others {OnOff(ShowOthersDebuff)}); " +
+        $"NPC names {OnOff(NpcNames)} ({NpcMaxDistance:0}yd, max {MaxNpcLabels}), player names {OnOff(PlayerNames)} (bars {OnOff(PlayerBars)}), " +
+        $"portal names {OnOff(PortalNames)} ({PortalMaxDistance:0}yd); " +
         $"self {OnOff(SelfPlate)} ({(SelfPlacement == SelfPlacement.Fixed ? "fixed on screen, " + (SelfLocked ? "locked" : "unlocked") : "follows you, " + SelfPosition.ToString().ToLowerInvariant())}, " +
-        $"numbers {OnOff(SelfNumbers)}, name {OnOff(SelfName)}, hide in first person {OnOff(SelfHideFirstPerson)}); " +
+        $"numbers {OnOff(SelfNumbers)}, name {OnOff(SelfName)}, hide in first person {OnOff(SelfHideFirstPerson)}, " +
+        $"debuffs on you {OnOff(SelfDebuffs)}, debuff loss greyed {OnOff(SelfDebuffLoss)}, track {OnOff(SelfBarTrack)}, damage trail {OnOff(SelfBarChip)}, " +
+        $"text outline {OnOff(SelfTextOutline)}, number band {OnOff(SelfNumberBand)}); " +
         $"combat text {OnOff(Numbers)} (dealt {OnOff(NumDealt)}, taken {OnOff(NumTaken)}, heals {OnOff(NumHeals)}, kills {OnOff(NumKills)}); " +
         $"gains {OnOff(Gains)} (xp {OnOff(GainXp)}, lum {OnOff(GainLum)}, radiance {OnOff(GainRadiance)}); " +
-        $"sizes: monster bar {MonsterBarWidth:0.##}x{MonsterBarHeight:0.##} text {MonsterTextSize:0.##}, " +
-        $"NPC text {NpcTextSize:0.##}, player text {PlayerTextSize:0.##}, " +
-        $"your bars {SelfBarWidth:0.##}x{SelfBarHeight:0.##} text {SelfTextSize:0.##}.");
+        $"sizes: monster bar {MonsterBarWidth:0.##}x{MonsterBarHeight:0.##} text {MonsterTextSize:0.##} debuff icons {MonsterDebuffIconSize}%, " +
+        $"NPC and portal text {NpcTextSize:0.##}, player text {PlayerTextSize:0.##}, " +
+        $"your bars {SelfBarWidth:0.##}x{SelfBarHeight:0.##} text {SelfTextSize:0.##} debuff icons {SelfDebuffIconSize}%.");
 
     private static string OnOff(bool v) => v ? "on" : "off";
 }

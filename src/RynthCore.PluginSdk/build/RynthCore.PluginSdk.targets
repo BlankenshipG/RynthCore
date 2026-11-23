@@ -7,13 +7,16 @@
       1. writes obj\...\rynth-plugin.json from the csproj:
            name          RynthPluginName          (default: AssemblyName without "RynthCore.Plugin.")
            version       Version                  (Publish-Update.ps1 passes -p:Version=yyyy.m.d.n)
-           minEngineApi  RynthPluginMinEngineApi
+           minEngineApi  RynthPluginMinEngineApi  (raised in release builds; see _RynthPluginEffectiveMinEngineApi)
            maxEngineApi  RynthPluginMaxEngineApi  (optional; leave unset - the table is append-only)
            dependencies  @(RynthPluginDependency)  Include = plugin name, metadata MinVersion, Optional="true"
            author        RynthPluginAuthor        (default: Authors, then Company)
            description   RynthPluginDescription   (default: Description)
            homepage      RynthPluginHomepage      (default: PackageProjectUrl)
            license       RynthPluginLicense       (default: PackageLicenseExpression)
+           server        RynthPluginServerId (lower-case a-z 0-9 -), RynthPluginServerName,
+                         RynthPluginServerHosts and RynthPluginServerWorldNames ('|'-separated):
+                         a server plugin, loaded only for its own server (engine PluginManifestGate)
       2. adds [assembly: RynthPluginManifest(minEngineApi)], which RynthPluginBase.MinimumApiVersion
          defaults to (the plugin's own runtime check, which also covers engines from before
          manifests), and generates RynthPluginInfo (Name, Version, MinEngineApi constants) in the
@@ -33,8 +36,40 @@
 
   <PropertyGroup>
     <!-- The engine API this SDK knows; tools\PluginManifestTests checks it equals PluginContractVersion.Current. -->
-    <RynthCoreSdkApiVersion>80</RynthCoreSdkApiVersion>
+    <RynthCoreSdkApiVersion>98</RynthCoreSdkApiVersion>
+    <!-- The first engine API that loads managed plugins and gives them Runtime\PluginShared (2026.10.19.1). -->
+    <RynthCoreManagedPluginApi>88</RynthCoreManagedPluginApi>
     <_RynthPluginManifestOn Condition="'$(RynthPluginMinEngineApi)' != '' and '$(RynthPluginManifest)' != 'false'">true</_RynthPluginManifestOn>
+  </PropertyGroup>
+
+  <!--
+    The minEngineApi that goes into the manifest (and the [assembly: RynthPluginManifest] runtime
+    check): _RynthPluginEffectiveMinEngineApi.
+
+    Normally the plugin's own RynthPluginMinEngineApi, as it is.
+
+    RynthPluginSharedSdk=true (Publish-Update.ps1's release builds): the plugin ships alone in the
+    feed and runs against the RynthCore.PluginSdk.dll in Runtime\PluginShared, which reaches a
+    player only with the core installer of the same release. Its Has* checks guard against an
+    engine without a function, not against an older PluginShared without an SDK member it calls
+    (that fails the method, or the load). So:
+      * a declared minimum at or above RynthCoreManagedPluginApi (88) is the plugin's own checked
+        claim and is used as it is;
+      * a lower one (the "66: every newer call is behind its Has* check" of NativeAOT days, when each
+        plugin carried its own SDK) can't hold for a plugin that needs 88 just to load, so the build
+        uses RynthCoreSdkApiVersion, the API of the SDK it was compiled against: it may call anything
+        this SDK has, and the launcher then holds the plugin until the player's core has that API.
+    A plugin checked against an older PluginShared declares that API (88 or more) to keep running on
+    older cores. Release builds used to force -p:RynthPluginMinEngineApi=88 on every plugin instead,
+    so a plugin calling a v89 SDK member was offered to API-88 cores (structural audit 2026-10-21).
+  -->
+  <PropertyGroup Condition="'$(_RynthPluginManifestOn)' == 'true'">
+    <_RynthPluginEffectiveMinEngineApi>$(RynthPluginMinEngineApi.Trim())</_RynthPluginEffectiveMinEngineApi>
+    <_RynthPluginMinIsNumber>$([System.Text.RegularExpressions.Regex]::IsMatch('$(RynthPluginMinEngineApi.Trim())', '^[0-9]{1,9}$'))</_RynthPluginMinIsNumber>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(_RynthPluginManifestOn)' == 'true' and '$(RynthPluginSharedSdk)' == 'true' and '$(_RynthPluginMinIsNumber)' == 'True'">
+    <_RynthPluginMinRaised Condition="$(RynthPluginMinEngineApi.Trim()) &lt; $(RynthCoreManagedPluginApi)">true</_RynthPluginMinRaised>
+    <_RynthPluginEffectiveMinEngineApi Condition="'$(_RynthPluginMinRaised)' == 'true'">$(RynthCoreSdkApiVersion)</_RynthPluginEffectiveMinEngineApi>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(_RynthPluginManifestOn)' == 'true'">
@@ -53,7 +88,7 @@
        plugin's own check matches its manifest without any code in the plugin. -->
   <ItemGroup Condition="'$(_RynthPluginManifestOn)' == 'true'">
     <AssemblyAttribute Include="RynthCore.PluginSdk.RynthPluginManifestAttribute">
-      <_Parameter1>$(RynthPluginMinEngineApi)</_Parameter1>
+      <_Parameter1>$(_RynthPluginEffectiveMinEngineApi)</_Parameter1>
       <_Parameter1_IsLiteral>true</_Parameter1_IsLiteral>
     </AssemblyAttribute>
   </ItemGroup>
@@ -79,6 +114,10 @@ public class RynthWritePluginManifest : Task
     public string Description { get; set; }
     public string Homepage { get; set; }
     public string License { get; set; }
+    public string ServerId { get; set; }
+    public string ServerName { get; set; }
+    public string ServerHosts { get; set; }
+    public string ServerWorldNames { get; set; }
     public ITaskItem[] Dependencies { get; set; }
     public string RootNamespace { get; set; }
     [Required] public string JsonPath { get; set; }
@@ -126,6 +165,21 @@ public class RynthWritePluginManifest : Task
         AppendOpt(sb, "description", Description);
         AppendOpt(sb, "homepage", Homepage);
         AppendOpt(sb, "license", License);
+
+        string serverId = (ServerId ?? "").Trim().ToLowerInvariant();
+        string serverName = (ServerName ?? "").Trim();
+        string[] hosts = Split(ServerHosts), worlds = Split(ServerWorldNames);
+        if (serverId.Length > 0)
+        {
+            foreach (char c in serverId)
+                if (!(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-'))
+                { Log.LogError("RynthPluginServerId '{0}' may only have a-z, 0-9 and '-'.", serverId); return false; }
+            if (hosts.Length + worlds.Length == 0)
+            { Log.LogError("RynthPluginServerId '{0}' needs RynthPluginServerHosts or RynthPluginServerWorldNames.", serverId); return false; }
+            if (serverName.Length == 0) serverName = serverId;
+            sb.Append(",\n  \"server\": { \"id\": ").Append(Q(serverId)).Append(", \"name\": ").Append(Q(serverName));
+            sb.Append(", \"hosts\": [").Append(JoinQ(hosts)).Append("], \"worldNames\": [").Append(JoinQ(worlds)).Append("] }");
+        }
         sb.Append("\n}\n");
         WriteIfChanged(JsonPath, sb.ToString());
 
@@ -139,6 +193,11 @@ public class RynthWritePluginManifest : Task
         cs.Append("    public const string Version = ").Append(Q((Version ?? "").Trim())).Append(";\n");
         cs.Append("    /// <summary>The oldest engine API this plugin runs on (its manifest's minEngineApi).</summary>\n");
         cs.Append("    public const uint MinEngineApi = ").Append(min).Append(";\n");
+        cs.Append("    /// <summary>The manifest's server block (\"\" and empty lists for a plugin that isn't a server plugin).</summary>\n");
+        cs.Append("    public const string ServerId = ").Append(Q(serverId)).Append(";\n");
+        cs.Append("    public const string ServerName = ").Append(Q(serverId.Length > 0 ? serverName : "")).Append(";\n");
+        cs.Append("    public static readonly string[] ServerHosts = { ").Append(serverId.Length > 0 ? JoinQ(hosts) : "").Append(" };\n");
+        cs.Append("    public static readonly string[] ServerWorldNames = { ").Append(serverId.Length > 0 ? JoinQ(worlds) : "").Append(" };\n");
         cs.Append("}\n");
         WriteIfChanged(InfoSourcePath, cs.ToString());
         return !Log.HasLoggedErrors;
@@ -148,6 +207,25 @@ public class RynthWritePluginManifest : Task
     {
         if (string.IsNullOrWhiteSpace(value)) return;
         sb.Append(",\n  ").Append(Q(key)).Append(": ").Append(Q(value.Trim()));
+    }
+
+    // '|'-separated (MSBuild would split ';' lists into items), blanks dropped, at most 16.
+    private static string[] Split(string text)
+    {
+        var list = new List<string>();
+        foreach (string part in (text ?? "").Split('|'))
+        {
+            string p = part.Trim();
+            if (p.Length > 0 && list.Count < 16) list.Add(p);
+        }
+        return list.ToArray();
+    }
+
+    private static string JoinQ(string[] values)
+    {
+        var sb = new StringBuilder();
+        for (int i = 0; i < values.Length; i++) sb.Append(i == 0 ? "" : ", ").Append(Q(values[i]));
+        return sb.ToString();
     }
 
     private static void WriteIfChanged(string path, string text)
@@ -237,10 +315,14 @@ public class RynthEmbedPluginManifest : Task
 
   <!-- 1 + 2: the JSON and RynthPluginInfo, before compiling (RynthPluginInfo is compiled in). -->
   <Target Name="RynthGeneratePluginManifest" BeforeTargets="CoreCompile" Condition="'$(_RynthPluginManifestOn)' == 'true'">
-    <RynthWritePluginManifest Name="$(RynthPluginName)" Version="$(Version)" MinEngineApi="$(RynthPluginMinEngineApi)"
+    <Message Importance="high" Condition="'$(_RynthPluginMinRaised)' == 'true'"
+             Text="$(RynthPluginName): RynthPluginMinEngineApi $(RynthPluginMinEngineApi) is below the managed-plugin API $(RynthCoreManagedPluginApi); this shared-SDK build declares $(_RynthPluginEffectiveMinEngineApi), the API of the SDK it was built with. Declare a checked minimum (at least $(RynthCoreManagedPluginApi)) to run on older cores." />
+    <RynthWritePluginManifest Name="$(RynthPluginName)" Version="$(Version)" MinEngineApi="$(_RynthPluginEffectiveMinEngineApi)"
                               MaxEngineApi="$(RynthPluginMaxEngineApi)" SdkApiVersion="$(RynthCoreSdkApiVersion)"
                               Author="$(RynthPluginAuthor)" Description="$(RynthPluginDescription)"
                               Homepage="$(RynthPluginHomepage)" License="$(RynthPluginLicense)"
+                              ServerId="$(RynthPluginServerId)" ServerName="$(RynthPluginServerName)"
+                              ServerHosts="$(RynthPluginServerHosts)" ServerWorldNames="$(RynthPluginServerWorldNames)"
                               Dependencies="@(RynthPluginDependency)" RootNamespace="$(RootNamespace)"
                               JsonPath="$(_RynthPluginManifestJson)" InfoSourcePath="$(_RynthPluginInfoSource)" />
     <ItemGroup>

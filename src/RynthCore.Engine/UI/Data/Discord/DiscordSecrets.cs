@@ -18,9 +18,8 @@ namespace RynthCore.Engine.UI.Data.Discord;
 
 internal static class DiscordSecrets
 {
-    // Changing this makes every saved secret unreadable, including the ones imported from
-    // RynthAi 0.5.33's discord.json (same value on purpose). Change it only with a migration.
-    private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("RynthCore.RynthAi.DiscordRelay.v1");
+    // Changing this makes every saved secret unreadable. Change it only with a migration.
+    private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("RynthCore.RynthChat.DiscordRelay.v1");
 
     private const int CryptProtectUiForbidden = 0x1;
 

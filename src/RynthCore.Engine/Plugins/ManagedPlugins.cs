@@ -134,6 +134,9 @@ internal static class ManagedPlugins
         }
     }
 
+    // How long the unload waits for the plugin contexts to be collected before naming the ones still held.
+    private const long UnloadCheckMs = 1500;
+
     /// <summary>Unloads every retired plugin's context. Last step of EngineLifecycle.Shutdown.</summary>
     public static void UnloadRetired()
     {
@@ -146,15 +149,60 @@ internal static class ManagedPlugins
                 if (retired.Contains(kv.Value)) Loaded.Remove(kv.Key);
         }
 #if ENGINE_CORECLR
+        string vaBefore = retired.Count > 0 ? Compatibility.AddressSpace.Describe() : "";
+        var refs = new List<(string Name, WeakReference Context)>(retired.Count);
         foreach (Entry e in retired)
+        {
             e.Context.Unload();
-        if (retired.Count > 0)
-            RynthLog.Plugin($"ManagedPlugins: {retired.Count} plugin context(s) unloading: {string.Join(", ", retired.ConvertAll(e => e.Name))}.");
+            refs.Add((e.Name, new WeakReference(e.Context, trackResurrection: true)));
+        }
+        retired.Clear();   // drop our own strong references before checking
+        // Context.Unload only starts the collection. A context still alive after a few collections
+        // is held by something (a thread, a timer, an event, a cached type in a shared context) and
+        // keeps everything the plugin loaded: every reload then loses that much address space for
+        // good (300-480 MB on some reloads, 2026-10-19). Name the ones that stay, so the culprit shows.
+        if (refs.Count > 0)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (refs.Exists(r => r.Context.IsAlive) && sw.ElapsedMilliseconds < UnloadCheckMs)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                if (refs.Exists(r => r.Context.IsAlive)) System.Threading.Thread.Sleep(20);
+            }
+            var alive = refs.FindAll(r => r.Context.IsAlive).ConvertAll(r => r.Name);
+            RynthLog.Plugin($"ManagedPlugins: {refs.Count} plugin context(s) unloaded in {sw.ElapsedMilliseconds} ms (va before: {vaBefore}, after: {Compatibility.AddressSpace.Describe()})" +
+                            (alive.Count == 0 ? "; all collected." : $"; STILL HELD after {UnloadCheckMs} ms (their memory stays): {string.Join(", ", alive)}."));
+        }
 #endif
     }
 
 #if ENGINE_CORECLR
-    /// <summary>A plugin and its private dependencies (from the plugin's folder).</summary>
+    /// <summary>
+    /// Runtime\PluginShared: the RynthSuite plugins' common dependencies (RynthCore.PluginSdk,
+    /// PluginCore, MoonSharp, ...), installed with RynthCore so each plugin in the update feed stays
+    /// one DLL (v88, 2026-10-19). Each plugin still loads its own copy into its own collectible
+    /// context, so it unloads with the plugin. Null when the folder isn't there.
+    /// </summary>
+    internal static readonly string? SharedDir = FindSharedDir();
+
+    private static string? FindSharedDir()
+    {
+        try
+        {
+            // The shim sits in Runtime\ (the engine itself may run from Runtime\.engine_loads\).
+            foreach (Assembly a in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (a.GetName().Name != "RynthCore.Shim" || string.IsNullOrEmpty(a.Location)) continue;
+                string dir = Path.Combine(Path.GetDirectoryName(a.Location)!, "PluginShared");
+                return Directory.Exists(dir) ? dir : null;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>A plugin and its private dependencies (its own folder, then Runtime\PluginShared).</summary>
     private sealed class PluginLoadContext : AssemblyLoadContext
     {
         private readonly string _dir;
@@ -187,16 +235,38 @@ internal static class ManagedPlugins
                 string fx = Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location)!, name.Name + ".dll");
                 return File.Exists(fx) ? LoadFromAssemblyPath(fx) : null;
             }
-            string candidate = Path.Combine(_dir, name.Name + ".dll");
-            return File.Exists(candidate) ? LoadFromFile(candidate) : null;
+            string? path = Pick(name.Name + ".dll");
+            return path != null ? LoadFromFile(path) : null;
+        }
+
+        // The plugin's own copy or the shared one; with both, the newer file (a dev build carries
+        // fresh dependencies beside it; a launcher update leaves stale ones beside a new plugin).
+        private string? Pick(string fileName)
+        {
+            string own = Path.Combine(_dir, fileName);
+            string? shared = SharedDir != null ? Path.Combine(SharedDir, fileName) : null;
+            bool hasOwn = File.Exists(own), hasShared = shared != null && File.Exists(shared);
+            if (hasOwn && hasShared)
+                return File.GetLastWriteTimeUtc(shared!) > File.GetLastWriteTimeUtc(own) ? shared : own;
+            return hasOwn ? own : hasShared ? shared : null;
         }
 
         protected override IntPtr LoadUnmanagedDll(string unmanagedDllName)
         {
-            string candidate = Path.Combine(_dir, unmanagedDllName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+            // ImGui.NET's "cimgui" is the engine's own module (RynthCore.cimgui.dll), so a plugin draws in
+            // the engine's ImGui and whatever context it has current, a pop-out's included. Each plugin's
+            // own ImGui.NET used to reach a second cimgui.dll whose current context stayed the main one:
+            // a section drawn in a popped-out Mini Remote ran outside any frame and faulted in native code,
+            // killing the client (RynthDreamWeave's server card, 2026-10-19). Found and fixed by
+            // SilentKelpie (rynth PR #6); re-implemented here.
+            if (EntryPoint.ImGuiNativeHandle != IntPtr.Zero
+                && (unmanagedDllName.Equals("cimgui", StringComparison.OrdinalIgnoreCase)
+                    || unmanagedDllName.Equals("cimgui.dll", StringComparison.OrdinalIgnoreCase)))
+                return EntryPoint.ImGuiNativeHandle;
+            string? path = Pick(unmanagedDllName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
                 ? unmanagedDllName
                 : unmanagedDllName + ".dll");
-            return File.Exists(candidate) ? LoadUnmanagedDllFromPath(candidate) : IntPtr.Zero;
+            return path != null ? LoadUnmanagedDllFromPath(path) : IntPtr.Zero;
         }
     }
 #endif

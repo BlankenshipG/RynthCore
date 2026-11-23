@@ -6,7 +6,7 @@
 //  Recall / Clear / Save / Dungeon Patrol, the route editor (move / duplicate /
 //  delete / set active / move here on the selection; nearest, reverse, snap to
 //  path, point at selection, pause, simplify; recording and trail -> route),
-//  a chat waypoint, Save As, the nav file picker, the nav point reach
+//  a chat waypoint, Save As, the nav file picker (at the top), the nav point reach
 //  (RynthAi's FollowNavMin, the same row as Settings > Navigation), and the
 //  waypoint list (click selects, Ctrl/Shift-click multi-selects, double-click
 //  sets active, right-click edits, X or Delete deletes, => marks the active one).
@@ -56,6 +56,7 @@ internal sealed class NavFace : IImGuiPanel
     {
         PhosphorIcons.NavigationArrow + " Nearest", PhosphorIcons.ArrowsClockwise + " Reverse", PhosphorIcons.Path + " Snap to Path",
         PhosphorIcons.MapPin + " Point at Selected", PhosphorIcons.Hourglass + " Add Pause", PhosphorIcons.Scissors + " Simplify",
+        PhosphorIcons.ArrowCounterClockwise + " Restart",
     };
     private static readonly string[] RowMenu =
         { "Set Active", "Move Here", "Move Up", "Move Down", "Duplicate", "Delete" };
@@ -110,6 +111,19 @@ internal sealed class NavFace : IImGuiPanel
         bool typing = false;
         NavPayload d = _data;
         bool navActive = d.MacroRunning && d.NavigationEnabled;
+        Vector2 p;
+
+        // Nav file picker, first (2026-11-01, the owner: "move the nav file selection to the top")
+        if (_navFiles.Length > 0)
+        {
+            p = ImGuiNET.ImGui.GetCursorScreenPos();
+            float lw = ImGuiNET.ImGui.CalcTextSize("Nav:").X + 6;
+            ImGuiNET.ImGui.GetWindowDrawList().AddText(new Vector2(p.X, p.Y + (22 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Mute, "Nav:");
+            if (Button("##navfile", _fileLabel, new Vector2(p.X + lw, p.Y), new Vector2(w - lw, 22), Text, BtnFill, leftAlign: true))
+                _picker.Open(new Vector2(p.X + lw, p.Y + 22), _navFiles, Array.IndexOf(_navFiles, _data.ActiveNavName), i =>
+                    NavCommands.Send(new NavCmd { Cmd = "loadNav", NavName = _navFiles[i] }));
+            NextLine(p, 26);
+        }
 
         // Active nav + status
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
@@ -118,7 +132,7 @@ internal sealed class NavFace : IImGuiPanel
         if (d.NavStatusLine.Length > 0) Label(d.NavStatusLine, d.NavIsStuck ? Amber : Green);
 
         // Start / Stop
-        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        p = ImGuiNET.ImGui.GetCursorScreenPos();
         if (Button("##startstop", navActive ? StopNav : StartNav, p, new Vector2(w, 28), Text, navActive ? StopBg : StartBg))
         {
             if (navActive)
@@ -157,19 +171,21 @@ internal sealed class NavFace : IImGuiPanel
 
         // Breadcrumbs | Route overlay (RynthAi's NavOverlaySettings; saved per character)
         p = ImGuiNET.ImGui.GetCursorScreenPos();
-        if (OverlayToggle("##crumbs", "Breadcrumbs", _data.TrackBreadcrumbs, p, half,
-                "Record the trail you walk and draw it on the ground (/ra navtrail on|off).\nTurning it off hides the trail; /ra navtrail clear wipes it."))
+        // Also on Settings > Navigation. The local settings copy takes the new value too, so a reach
+        // save from this panel before the next settings fetch doesn't send the old one back.
+        if (OverlayToggle("##crumbs", "Breadcrumbs", _data.TrackBreadcrumbs, p, half, SettingsSchema.BreadcrumbsTip))
         {
             bool on = !_data.TrackBreadcrumbs;
             NavCommands.Send(new NavCmd { Cmd = "setBreadcrumbs", On = on });
             _data.TrackBreadcrumbs = on;
+            if (_settings?.TrackBreadcrumbs != null) _settings.TrackBreadcrumbs = on;
         }
-        if (OverlayToggle("##routeovl", "Route overlay", _data.ShowRouteOverlay, new Vector2(p.X + half + 4, p.Y), half,
-                "Draw the route in the world: waypoint rings and lines, waypoint labels and the guide line\nto the active waypoint (/ra navoverlay on|off). The waypoint HUD window is separate."))
+        if (OverlayToggle("##routeovl", "Route overlay", _data.ShowRouteOverlay, new Vector2(p.X + half + 4, p.Y), half, SettingsSchema.RouteOverlayTip))
         {
             bool on = !_data.ShowRouteOverlay;
             NavCommands.Send(new NavCmd { Cmd = "setRouteOverlay", On = on });
             _data.ShowRouteOverlay = on;
+            if (_settings?.ShowRouteOverlay != null) _settings.ShowRouteOverlay = on;
         }
         NextLine(p, 26);
 
@@ -256,18 +272,6 @@ internal sealed class NavFace : IImGuiPanel
         }
         NextLine(p, 26);
 
-        // Nav file picker
-        if (_navFiles.Length > 0)
-        {
-            p = ImGuiNET.ImGui.GetCursorScreenPos();
-            float lw = ImGuiNET.ImGui.CalcTextSize("Nav:").X + 6;
-            ImGuiNET.ImGui.GetWindowDrawList().AddText(new Vector2(p.X, p.Y + (22 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Mute, "Nav:");
-            if (Button("##navfile", _fileLabel, new Vector2(p.X + lw, p.Y), new Vector2(w - lw, 22), Text, BtnFill, leftAlign: true))
-                _picker.Open(new Vector2(p.X + lw, p.Y + 22), _navFiles, Array.IndexOf(_navFiles, _data.ActiveNavName), i =>
-                    NavCommands.Send(new NavCmd { Cmd = "loadNav", NavName = _navFiles[i] }));
-            NextLine(p, 26);
-        }
-
         // Waypoints
         Separator(w);
         Label($"Waypoints ({_data.Points.Count})", Mute);
@@ -296,7 +300,7 @@ internal sealed class NavFace : IImGuiPanel
     {
         string text = (on ? PhosphorIcons.CheckSquare : PhosphorIcons.Square) + " " + label;
         bool clicked = Button(id, text, pos, new Vector2(width, 22), on ? Teal : Mute, BtnFill, leftAlign: true);
-        if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(tooltip);
+        if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(tooltip);
         return clicked;
     }
 
@@ -324,7 +328,7 @@ internal sealed class NavFace : IImGuiPanel
         dl.AddText(new Vector2(p.X, p.Y + (22 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Mute, label);
         ImGuiNET.ImGui.SetCursorScreenPos(p);
         ImGuiNET.ImGui.InvisibleButton("##reach_label", new Vector2(Math.Max(1, labelW), 22));
-        if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetTooltip(SettingsSchema.NavPointReachTip);
+        if (ImGuiNET.ImGui.IsItemHovered()) SafeImGui.SetTooltip(SettingsSchema.NavPointReachTip);
 
         const float stepW = 22, boxW = 52;
         float right = p.X + w;
@@ -439,6 +443,10 @@ internal sealed class NavFace : IImGuiPanel
                 _picker.Open(at, NavCommands.SimplifyLabels, -1, i =>
                     NavCommands.Send(new NavCmd { Cmd = "simplifyRoute", Yards = NavCommands.SimplifyYards[i] }), width: 300);
                 break;
+            case 6:
+                // Run the route again from its first point (a finished Once route too); answers in chat.
+                RynthAiCommands.ApplyRemoteCommand("sendchat", "/ra nav restart");
+                break;
         }
 
         // Record | Route from Trail...
@@ -454,9 +462,13 @@ internal sealed class NavFace : IImGuiPanel
         Vector2 tp = new(p.X + half + 4, p.Y);
         if (Button("##fromtrail", FromTrail, tp, new Vector2(half, 22), Text, BtnFill, enabled: _data.TrailPoints >= 2))
             _picker.Open(new Vector2(tp.X, tp.Y + 22), NavCommands.TrailChoices, -1, i =>
-                NavCommands.Send(new NavCmd { Cmd = "trailToRoute", Reverse = i == 1 }), width: 300);
+            {
+                // The last choice wipes the trail (/ra navtrail clear); the others make a route of it.
+                if (i == NavCommands.TrailClearChoice) RynthAiCommands.ApplyRemoteCommand("sendchat", "/ra navtrail clear");
+                else NavCommands.Send(new NavCmd { Cmd = "trailToRoute", Reverse = i == 1 });
+            }, width: 300);
         if (ImGuiNET.ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGuiNET.ImGui.SetTooltip(_data.TrailPoints >= 2
+            SafeImGui.SetTooltip(_data.TrailPoints >= 2
                 ? $"Breadcrumb trail: {_data.TrailPoints} crumbs, {_data.TrailYards:0} yd.\nThe new route is unsaved; the loaded nav file is not changed."
                 : "Turn on Breadcrumbs and walk a while to build a trail.");
         NextLine(p, 26);

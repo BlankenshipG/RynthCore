@@ -3,14 +3,18 @@
 //  ImGui face of the RynthChat rule editor (the old Avalonia face is
 //  UI/Panels/RynthChatFiltersPanel.cs). One card per rule:
 //
-//    [#] [on] [regex ..........................] [up] [down] [delete]
+//    [#] [on] [Contains v] [pattern ...................] [up] [down] [delete]
 //         When [Any line v]  [Move to v] [Junk v]  [Colour line v] [swatch]
+//         (colour: No colour / Colour line / Colour match / Highlight line)
 //         (a regex error, a timed-out rule, a missing tab, or its hit count)
 //
 //  The order and what each action does are spelled out in the header lines
-//  (and in UI/Data/ChatData.cs). Below the rules: Add, Import / Export (the
-//  clipboard, JSON), and a test box - paste a line, pick where it came from,
-//  and see which rules match and where it ends up. The test runs on an edit,
+//  (and in UI/Data/ChatData.cs). A pattern is plain text (Contains, Starts
+//  with, Ends with) or a regex (ChatRuleMatching.cs). Below the rules: Add,
+//  Standard filters (ready-made Hide rules, ChatFilterPresets.cs), Import /
+//  Export (the clipboard, JSON), and a test box - paste a line, pick where it
+//  came from, and see which rules match and where it ends up, which standard
+//  filter would catch it, or make a rule from it. The test runs on an edit,
 //  never per frame; the chat itself is routed on the pump.
 //
 //  The rules live in ChatModel. Each edit applies (the pump re-routes the
@@ -34,8 +38,8 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         new PanelSpec(new Vector2(600, 460), new Vector2(440, 260), EdgeToEdge: true, GripInBody: true),
         () => new ChatFiltersFace());
 
-    private static readonly uint AddBg = RynthTheme.Argb(0xFF264C59), CardBg = RynthTheme.Argb(0xFF0E1822),
-        FocusBorder = RynthTheme.Argb(0xFFFFD700);
+    private static readonly uint CardBg = RynthTheme.Argb(0xFF0E1822), FocusBorder = RynthTheme.Argb(0xFFFFD700);
+    private static uint AddBg => RynthTheme.AccentFill;
 
     private sealed class Buffers
     {
@@ -62,12 +66,15 @@ internal sealed class ChatFiltersFace : IImGuiPanel
     private int _testSourceSeen = -1;
     private long _testVersion = -1;
     private readonly List<(string Text, uint Color)> _testResult = new();
+    private string _testLine = "";   // the tested text, timestamp removed ("Make rule" uses it)
 
     public void OnShown() => ChatModel.EnsureSettingsLoaded();
 
     private const string AddLabel = PhosphorIcons.Plus + " Add rule";
     private const string ImportLabel = PhosphorIcons.ClipboardText + " Import";
     private const string ExportLabel = PhosphorIcons.Copy + " Export";
+    private const string PresetsLabel = PhosphorIcons.ListChecks + " Standard filters";
+    private const string MakeRuleLabel = PhosphorIcons.Plus + " Make rule";
     private const string Caret = " " + PhosphorIcons.CaretDown;
 
     private static readonly string[] ActionLabels = { "Move to", "Copy to", "Hide", "Colour only" };
@@ -78,9 +85,29 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         "Hide: the line is not shown anywhere (the chat log still has it).",
         "Colour only: no routing; the rule just colours.",
     };
-    private static readonly string[] ColorLabels = { "No colour", "Colour line", "Colour match" };
-    /// <summary>Indexed by <see cref="ChatMatchMode"/>.</summary>
-    private static readonly string[] ModeLabels = { "Regex", "Contains", "Starts with", "Ends with" };
+    // Indexed by ChatColorMode.
+    private static readonly string[] ColorLabels = { "No colour", "Colour line", "Colour match", "Highlight line" };
+    private static readonly string[] ColorHelp =
+    {
+        "No colour: the rule doesn't colour the line.",
+        "Colour line: the whole line's text in this colour.",
+        "Colour match: just the text the rule matched, in this colour.",
+        "Highlight line: a band in this colour behind the whole line; the text keeps its colour.",
+    };
+    private static readonly string[] ModeHelp =
+    {
+        "Regex: a case-insensitive regular expression (^ start, $ end, \\d+ a number...).",
+        "Contains: the text anywhere in the line. Any case; . ( * \" are just characters.",
+        "Starts with: the line begins with the text. Any case.",
+        "Ends with: the line ends with the text. Any case.",
+    };
+    private static readonly string[] ModeHints =
+    {
+        "regex, e.g. ^You have been healed",
+        "text, e.g. evaded your attack",
+        "text, e.g. You say, \"",
+        "text, e.g. has expired.",
+    };
 
     public void Draw()
     {
@@ -96,9 +123,9 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         }
 
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
-        Label("Rules run top to bottom (" + PhosphorIcons.ArrowUp + PhosphorIcons.ArrowDown + " to reorder) on each line's text, as a case-insensitive regex.", Mute);
+        Label("Rules run top to bottom (" + PhosphorIcons.ArrowUp + PhosphorIcons.ArrowDown + " to reorder) on each line's text: plain text (any case) or a regex.", Mute);
         Label("Where it shows: Copy rules add a tab and go on; the first Move or Hide that matches decides.", Mute);
-        Label("Colour: the first \"Colour line\" wins; \"Colour match\" colours every match (a higher rule wins an overlap).", Mute);
+        Label("Colour: the first \"Colour line\" wins, and the first \"Highlight line\"; \"Colour match\" colours every match (a higher rule wins an overlap).", Mute);
         ImGuiNET.ImGui.PopFont();
         ImGuiNET.ImGui.Dummy(new Vector2(0, 1));
 
@@ -130,10 +157,15 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         if (Button("##add", AddLabel, new Vector2(bx, ap.Y), new Vector2(ButtonWidth(AddLabel) + 4, 24), Text, AddBg))
         {
             // An empty pattern matches nothing until typed; saved now so the row survives a relaunch mid-edit.
-            var rule = new ChatFilterRule();
+            // New rules are plain text (Contains); rules made from a chat line stay regexes.
+            var rule = new ChatFilterRule { Mode = ChatMatchMode.Contains };
             edit = () => ChatModel.AddRule(rule);
         }
-        bx += ButtonWidth(AddLabel) + 8;
+        bx += ButtonWidth(AddLabel) + 4;
+        if (Button("##presets", PresetsLabel, new Vector2(bx, ap.Y), new Vector2(ButtonWidth(PresetsLabel), 24), Text, BtnFill))
+            OpenPresetPicker(new Vector2(bx, ap.Y));
+        ImGuiNET.ImGui.SetItemTooltip("Ready-made rules that hide common game spam (spell words, evades, busy...).\nPicking one adds it as a Hide rule you can edit or delete.");
+        bx += ButtonWidth(PresetsLabel) + 8;
         if (Button("##import", ImportLabel, new Vector2(bx, ap.Y), new Vector2(ButtonWidth(ImportLabel), 24), Text, BtnFill))
             Flash(ChatModel.ImportRules(ChatModel.GetClipboardText()));
         ImGuiNET.ImGui.SetItemTooltip("Add the rules on the clipboard (an Export, or a rynthchat_settings.json) after these.");
@@ -173,6 +205,23 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         Label("Checked after the rules above, only for lines no rule moved or hid.", Mute);
         Label("Tick to hide the lines; pick a tab to move them there instead.", Mute);
         ImGuiNET.ImGui.PopFont();
+        bool retail = ChatModel.HideInRetailChat;
+        if (ImGuiNET.ImGui.Checkbox("Hidden lines are hidden in the retail chat too##hideretail", ref retail))
+        {
+            ChatModel.HideInRetailChat = retail;
+            ChatModel.SaveSettings();
+        }
+        SafeImGui.SetItemTooltip("On: a line a rule or standard filter hides doesn't print in AC's own chat window either.\n" +
+            "Off: hiding only applies to RynthChat; the retail chat shows everything.\n" +
+            "Moved / copied lines still show in the retail chat either way.");
+        bool automated = ChatModel.AutomatedToSystem;
+        if (ImGuiNET.ImGui.Checkbox("Automated system text shows in System only##autosys", ref automated))
+            ChatModel.SetAutomatedToSystem(automated);
+        SafeImGui.SetItemTooltip("On (the default): replies to the commands plugins send by themselves (/myquests, /qb list,\n" +
+            "login probes), the server's login messages, and any line a plugin hides from the retail chat\n" +
+            "show in the System tab, not under All.\n" +
+            "Off: they show under All and their channel tab like any other line.\n" +
+            "A rule or standard filter that moves or hides such a line still decides first.");
         foreach (string group in UI.Panels.RynthChatPresets.Groups)
         {
             int on = 0, total = 0;
@@ -185,7 +234,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
                 ImGuiNET.ImGui.PushID(p.Id);
                 bool enabled = p.Enabled;
                 if (ImGuiNET.ImGui.Checkbox(p.Label, ref enabled)) { p.Enabled = enabled; ChatModel.FiltersChanged(); }
-                ImGuiNET.ImGui.SetItemTooltip(p.Description + "\nExample: " + p.Example);
+                SafeImGui.SetItemTooltip(p.Description + "\nExample: " + p.Example);
                 ImGuiNET.ImGui.SameLine(Math.Max(ImGuiNET.ImGui.GetCursorPosX() + 8, rowW * 0.6f));
                 string tabText = (p.Tab.Length == 0 ? "hide" : "to " + p.Tab) + Caret;
                 if (ImGuiNET.ImGui.SmallButton(tabText))
@@ -237,12 +286,25 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + 16, p.Y + 1));
         bool on = r.Enabled;
         if (ImGuiNET.ImGui.Checkbox("##on", ref on)) { r.Enabled = on; ChatModel.FiltersChanged(); }
-        ImGuiNET.ImGui.SetItemTooltip(on ? "Rule on (click to turn off)" : "Rule off (click to turn on)");
+        SafeImGui.SetItemTooltip(on ? "Rule on (click to turn off)" : "Rule off (click to turn on)");
 
         const float btn = 22;
         float x = p.X + 42;
+        int modeIdx = (int)r.Mode;
+        string modeText = ChatRuleMatching.Labels[modeIdx] + Caret;
+        float modeW = ButtonWidth(ChatRuleMatching.Labels[2] + Caret);   // the widest, so patterns line up
+        ChatFilterRule moded = r;
+        if (Button("##mode", modeText, new Vector2(x, p.Y), new Vector2(modeW, rowH), Text, BtnFill, leftAlign: true))
+            _picker.Open(new Vector2(x, p.Y + rowH + 2), ChatRuleMatching.Labels, modeIdx, k =>
+            {
+                moded.Mode = (ChatMatchMode)k;
+                moded.Recompile();
+                ChatModel.FiltersChanged();
+            }, 120);
+        SafeImGui.SetItemTooltip(ModeHelp[modeIdx]);
+        x += modeW + 4;
         float patW = Math.Max(80, card.X + rowW - 4 - 3 * (btn + 2) - 4 - x);
-        if (TextBox("##pat", b.Pattern, new Vector2(x, p.Y), patW, "regex, e.g. ^You have been healed", out bool patActive))
+        if (TextBox("##pat", b.Pattern, new Vector2(x, p.Y), patW, ModeHints[modeIdx], out bool patActive))
         {
             r.Pattern = Utf8(b.Pattern);
             r.Recompile();
@@ -271,18 +333,6 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         float left = p.X + 42, right = card.X + rowW - 4;
         var flow = new Flow(left, p.Y + rowH + 4, right, rowH);
 
-        int matchMode = (int)r.Mode;
-        string modeText = ModeLabels[matchMode] + Caret;
-        Vector2 mPos = flow.Place(ButtonWidth(modeText));
-        if (Button("##mode", modeText, mPos, new Vector2(ButtonWidth(modeText), rowH), Text, BtnFill))
-            _picker.Open(mPos + new Vector2(0, rowH + 2), ModeLabels, matchMode, k =>
-            {
-                rule.Mode = (ChatMatchMode)k;
-                rule.Recompile();
-                ChatModel.FiltersChanged();
-            }, 120);
-        ImGuiNET.ImGui.SetItemTooltip("How the pattern matches: a regex, or plain text anywhere / at the start / at the end of the line.");
-
         string whenText = "When: " + ChatModel.ConditionLabel(r.When) + Caret;
         Vector2 wp = flow.Place(Math.Min(ButtonWidth(whenText), 240));
         if (Button("##when", whenText, wp, new Vector2(Math.Min(ButtonWidth(whenText), 240), rowH), Text, BtnFill, leftAlign: true))
@@ -299,7 +349,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
                 if (rule.Action == ChatRuleAction.Color && rule.ColorMode == ChatColorMode.None) rule.ColorMode = ChatColorMode.Line;
                 ChatModel.FiltersChanged();
             }, 140);
-        ImGuiNET.ImGui.SetItemTooltip(ActionHelp[action]);
+        SafeImGui.SetItemTooltip(ActionHelp[action]);
 
         if (r.Action is ChatRuleAction.Move or ChatRuleAction.Copy)
         {
@@ -313,7 +363,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
 
         if (r.Action != ChatRuleAction.Hide)
         {
-            int mode = (int)r.ColorMode;
+            int mode = Math.Clamp((int)r.ColorMode, 0, ColorLabels.Length - 1);
             string colText = ColorLabels[mode] + Caret;
             Vector2 cPos = flow.Place(ButtonWidth(colText));
             if (Button("##colmode", colText, cPos, new Vector2(ButtonWidth(colText), rowH), Text, BtnFill))
@@ -321,8 +371,8 @@ internal sealed class ChatFiltersFace : IImGuiPanel
                 {
                     rule.ColorMode = (ChatColorMode)k;
                     ChatModel.FiltersChanged();
-                }, 130);
-            ImGuiNET.ImGui.SetItemTooltip("Colour line: the whole line. Colour match: just the text the regex matched.");
+                }, 140);
+            SafeImGui.SetItemTooltip(ColorHelp[mode]);
             if (r.ColorMode != ChatColorMode.None)
             {
                 Vector2 sPos = flow.Place(rowH);
@@ -381,9 +431,9 @@ internal sealed class ChatFiltersFace : IImGuiPanel
 
     private static (string? Note, uint Color) RuleNote(ChatFilterRule r)
     {
-        if (r.Pattern.Length == 0) return ("Type a pattern: the rule matches nothing until then.", Faded(Mute));
+        if (r.Pattern.Trim().Length == 0) return ("Type a pattern: the rule matches nothing until then.", Faded(Mute));
         if (r.Invalid) return ("Regex error: " + (r.Error ?? "doesn't compile"), Red);
-        if (r.Slow) return ("Too slow: matching it took too long (see the RynthCore log), so the rule is skipped. Edit the pattern to try again.", Amber);
+        if (r.Slow) return ("Too slow: matching it took too long twice running (see the RynthCore log), so the rule is skipped for a while. It is tried again on its own; editing the pattern tries it at once.", Amber);
         if (r.Action is ChatRuleAction.Move or ChatRuleAction.Copy && r.Tab.Length == 0)
             return ("Pick a tab: until then it only colours.", Amber);
         if (!r.Enabled) return ("Off.", Faded(Mute));
@@ -406,6 +456,20 @@ internal sealed class ChatFiltersFace : IImGuiPanel
             _x += w + 4;
             return at;
         }
+    }
+
+    /// <summary>The standard filters; a tick marks the ones already in the rules (picking one again turns it on).</summary>
+    private void OpenPresetPicker(Vector2 at)
+    {
+        ChatFilterPreset[] presets = ChatFilterPresets.All;
+        var labels = new string[presets.Length];
+        for (int k = 0; k < presets.Length; k++)
+        {
+            ChatFilterRule? have = ChatModel.FindPresetRule(presets[k]);
+            string mark = have == null ? "   " : have.Enabled ? PhosphorIcons.Check + " " : "(off) ";
+            labels[k] = mark + presets[k].PickerLabel;
+        }
+        _picker.Open(at + new Vector2(0, 26), labels, -1, k => Flash(ChatModel.AddPresetRule(presets[k])), 300);
     }
 
     private void OpenWhenPicker(ChatFilterRule rule, Vector2 at)
@@ -494,7 +558,18 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
         string srcLabel = "from: " + ChatModel.Conditions[_testSource].Label + Caret;
         float srcW = Math.Min(ButtonWidth(srcLabel), 230);
-        TextBox("##test", _test, p, Math.Max(80, w - srcW - 4), "e.g. Bob tells you, \"hi\"", out _);
+        float makeW = ButtonWidth(MakeRuleLabel);
+        TextBox("##test", _test, p, Math.Max(80, w - srcW - makeW - 8), "e.g. Bob tells you, \"hi\"", out _);
+        var mp = new Vector2(p.X + w - srcW - makeW - 4, p.Y);
+        if (Button("##makerule", MakeRuleLabel, mp, new Vector2(makeW, 22), Text, AddBg, _testLine.Length > 0))
+        {
+            // Plain text, held to where the line came from; pick what it does on the new card.
+            string when = ChatModel.Conditions[_testSource].Value;
+            string pattern = _testLine.Length > 140 ? _testLine[..140] : _testLine;
+            ChatModel.AddRule(new ChatFilterRule { Mode = ChatMatchMode.Contains, Pattern = pattern, When = when });
+            Flash("Made a Contains rule from the test line: trim it down and pick what it does.");
+        }
+        ImGuiNET.ImGui.SetItemTooltip("Add a rule that matches this line as plain text (Contains), for lines from the source picked here.");
         var sp = new Vector2(p.X + w - srcW, p.Y);
         if (Button("##testsrc", srcLabel, sp, new Vector2(srcW, 22), Text, BtnFill, leftAlign: true))
         {
@@ -535,6 +610,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
         text = text.Trim();
         // A line copied from the chat starts with its timestamp; the rules never see that.
         if (text.Length > 9 && text[2] == ':' && text[5] == ':' && text[8] == ' ' && char.IsDigit(text[0])) text = text[9..];
+        _testLine = text;
         if (text.Length == 0) { _testResult.Add(("Paste a line to see which rules match and where it goes.", Faded(Mute))); return; }
 
         string when = ChatModel.Conditions[_testSource].Value;
@@ -554,6 +630,7 @@ internal sealed class ChatFiltersFace : IImGuiPanel
             _testResult.Add((step.Rule switch
             {
                 ChatRouter.StandardFilterStep => "Standard",
+                ChatRouter.AutomatedStep => "Automated",
                 < 0 => "Your name",
                 _ => $"Rule {step.Rule + 1}",
             } + ": " + step.What, Text));
@@ -568,8 +645,20 @@ internal sealed class ChatFiltersFace : IImGuiPanel
             if (route.Tabs != null) tabs.AddRange(route.Tabs);
             where = tabs.Count == 0 ? "Shown nowhere." : "Shows in: " + string.Join(", ", tabs) + ".";
         }
-        uint color = RynthTheme.Argb(route.LineArgb ?? ChatModel.ChannelArgb(channel));
+        uint color = RynthTheme.Argb(ChatLineColors.Resolve(route.LineArgb, ChatLineColors.KindOf(type, channel, text), channel, type));
         _testResult.Add((where + (route.LineArgb != null ? "  (this is its colour)" : ""), route.Hidden ? Faded(Mute) : color));
+        if (!route.Hidden && route.HighlightArgb is uint band)
+            _testResult.Add(($"Highlighted: a {ChatModel.FormatColor(band | 0xFF000000)} band behind the line (this colour).",
+                RynthTheme.Argb(band | 0xFF000000)));
+
+        // Not hidden: name a standard filter that would hide it (one not in the rules yet).
+        if (!route.Hidden)
+            foreach (ChatFilterPreset preset in ChatFilterPresets.All)
+                if (preset.Matches(text, channel, type) && ChatModel.FindPresetRule(preset) == null)
+                {
+                    _testResult.Add(($"Standard filter \"{preset.PickerLabel}\" would hide it (Standard filters, above).", Teal));
+                    break;
+                }
     }
 
     /// <summary>Buffers for each rule; refilled from the rules when another face changed them,

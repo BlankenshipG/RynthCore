@@ -1180,6 +1180,26 @@ internal sealed unsafe class LayeredWindow : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// True when a window at this spot is usable where it is: at least half of it on the nearest
+    /// monitor's work area and its top strip (where it is dragged from) reachable there. A window
+    /// that hangs a little past an edge or over the taskbar is left where the player put it
+    /// (2026-11-01: pop-outs moved at every login over a few pixels). Any thread.
+    /// </summary>
+    public static bool MostlyOnScreen(int left, int top, int width, int height)
+    {
+        width = Math.Max(1, width); height = Math.Max(1, height);
+        if (!TryGetWorkArea(left, top, width, height, out int wl, out int wt, out int wr, out int wb)) return true;
+        long ix = Math.Max(0, Math.Min(left + width, wr) - Math.Max(left, wl));
+        long iy = Math.Max(0, Math.Min(top + height, wb) - Math.Max(top, wt));
+        bool half = ix * iy * 2 >= (long)width * height;
+        int strip = Math.Min(height, 24);
+        long sx = ix;   // the top strip spans the same columns
+        long sy = Math.Max(0, Math.Min(top + strip, wb) - Math.Max(top, wt));
+        bool grabbable = sx >= Math.Min(60, width) && sy >= Math.Min(8, strip);
+        return half && grabbable;
+    }
+
     /// <summary>The work area of the monitor nearest a rectangle (screen px). Any thread.</summary>
     public static bool TryGetWorkArea(int left, int top, int width, int height, out int workLeft, out int workTop, out int workRight, out int workBottom)
     {
@@ -1196,14 +1216,15 @@ internal sealed unsafe class LayeredWindow : IDisposable
     }
 
     /// <summary>
-    /// Moves the window back inside the nearest monitor's work area when any of
-    /// it is off the screen. No OnMoved (the caller persists). True when it moved.
+    /// Moves the window back inside the nearest monitor's work area when too much of
+    /// it is off the screen (MostlyOnScreen). No OnMoved (the caller persists). True when it moved.
     /// The window's thread.
     /// </summary>
     public bool EnsureOnScreen()
     {
         if (_disposed || Hwnd == IntPtr.Zero || _dragMode != DragNone) return false;   // a drag ends with its own check
         int x = ScreenLeft, y = ScreenTop;
+        if (MostlyOnScreen(x, y, Width, Height)) return false;
         if (!ClampToWorkArea(ref x, ref y, Width, Height)) return false;
         Move(x, y);
         return true;
@@ -1500,18 +1521,54 @@ internal sealed unsafe class LayeredWindow : IDisposable
             }
 
             // Off the screen now, and ask the window's own thread to destroy it
-            // (works for a window created on any thread). Only if that post fails
-            // fall back to the game-thread destroy below: doing both could destroy
-            // an unrelated window that reused the handle in between.
+            // (works for a window created on any thread, never blocks, and still
+            // works after Win32Backend has unhooked the game WndProc: the post
+            // goes to the panel, not to the game window).
             if (Retire(hwnd)) { DisposeDib(); return; }
 
-            // DestroyWindow MUST run on the thread that owns the HWND (Win32
-            // fails it with ERROR_ACCESS_DENIED otherwise); a missed destroy
-            // leaves the floating window visible but orphaned ("frozen duplicate").
-            DestroyOnOwnerThread(hwnd);
+            // The post failed: the window is already gone, or its queue is full.
+            // DestroyWindow only works on the owner thread, so destroy here only
+            // when this thread owns it. The old backup posted the destroy to the
+            // game thread, which fails (ACCESS_DENIED) for a panel created on the
+            // Avalonia UI thread.
+            DestroyIfOwnedHere(hwnd);
         }
 
         DisposeDib();
+    }
+
+    private static void DestroyIfOwnedHere(IntPtr hwnd)
+    {
+        try
+        {
+            uint owner = GetWindowThreadProcessId(hwnd, out _);
+            uint current = GetCurrentThreadId();
+            bool ourClass = false;
+            if (owner != 0)
+            {
+                char* buffer = stackalloc char[128];
+                int length = GetClassNameW(hwnd, buffer, 128);
+                ourClass = length > 0 && new string(buffer, 0, length).StartsWith(ClassNamePrefix, StringComparison.Ordinal);
+            }
+
+            switch (PanelDestroyPlan.Choose(owner, current, ourClass))
+            {
+                case PanelDestroyFallback.DestroyHere:
+                    bool destroyed = DestroyWindow(hwnd);
+                    RynthCore.Engine.RynthLog.Info($"LayeredWindow.Dispose: self-destroy post failed; DestroyWindow(0x{hwnd.ToInt64():X}) on its owner thread 0x{current:X} = {destroyed}.");
+                    break;
+                case PanelDestroyFallback.LeaveHidden:
+                    ShowWindowAsync(hwnd, SW_HIDE);
+                    RynthCore.Engine.RynthLog.Info($"LayeredWindow.Dispose: self-destroy post to 0x{hwnd.ToInt64():X} failed; owner thread 0x{owner:X} is not this one (0x{current:X}), so it is left hidden (destroyed with its thread or by the shutdown sweep).");
+                    break;
+                default:
+                    break; // already gone, nothing to destroy
+            }
+        }
+        catch (Exception ex)
+        {
+            RynthCore.Engine.RynthLog.Info($"LayeredWindow.Dispose: destroy fallback threw {ex.GetType().Name}: {ex.Message}.");
+        }
     }
 
     /// <summary>

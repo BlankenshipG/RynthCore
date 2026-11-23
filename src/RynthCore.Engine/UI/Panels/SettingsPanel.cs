@@ -328,15 +328,42 @@ internal static class SettingsPanel
             case SettingKind.Double:
                 return DoubleRow(row.Label, row.Get!(d), row.Min, row.Max, row.Step, v => Changed(v), row.Tooltip);
             case SettingKind.Combo:
-                return ComboRow(row.Label, row.Items!, (int)row.Get!(d), v => Changed(v), picker, row.Tooltip);
+                return ComboRow(row.Label, row.CurrentItems, (int)row.Get!(d), v => Changed(v), picker, row.Tooltip);
             case SettingKind.Section:
                 return SectionHeader(row.Label);
             case SettingKind.Spacer:
                 return Spacer();
             case SettingKind.Button:
-                return ButtonRow(row.Label, row.ButtonText ?? row.Label, () => row.Click?.Invoke(), row.Tooltip);
+                // A button that asks first is the ImGui panel's only (this panel is being retired).
+                if (row.Confirm != null) return null;
+                return ButtonRow(row.Label, row.ButtonText ?? row.Label, () =>
+                {
+                    // A settings edit is pushed like a typed value; the tab is rebuilt so the
+                    // number boxes show the new values.
+                    if (row.Edit != null)
+                    {
+                        row.Edit(state.Data);
+                        Push(state);
+                        state.Rebuild?.Invoke();
+                    }
+                    row.Click?.Invoke();
+                }, row.Tooltip);
             case SettingKind.TraceCategories:
                 return TraceCategoriesRow(state, row);
+            case SettingKind.ServerPick:
+            {
+                // The picker itself is the ImGui face's; here, what is picked and how to change it.
+                var snap = UI.Sections.SectionRegistry.Current;
+                string pick = UI.Sections.ServerSelection.CurrentPick(snap.Servers) ?? "mixed";
+                var active = UI.Sections.ServerSelection.ActiveServer(snap.Servers);
+                return new TextBlock
+                {
+                    Text = $"Server: {(active == null ? "none active" : active.Name + " (" + active.Id + ")")}, pick {pick}. "
+                         + "Change it with /rc server pick <id>|auto (the ImGui panel has a picker).",
+                    Foreground = ColTeal, FontSize = 11,
+                    TextWrapping = Avalonia.Media.TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 2),
+                };
+            }
             case SettingKind.Text:
                 return TextRow(row.Label, row.GetText?.Invoke(d) ?? string.Empty, row.Hint, v =>
                 {
@@ -804,7 +831,7 @@ internal static class SettingsPanel
     }
 
     /// <summary>
-    /// [All on] [All off] [ILT Hub on] over a 3-column grid of toggles, one per RynthAi trace
+    /// [All on] [All off] over a 3-column grid of toggles, one per RynthAi trace
     /// category. Each change edits DiagCategories, saves, and rebuilds the tab so the grid redraws.
     /// </summary>
     private static Control TraceCategoriesRow(PanelState state, SettingRow row)
@@ -835,7 +862,6 @@ internal static class SettingsPanel
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 0, 0, 4) };
         buttons.Children.Add(Bulk("All on", () => TraceCategoryLevels.Set(state.Data.DiagCategories, "", true)));
         buttons.Children.Add(Bulk("All off", () => TraceCategoryLevels.Set(state.Data.DiagCategories, "", false)));
-        buttons.Children.Add(Bulk("ILT Hub on", () => TraceCategoryLevels.Set(state.Data.DiagCategories, "", true, "Ilt")));
         if (row.Tooltip != null)
         {
             ToolTip.SetTip(buttons, row.Tooltip);

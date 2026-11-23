@@ -257,6 +257,27 @@ internal sealed class RealRegistryView : IDisposable
         return scope;
     }
 
+    /// <summary>
+    /// UAC registry virtualization is on for this process right now (outside an
+    /// <see cref="Enter"/> scope, or when switching it off failed). An HKLM write would then
+    /// land in the per-user VirtualStore copy, which registration must never create.
+    /// Fails closed: true when the token can't be read.
+    /// </summary>
+    public static bool ProcessVirtualized()
+    {
+        try
+        {
+            if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, out IntPtr token)) return true;
+            try
+            {
+                int on = 0;
+                return !GetTokenInformation(token, TokenVirtualizationEnabled, ref on, sizeof(int), out _) || on != 0;
+            }
+            finally { CloseHandle(token); }
+        }
+        catch { return true; }
+    }
+
     public void Dispose()
     {
         if (_token == IntPtr.Zero) return;

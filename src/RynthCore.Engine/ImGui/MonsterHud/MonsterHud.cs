@@ -18,7 +18,11 @@
 //  on a plate and no ImGui panel is under it, WantsMouse asks the game window
 //  to keep that click from AC (EngineFrameController ORs it into the capture
 //  flags), and the press selects the plate's monster through the main-thread
-//  overlay-select slot. Every other click still goes to the game.
+//  overlay-select slot. Every other click still goes to the game - including
+//  one on an AC window that covers a plate: a plate only counts where AC's own
+//  mouse-over is the 3D world (Compatibility/AcMouseOver), and while a plate
+//  is only hovered the mouse moves still reach AC (MouseMovesToGame) so that
+//  answer follows the cursor.
 //
 //  Two rates:
 //    Update (AC's render thread, before the ImGui frame): at most 4x a second
@@ -29,12 +33,18 @@
 //      same scan picks the name-only labels: non-attackable creatures (NPCs,
 //      vendors; summoned pets skipped) within NpcMaxDistance, nearest first,
 //      capped at MaxNpcLabels apart from the plates (and players, if "Player
-//      names" is on). Each object is classified once (Classes). The same tick
-//      polls the player's XP / Luminance for the gain text.
+//      names" is on), and portals' names ("Portal names", 2026-10-28) within
+//      PortalMaxDistance, capped at MaxPortalLabels on their own. Each object
+//      is classified once (Classes, PlateClass: ITEM_TYPE creature / portal).
+//      The same tick polls the player's XP / Luminance for the gain text.
 //    Draw (inside the ImGui frame): every frame each chosen monster's LIVE
 //      position is read (main thread, a handful of objects) and projected with
 //      the engine's camera capture (GameMatrixCapture), so plates stick to
 //      moving monsters without the 10 Hz snapshot's stepping.
+//    Behind walls (2026-11-04, report R-20261105-020337-67aa; PlateSight): the
+//      scan skips objects AC's cell lists rule out from the camera's cell, and
+//      each frame a plate whose room AC didn't draw (or, seen from inside, an
+//      outdoor object no drawn doorway covers) is hidden and takes no click.
 //
 //  World -> screen: AC transforms geometry on the CPU; GameMatrixCapture
 //  rebuilds the view from SmartBox's camera frame and hooks SetTransform for
@@ -68,50 +78,29 @@ internal static class MonsterHud
     private const int SnapshotPeriodMs = 250;        // monster list refresh (4 Hz)
     private const double AttackerMemorySec = 20;     // "hit you recently"
     private const double HurtMemorySec = 60;         // "hurt recently" (engaged filter)
-    private const uint TypeCreature = 0x10;          // ITEM_TYPE TYPE_CREATURE
     private const uint BfPlayer = 0x8;               // PublicWeenieDesc BF_PLAYER
     private const uint BfVendor = 0x200;             // PublicWeenieDesc BF_VENDOR
     private const uint PetOwnerIid = 44;             // PropertyInstanceId PetOwner (summoned pets)
     internal const float LandblockSize = 192f;
-    private const int MaxIcons = 5;                  // debuff icons per plate; more shows "+N"
-    private const float BlinkSec = 5f;               // icons blink in their last seconds
 
     // ── Palette (ARGB literals -> ImGui ABGR) ────────────────────────────
     private static readonly uint BarBack = C(0xE00C1118), BarEdge = C(0xFF000000), Tick = C(0x70000000),
         Shine = C(0x38FFFFFF), Trail = C(0xFFF3E2A8), Gold = C(0xFFE6C766), GoldBright = C(0xFFFFD966),
-        GoldGlow = C(0x55E6C766), NameText = C(0xFFF2E8DC), AttackerText = C(0xFFFF8A7A), Outline = C(0xE6000000),
-        HpText = C(0xFFFFFFFF), DimText = C(0xFFB8C4D0), BadgeBack = C(0xD0101820), BadgeEdge = C(0xFF34587A),
-        Leader = C(0x60FFFFFF), HoverEdge = C(0xC0FFFFFF), UnknownFill = C(0xFF5E8A6A), IconBack = C(0xD80B1219), OthersTint = C(0xFFFF8A7A);
+        GoldGlow = C(0x55E6C766), NameText = C(0xFFF2E8DC), AttackerText = C(0xFFFF8A7A),
+        BadgeBack = C(0xD0101820), Leader = C(0x60FFFFFF),
+        HoverEdge = C(0xC0FFFFFF), UnknownFill = C(0xFF5E8A6A);
+    // Your plate's "Grey out what debuffs take": the lost part of a bar, lighter than the empty track.
+    private static readonly uint LostTop = C(0xE07A7A7A), LostBottom = C(0xE04E4E4E), LostEdge = C(0xFF1A1A1A);
+    // Also the debuff icon row's (DebuffIconRow): outlines, stack digits, "+N".
+    internal static readonly uint Outline = C(0xE6000000), HpText = C(0xFFFFFFFF), DimText = C(0xFFB8C4D0);
+    private static uint BadgeEdge => RynthTheme.Border;
     private static readonly Vector3 HpHigh = new(0x3F, 0xD0, 0x6A), HpMid = new(0xE8, 0xB3, 0x33), HpLow = new(0xE0, 0x4A, 0x4A);
 
-    // Element colours, shared by the "weak to" pill and the vulnerability icons.
-    private static readonly uint ElemSlash = C(0xFFC9D1DB), ElemPierce = C(0xFFD9C19A), ElemBludgeon = C(0xFFB59A7E),
-        ElemFire = C(0xFFFF7A3D), ElemCold = C(0xFF7FD3FF), ElemLightning = C(0xFFC89BFF), ElemAcid = C(0xFF8FE36A),
-        ElemNether = C(0xFFB06BE0);
+    // Element colours, shared by the "weak to" pill and the vulnerability icons (DebuffIconRow's tints).
+    internal static readonly uint ElemSlash = C(0xFFC9D1DB), ElemPierce = C(0xFFD9C19A), ElemBludgeon = C(0xFFB59A7E),
+        ElemFire = C(0xFFFF7A3D), ElemCold = C(0xFF7FD3FF), ElemLightning = C(0xFFC89BFF), ElemAcid = C(0xFF8FE36A);
 
-    // One glyph and tint per DebuffKind (index = kind).
-    private static readonly string[] KindGlyph =
-    {
-        PhosphorIcons.Fire, PhosphorIcons.Snowflake, PhosphorIcons.Lightning, PhosphorIcons.Flask,
-        PhosphorIcons.Sword, PhosphorIcons.Knife, PhosphorIcons.Hammer,
-        PhosphorIcons.ShieldSlash, PhosphorIcons.MagicWand, PhosphorIcons.ShieldWarning,
-        PhosphorIcons.ArrowFatLinesDown, PhosphorIcons.HeartBreak, PhosphorIcons.Footprints,
-        PhosphorIcons.TrendDown, PhosphorIcons.Skull, PhosphorIcons.ArrowFatDown,
-    };
-    private static readonly uint[] KindTint =
-    {
-        ElemFire, ElemCold, ElemLightning, ElemAcid, ElemSlash, ElemPierce, ElemBludgeon,
-        C(0xFF9FB4C8),   // Imperil: steel
-        C(0xFFB98CFF),   // Magic Yield: violet
-        C(0xFFFFB347),   // melee / missile defense: orange
-        C(0xFFF2D24B),   // attributes: yellow
-        C(0xFFFF6B8A),   // vitals / regen: pink-red
-        C(0xFFA8C66C),   // movement: moss
-        C(0xFF8FB8DE),   // skills: blue-grey
-        C(0xFF7CE08A),   // damage over time: green
-        C(0xFFC8C8C8),   // other
-    };
-    private static readonly string[] StackDigits = { "", "", "2", "3", "4", "5", "6", "7", "8", "9" };
+    // The debuff icons' glyphs, tints and painter are in DebuffIconRow (shared with your own plate).
 
     internal static uint C(uint argb) => RynthTheme.Argb(argb);
 
@@ -123,6 +112,10 @@ internal static class MonsterHud
         /// <summary>RadarKind.Monster: a full monster plate. Npc / Vendor / Player: a name-only label.</summary>
         public byte Kind = RadarKind.Monster;
         public bool IsLabel => Kind != RadarKind.Monster;
+        /// <summary>A name label with a thin health bar under it (players, when "Player health bars" is on).</summary>
+        public bool WithBar;
+        public bool HpFresh;             // the last health observation is recent enough to draw a bar from
+        public bool HasBar => WithBar && HpKnown && HpFresh;
         public int Level;                // 0 = unknown
         public string LevelText = "";
         public float HeadHeight = DefaultHeadHeight;
@@ -132,6 +125,7 @@ internal static class MonsterHud
         public bool Chosen;              // in the latest snapshot
         public bool Gone;                // live position read failed (despawned / died)
         public bool OnScreen;
+        public bool Hidden;              // behind walls this frame (PlateSight): fades out, takes no click
         public bool Appeared;            // became visible this frame: layout snaps instead of easing
         public float Alpha;              // smoothed, 0..1
         public float Scale = 1f;         // smoothed
@@ -152,12 +146,13 @@ internal static class MonsterHud
         public float LastX, LastY, LastZ;
 
         // Debuff icons (this frame)
-        public readonly DebuffIcon[] Icons = new DebuffIcon[MaxIcons];
-        public int IconCount;            // may exceed MaxIcons (overflow)
+        public readonly DebuffIcon[] Icons = new DebuffIcon[DebuffIconRow.MaxIcons];
+        public int IconCount;            // may exceed DebuffIconRow.MaxIcons (overflow)
         public bool Others;              // "debuffed by others" marker
 
         // Layout (this frame)
-        public float Width, Height, BarW, BarH, NameSize, SmallSize, BelowBar, IconSize;
+        public float Width, Height, BarW, BarH, NameSize, SmallSize, BelowBar;
+        public DebuffRowMetrics Row;     // the debuff row's lengths (k x "Debuff icon size")
         public ImFontPtr NameFont, SmallFont;
         public float NameW, BadgeW;
 
@@ -170,22 +165,32 @@ internal static class MonsterHud
         public int OverflowKey = -1;
     }
 
-    private sealed record WeakTag(string Label, uint Color);
+    // Icon: a Phosphor glyph drawn before the letters, so the element reads at a glance.
+    private sealed record WeakTag(string Label, uint Color, string Icon);
 
     private const float DefaultHeadHeight = 2.0f;
+    // Portals: the snapshot has no model height, so a fixed lift over the portal's origin (its foot)
+    // that clears the top of a standard swirl. "Height lift" in the settings adds to it, as to every plate.
+    private const float PortalLabelHeight = 3.5f;
+    // A player's health is only known from what the game happened to tell us; a reading older than this is not drawn.
+    private const long PlayerBarMemorySec = 90;
+    // A size from the table is the top of the model: a hand's width above it for the plate, within sane bounds.
+    private const float HeadMargin = 0.12f, MinKnownHeadHeight = 0.3f, MaxKnownHeadHeight = 120f;
     private static readonly Dictionary<uint, Plate> Plates = new(64);
     private static readonly List<Plate> DrawOrder = new(64);
     private static readonly List<Plate> Placed = new(64);
     private static readonly List<(uint Id, float D2)> Candidates = new(128);
     private static readonly List<(uint Id, float D2)> LabelCandidates = new(64);
+    private static readonly List<(uint Id, float D2)> PortalCandidates = new(16);
     private static readonly List<uint> Evict = new(16);
 
     // What each live object is, worked out once per id (item type, BF_PLAYER, BF_VENDOR and
-    // PetOwner never change), so the 4 Hz scan skips non-creatures with one lookup and the
+    // PetOwner never change), so the 4 Hz scan skips other objects with one lookup and the
     // monster pick no longer reads the bitfield live. Attackable is NOT cached: it is read
     // from the snapshot every scan, as before. Entries not seen for a while are pruned.
-    private const byte ClsUnknown = 0, ClsOther = 1, ClsCreature = 2, ClsVendor = 3, ClsPlayer = 4, ClsPet = 5;
-    private const byte ClsCreatureNoPwd = 6;   // a creature whose PWD isn't in the snapshot yet: never cached
+    private const byte ClsUnknown = PlateClass.Unknown, ClsOther = PlateClass.Other, ClsCreature = PlateClass.Creature,
+        ClsVendor = PlateClass.Vendor, ClsPlayer = PlateClass.Player, ClsPet = PlateClass.Pet, ClsPortal = PlateClass.Portal;
+    private const byte ClsCreatureNoPwd = PlateClass.CreatureNoPwd;   // a creature whose PWD isn't in the snapshot yet: never cached
     private struct ObjClass { public byte Cls; public int Seen; }
     private static readonly Dictionary<uint, ObjClass> Classes = new(512);
     private static readonly List<uint> ClassEvict = new(64);
@@ -221,6 +226,13 @@ internal static class MonsterHud
     /// built, on AC's render thread.
     /// </summary>
     public static bool WantsMouse => _wantsMouse || PlayerPlate.WantsMouse;
+
+    /// <summary>
+    /// The plates want the mouse only because one is under the cursor (no press held, no
+    /// self-plate drag): mouse moves still go to AC then, so AC's own mouse-over (what
+    /// AcMouseOver reads) follows the cursor onto a window that covers the plate.
+    /// </summary>
+    public static bool MouseMovesToGame => _wantsMouse && _pressId == 0 && !PlayerPlate.WantsMouse;
 
     /// <summary>Plates being tracked (diagnostics).</summary>
     public static int PlateCount => Plates.Count;
@@ -265,11 +277,14 @@ internal static class MonsterHud
             // "the Drudge you hit" among them) when the plates themselves are off.
             bool monsters = MonsterHudSettings.Enabled;
             bool trackMonsters = monsters || MonsterHudSettings.Numbers;
-            // Name-only labels over NPCs (and, if asked, players): their own switches and cap.
-            bool track = trackMonsters || MonsterHudSettings.NpcNames || MonsterHudSettings.PlayerNames;
+            // Name-only labels over NPCs (and, if asked, players) and over portals: their own switches and caps.
+            bool track = trackMonsters || MonsterHudSettings.NpcNames || MonsterHudSettings.PlayerNames || MonsterHudSettings.PlayerBars ||
+                         MonsterHudSettings.PortalNames;
             if (!track) ClearPlates();
             SetDamageSubscription(monsters && MonsterHudSettings.ShowWeakness);
             if (monsters && MonsterHudSettings.ShowDebuffs) PortalSpellTable.EnsureLoadQueued();
+            // Your own plate's "Debuffs on you" row reads it too, plates on or off.
+            if (MonsterHudSettings.SelfPlate && MonsterHudSettings.SelfDebuffs) PortalSpellTable.EnsureLoadQueued();
 
             long now = Stopwatch.GetTimestamp();
             if (now >= _nextSnapshotTicks)
@@ -279,6 +294,8 @@ internal static class MonsterHud
                 CombatText.PollGains(_playerId);
                 if (track) Snapshot(now, trackMonsters);
             }
+            if (monsters) ApplyDealtHits(now);
+            if (monsters && MonsterHudSettings.RefreshOthersHealth) ProbeHealth(now);
 
             _hasContent = Plates.Count > 0 || MonsterHudSettings.SelfPlate || CombatText.HasContent;
         }
@@ -307,9 +324,12 @@ internal static class MonsterHud
     {
         ClearPlates();
         MonsterHudData.Clear();
+        HealthProbe.Reset();
+        _nextProbeTicks = 0;
         PlateDebuffs.Clear();
         CombatText.Clear();
         PlayerPlate.Reset();
+        PlateSight.Reset();
         Classes.Clear();
         _playerId = 0;
     }
@@ -362,15 +382,27 @@ internal static class MonsterHud
         float maxD2 = maxD * maxD;
         float targetD2 = MathF.Max(maxD2, 100f * 100f);   // the target keeps its plate a bit further out
         bool engagedOnly = MonsterHudSettings.Filter == PlateFilter.Engaged && MonsterHudSettings.Enabled;
-        bool npcNames = MonsterHudSettings.NpcNames, playerNames = MonsterHudSettings.PlayerNames;
+        bool npcNames = MonsterHudSettings.NpcNames, playerBars = MonsterHudSettings.PlayerBars,
+             playerNames = MonsterHudSettings.PlayerNames || playerBars;   // a bar comes with the name
         float npcD = MonsterHudSettings.NpcMaxDistance;
         float npcD2 = npcD * npcD;
         float npcTargetD2 = MathF.Max(npcD2, 100f * 100f);   // a selected NPC keeps its name further out too
         bool targetIsLabel = false;
+        bool portalNames = MonsterHudSettings.PortalNames;
+        float portalD = MonsterHudSettings.PortalMaxDistance;
+        float portalD2 = portalD * portalD;
+        float portalTargetD2 = MathF.Max(portalD2, 100f * 100f);   // and a selected portal
+        bool targetIsPortal = false;
+        // Behind walls (2026-11-04, report R-20261105-020337-67aa): objects the cell lists already rule
+        // out (another room, another building, outdoors from a dungeon) are no candidates, so the
+        // hidden NPCs of a town don't use up the caps; DrawPlates asks AC's draw stamps each frame.
+        bool walls = MonsterHudSettings.HideBehindWalls;
+        if (walls) PlateSight.Refresh(pCell);
 
         int pass = ++_classPass;
         Candidates.Clear();
         LabelCandidates.Clear();
+        PortalCandidates.Clear();
         uint[] ids = ClientObjectHooks.LiveObjectIds;
         for (int i = 0; i < ids.Length; i++)
         {
@@ -388,9 +420,15 @@ internal static class MonsterHud
             }
             if (cls == ClsOther || cls == ClsUnknown) continue;
 
-            // Monster plate (attackable creature) or name label (NPC / vendor, player)?
-            bool label;
-            if (cls == ClsPlayer)
+            // Monster plate (attackable creature), name label (NPC / vendor, player) or portal name?
+            bool label, portal = false;
+            if (cls == ClsPortal)
+            {
+                // A portal: its name only, from its own list and cap.
+                if (!portalNames) continue;
+                label = portal = true;
+            }
+            else if (cls == ClsPlayer)
             {
                 // Players never get a monster plate (attackable in PK or not).
                 if (!playerNames) continue;
@@ -415,9 +453,16 @@ internal static class MonsterHud
 
             if (!ClientObjectHooks.TryGetSnapshotPosition(id, out uint cell, out float x, out float y, out float z)) continue;
             if (!TryOffset(pCell, cell, out float ox, out float oy)) continue;
+            if (walls && !PlateSight.ShowCoarse(cell)) continue;
             float dx = x + ox - px, dy = y + oy - py, dz = z - pz;
             float d2 = dx * dx + dy * dy + dz * dz;
-            if (label)
+            if (portal)
+            {
+                if (d2 > (id == target ? portalTargetD2 : portalD2)) continue;
+                PortalCandidates.Add((id, d2));
+                if (id == target) targetIsPortal = true;
+            }
+            else if (label)
             {
                 if (d2 > (id == target ? npcTargetD2 : npcD2)) continue;
                 LabelCandidates.Add((id, d2));
@@ -431,6 +476,7 @@ internal static class MonsterHud
         }
         Candidates.Sort(ByD2);
         LabelCandidates.Sort(ByD2);
+        PortalCandidates.Sort(ByD2);
         if ((pass & 63) == 0) PruneClasses(pass);
 
         foreach (Plate p in Plates.Values) p.Chosen = false;
@@ -480,6 +526,7 @@ internal static class MonsterHud
             byte cls = Classes.TryGetValue(id, out ObjClass oc) ? oc.Cls : ClsCreature;
             byte kind = cls == ClsPlayer ? RadarKind.Player : cls == ClsVendor ? RadarKind.Vendor : RadarKind.Npc;
             Plate plate = GetPlate(id, kind);
+            plate.WithBar = playerBars && kind == RadarKind.Player;
             // Head height once per name; again while selected (selecting appraises: CreatureType may arrive).
             if (name != plate.Name || isTarget)
             {
@@ -488,6 +535,28 @@ internal static class MonsterHud
             }
             labels++;
             if (isTarget) targetIsLabel = false;   // found: the cap applies again
+        }
+
+        // ── Portal names: their own cap, so a town's NPCs never push them out ──
+        int portalCap = MonsterHudSettings.MaxPortalLabels;
+        int portals = 0;
+        for (int i = 0; i < PortalCandidates.Count; i++)
+        {
+            uint id = PortalCandidates[i].Id;
+            bool isTarget = id == target;
+            if (portals >= portalCap && !isTarget)
+            {
+                if (!targetIsPortal) break;
+                continue;   // keep scanning only to find the target
+            }
+            if (!ClientObjectHooks.TryGetSnapshotName(id, out string name) || name.Length == 0) continue;
+
+            Plate plate = GetPlate(id, RadarKind.Portal);
+            plate.WithBar = false;
+            if (name != plate.Name) plate.Name = name;
+            plate.HeadHeight = PortalLabelHeight;
+            portals++;
+            if (isTarget) targetIsPortal = false;
         }
 
         // Plates no longer chosen fade out in Draw and are evicted at zero alpha.
@@ -508,14 +577,15 @@ internal static class MonsterHud
     }
 
     /// <summary>
-    /// What an object is, from the main-thread snapshots only (no AC call): not a creature,
-    /// a player, a summoned pet, a vendor or another creature. ClsUnknown / ClsCreatureNoPwd
-    /// when the snapshots don't have it yet (asked again next scan).
+    /// What an object is, from the main-thread snapshots only (no AC call): a portal, nothing
+    /// labelled, a player, a summoned pet, a vendor or another creature. ClsUnknown /
+    /// ClsCreatureNoPwd when the snapshots don't have it yet (asked again next scan).
     /// </summary>
     private static byte Classify(uint id)
     {
         if (!ClientObjectHooks.TryGetSnapshotItemType(id, out uint type)) return ClsUnknown;
-        if ((type & TypeCreature) == 0) return ClsOther;
+        byte byType = PlateClass.FromItemType(type);
+        if (byType != ClsCreature) return byType;   // a portal, or nothing that gets a plate or a name
         if (!ClientObjectHooks.TryGetSnapshotPwdInfo(id, out uint bf, out _, out _)) return ClsCreatureNoPwd;
         if ((bf & BfPlayer) != 0) return ClsPlayer;
         if (ClientObjectHooks.TryGetObjectInstanceIdProperty(id, PetOwnerIid, out uint owner) && owner != 0) return ClsPet;
@@ -575,11 +645,16 @@ internal static class MonsterHud
     /// <summary>
     /// Metres from the feet to just above the head. The client's own model
     /// height isn't read (its CPartArray/CSetup layout isn't mapped here), so
-    /// this goes by CreatureType from the appraisal cache, then by name, then
-    /// a humanoid default; "Height lift" in the settings corrects the rest.
+    /// this goes by the creature's weenie class id against the generated size
+    /// table (CreatureSizes: model height x scale), then CreatureType from the
+    /// appraisal cache, then by name, then a humanoid default; "Height lift"
+    /// in the settings corrects the rest.
     /// </summary>
     internal static float EstimateHeadHeight(uint id, string name)
     {
+        if (ClientObjectHooks.TryGetObjectWcid(id, out uint wcid) && CreatureSizes.TryGetTop(wcid, out float top))
+            return Math.Clamp(top, MinKnownHeadHeight, MaxKnownHeadHeight) + HeadMargin;
+
         if (AppraisalHooks.TryGetCachedIntProperty(id, 2, out int ct) && ct > 0 && ct < CreatureTypeHeights.Length &&
             CreatureTypeHeights[ct] > 0)
             return CreatureTypeHeights[ct];
@@ -676,23 +751,34 @@ internal static class MonsterHud
         _weakByName = byName;
     }
 
-    /// <summary>"Bludgeon 1.0, Pierce 0.86" -> the first (most damage taken) element.</summary>
+    /// <summary>
+    /// "Bludgeon 1.0, Pierce 0.86" -> the first (most damage taken) element. Nether is
+    /// skipped: everything takes it, so the pill shows the next element instead.
+    /// </summary>
     private static WeakTag? ParseWeak(string weak)
     {
-        int comma = weak.IndexOf(',');
-        string first = (comma > 0 ? weak[..comma] : weak).Trim();
-        int sp = first.IndexOf(' ');
-        string elem = sp > 0 ? first[..sp] : first;
-        return elem.ToLowerInvariant() switch
+        foreach (string part in weak.Split(','))
         {
-            "slash" or "slashing" => new WeakTag("SL", ElemSlash),
-            "pierce" or "piercing" => new WeakTag("PI", ElemPierce),
-            "bludgeon" or "bludgeoning" => new WeakTag("BL", ElemBludgeon),
-            "fire" => new WeakTag("FI", ElemFire),
-            "cold" => new WeakTag("CO", ElemCold),
-            "lightning" or "electric" => new WeakTag("LI", ElemLightning),
-            "acid" => new WeakTag("AC", ElemAcid),
-            "nether" => new WeakTag("NE", ElemNether),
+            string first = part.Trim();
+            int sp = first.IndexOf(' ');
+            string elem = (sp > 0 ? first[..sp] : first).ToLowerInvariant();
+            if (elem.Length == 0 || elem == "nether") continue;
+            return ElementTag(elem);
+        }
+        return null;
+    }
+
+    private static WeakTag? ElementTag(string elem)
+    {
+        return elem switch
+        {
+            "slash" or "slashing" => new WeakTag("SL", ElemSlash, PhosphorIcons.Sword),
+            "pierce" or "piercing" => new WeakTag("PI", ElemPierce, PhosphorIcons.Knife),
+            "bludgeon" or "bludgeoning" => new WeakTag("BL", ElemBludgeon, PhosphorIcons.Hammer),
+            "fire" => new WeakTag("FI", ElemFire, PhosphorIcons.Fire),
+            "cold" => new WeakTag("CO", ElemCold, PhosphorIcons.Snowflake),
+            "lightning" or "electric" => new WeakTag("LI", ElemLightning, PhosphorIcons.Lightning),
+            "acid" => new WeakTag("AC", ElemAcid, PhosphorIcons.Flask),
             _ => null,
         };
     }
@@ -712,20 +798,32 @@ internal static class MonsterHud
         public long Now;
         public float UiScale;
         public ImDrawListPtr Dl;
+        public bool UnderUi;             // Dl is UnderUiLayer's (under AC's windows), not the background list
     }
 
-    /// <summary>AC's render thread, inside the ImGui frame (between NewFrame and Render).</summary>
-    public static void Draw(float uiScale)
+    /// <summary>
+    /// AC's render thread, inside the ImGui frame (between NewFrame and Render).
+    /// <paramref name="worldVisible"/> false (the video patch skipped AC's 3D scene): only
+    /// the screen-fixed player plate draws; the world-anchored plates and combat text don't
+    /// (nothing to anchor them to, and no invisible plate takes a click).
+    /// </summary>
+    public static void Draw(float uiScale, bool worldVisible = true)
     {
+        DebuffIconRow.BeginHover();
         if (!_hasContent) { ResetClick(); PlayerPlate.DropDrag(); return; }
         try
         {
             if (!TryBeginFrame(uiScale, out Frame f)) { ResetClick(); PlayerPlate.DropDrag(); return; }
-            DrawPlates(ref f, MonsterHudSettings.Enabled);
-            PlayerPlate.Draw(ref f);
-            CombatText.Draw(ref f);
+            if (worldVisible)
+            {
+                DrawPlates(ref f, MonsterHudSettings.Enabled);
+                PlayerPlate.Draw(ref f);
+                CombatText.Draw(ref f);
+            }
             // The player plate fixed on screen: ImGui's background list (the normal UI pass), not the layer above.
             PlayerPlate.DrawScreen(ref f);
+            // The debuff icon under the cursor (any plate's): its tooltip.
+            DebuffIconRow.ShowHoverTip(f.Now);
         }
         catch (Exception ex)
         {
@@ -765,7 +863,8 @@ internal static class MonsterHud
         // plates (UnderUiLayer). The background list (over AC's UI) only if the
         // layer isn't available.
         f.Dl = UnderUiLayer.BeginBuild(display);
-        if (!UnderUiLayer.IsBuilding) f.Dl = ImGuiNET.ImGui.GetBackgroundDrawList();
+        f.UnderUi = UnderUiLayer.IsBuilding;
+        if (!f.UnderUi) f.Dl = ImGuiNET.ImGui.GetBackgroundDrawList();
         return true;
     }
 
@@ -806,6 +905,7 @@ internal static class MonsterHud
     {
         float monsterMaxD = MonsterHudSettings.MaxDistance;
         float labelMaxD = MonsterHudSettings.NpcMaxDistance;
+        float portalMaxD = MonsterHudSettings.PortalMaxDistance;
         float opacity = MonsterHudSettings.Opacity;
         float userScale = MonsterHudSettings.Scale;
         float lift = MonsterHudSettings.HeightLift;
@@ -817,6 +917,9 @@ internal static class MonsterHud
         float kScale = 1f - MathF.Exp(-dt * 10f);
         float kBar = 1f - MathF.Exp(-dt * 14f);
         uint target = ClientHelperHooks.GetSelectedItemId();
+        // Behind walls (2026-11-04, report R-20261105-020337-67aa): AC's draw stamp, sampled once a frame.
+        bool walls = MonsterHudSettings.HideBehindWalls;
+        if (walls) PlateSight.BeginFrame(f.PlayerCell);
 
         DrawOrder.Clear();
         Evict.Clear();
@@ -852,9 +955,13 @@ internal static class MonsterHud
             p.IsAttacker = !label && MonsterHudData.AttackedRecently(p.Name, AttackerMemorySec);
 
             p.OnScreen = false;
+            bool headFront = false;
+            Vector2 headPx = default;   // where the head projects, before Keep on screen pins it
             if (p.HasWorld && GameMatrixCapture.WorldToScreen(p.LastWx, p.LastWy, p.LastWz, out float sx, out float sy))
             {
                 sx *= f.MapX; sy *= f.MapY;
+                headFront = true;
+                headPx = new Vector2(sx, sy);
                 const float margin = 60f;
                 if (MonsterHudSettings.KeepOnScreen)
                 {
@@ -876,10 +983,14 @@ internal static class MonsterHud
             }
 
             // ── Alpha / scale targets ──
-            float maxD = label ? labelMaxD : monsterMaxD;
+            float maxD = !label ? monsterMaxD : p.Kind == RadarKind.Portal ? portalMaxD : labelMaxD;
             float t = maxD > 1f ? Math.Clamp(p.Distance / maxD, 0f, 1f) : 0f;
             float distFade = fade ? 1f - 0.55f * SmoothStep(0.45f, 1f, t) : 1f;
-            bool show = p.OnScreen && (p.Chosen || p.IsTarget) && !p.Gone;
+            // An object the player can't see because of walls: no plate (it fades as one leaving the
+            // screen does) and, from this frame, no click (PlateClick skips it). Asked only for a plate that would draw.
+            p.Hidden = walls && p.OnScreen && (p.Chosen || p.IsTarget) && !p.Gone &&
+                       !PlateSight.Show(ref f, p.Id, p.LastCell, headFront, headPx, p.LastWx, p.LastZ, p.LastWz);
+            bool show = p.OnScreen && !p.Hidden && (p.Chosen || p.IsTarget) && !p.Gone;
             float alphaTarget = show ? opacity * (p.IsTarget ? 1f : distFade) : 0f;
             bool wasVisible = p.Alpha > 0.01f;
             p.Appeared = !wasVisible;
@@ -893,8 +1004,8 @@ internal static class MonsterHud
             // Appearing: start at the right size; visible: ease (target pop, distance).
             p.Scale = wasVisible ? p.Scale + (scaleTarget - p.Scale) * kScale : scaleTarget;
 
-            // ── Health (monster plates only) ──
-            if (!label) UpdateHealth(p, f.Now, kBar, dt);
+            // ── Health (monster plates, and player labels with a bar) ──
+            if (!label || p.WithBar) UpdateHealth(p, f.Now, kBar, dt);
 
             if (!show && p.Alpha < 0.01f)
             {
@@ -925,9 +1036,10 @@ internal static class MonsterHud
         }
 
         // ── Click-to-select: which plate is under the cursor, and a press on it ──
-        PlateClick(f.UiScale);
+        PlateClick(f.UiScale, f.UnderUi);
 
         // ── Paint: farthest first, nearest (and the target) on top ──
+        _paintUnderUi = f.UnderUi;
         for (int i = DrawOrder.Count - 1; i >= 0; i--)
         {
             Plate p = DrawOrder[i];
@@ -947,6 +1059,7 @@ internal static class MonsterHud
         if (MonsterHudData.TryGetHealth(p.Id, out HealthObservation h))
         {
             p.HpKnown = true;
+            p.HpFresh = (now - h.Ticks) < PlayerBarMemorySec * Stopwatch.Frequency;
             p.Ratio = h.Ratio;
             uint max = h.Max;
             if (ObjectQualityCache.TryGetCreatureVitals(p.Id, out CreatureVitals v) && v.MaxHealth > 0)
@@ -958,6 +1071,7 @@ internal static class MonsterHud
         {
             // Never observed: an untouched monster is at full health in practice.
             p.HpKnown = false;
+            p.HpFresh = false;
             p.Ratio = 1f;
             p.HpMax = ObjectQualityCache.TryGetCreatureVitals(p.Id, out CreatureVitals v) ? v.MaxHealth : 0;
             p.HpCur = p.HpMax;
@@ -1011,10 +1125,20 @@ internal static class MonsterHud
             p.NameFont = ImGuiFonts.Sharp(p.NameSize, bold: true);
             p.NameW = TextWidth(p.NameFont, p.NameSize, p.Name);
             p.BadgeW = 0f;
-            p.BarW = p.BarH = 0f;
-            p.IconSize = 0f;
-            p.BelowBar = p.IsTarget ? 9f * k : 3f * k;   // the target pointer hangs under the name
-            p.Width = p.NameW + 8f * k;
+            p.Row = default;
+            if (p.HasBar)
+            {
+                // A thin bar under the name, at least the name's width.
+                p.BarW = MathF.Round(MathF.Max(p.NameW, 64f * k));
+                p.BarH = MathF.Max(3f, MathF.Round(4f * k));
+            }
+            else
+            {
+                p.BarW = p.BarH = 0f;
+            }
+            float barRow = p.BarH > 0f ? p.BarH + MathF.Round(2f * k) : 0f;
+            p.BelowBar = (p.IsTarget ? 9f * k : 3f * k) + barRow;   // the target pointer hangs under the name (and bar)
+            p.Width = MathF.Max(p.NameW, p.BarW) + 8f * k;
             p.Height = p.NameSize + 2f * k + p.BelowBar;
             return;
         }
@@ -1036,9 +1160,10 @@ internal static class MonsterHud
         p.BadgeW = MonsterHudSettings.ShowLevel && p.LevelText.Length > 0
             ? TextWidth(p.SmallFont, p.SmallSize, p.LevelText) + 8f * k : 0f;
 
-        // Debuff row under the bar: icon + countdown line.
-        p.IconSize = MathF.Round(13f * k);
-        float iconRow = p.IconCount > 0 || p.Others ? p.IconSize + MathF.Round(3f * k) + 3f : 0f;
+        // Debuff row under the bar: icon + countdown line, at its own size (not the text size).
+        p.Row = new DebuffRowMetrics(k, MonsterHudSettings.MonsterDebuffIconSize);
+        bool icons = p.IconCount > 0 || p.Others;
+        float iconRow = icons ? p.Row.Height : 0f;
         p.BelowBar = iconRow + (p.IsTarget ? 9f * k : 3f * k);
 
         float nameLine = p.NameW + (p.BadgeW > 0 ? p.BadgeW + 4f * k : 0f);
@@ -1047,10 +1172,14 @@ internal static class MonsterHud
         // inside the crowd-avoidance box, symmetric so the plate stays centred.
         float side = (p.Weak != null || MonsterHudSettings.ShowDistance) ? 2f * 30f * k * text : 0f;
         p.Width = MathF.Max(p.BarW + side, nameLine) + 8f * k;
+        // Icons made bigger than the default can be wider than the bar: the box (crowding, clicks) holds them.
+        if (icons && p.Row.Scale > 1f)
+            p.Width = p.Row.CoverWidth(p.Width, DebuffIconRow.Width(p.Icons.Length, p.IconCount, p.Others, in p.Row,
+                p.SmallFont, p.SmallSize, ref p.OverflowKey, ref p.OverflowString), 8f * k);
         p.Height = nameH + p.BarH + p.BelowBar;
     }
 
-    /// <summary>A name label's text size: players' or NPCs' (vendors count as NPCs).</summary>
+    /// <summary>A name label's text size: players' or NPCs' (vendors and portals go with NPCs).</summary>
     private static float LabelTextSize(byte kind) =>
         kind == RadarKind.Player ? MonsterHudSettings.PlayerTextSize : MonsterHudSettings.NpcTextSize;
 
@@ -1095,8 +1224,12 @@ internal static class MonsterHud
     /// (Win32Backend.MouseCaptured) were up, so AC never saw it. The press selects at
     /// once (as a click in the 3D world does) and the capture stays until the button
     /// is released, so the release never reaches AC either. One select per press.
+    /// Drawn under AC's windows (<paramref name="underUi"/>), a plate only counts where
+    /// AC itself has the 3D world under the cursor (AcMouseOver): where one of AC's
+    /// windows covers it (inventory, chat, radar, the selected-object bar...) the
+    /// click is AC's. AC's UI state unreadable: the plate counts, as before.
     /// </summary>
-    private static void PlateClick(float uiScale)
+    private static void PlateClick(float uiScale, bool underUi)
     {
         uint prevHover = _hoverId;   // the plate whose hover put the capture up for this frame's input
         _hoverId = 0;
@@ -1107,12 +1240,20 @@ internal static class MonsterHud
             Vector2 m = io.MousePos;
             foreach (Plate p in DrawOrder)
             {
-                if (p.Gone || p.Alpha < 0.25f) continue;   // fading in or out: not a target yet
+                if (p.Gone || p.Hidden || p.Alpha < 0.25f) continue;   // fading in or out (or behind walls): not a target
                 Vector4 r = RectAt(p, p.Nudge, uiScale);
                 if (m.X < r.X || m.X > r.Z || m.Y < r.Y || m.Y > r.W) continue;
                 _hoverId = p.Id;
                 break;
             }
+        }
+
+        // A plate (or last frame's, for a press that slipped off it) under one of AC's windows:
+        // no capture, no select. Only asked when a plate could take the mouse (one read per frame).
+        if (usable && underUi && (_hoverId != 0 || (_pressId == 0 && prevHover != 0)) && AcWindowUnderCursor())
+        {
+            _hoverId = 0;
+            prevHover = 0;
         }
 
         if (_pressId == 0)
@@ -1136,6 +1277,30 @@ internal static class MonsterHud
         _wantsMouse = _hoverId != 0 || _pressId != 0;
     }
 
+    private static int _leftToAcLogged;
+    private static bool _paintUnderUi;   // this frame's plates are on the layer under AC's windows
+
+    /// <summary>
+    /// One of AC's windows is under the cursor (the debuff tooltips of rows drawn under AC's UI skip it).
+    /// Same rule as the plate click, without its log line. AC's UI state unreadable: false.
+    /// </summary>
+    internal static bool AcWindowCoversCursor() =>
+        !AcMouseOverRules.UnderUiOverlayMayTakeClick(AcMouseOver.Read().Target);
+
+    /// <summary>AC's own UI has one of its windows under the cursor (not the 3D world). AC's main thread.</summary>
+    private static bool AcWindowUnderCursor()
+    {
+        AcMouseOver.Sample s = AcMouseOver.Read();
+        if (AcMouseOverRules.UnderUiOverlayMayTakeClick(s.Target))
+            return false;
+        if (_leftToAcLogged < 3)
+        {
+            _leftToAcLogged++;
+            RynthLog.UI($"MonsterHud: a plate is under AC's UI element 0x{s.ElementId:X8} (type 0x{s.Type:X8}) - its click stays with AC.");
+        }
+        return true;
+    }
+
     /// <summary>Text width at <paramref name="size"/> px. No font push: this runs outside any window.</summary>
     internal static float TextWidth(ImFontPtr font, float size, string text) =>
         font.CalcTextSizeA(size, float.MaxValue, 0f, text).X;
@@ -1154,8 +1319,8 @@ internal static class MonsterHud
         var b1 = new Vector2(barR, barBottom);
         float round = MathF.Max(1f, 2f * k);
         bool icons = p.IconCount > 0 || p.Others;
-        float iconTop = barBottom + MathF.Round(3f * k);
-        float pointerTop = icons ? iconTop + p.IconSize + 3f + 2f * k : barBottom + 2f * k;
+        float iconTop = barBottom + p.Row.Above;
+        float pointerTop = icons ? iconTop + p.Row.Icon + p.Row.Below + 2f * k : barBottom + 2f * k;
 
         // Crowd leader: a plate pushed up keeps a faint line down to its monster.
         if (p.Nudge > 10f * uiScale)
@@ -1195,17 +1360,19 @@ internal static class MonsterHud
             }
         }
 
-        // Left of the bar: the "weak to" element pill.
+        // Left of the bar: the "weak to" element pill, its icon then its letters.
         if (p.Weak != null)
         {
-            float pw = TextWidth(p.SmallFont, p.SmallSize, p.Weak.Label) + 6f * k;
+            float iw = TextWidth(p.SmallFont, p.SmallSize, p.Weak.Icon) + 2f * k;
+            float pw = iw + TextWidth(p.SmallFont, p.SmallSize, p.Weak.Label) + 6f * k;
             float ph = MathF.Max(p.BarH + 2f, p.SmallSize + 2f);
             var q0 = new Vector2(MathF.Round(barL - 4f * k - pw), MathF.Round(barTop + (p.BarH - ph) * 0.5f));
             var q1 = q0 + new Vector2(pw, ph);
             dl.AddRectFilled(q0, q1, Mul(BadgeBack, a), 3f * k);
             dl.AddRect(q0, q1, Mul(p.Weak.Color, a * 0.9f), 3f * k, ImDrawFlags.None, 1f);
             var tp = new Vector2(MathF.Round(q0.X + 3f * k), MathF.Round(q0.Y + (ph - p.SmallSize) * 0.5f));
-            dl.AddText(p.SmallFont, p.SmallSize, tp, Mul(p.Weak.Color, a), p.Weak.Label);
+            dl.AddText(p.SmallFont, p.SmallSize, tp, Mul(p.Weak.Color, a), p.Weak.Icon);
+            dl.AddText(p.SmallFont, p.SmallSize, tp + new Vector2(MathF.Round(iw), 0), Mul(p.Weak.Color, a), p.Weak.Label);
         }
 
         // Distance, right of the bar.
@@ -1219,7 +1386,9 @@ internal static class MonsterHud
 
         // Under the bar: the debuff icons.
         if (icons)
-            PaintIcons(dl, p, cx, iconTop, k, a, now);
+            DebuffIconRow.Paint(dl, p.Icons, p.IconCount, p.Others, in p.Row, p.SmallFont, p.SmallSize,
+                ref p.OverflowKey, ref p.OverflowString, cx, iconTop, a, now,
+                p.Gone || p.Hidden ? DebuffRowTips.Off : DebuffRowTips.Monster, _paintUnderUi);
 
         // ── Name line: [level badge] Name ──
         if (p.NameW > 0 || p.BadgeW > 0)
@@ -1267,6 +1436,16 @@ internal static class MonsterHud
         float x = MathF.Round(cx - p.NameW * 0.5f);
         float pointerTop = baseY + 2f * k;
 
+        if (p.BarH > 0f)
+        {
+            // The player's health under the name.
+            float barTop = MathF.Round(baseY + 2f * k);
+            float barL = MathF.Round(cx - p.BarW * 0.5f);
+            PaintBar(dl, new Vector2(barL, barTop), new Vector2(barL + p.BarW, barTop + p.BarH), MathF.Max(1f, 1.5f * k), a,
+                p.ShownRatio, p.TrailRatio, HealthColor(p.Ratio), ticks: false);
+            pointerTop = barTop + p.BarH + 2f * k;
+        }
+
         if (p.Nudge > 10f * uiScale)
             dl.AddLine(new Vector2(cx, pointerTop - 1), new Vector2(cx, p.Anchor.Y - 2f * k), Mul(Leader, a), 1f);
 
@@ -1293,13 +1472,20 @@ internal static class MonsterHud
     /// <summary>
     /// A bar: black edge, dark track, the chip (what the last drop took), the
     /// gradient fill with a shine line, and optional quarter ticks. Shared with
-    /// the player plate.
+    /// the player plate, whose options can leave out the edge and track
+    /// (<paramref name="track"/>) and the chip (<paramref name="chip"/>);
+    /// monster plates always draw both. <paramref name="cap"/> below 1 (your
+    /// plate, "Grey out what debuffs take"): the bar spans the maximum without
+    /// debuffs and from <paramref name="cap"/> to the end is grey, what they take.
     /// </summary>
     internal static void PaintBar(ImDrawListPtr dl, Vector2 b0, Vector2 b1, float round, float a,
-        float shownRatio, float trailRatio, uint baseCol, bool ticks)
+        float shownRatio, float trailRatio, uint baseCol, bool ticks, bool track = true, bool chip = true, float cap = 1f)
     {
-        dl.AddRectFilled(b0 - Vector2.One, b1 + Vector2.One, Mul(BarEdge, a * 0.9f), round + 1);
-        dl.AddRectFilled(b0, b1, Mul(BarBack, a), round);
+        if (track)
+        {
+            dl.AddRectFilled(b0 - Vector2.One, b1 + Vector2.One, Mul(BarEdge, a * 0.9f), round + 1);
+            dl.AddRectFilled(b0, b1, Mul(BarBack, a), round);
+        }
 
         float innerW = b1.X - b0.X - 2f;
         var i0 = new Vector2(b0.X + 1, b0.Y + 1);
@@ -1308,8 +1494,18 @@ internal static class MonsterHud
         float shown = Math.Clamp(shownRatio, 0f, 1f);
         float trail = Math.Clamp(trailRatio, 0f, 1f);
 
-        if (trail > shown + 0.002f)
+        if (chip && trail > shown + 0.002f)
             dl.AddRectFilled(new Vector2(i0.X + innerW * shown, i0.Y), new Vector2(i0.X + innerW * trail, innerBottom), Mul(Trail, a * 0.85f));
+
+        // What debuffs take: a grey block from the lowered maximum to the end, with a dark edge where it starts.
+        float lostFrom = Math.Clamp(cap, 0f, 1f);
+        if (lostFrom < 0.998f)
+        {
+            float lx = MathF.Round(i0.X + innerW * lostFrom);
+            var l1 = new Vector2(i0.X + innerW, innerBottom);
+            dl.AddRectFilledMultiColor(new Vector2(lx, i0.Y), l1, Mul(LostTop, a), Mul(LostTop, a), Mul(LostBottom, a), Mul(LostBottom, a));
+            dl.AddLine(new Vector2(lx, i0.Y), new Vector2(lx, innerBottom), Mul(LostEdge, a), 1f);
+        }
 
         if (shown > 0.001f)
         {
@@ -1325,84 +1521,6 @@ internal static class MonsterHud
                 float tx = MathF.Round(i0.X + innerW * q * 0.25f);
                 dl.AddLine(new Vector2(tx, i0.Y + 1), new Vector2(tx, innerBottom - 1), Mul(Tick, a), 1f);
             }
-    }
-
-    /// <summary>
-    /// The debuff row, centred under the bar: one icon per kind with a shrinking
-    /// countdown line, blinking in its last seconds; "+N" when more than fit;
-    /// then the "debuffed by others" marker.
-    /// </summary>
-    private static void PaintIcons(ImDrawListPtr dl, Plate p, float cx, float top, float k, float a, long now)
-    {
-        float sz = p.IconSize;
-        float gap = MathF.Max(2f, MathF.Round(2f * k));
-        int count = p.IconCount;
-        int shown = count > MaxIcons ? MaxIcons - 1 : count;
-        int overflow = count - shown;
-        string more = "";
-        float moreW = 0f;
-        if (overflow > 0)
-        {
-            if (overflow != p.OverflowKey)
-            {
-                p.OverflowKey = overflow;
-                p.OverflowString = "+" + overflow.ToString(CultureInfo.InvariantCulture);
-            }
-            more = p.OverflowString;
-            moreW = TextWidth(p.SmallFont, p.SmallSize, more) + 4f * k;
-        }
-        int slots = shown + (p.Others ? 1 : 0);
-        float rowW = slots * sz + Math.Max(0, slots - 1) * gap + (overflow > 0 ? gap + moreW : 0f);
-        float x = MathF.Round(cx - rowW * 0.5f);
-        float glyphPx = MathF.Round(sz * 0.8f);
-        ImFontPtr iconFont = ImGuiFonts.Sharp(glyphPx, bold: false);   // the icons are merged into every bake
-        float lineH = MathF.Max(1f, MathF.Round(1.5f * k));
-
-        for (int i = 0; i < shown; i++)
-        {
-            DebuffIcon ic = p.Icons[i];
-            int kind = (int)ic.Kind;
-            uint tint = kind < KindTint.Length ? KindTint[kind] : KindTint[^1];
-            float remaining = (ic.Expiry - now) / (float)Stopwatch.Frequency;
-            float frac = ic.Duration > 0 ? Math.Clamp(remaining / ic.Duration, 0f, 1f) : 0f;
-            float blink = remaining < BlinkSec ? 0.45f + 0.55f * MathF.Abs(MathF.Cos(remaining * MathF.PI * 2f)) : 1f;
-
-            var i0 = new Vector2(x, top);
-            var i1 = i0 + new Vector2(sz, sz);
-            dl.AddRectFilled(i0, i1, Mul(IconBack, a), 2f * k);
-            dl.AddRect(i0, i1, Mul(tint, a * 0.55f * blink), 2f * k, ImDrawFlags.None, 1f);
-            PhosphorIcons.DrawCentered(dl, iconFont, glyphPx, KindGlyph[kind < KindGlyph.Length ? kind : KindGlyph.Length - 1],
-                i0, new Vector2(sz, sz), Mul(tint, a * blink));
-            if (ic.Stack > 1 && ic.Stack < StackDigits.Length)
-            {
-                string digit = StackDigits[ic.Stack];
-                float ds = MathF.Round(p.SmallSize * 0.85f);
-                var dp = new Vector2(i1.X - TextWidth(p.SmallFont, ds, digit) + 1f, i0.Y - 2f);
-                OutlinedText(dl, p.SmallFont, ds, dp, a, digit);
-                dl.AddText(p.SmallFont, ds, dp, Mul(HpText, a), digit);
-            }
-            // Countdown: a line under the icon that shrinks to nothing at expiry.
-            float ly = i1.Y + 1f;
-            dl.AddRectFilled(new Vector2(i0.X, ly), new Vector2(i1.X, ly + lineH), Mul(Outline, a * 0.8f));
-            if (frac > 0f)
-                dl.AddRectFilled(new Vector2(i0.X, ly), new Vector2(i0.X + MathF.Max(1f, sz * frac), ly + lineH), Mul(tint, a * blink));
-            x += sz + gap;
-        }
-
-        if (overflow > 0)
-        {
-            var mp = new Vector2(x, MathF.Round(top + (sz - p.SmallSize) * 0.5f));
-            OutlinedText(dl, p.SmallFont, p.SmallSize, mp, a, more);
-            dl.AddText(p.SmallFont, p.SmallSize, mp, Mul(DimText, a), more);
-            x += moreW + gap;
-        }
-
-        if (p.Others)
-        {
-            var i0 = new Vector2(x, top);
-            dl.AddRectFilled(i0, i0 + new Vector2(sz, sz), Mul(IconBack, a * 0.8f), 2f * k);
-            PhosphorIcons.DrawCentered(dl, iconFont, glyphPx, PhosphorIcons.UsersThree, i0, new Vector2(sz, sz), Mul(OthersTint, a * 0.8f));
-        }
     }
 
     /// <summary>A soft 1 px outline under text (the text itself is drawn by the caller).</summary>
@@ -1465,6 +1583,105 @@ internal static class MonsterHud
     /// The plate whose monster has <paramref name="name"/>: the selected one first,
     /// then the one the player hit most recently, then the nearest. 0 if none.
     /// </summary>
+    // ── Hits on monsters with no health feed (CleaveHealth) ─────────────
+    private readonly record struct DealtHit(string Name, float Share, long Ticks);
+    private static readonly object HitSync = new();
+    private static readonly List<DealtHit> PendingHits = new();
+    private static readonly List<DealtHit> HitWork = new();
+    private static string? _lastHitName;
+    private static uint _lastHitDamage;
+    private static long _lastHitTicks;
+    private const int MaxPendingHits = 64;
+    /// <summary>A hit waits this long (s) so the server's own UpdateHealth for it (the queried
+    /// target's) is in before the plates are matched.</summary>
+    private const double HitSettleSec = 0.25;
+
+    /// <summary>AttackerNotification: the player hit <paramref name="name"/> for
+    /// <paramref name="share"/> of its max health. AC's main thread (SmartBoxHooks, two paths per
+    /// event - the same hit inside 50 ms counts once).</summary>
+    internal static void NoteDealtHit(string name, uint damage, double share)
+    {
+        long now = Stopwatch.GetTimestamp();
+        lock (HitSync)
+        {
+            if (damage == _lastHitDamage && name == _lastHitName && now - _lastHitTicks < Stopwatch.Frequency / 20) return;
+            _lastHitName = name; _lastHitDamage = damage; _lastHitTicks = now;
+            if (PendingHits.Count >= MaxPendingHits) PendingHits.RemoveAt(0);
+            PendingHits.Add(new DealtHit(name, (float)share, now));
+        }
+    }
+
+    private static readonly List<CleaveHealth.Candidate> HitCandidates = new();
+
+    /// <summary>Settled hits onto the plates of monsters the server isn't feeding health for.</summary>
+    private static void ApplyDealtHits(long now)
+    {
+        HitWork.Clear();
+        lock (HitSync)
+        {
+            if (PendingHits.Count == 0) return;
+            long settle = (long)(HitSettleSec * Stopwatch.Frequency);
+            int n = 0;
+            while (n < PendingHits.Count && now - PendingHits[n].Ticks >= settle) n++;
+            if (n == 0) return;
+            HitWork.AddRange(PendingHits.GetRange(0, n));
+            PendingHits.RemoveRange(0, n);
+        }
+        double freq = Stopwatch.Frequency;
+        foreach (DealtHit hit in HitWork)
+        {
+            HitCandidates.Clear();
+            foreach (Plate p in Plates.Values)
+            {
+                if (p.Gone || p.IsLabel || !p.Name.Equals(hit.Name, StringComparison.Ordinal)) continue;
+                bool has = MonsterHudData.TryGetHealth(p.Id, out HealthObservation h);
+                HitCandidates.Add(new CleaveHealth.Candidate(p.Id, p.Distance, has, has ? h.Ratio : 1f, has ? h.Prev : -1f,
+                    has && h.Estimated, has ? (hit.Ticks - h.Ticks) / freq : 0));
+            }
+            uint id = CleaveHealth.Pick(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(HitCandidates), hit.Share, out float ratio);
+            if (id != 0) MonsterHudData.RecordHealth(id, ratio, 0, 0, estimated: true);
+        }
+    }
+
+    // ── Health for the plates the server isn't streaming (HealthProbe) ──
+    private static readonly List<HealthProbe.Candidate> ProbeCandidates = new();
+    private static long _nextProbeTicks;
+    /// <summary>"Hit by you" keeps a plate in the fight this long (s) for the probe's refresh.</summary>
+    private const double ProbeHitMemorySec = 30;
+
+    /// <summary>
+    /// At most one health query per "Refresh others' health" interval for an on-screen plate the server
+    /// isn't streaming, then one for the stream's owner so the selected / fight target keeps its feed.
+    /// AC's main thread only (both sends go out back to back, in order); skipped otherwise and in a
+    /// death / portal / login window.
+    /// </summary>
+    private static void ProbeHealth(long now)
+    {
+        if (now < _nextProbeTicks || Plates.Count == 0) return;
+        float interval = Math.Clamp(MonsterHudSettings.HealthRefreshSec, HealthProbe.MinIntervalSec, HealthProbe.MaxIntervalSec);
+        _nextProbeTicks = now + (long)(interval * Stopwatch.Frequency);
+        if (!CombatActionHooks.HasQueryHealth || AcMainThreadQueue.MustQueue(teardown: false)) return;
+
+        if (!HealthProbe.TryGetOwner(out uint owner)) owner = ClientHelperHooks.GetSelectedItemId();
+        double freq = Stopwatch.Frequency;
+        long hitWindow = (long)(ProbeHitMemorySec * freq);
+        ProbeCandidates.Clear();
+        foreach (Plate p in Plates.Values)
+        {
+            if (p.IsLabel || p.Gone || !p.OnScreen || p.Alpha < 0.01f || p.Id == _playerId) continue;
+            bool has = MonsterHudData.TryGetHealth(p.Id, out HealthObservation h);
+            bool seen = has && h.ServerTicks != 0;
+            long lastHit = CombatText.LastHitTicks(p.Id);
+            bool active = p.IsAttacker || (has && (h.Ratio < 0.999f || h.Estimated)) ||
+                          (lastHit != long.MinValue && now - lastHit < hitWindow);
+            ProbeCandidates.Add(new HealthProbe.Candidate(p.Id, p.Distance, seen, seen ? (now - h.ServerTicks) / freq : 0,
+                active, Dead: seen && h.Ratio <= 0.001f));
+        }
+        uint id = HealthProbe.Pick(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(ProbeCandidates), owner);
+        if (id == 0) return;
+        CombatActionHooks.SendHudHealthProbe(id, owner, Environment.TickCount64);
+    }
+
     internal static uint FindPlateByName(string name)
     {
         uint target = ClientHelperHooks.GetSelectedItemId();
@@ -1552,12 +1769,13 @@ internal static class MonsterHud
     /// <summary>Chat lines for "/rv plates status": what the overlays see right now. AC's thread.</summary>
     public static string[] DescribeLines()
     {
-        int onScreen = 0, known = 0, labels = 0, labelsOnScreen = 0;
+        int onScreen = 0, known = 0, labels = 0, labelsOnScreen = 0, portals = 0;
         foreach (Plate p in Plates.Values)
         {
             if (p.IsLabel)
             {
                 labels++;
+                if (p.Kind == RadarKind.Portal) portals++;
                 if (p.OnScreen && p.Alpha > 0.01f) labelsOnScreen++;
                 continue;
             }
@@ -1567,12 +1785,16 @@ internal static class MonsterHud
         return new[]
         {
             $"Nameplates: {Plates.Count - labels} tracked, {onScreen} on screen, {known} with health seen; " +
-            $"name labels {labels} ({labelsOnScreen} on screen), {Classes.Count} objects classified; " +
+            $"name labels {labels} ({labelsOnScreen} on screen, {portals} portals), {Classes.Count} objects classified; " +
             $"camera {(GameMatrixCapture.HasCapturedFrame ? "captured" : "not captured")} " +
             $"(frame lb 0x{GameMatrixCapture.FrameLandblock:X4}, viewport {GameMatrixCapture.ViewportWidth}x{GameMatrixCapture.ViewportHeight}); " +
-            $"weakness data {(_weakByWcid.Count + _weakByName.Count > 0 ? "loaded" : "none")}.",
+            $"weakness data {(_weakByWcid.Count + _weakByName.Count > 0 ? "loaded" : "none")}; " +
+            $"others' health refresh {(MonsterHudSettings.RefreshOthersHealth ? $"on, every {MonsterHudSettings.HealthRefreshSec:0.0#} s" : "off")} " +
+            $"({HealthProbe.ProbeCount} quer{(HealthProbe.ProbeCount == 1 ? "y" : "ies")} sent).",
             PlateDebuffs.Describe(),
             PlayerPlate.Describe() + " " + CombatText.Describe(),
+            PlateSight.Describe(),
+            AcMouseOver.Describe(),
         };
     }
 }

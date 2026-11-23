@@ -16,7 +16,9 @@
 //  25 px title band isn't stretched) follow AcClientReborn's InventoryGeometry.
 //  Credit: OpenAC (Tom's project) for the layout and sprite research.
 //
-//    title     retail title bar "Inventory of <name>", tool toggles, close
+//    title     retail title bar "Inventory of <name>", Vault, Remote / Sort / Count /
+//              GInv (text, icons or one menu: InventoryTitleLayout), size / tools /
+//              Modern toggles, close
 //    tools     search, sort, category chips (toggle, the funnel in the title)
 //    paperdoll the 24 equip slots at their retail places (the 3D figure isn't
 //              drawn, so the retail "Slots" view is always on)
@@ -34,11 +36,14 @@
 // ============================================================================
 
 using System;
+using System.Globalization;
 using System.IO;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Engine.Compatibility;
+using RynthCore.Engine.Net;
 using RynthCore.Engine.UI;
+using RynthCore.Engine.UI.ScriptWindows;
 using static RynthCore.Engine.ImGuiBackend.Panels.FaceKit;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
@@ -132,6 +137,10 @@ internal sealed partial class InventoryFace
     private string? _hoverLabel, _hoverLabel2;
     private string _titleText = "Inventory";
     private string? _titleFor;
+    // The title cut to its room (InventoryTitleLayout.Elide), kept while the text and the room stay the same.
+    private string _titleCut = string.Empty;
+    private string? _titleCutFor;
+    private float _titleCutRoom, _titleCutW;
 
     // =====================================================================
     //  Body
@@ -143,9 +152,14 @@ internal sealed partial class InventoryFace
         float ui = EngineFrameController.FontScale * PanelTextScale.Factor(ImGuiFonts.CurrentStep);
         if (!(ui > 0f) || !float.IsFinite(ui)) ui = 1f;
         ui *= InventorySettingsStore.SizeFactor;   // the panel's own size (the - / + in the title bar)
-        float s = Math.Max(0.4f, Math.Min(ui, size.X / RetailW));
+        // Whole-pixel cells keep point-sampled icons even (32 px art drawn at 46.4 px is uneven).
+        float want = Math.Max(0.4f, MathF.Round(32f * ui) / 32f);
+        float s = Math.Max(0.4f, Math.Min(want, size.X / RetailW));
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
-        float w = size.X;
+        // Retail's window is a fixed width at its size: the panel follows it (the - / + in the title bar
+        // resize it), so there is no spare strip beside the burden meter.
+        FitWidth(size, RetailW * want);
+        float w = Math.Min(size.X, RetailW * s);
         Vector2 o = origin;
         float statusH = MathF.Round(20 * s);
         float bottom = o.Y + size.Y - statusH;
@@ -153,7 +167,7 @@ internal sealed partial class InventoryFace
         // The open pack: a real pack (Classic has no "All" or "Worn" entry; the paperdoll is Worn).
         if (_pack == AllPacks || _pack == WornPacks || view.PackOf(_pack) == null)
             _pack = view.Packs.Length > 0 ? view.Packs[0].Id : AllPacks;
-        bool filtered = _category != 0 || _searchText.Length > 0;
+        bool filtered = FiltersOn;
         RebuildIfNeeded(view, filtered ? AllPacks : _pack);
 
         Backdrop(dl, o, w, bottom - o.Y, s);
@@ -166,12 +180,15 @@ internal sealed partial class InventoryFace
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(o.X + 6, toolsBottom + 4));
             Tools(w - 12);
             Chips(w - 12);
+            LikeBar(w - 12);
             toolsBottom = ImGuiNET.ImGui.GetCursorScreenPos().Y;
         }
         float ry = toolsBottom - TitleH * s;          // where retail y = 0 lands
         float r = Math.Max(ContentsY + 60, (bottom - ry) / s);   // the retail window's height (px at scale 1)
 
-        float sx = o.X + w - SideW * s;              // the side column follows the right edge
+        // The side column sits against the grid, where retail has it: the retail window is a fixed width,
+        // so a wider panel leaves its spare room on the right instead of a gap in the middle.
+        float sx = o.X + Math.Min(w - SideW * s, (RetailW - SideW) * s);
         Paperdoll(view, dl, new Vector2(o.X, ry + FieldY * s), s);
         SideColumn(view, dl, new Vector2(sx, ry + FieldY * s), r, s, filtered);
         Contents(view, dl, new Vector2(o.X, ry + ContentsY * s), sx, r, s, filtered);
@@ -200,6 +217,21 @@ internal sealed partial class InventoryFace
             dl.AddImage(tex, o + new Vector2(0, band), o + new Vector2(w, h), new Vector2(0, TitleH / ArtH), Vector2.One);
     }
 
+    /// <summary>The Classic title bar's "more" menu: open or close the panels related to the inventory.</summary>
+    private static void RelatedPanelsMenu(bool remoteOpen, bool sortOpen, bool countOpen, bool ginvOpen)
+    {
+        if (!ImGuiNET.ImGui.BeginPopup("##inv_related_menu")) return;
+        if (ImGuiNET.ImGui.MenuItem("Mini Remote", "/rc miniremote", remoteOpen)) ToggleMiniRemote();
+        if (ImGuiNET.ImGui.MenuItem("RynthSort", "/rsort", sortOpen)) ToggleRynthSort();
+        if (!ScriptWindowRegistry.Has(RynthSortKey)) ImGuiNET.ImGui.SetItemTooltip("Needs the RynthSort plugin");
+        if (ImGuiNET.ImGui.MenuItem("Item Count", "/rc itemcount", countOpen)) ToggleItemCount();
+        if (ImGuiNET.ImGui.MenuItem("Global Inventory", "/ginv", ginvOpen)) ToggleGlobalInventory();
+        if (!ScriptWindowRegistry.Has(GlobalInventoryKey)) ImGuiNET.ImGui.SetItemTooltip("Needs the RynthInventory plugin");
+        if (ImGuiNET.ImGui.MenuItem("Trade Shop", "/ra tradeshop ui")) ToggleTradeShop();
+        SafeImGui.SetItemTooltip(TradeShopTip);
+        ImGuiNET.ImGui.EndPopup();
+    }
+
     private void TitleBar(InventoryView view, ImDrawListPtr dl, Vector2 o, float w, float s)
     {
         float h = TitleH * s, closeW = 24 * s;
@@ -221,46 +253,136 @@ internal sealed partial class InventoryFace
             dl.AddRect(o, o + new Vector2(barW, h - 1), Gold, 4);
         }
 
-        // Two toggles at the bar's right end: the tools row and the Modern look.
-        float btn = MathF.Round(18 * s);
-        var b2 = new Vector2(o.X + barW - 8 * s - btn, o.Y + (h - btn) * 0.5f);
-        var b1 = new Vector2(b2.X - btn - 2 * s, b2.Y);
-        var bPlus = new Vector2(b1.X - btn - 6 * s, b2.Y);
-        var bMinus = new Vector2(bPlus.X - btn - 2 * s, b2.Y);
-        if (TitleToggle("##inv_smaller", PhosphorIcons.Minus, bMinus, btn, false))
-            InventorySettingsStore.StepSize(-1);
-        ImGuiNET.ImGui.SetItemTooltip($"Smaller ({InventorySettingsStore.SizePct}%)");
-        if (TitleToggle("##inv_bigger", PhosphorIcons.Plus, bPlus, btn, false))
-            InventorySettingsStore.StepSize(+1);
-        ImGuiNET.ImGui.SetItemTooltip($"Bigger ({InventorySettingsStore.SizePct}%)");
-        if (TitleToggle("##inv_tools", PhosphorIcons.Funnel, b1, btn, InventorySettingsStore.ShowTools))
-            InventorySettingsStore.SetShowTools(!InventorySettingsStore.ShowTools);
-        ImGuiNET.ImGui.SetItemTooltip("Search, sort and filter");
-        if (TitleToggle("##inv_modern", PhosphorIcons.SquaresFour, b2, btn, false))
-            InventorySettingsStore.SetClassic(false);
-        ImGuiNET.ImGui.SetItemTooltip("Modern look");
-
-        // Drag surface: the bar left of the toggles (moves the panel, like the header).
-        float dragW = Math.Max(1, bMinus.X - o.X - 2);
-        ImGuiNET.ImGui.SetCursorScreenPos(o);
-        ImGuiNET.ImGui.InvisibleButton("##inv_titledrag", new Vector2(dragW, h));
-        ImGuiPanelHost.DragWindowWithLastItem();
-
-        // "Inventory of <name>", centred on the bar (left of the toggles when it's narrow).
+        // "Inventory of <name>": its width decides how much room the layout owes the title.
         if (!ReferenceEquals(_titleFor, view.PlayerName))
         {
             _titleFor = view.PlayerName;
             _titleText = view.PlayerName.Length > 0 ? "Inventory of " + view.PlayerName : "Inventory";
         }
         ImFontPtr f = ImGuiFonts.Get(UiFont.UiBold11);
+        float titlePx = 12 * s;
+        float titleK = titlePx / f.FontSize;
         ImGuiNET.ImGui.PushFont(f);
-        Vector2 ts = ImGuiNET.ImGui.CalcTextSize(_titleText);
+        Vector2 ts = ImGuiNET.ImGui.CalcTextSize(_titleText) * titleK;
         ImGuiNET.ImGui.PopFont();
-        float tx = o.X + (barW - ts.X) * 0.5f;
-        if (tx + ts.X > bMinus.X - 4) tx = Math.Max(o.X + 10 * s, bMinus.X - 4 - ts.X);
-        dl.PushClipRect(o + new Vector2(6 * s, 0), new Vector2(bMinus.X - 2, o.Y + h), true);
-        dl.AddText(f, f.FontSize * InventorySettingsStore.SizeFactor, new Vector2(tx, o.Y + (h - ts.Y) * 0.5f), White, _titleText);
-        dl.PopClipRect();
+
+        // Where everything goes (UI/InventoryTitleLayout, tested): the four toggles at the right end, Vault
+        // next to them (always there on a vault server), then the related-panel buttons as text, as icons or
+        // as one "more" menu, whichever leaves the title its room. Nothing lands off the panel.
+        InventoryTitleLayout lay = InventoryTitleLayout.Compute(barW, s, VaultFeed.Available, ts.X);
+        float btn = lay.Btn;
+        float by = o.Y + (h - btn) * 0.5f;
+        Vector2 At(TitleSlot sl) => new(o.X + sl.X, by);
+
+        if (TitleToggle("##inv_smaller", PhosphorIcons.Minus, At(lay.Smaller), btn, false))
+            InventorySettingsStore.StepSize(-1);
+        SafeImGui.SetItemTooltip($"Smaller ({InventorySettingsStore.SizePct}%)");
+        if (TitleToggle("##inv_bigger", PhosphorIcons.Plus, At(lay.Bigger), btn, false))
+            InventorySettingsStore.StepSize(+1);
+        SafeImGui.SetItemTooltip($"Bigger ({InventorySettingsStore.SizePct}%)");
+        if (TitleToggle("##inv_tools", PhosphorIcons.Funnel, At(lay.Tools), btn, InventorySettingsStore.ShowTools))
+        {
+            // Closing the search / filter row shows every item again.
+            if (InventorySettingsStore.ShowTools) ClearFilters();
+            InventorySettingsStore.SetShowTools(!InventorySettingsStore.ShowTools);
+        }
+        ImGuiNET.ImGui.SetItemTooltip("Search, sort and filter");
+        if (TitleToggle("##inv_modern", PhosphorIcons.SquaresFour, At(lay.Modern), btn, false))
+            InventorySettingsStore.SetClassic(false);
+        ImGuiNET.ImGui.SetItemTooltip("Modern look");
+
+        // Vault (Aelrynth only): the contents area shows the account vault instead of the open pack.
+        if (lay.Vault.Present)
+        {
+            if (TitleTextToggle("##inv_vault", "Vault", At(lay.Vault), new Vector2(lay.Vault.W, btn), _vaultOpen))
+            {
+                _vaultOpen = !_vaultOpen;
+                if (_vaultOpen) VaultFeed.ViewOpened();
+            }
+            ImGuiNET.ImGui.SetItemTooltip("Your Aelrynth account vault");
+        }
+        else if (!VaultFeed.Available)
+        {
+            _vaultOpen = false;
+        }
+
+        // Trade Shop Storefront — always present (catalog prices + conversion rates).
+        if (lay.Shop.Present)
+        {
+            if (TitleToggle("##inv_tradeshop", PhosphorIcons.Storefront, At(lay.Shop), btn, false))
+                ToggleTradeShop();
+            SafeImGui.SetItemTooltip(TradeShopTip);
+        }
+
+        // Related panels: Mini Remote, RynthSort, Item Count, Global Inventory.
+        switch (lay.Mode)
+        {
+            case TitleExtrasMode.Text:
+                if (TitleTextToggle("##inv_miniremote", "Remote", At(lay.Remote), new Vector2(lay.Remote.W, btn), MiniRemoteOpen))
+                    ToggleMiniRemote();
+                SafeImGui.SetItemTooltip(MiniRemoteTip);
+                if (TitleTextToggle("##inv_rsort", "Sort", At(lay.Sort), new Vector2(lay.Sort.W, btn), RynthSortOpen))
+                    ToggleRynthSort();
+                SafeImGui.SetItemTooltip(RynthSortTip());
+                if (TitleTextToggle("##inv_itemcount", "Count", At(lay.Count), new Vector2(lay.Count.W, btn), ItemCountOpen))
+                    ToggleItemCount();
+                SafeImGui.SetItemTooltip(ItemCountTip);
+                if (TitleTextToggle("##inv_ginv", "GInv", At(lay.GInv), new Vector2(lay.GInv.W, btn), GlobalInventoryOpen))
+                    ToggleGlobalInventory();
+                SafeImGui.SetItemTooltip(GlobalInventoryTip());
+                break;
+            case TitleExtrasMode.Icons:
+                if (TitleToggle("##inv_miniremote", PhosphorIcons.SlidersHorizontal, At(lay.Remote), btn, MiniRemoteOpen))
+                    ToggleMiniRemote();
+                SafeImGui.SetItemTooltip(MiniRemoteTip);
+                if (TitleToggle("##inv_rsort", PhosphorIcons.SortAscending, At(lay.Sort), btn, RynthSortOpen))
+                    ToggleRynthSort();
+                SafeImGui.SetItemTooltip(RynthSortTip());
+                if (TitleToggle("##inv_itemcount", PhosphorIcons.Bag, At(lay.Count), btn, ItemCountOpen))
+                    ToggleItemCount();
+                SafeImGui.SetItemTooltip(ItemCountTip);
+                if (TitleToggle("##inv_ginv", PhosphorIcons.GlobeHemisphereWest, At(lay.GInv), btn, GlobalInventoryOpen))
+                    ToggleGlobalInventory();
+                SafeImGui.SetItemTooltip(GlobalInventoryTip());
+                break;
+            case TitleExtrasMode.Menu:
+                if (TitleToggle("##inv_more", PhosphorIcons.DotsThree, At(lay.More), btn,
+                        MiniRemoteOpen || RynthSortOpen || ItemCountOpen || GlobalInventoryOpen))
+                    _openMore = true;
+                ImGuiNET.ImGui.SetItemTooltip("Mini Remote, RynthSort, Item Count, Global Inventory, Trade Shop");
+                break;
+        }
+        RelatedMenu();
+
+        // Drag surface: the bar left of the buttons (moves the panel, like the header).
+        float dragW = Math.Max(1, lay.LeftmostX - 2);
+        ImGuiNET.ImGui.SetCursorScreenPos(o);
+        ImGuiNET.ImGui.InvisibleButton("##inv_titledrag", new Vector2(dragW, h));
+        ImGuiPanelHost.DragWindowWithLastItem();
+
+        // The title: centred on the bar when it fits, else against the left edge and cut with "...".
+        float room = lay.TitleWidth - 4 * s;
+        if (room >= 1)
+        {
+            string shown = _titleText;
+            if (ts.X > room)
+            {
+                if (!ReferenceEquals(_titleCutFor, _titleText) || _titleCutRoom != room)
+                {
+                    CutTitle(f, titleK, room);
+                }
+                shown = _titleCut;
+                ts.X = _titleCutW;
+            }
+            if (shown.Length > 0)
+            {
+                float left = o.X + lay.TitleLeft + 4 * s;
+                float tx = Math.Clamp(o.X + (barW - ts.X) * 0.5f, left, Math.Max(left, o.X + lay.TitleRight - ts.X));
+                dl.PushClipRect(o + new Vector2(lay.TitleLeft, 0), new Vector2(o.X + lay.TitleRight, o.Y + h), true);
+                dl.AddText(f, titlePx, new Vector2(tx, o.Y + (h - ts.Y) * 0.5f), White, shown);
+                dl.PopClipRect();
+            }
+        }
 
         // The retail close button.
         var cp = new Vector2(o.X + barW, o.Y);
@@ -274,6 +396,17 @@ internal sealed partial class InventoryFace
             dl.AddRect(cp + new Vector2(3 * s, 3 * s), cp + new Vector2(closeW - 3 * s, h - 3 * s), Gold, 2);
             dl.AddLine(cp + new Vector2(7 * s, h * 0.5f), cp + new Vector2(closeW - 7 * s, h * 0.5f), Gold, 2);
         }
+    }
+
+    /// <summary>Cuts the title text to <paramref name="room"/> px (only when it changed): _titleCut and its width.</summary>
+    private void CutTitle(ImFontPtr font, float k, float room)
+    {
+        ImGuiNET.ImGui.PushFont(font);
+        _titleCut = InventoryTitleLayout.Elide(_titleText, room, t => ImGuiNET.ImGui.CalcTextSize(t).X * k);
+        _titleCutW = _titleCut.Length == 0 ? 0 : ImGuiNET.ImGui.CalcTextSize(_titleCut).X * k;
+        ImGuiNET.ImGui.PopFont();
+        _titleCutFor = _titleText;
+        _titleCutRoom = room;
     }
 
     private static bool TitleToggle(string id, string glyph, Vector2 pos, float size, bool on)
@@ -301,7 +434,7 @@ internal sealed partial class InventoryFace
                 if ((it.Location & slot.Mask) != 0) { worn = it; break; }
             if (slot.Sigil != 0 && worn == null && (view.AetheriaMask & slot.Sigil) == 0) continue;   // locked sigil slot
 
-            var min = new Vector2(field.X + slot.X * s, field.Y + slot.Y * s);
+            var min = new Vector2(MathF.Round(field.X + slot.X * s), MathF.Round(field.Y + slot.Y * s));
             var max = min + new Vector2(cell, cell);
             ImGuiNET.ImGui.SetCursorScreenPos(min);
             ImGuiNET.ImGui.PushID(i);
@@ -309,6 +442,9 @@ internal sealed partial class InventoryFace
             bool hovered = ImGuiNET.ImGui.IsItemHovered();
             ImGuiNET.ImGui.PopID();
 
+            // The slot's tile is drawn filled or not: it is part of the panel, and it is what says an
+            // item is worn (retail draws a worn item like any other, over its slot).
+            CellPicture(dl, slot.Empty, min, cell);
             if (worn != null)
             {
                 DrawItemIcon(dl, worn.Id, min, cell, ReferenceEquals(worn, _dragItem) ? 0x60FFFFFFu : 0xFFFFFFFFu);
@@ -316,7 +452,6 @@ internal sealed partial class InventoryFace
             }
             else
             {
-                CellPicture(dl, slot.Empty, min, cell);
                 if (hovered)
                 {
                     _hoverLabel = slot.Name;
@@ -344,9 +479,10 @@ internal sealed partial class InventoryFace
     private void SideColumn(InventoryView view, ImDrawListPtr dl, Vector2 field, float r, float s, bool filtered)
     {
         // Burden: caption and percent (36x15 each at y 7 and 18), meter 11x58 at (44, 8).
-        ImFontPtr f = ImGuiFonts.Get(UiFont.Ui9);
-        CenterText(dl, f, "Burden", new Vector2(field.X, field.Y + 7 * s), new Vector2(36 * s, 15 * s), White);
-        CenterText(dl, f, view.BurdenText, new Vector2(field.X, field.Y + 18 * s), new Vector2(36 * s, 15 * s), White);
+        // Retail's text here is about 13 px (a serif face); the smallest UI font was too small to read.
+        ImFontPtr f = ImGuiFonts.Get(UiFont.Ui14);
+        CenterText(dl, f, "Burden", new Vector2(field.X - 3 * s, field.Y + 5 * s), new Vector2(42 * s, 15 * s), White, 13 * s);
+        CenterText(dl, f, view.BurdenText, new Vector2(field.X - 3 * s, field.Y + 18 * s), new Vector2(42 * s, 15 * s), White, 13 * s);
         var mMin = new Vector2(field.X + 44 * s, field.Y + 8 * s);
         var mSize = new Vector2(11 * s, 58 * s);
         // Retail's meter holds 0-300% of capacity (OpenAC's BurdenMath.LoadToFill: load / 3).
@@ -369,7 +505,7 @@ internal sealed partial class InventoryFace
 
         // Main pack (36x36 at (6, 32)).
         InventoryPack? main = view.Packs.Length > 0 ? view.Packs[0] : null;
-        PackCell(view, dl, main, new Vector2(field.X + 6 * s, field.Y + 32 * s), s, -1, filtered);
+        PackCell(view, dl, main, new Vector2(MathF.Round(field.X + 6 * s), MathF.Round(field.Y + 32 * s)), s, -1, filtered);
 
         // The main pack's pack slots (36 px pitch at (6, 73)): the side packs, then the items
         // that take a pack slot (foci), as retail lists them; retail's seven slots (eight with
@@ -386,7 +522,7 @@ internal sealed partial class InventoryFace
         {
             int i = _packFirstRow + row;
             if (i >= slots) break;
-            var min = new Vector2(field.X + 6 * s, listY + row * PackPx * s);
+            var min = new Vector2(MathF.Round(field.X + 6 * s), MathF.Round(listY + row * PackPx * s));
             if (i < sidePacks) PackCell(view, dl, view.Packs[i + 1], min, s, i, filtered);
             else if (i < used) SlotItemCell(view, dl, view.SlotItems[i - sidePacks], min, s, i, pendingId);
             else
@@ -404,7 +540,9 @@ internal sealed partial class InventoryFace
         if (MouseIn(new Vector2(field.X, listY), new Vector2(field.X + SideW * s, listY + listH))
             && ImGuiNET.ImGui.IsWindowHovered())
             Wheel(ref _packFirstRow, slots - rows);
-        Scrollbar("##inv_packsb", new Vector2(field.X + 41 * s, listY), listH, s, ref _packFirstRow, slots, rows);
+        // Retail draws this scrollbar only when the slots do not all fit.
+        if (slots > rows)
+            Scrollbar("##inv_packsb", new Vector2(field.X + 41 * s, listY), listH, s, ref _packFirstRow, slots, rows);
     }
 
     /// <summary>
@@ -422,6 +560,7 @@ internal sealed partial class InventoryFace
         ImGuiNET.ImGui.PopID();
         ItemPointer(it, hovered);
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));   // stack counts
+        CellPicture(dl, Art.PackEmpty, inner, cell);   // the slot stays under what fills it
         ItemCell(dl, it, inner, cell, pendingId);
         ImGuiNET.ImGui.PopFont();
         SlotDropHint(view, dl, inner, cell);
@@ -454,6 +593,7 @@ internal sealed partial class InventoryFace
             return;
         }
         if (clicked && _dragItem == null) _pack = pack.Id;
+        CellPicture(dl, Art.PackEmpty, inner, cell);   // the slot stays under what fills it
         if (pack.IsMain)
         {
             if (!Sprite(dl, Art.MainPackIcon, inner, new Vector2(cell, cell)))
@@ -503,16 +643,21 @@ internal sealed partial class InventoryFace
 
     private void Contents(InventoryView view, ImDrawListPtr dl, Vector2 field, float sideX, float r, float s, bool filtered)
     {
+        if (_vaultOpen && VaultFeed.Available)
+        {
+            VaultContents(dl, field, sideX, r, s);
+            return;
+        }
         float cell = CellPx * s;
-        var gridPos = new Vector2(field.X + 15 * s, field.Y + 20 * s);
+        var gridPos = new Vector2(MathF.Round(field.X + 15 * s), MathF.Round(field.Y + 20 * s));
         float availW = sideX - 32 * s - gridPos.X;   // retail: grid 15..207, scrollbar 207..223, column at 239
-        int cols = Math.Max(1, (int)(availW / cell));
+        int cols = Math.Max(1, (int)(availW / cell + 0.01f));   // exact multiples must not round down (6 columns at retail size)
         float gridW = cols * cell;
         float gridH = Math.Max(cell, (r - ContentsY - 5 - 24) * s);
         int rows = Math.Max(1, (int)(gridH / cell + 0.01f));
 
         // "Contents of <pack>" over the grid.
-        CenterText(dl, ImGuiFonts.Get(UiFont.Ui10), _captionText, new Vector2(gridPos.X, field.Y), new Vector2(gridW, 15 * s), White);
+        CenterText(dl, ImGuiFonts.Get(UiFont.Ui14), _captionText, new Vector2(gridPos.X, field.Y), new Vector2(gridW, 15 * s), White, 12 * s);
 
         InventoryPack? open = filtered ? null : view.PackOf(_pack);
         int cells = open != null ? Math.Max(open.Capacity, _shown.Count) : _shown.Count;
@@ -533,7 +678,8 @@ internal sealed partial class InventoryFace
         }
         if (hovered && hoverCell >= 0 && hoverCell < _shown.Count) ItemPointer(_shown[hoverCell], true);
 
-        // Only the rows on show; retail draws an item's icon in place of the empty cell.
+        // Only the rows on show. Retail draws the empty-cell picture under EVERY cell and the item
+        // over it (AcClientReborn does the same), so the grid's lines show behind an item's icon.
         uint pendingId = InventoryModel.Pending?.ItemId ?? 0;
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));   // stack counts
         for (int rr = 0; rr < rows; rr++)
@@ -543,11 +689,8 @@ internal sealed partial class InventoryFace
                 int i = (_gridFirstRow + rr) * cols + c;
                 if (i >= cells) break;
                 var min = new Vector2(gridPos.X + c * cell, gridPos.Y + rr * cell);
-                if (i >= _shown.Count)
-                {
-                    CellPicture(dl, Art.GridEmpty, min, cell);
-                    continue;
-                }
+                CellPicture(dl, Art.GridEmpty, min, cell);
+                if (i >= _shown.Count) continue;
                 ItemCell(dl, _shown[i], min, cell, pendingId);
             }
         }
@@ -555,15 +698,30 @@ internal sealed partial class InventoryFace
 
         if (open != null)
         {
-            // Dropping on the grid moves the item into the open pack.
-            if (_dragItem != null && hoverCell >= 0 && hoverCell < cells && !(_dragItem.Container == open.Id && _dragItem.Wielder == 0))
+            // Dropping on the grid moves the item into the open pack - to the slot under the mouse when
+            // the cells are the server's slots (retail: a drop on a cell places it there, which is also
+            // how items are reordered inside a pack).
+            int dropSlot = -1;
+            if (_dragItem != null && hoverCell >= 0 && CellsAreSlots(_dragItem))
+            {
+                int mine = _dragItem.Container == open.Id && _dragItem.Wielder == 0 ? SlotOf(_dragItem) : -1;
+                int others = _shown.Count - (mine >= 0 ? 1 : 0);
+                dropSlot = Math.Min(hoverCell, Math.Max(0, others));
+            }
+            // A drop inside the item's own pack that cannot be a slot says why, instead of doing nothing.
+            if (dropSlot < 0 && _dragItem != null && hoverCell >= 0 && _dragItem.Container == open.Id && _dragItem.Wielder == 0
+                && !_dragItem.RequiresPackSlot && !_dragItem.IsPack)
+                dropSlot = -2;
+            bool sameSpot = dropSlot >= 0 && _dragItem != null && _dragItem.Container == open.Id && _dragItem.Wielder == 0 && SlotOf(_dragItem) == dropSlot;
+            if (_dragItem != null && hoverCell >= 0 && hoverCell < cells
+                && (dropSlot >= 0 ? !sameSpot : !(_dragItem.Container == open.Id && _dragItem.Wielder == 0)))
             {
                 int c = hoverCell % cols, rr = hoverCell / cols - _gridFirstRow;
                 var min = new Vector2(gridPos.X + c * cell, gridPos.Y + rr * cell);
                 bool full = PackRefuses(view, open, _dragItem);
                 Overlay(dl, full ? Art.Reject : Art.AcceptGrid, min, cell, full ? RejectRed : AcceptGreen);
             }
-            _targets.Add(new Target { Min = gridPos, Max = gridPos + area, Kind = DropKind.Pack, Id = open.Id, Name = open.Name });
+            _targets.Add(new Target { Min = gridPos, Max = gridPos + area, Kind = DropKind.Pack, Id = open.Id, Name = open.Name, Slot = dropSlot });
         }
         else if (_shown.Count == 0)
         {
@@ -571,6 +729,158 @@ internal sealed partial class InventoryFace
         }
 
         Scrollbar("##inv_gridsb", new Vector2(gridPos.X + gridW, gridPos.Y), rows * cell, s, ref _gridFirstRow, totalRows, rows);
+    }
+
+
+    // ── The Aelrynth account vault (Inventory > Vault) ──────────────────
+
+    private bool _vaultOpen;
+    private int _vaultFirstRow;
+    private VaultItem? _vaultCtx;
+    private bool _openVaultCtx;
+
+    /// <summary>The vault view's caption: how full it is, or the read's status before the first read.</summary>
+    private static string VaultCaption(VaultSnapshot? snap)
+    {
+        if (snap == null) return VaultFeed.Status;
+        int n = snap.Items.Length;
+        return snap.Max > 0 ? $"Aelrynth Vault: {n:N0} of {snap.Max:N0}" : $"Aelrynth Vault: {n:N0}";
+    }
+
+    /// <summary>What the vault view says before it has been read.</summary>
+    private static string VaultEmptyText => VaultFeed.Unsupported ? "The vault is not open on this server yet." : "Click Refresh to read the vault.";
+
+    /// <summary>
+    /// The vault's right-click menu (both looks): Withdraw the item. Call it in the panel's own window
+    /// (not inside a child), so the popup opened and drawn here share one ID.
+    /// </summary>
+    private void VaultContextMenu()
+    {
+        if (_openVaultCtx)
+        {
+            _openVaultCtx = false;
+            ImGuiNET.ImGui.OpenPopup("##vault_ctx");
+        }
+        PushMenuStyle();
+        if (ImGuiNET.ImGui.BeginPopup("##vault_ctx"))
+        {
+            VaultItem? it = _vaultCtx;
+            if (it == null) ImGuiNET.ImGui.CloseCurrentPopup();
+            else
+            {
+                SafeImGui.TextDisabled(it.Name);
+                ImGuiNET.ImGui.Separator();
+                if (ImGuiNET.ImGui.MenuItem("Withdraw", "", false, VaultFeed.Available))
+                    VaultFeed.Withdraw(it);
+            }
+            ImGuiNET.ImGui.EndPopup();
+        }
+        PopMenuStyle();
+    }
+
+    /// <summary>A small labelled button in the title bar.</summary>
+    private static bool TitleTextToggle(string id, string label, Vector2 pos, Vector2 size, bool on)
+    {
+        ImGuiNET.ImGui.SetCursorScreenPos(pos);
+        bool clicked = ImGuiNET.ImGui.InvisibleButton(id, size);
+        bool hot = ImGuiNET.ImGui.IsItemHovered();
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
+        uint col = on || hot ? Gold : Faded(Gold);
+        dl.AddRect(pos, pos + size, col, 3);
+        Vector2 ts = ImGuiNET.ImGui.CalcTextSize(label);
+        dl.AddText(pos + new Vector2((size.X - ts.X) * 0.5f, (size.Y - ts.Y) * 0.5f), col, label);
+        return clicked;
+    }
+
+    /// <summary>
+    /// The Vault view: the contents area shows the account vault (the grid's own frames for every slot,
+    /// items drawn as they are in a pack). Read-only apart from right-click > Withdraw.
+    /// </summary>
+    private void VaultContents(ImDrawListPtr dl, Vector2 field, float sideX, float r, float s)
+    {
+        float cell = CellPx * s;
+        var gridPos = new Vector2(MathF.Round(field.X + 15 * s), MathF.Round(field.Y + 20 * s));
+        float availW = sideX - 32 * s - gridPos.X;
+        int cols = Math.Max(1, (int)(availW / cell + 0.01f));   // exact multiples must not round down (6 columns at retail size)
+        float gridW = cols * cell;
+        float gridH = Math.Max(cell, (r - ContentsY - 5 - 24) * s);
+        int rows = Math.Max(1, (int)(gridH / cell + 0.01f));
+
+        VaultSnapshot? snap = VaultFeed.Snapshot;
+        VaultItem[] items = snap?.Items ?? Array.Empty<VaultItem>();
+        int cells = snap == null ? 0 : Math.Max(snap.Max, items.Length);
+        CenterText(dl, ImGuiFonts.Get(UiFont.Ui14), VaultCaption(snap), new Vector2(gridPos.X, field.Y), new Vector2(gridW, 15 * s), White, 12 * s);
+
+        // Read again (the vault changes when anything is deposited or withdrawn).
+        var rb = new Vector2(gridPos.X + gridW - 44 * s, field.Y + 1 * s);
+        if (TitleTextToggle("##vault_refresh", "Refresh", rb, new Vector2(44 * s, 14 * s), VaultFeed.Awaiting))
+            VaultFeed.RequestRefresh();
+
+        int totalRows = (cells + cols - 1) / cols;
+        _vaultFirstRow = Math.Clamp(_vaultFirstRow, 0, Math.Max(0, totalRows - rows));
+        var area = new Vector2(gridW, rows * cell);
+        ImGuiNET.ImGui.SetCursorScreenPos(gridPos);
+        ImGuiNET.ImGui.InvisibleButton("##vault_cells", area, ImGuiButtonFlags.MouseButtonLeft | ImGuiButtonFlags.MouseButtonRight);
+        bool hovered = ImGuiNET.ImGui.IsItemHovered();
+        Vector2 mouse = ImGuiNET.ImGui.GetMousePos();
+        int hoverCell = -1;
+        if (MouseIn(gridPos, gridPos + area))
+        {
+            int c = (int)((mouse.X - gridPos.X) / cell), rr = (int)((mouse.Y - gridPos.Y) / cell);
+            if (c >= 0 && c < cols && rr >= 0 && rr < rows) hoverCell = (_vaultFirstRow + rr) * cols + c;
+            if (ImGuiNET.ImGui.IsWindowHovered()) Wheel(ref _vaultFirstRow, totalRows - rows);
+        }
+
+        ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));   // stack counts
+        for (int rr = 0; rr < rows; rr++)
+        {
+            for (int c = 0; c < cols; c++)
+            {
+                int i = (_vaultFirstRow + rr) * cols + c;
+                if (i >= cells) break;
+                var min = new Vector2(gridPos.X + c * cell, gridPos.Y + rr * cell);
+                CellPicture(dl, Art.GridEmpty, min, cell);
+                if (i >= items.Length) continue;
+                VaultItem it = items[i];
+                if (ScriptIcons.TryGetItem(it.Icon, it.Underlay, it.Overlay, it.Effects, it.ItemType, out IntPtr tex))
+                {
+                    IconSampling.Begin(dl);
+                    dl.AddImage(tex, min, min + new Vector2(cell, cell));
+                    IconSampling.End(dl);
+                }
+                else
+                    dl.AddRectFilled(min, min + new Vector2(cell, cell), Placeholder, 2);
+                if (it.Stack > 1)
+                {
+                    string st = it.Stack.ToString(CultureInfo.InvariantCulture);
+                    Vector2 ts = ImGuiNET.ImGui.CalcTextSize(st);
+                    var tp = new Vector2(min.X + cell - ts.X - 1, min.Y + cell - ts.Y);
+                    dl.AddText(tp + Vector2.One, StackShadow, st);
+                    dl.AddText(tp, StackCol, st);
+                }
+            }
+        }
+        ImGuiNET.ImGui.PopFont();
+
+        if (hovered && hoverCell >= 0 && hoverCell < items.Length)
+        {
+            VaultItem hot = items[hoverCell];
+            SafeImGui.SetTooltip(hot.Stack > 1 ? $"{hot.Name} ({hot.Stack:N0})" : hot.Name);
+            if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Right))
+            {
+                _vaultCtx = hot;
+                _openVaultCtx = true;
+            }
+        }
+        else if (snap == null && !VaultFeed.Awaiting)
+        {
+            dl.AddText(gridPos + new Vector2(4, 22 * s), Mute, VaultEmptyText);
+        }
+
+        VaultContextMenu();
+
+        if (snap != null)   // nothing to scroll before the vault has been read
+            Scrollbar("##inv_vaultsb", new Vector2(gridPos.X + gridW, gridPos.Y), rows * cell, s, ref _vaultFirstRow, totalRows, rows);
     }
 
     // ── Status strip: the action / outcome (or pyreals), Drop, Give ─────
@@ -581,12 +891,13 @@ internal sealed partial class InventoryFace
         dl.AddLine(p, p + new Vector2(w, 0), Faded(Gold));
         InventoryTarget? target = InventoryModel.Target;
         InventoryItem? sel = SelectedItem(view);
+        RefreshSelectionLabels(target);
         float zh = h - 4, giveW = Math.Min(128 * s, w * 0.42f), dropW = 62 * s;
         var give = new Vector2(p.X + w - giveW - 2, p.Y + 2);
         var drop = new Vector2(give.X - dropW - 3, p.Y + 2);
-        Zone("##z_drop", DropKind.Drop, PhosphorIcons.ArrowFatDown, "Drop", drop, new Vector2(dropW, zh), 0, "",
-            InventoryModel.DropAvailable, sel, "Drop on the ground: drag an item here, or click to drop the selected item.");
-        Zone("##z_give", DropKind.Give, PhosphorIcons.Gift, target?.ZoneLabel ?? "Give", give, new Vector2(giveW, zh),
+        Zone("##z_drop", DropKind.Drop, PhosphorIcons.ArrowFatDown, _dropLabel, drop, new Vector2(dropW, zh), 0, "",
+            InventoryModel.DropAvailable, sel, DropTip);
+        Zone("##z_give", DropKind.Give, PhosphorIcons.Gift, _giveLabel, give, new Vector2(giveW, zh),
             target?.Id ?? 0, target?.Name ?? "", InventoryModel.GiveAvailable && target != null, sel,
             target?.ZoneTip ?? "Select a creature, NPC or player in the game to give to.");
         StatusLine(new Vector2(p.X + 3, p.Y), Math.Max(10, drop.X - p.X - 6), h, view);
@@ -610,7 +921,7 @@ internal sealed partial class InventoryFace
             dl.AddText(tp, StackCol, it.StackText);
         }
         if (it.Id == pendingId) Overlay(dl, Art.Waiting, min, cell, Amber);
-        if (it.Id == _selected) Overlay(dl, Art.Selected, min, cell, SelYellow);
+        if (IsPicked(it)) Overlay(dl, Art.Selected, min, cell, SelYellow);
     }
 
     /// <summary>Hover, click (select, and a press that may become a drag), double-click (use), right-click (menu).</summary>
@@ -620,7 +931,7 @@ internal sealed partial class InventoryFace
         _hover = it;
         if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Left))
         {
-            SelectItem(it);
+            ClickItem(it);
             _pressItem = it;
             _pressAt = ImGuiNET.ImGui.GetMousePos();
         }
@@ -630,11 +941,7 @@ internal sealed partial class InventoryFace
             Act(InventoryActionKind.Use, it, 0, "", 0);
         }
         if (ImGuiNET.ImGui.IsMouseClicked(ImGuiMouseButton.Right))
-        {
-            _selected = it.Id;
-            _ctxItem = it;
-            _openCtx = true;
-        }
+            RightClickItem(it);
     }
 
     /// <summary>
@@ -736,15 +1043,34 @@ internal sealed partial class InventoryFace
         dl.AddRect(min, min + new Vector2(size, size), fallback, 2, ImDrawFlags.None, 1.5f);
     }
 
-    private static void CenterText(ImDrawListPtr dl, ImFontPtr f, string text, Vector2 pos, Vector2 size, uint color)
+    /// <summary>
+    /// Text centred in a box. <paramref name="px"/> is the drawn size in screen pixels (retail's text is a fixed
+    /// size per 32 px cell, so callers pass N * the layout scale); 0 = the font's own size times the panel size.
+    /// </summary>
+    private static void CenterText(ImDrawListPtr dl, ImFontPtr f, string text, Vector2 pos, Vector2 size, uint color, float px = 0f)
     {
         if (text.Length == 0) return;
+        float drawPx = px > 0f ? px : f.FontSize * InventorySettingsStore.SizeFactor;
         ImGuiNET.ImGui.PushFont(f);
         Vector2 ts = ImGuiNET.ImGui.CalcTextSize(text);
         ImGuiNET.ImGui.PopFont();
+        ts *= drawPx / f.FontSize;
         dl.PushClipRect(pos, pos + size, true);
-        dl.AddText(f, f.FontSize * InventorySettingsStore.SizeFactor, new Vector2(pos.X + (size.X - ts.X) * 0.5f, pos.Y + (size.Y - ts.Y) * 0.5f), color, text);
+        dl.AddText(f, drawPx, new Vector2(pos.X + (size.X - ts.X) * 0.5f, pos.Y + (size.Y - ts.Y) * 0.5f), color, text);
         dl.PopClipRect();
+    }
+
+    private long _fitAtMs;
+
+    /// <summary>Asks the host to make the panel exactly <paramref name="wantPx"/> wide (screen px) when it is not; at most twice a second.</summary>
+    private void FitWidth(Vector2 size, float wantPx)
+    {
+        if (ImGuiPopOuts.InPopOutFrame || Math.Abs(size.X - wantPx) <= 4f) return;
+        long now = Environment.TickCount64;
+        if (now - _fitAtMs < 500) return;
+        _fitAtMs = now;
+        float place = ImGuiPanelHost.PlacementScale();
+        ImGuiPanelHost.RequestSize(Title, new Vector2(wantPx / place, size.Y / place));
     }
 
     private static bool MouseIn(Vector2 min, Vector2 max)
@@ -755,8 +1081,9 @@ internal sealed partial class InventoryFace
 }
 
 /// <summary>
-/// The Inventory panel's remembered choices: Classic or Modern look, and whether the
-/// Classic view shows its tools row. %LOCALAPPDATA%\RynthCore\inventory_settings.txt,
+/// The Inventory panel's remembered choices: Classic or Modern look, whether the
+/// Classic view shows its tools row, its size, and the attribute filter's rules.
+/// %LOCALAPPDATA%\RynthCore\inventory_settings.txt,
 /// read once when the panel opens, written in the background when a choice changes.
 /// </summary>
 internal static class InventorySettingsStore
@@ -768,9 +1095,11 @@ internal static class InventorySettingsStore
     public static bool Classic { get; private set; } = true;
     /// <summary>Classic view: the search / sort / category row under the title bar.</summary>
     public static bool ShowTools { get; private set; }
-    /// <summary>The panel's size in percent of the UI scale (50-150, steps of 10); text follows it.</summary>
+    /// <summary>The panel's size in percent of the UI scale (50-150, steps of 5); text follows it.</summary>
     public static int SizePct { get; private set; } = 80;
     public static float SizeFactor => SizePct / 100f;
+    /// <summary>The attribute filter's rules (InventoryAttributeFilter.Serialize); "" = none.</summary>
+    public static string AttrFilter { get; private set; } = string.Empty;
 
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RynthCore", "inventory_settings.txt");
@@ -794,6 +1123,7 @@ internal static class InventorySettingsStore
                     if (key == "classic") Classic = val == "1";
                     else if (key == "tools") ShowTools = val == "1";
                     else if (key == "size" && int.TryParse(val, out int pct)) SizePct = Math.Clamp(pct, 50, 150);
+                    else if (key == "attrfilter") AttrFilter = val;
                 }
             }
             catch { /* defaults stay */ }
@@ -809,7 +1139,7 @@ internal static class InventorySettingsStore
 
     public static void StepSize(int dir)
     {
-        int next = Math.Clamp(SizePct + 10 * Math.Sign(dir), 50, 150);
+        int next = Math.Clamp(SizePct + 5 * Math.Sign(dir), 50, 150);
         if (next == SizePct) return;
         SizePct = next;
         Save();
@@ -822,13 +1152,22 @@ internal static class InventorySettingsStore
         Save();
     }
 
+    public static void SetAttrFilter(string line)
+    {
+        line ??= string.Empty;
+        if (AttrFilter == line) return;
+        AttrFilter = line;
+        Save();
+    }
+
     /// <summary>Writes the settings in the background (the caller is AC's render thread).</summary>
     private static void Save()
     {
         string text = "# RynthCore inventory panel settings - auto-generated, hand-edits OK.\n"
             + "classic=" + (Classic ? "1" : "0") + "\n"
             + "tools=" + (ShowTools ? "1" : "0") + "\n"
-            + "size=" + SizePct + "\n";
+            + "size=" + SizePct + "\n"
+            + "attrfilter=" + AttrFilter + "\n";
         UiBackgroundWriter.Enqueue("inventory settings", () =>
         {
             lock (Sync)

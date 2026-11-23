@@ -753,7 +753,15 @@ internal static class AvaloniaOverlay
                 StringComparison.Ordinal);
             UseCustomSkiaBridge = customBridgeRequested || (UseAnglePreferredBridge && !customBridgeDisabled);
 
-            if (UseAnglePreferredBridge)
+            // DXVK / drop-in d3d9: shared D3D9Ex HANDLEs are unreliable — stay on LockRect.
+            D3D9.DxvkDetection.EnsureProbed();
+            if (D3D9.DxvkDetection.IsDxvk || D3D9.DxvkDetection.IsNonSystemD3d9)
+            {
+                UseAnglePreferredBridge = false;
+                UseCustomSkiaBridge = false;
+                D3D9.DxvkDetection.ApplyOverlayPolicy();
+            }
+            else if (UseAnglePreferredBridge)
                 OverlaySurfaceBridge.UseAngleStub();
             else
                 OverlaySurfaceBridge.UseSoftwareFallback();
@@ -1439,8 +1447,8 @@ internal class RynthOverlayWindow : Window
             Foreground = Brushes.Khaki,
             Margin = new Thickness(8, 0, 0, 0),
         });
-        ToolTip.SetTip(reloadBtn, "Engine reload — shut down, FreeLibrary, reload from disk, re-init.");
-        reloadBtn.Click += (_, _) => EngineLifecycle.SignalReload();
+        ToolTip.SetTip(reloadBtn, "Engine reload. While in-world it waits until logout / character select.");
+        reloadBtn.Click += (_, _) => EntryPoint.RequestManualReload("Avalonia RL");
         stack.Children.Add(reloadBtn);
         // Register under a special key so RefreshHitTestSnapshot publishes
         // its rect to Win32Backend — without this, clicks over RL fall
@@ -1513,6 +1521,11 @@ internal class RynthOverlayWindow : Window
     {
         try
         {
+            // Settings > Interface "Remember Open Windows and Positions" (default on).
+            // Off: leave panels closed so a hand-arranged layout is not forced back.
+            if (!Plugins.EngineSettings.RememberWindowLayout)
+                return;
+
             // Bar floating mode restores once AC's HWND is available. If we
             // pop out before that, the FloatingPanelHost ctor takes its
             // legacy code path (no marshal to game thread) and the layered

@@ -652,6 +652,28 @@ internal static class CharacterManagementHooks
             : IntPtr.Zero;
     }
 
+    /// <summary>
+    /// The CPlayerSystem singleton for AcShortcuts (the player's shortcut list lives in its
+    /// PlayerModule). AC's main thread; zero when it can't be read.
+    /// </summary>
+    internal static IntPtr PlayerSystemOnMainThread()
+    {
+        if (!MainThreadGuard.IsOnMainThread()) return IntPtr.Zero;
+        var get = _getPlayerSystem;
+        if (get != null)
+        {
+            try
+            {
+                IntPtr p = get();
+                if (p != IntPtr.Zero) return p;
+            }
+            catch { }
+        }
+        IntPtr addr = new(_playerSystemAddr);
+        if (_playerSystemAddr == 0 || !ClientObjectHooks.IsReadablePointer(addr)) return IntPtr.Zero;
+        return Marshal.ReadIntPtr(addr);
+    }
+
     private static IntPtr GetPlayerSystemPointer()
     {
         if (!MainThreadGuard.IsOnMainThread())

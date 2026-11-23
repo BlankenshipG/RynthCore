@@ -95,18 +95,21 @@ internal static class ServerDetect
         return host.Length > 0;
     }
 
-    /// <summary>Windows command-line splitting, enough for the launchers' quoting (quotes group, \" is a quote).</summary>
+    /// <summary>
+    /// acclient's own splitting (ConvertCommandLineToArgList, 0x004098F0; the launcher's
+    /// AcClientCommandLine), so -h is the host the client itself reads: spaces split outside quotes,
+    /// a quote only toggles and is dropped, a backslash is ordinary. An open quote (the client refuses
+    /// the whole line) still yields what was read.
+    /// </summary>
     private static List<string> SplitArgs(string s)
     {
         var list = new List<string>();
         var cur = new System.Text.StringBuilder();
         bool inQuotes = false, any = false;
-        for (int i = 0; i < s.Length; i++)
+        foreach (char c in s)
         {
-            char c = s[i];
-            if (c == '\\' && i + 1 < s.Length && s[i + 1] == '"') { cur.Append('"'); i++; any = true; continue; }
-            if (c == '"') { inQuotes = !inQuotes; any = true; continue; }
-            if (!inQuotes && char.IsWhiteSpace(c))
+            if (c == '"') { inQuotes = !inQuotes; continue; }
+            if (c == ' ' && !inQuotes)
             {
                 if (any) { list.Add(cur.ToString()); cur.Clear(); any = false; }
                 continue;

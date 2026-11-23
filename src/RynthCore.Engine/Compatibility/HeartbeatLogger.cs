@@ -135,6 +135,11 @@ internal static class HeartbeatLogger
                     // flooding the ring; flat = fine.
                     long dropped = 0;
                     try { dropped = AcMainThreadQueue.DroppedCount; } catch { }
+                    // qrej = marshalled actions and casts refused during a world transition
+                    // (dead / portal / settle window), a running total kept apart from qdrop: a
+                    // jump in qrej around a teleport is the gate working, not a flood.
+                    long rejected = 0;
+                    try { rejected = AcMainThreadQueue.TransitionRejectedCount; } catch { }
                     // rec = busy reconciles (cast/item-action), fcl = force-clears.
                     // Soak health: rec climbs during combat/loot; fcl stays flat.
                     long rec = 0, fcl = 0;
@@ -150,26 +155,71 @@ internal static class HeartbeatLogger
                     try
                     {
                         if (Plugins.EngineSettings.EnableImGuiBackend)
-                            uiField = $" ui={ImGuiBackend.UiFrameStats.P95Ms:0.0}/{ImGuiBackend.UiFrameStats.MaxMs:0.0}ms";
+                        {
+                            float uiP95 = ImGuiBackend.UiFrameStats.P95Ms;
+                            uiField = $" ui={uiP95:0.0}/{ImGuiBackend.UiFrameStats.MaxMs:0.0}ms";
+                            // uitop=part:avg/max,... = the UI frame's top 3 parts over the last seconds
+                            // (ImGui/UiCost), only while the p95 is over the slow-frame threshold.
+                            uiField += ImGuiBackend.UiCost.HeartbeatField(uiP95);
+                        }
                     }
                     catch { }
                     // vafree = free address space (MB): reloads leak engine/plugin copies,
                     // so a client that dies mid-reload can be checked for running out.
+                    // valargest = the largest free block (MB): a 32-bit client fails an
+                    // allocation on fragmentation long before vafree reaches 0.
                     string vaField = "";
-                    try { long free = AddressSpaceMb().FreeMb; if (free >= 0) vaField = $" vafree={free}MB"; }
+                    try
+                    {
+                        long free = AddressSpaceMb().FreeMb;
+                        if (free >= 0) vaField = $" vafree={free}MB";
+                        long largest = AddressSpace.FreeAndLargestMb().LargestFreeMb;
+                        if (largest >= 0) vaField += $" valargest={largest}MB";
+                        // Nearly out soon after start: Adaptive degrade back on for the next launch.
+                        Graphics.AcGraphics.CheckLowMemory(free, largest);
+                    }
+                    catch { }
+                    // Crash logger module cache (native): rebuilt every 10 s here, so a fault
+                    // never has to call the loader to name a module.
+                    if (tick % 10 == 1)
+                    {
+                        try { SehTrampoline.RefreshCrashLoggerModules(); } catch { }
+                    }
+                    // Safety net for the main-thread message box count (MainThreadFreeze).
+                    MessageBoxHooks.ReconcileStaleMainThreadCount();
+                    // gateov=N = the world-transition gate's safety valve has opened N times (a death/portal
+                    // that outlasted WorldTransitionState.MaxHoldMs); omitted while 0.
+                    try { int gov = PlayerLifecycleLog.GateOverrides; if (gov > 0) vaField += $" gateov={gov}"; }
+                    catch { }
+                    // pump=paused = plugin ticks paused because AC's main thread is frozen
+                    // (MainThreadFreeze); omitted while running.
+                    try { if (MainThreadFreeze.Paused) vaField += $" pump=paused stall={MainThreadFreeze.MainThreadStallMs}ms"; }
                     catch { }
                     // req=<type>/<age>s = the client is waiting on an item request (it refuses
                     // every use/move/equip meanwhile); atk=1 = its attacking flag is set. Both
                     // omitted while open, so a long run of req= in a log is the item-action lock.
                     string gateField = ClientActionGates.HeartbeatField();
+                    // vp=<mode>:skip|draw cpu=N% = the video patch (D3D9/VideoPatch) and this
+                    // client's CPU share of all cores. Omitted while the patch is off; the patch
+                    // also logs before/after averages around each mode change.
+                    string vpField = "";
+                    try { vpField = D3D9.VideoPatch.OnHeartbeat(draw); }
+                    catch { }
                     // Unfiltered on purpose: it is the launcher's liveness signal (see RynthLog.Heartbeat).
-                    RynthLog.Heartbeat($"hb #{tick} up={(nowMs - startMs) / 1000}s fps={fps} draw={draw} plug={pps}/s ws={wsMb}MB login={login} qdrop={dropped} rec={rec} fcl={fcl}{idleField}{uiField}{vaField}{gateField}");
+                    RynthLog.Heartbeat($"hb #{tick} up={(nowMs - startMs) / 1000}s fps={fps} draw={draw} plug={pps}/s ws={wsMb}MB login={login} qdrop={dropped} qrej={rejected} rec={rec} fcl={fcl}{idleField}{uiField}{vaField}{gateField}{vpField}");
 
                     // Every 60 s: garbage collections and the time they paused the process.
                     // Under the CoreCLR host the engine and managed plugins share one GC, so a
                     // blocking gen2 stalls AC's main thread whenever it is in managed code.
                     if (tick % 60 == 0)
                         LogGcStats();
+
+                    // Every 60 s: IdentifyObject (0xC8) sends by who asked, and AutoId's skips
+                    // (AutoIdService.TakeMinuteLine). Its own line, never part of "hb #".
+                    if (tick % 60 == 0)
+                    {
+                        try { RynthLog.Info(AutoIdService.TakeMinuteLine()); } catch { }
+                    }
 
                     // Every 5 s: hide and destroy any panel window no live panel owns
                     // (the "double UI" orphans).

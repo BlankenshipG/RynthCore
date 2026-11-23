@@ -122,6 +122,7 @@ internal static unsafe class LogoffOriginProbe
         HookResolver.ResolveResult r;
 
         r = HookResolver.Resolve(text, "LogoffProbe.LogOffCharacter", LogOffCharacterPattern, ProbeLogOffCharacterVa);
+        if (r.Success) _logOffCharacterEntry = r.Address;
         delegate* unmanaged[Thiscall]<IntPtr, byte, void> dLogOffCharacter = &LogOffCharacterDetour;
         if (TryHook(r, "CPlayerSystem::LogOffCharacter", (IntPtr)dLogOffCharacter, out _origLogOffCharacter)) hooked++;
 
@@ -142,6 +143,26 @@ internal static unsafe class LogoffOriginProbe
         if (TryHook(r, "ClientNet::LogOffServer", (IntPtr)dLogOffServer, out _origLogOffServer)) hooked++;
 
         RynthLog.Compat($"LogoffProbe: {hooked}/5 logoff-origin hooks installed (labels {(_labelsValid ? "on" : "off - not the reference client")}).");
+    }
+
+    // CPlayerSystem::LogOffCharacter's entry (hooked or not): TryRequestLogOff calls it.
+    private static IntPtr _logOffCharacterEntry;
+
+    /// <summary>
+    /// Logs the character off the way the Log Out button does: CPlayerSystem::LogOffCharacter(false)
+    /// (through the hook above when it is in, so the logoff is recorded like any other). AC's main
+    /// thread only. False with a reason when it can't be called.
+    /// </summary>
+    public static bool TryRequestLogOff(out string status)
+    {
+        if (!MainThreadGuard.IsOnMainThread()) { status = "off AC's main thread."; return false; }
+        IntPtr fn = _logOffCharacterEntry;
+        if (fn == IntPtr.Zero) { status = "CPlayerSystem::LogOffCharacter isn't resolved."; return false; }
+        IntPtr playerSystem = CharacterManagementHooks.PlayerSystemOnMainThread();
+        if (playerSystem == IntPtr.Zero) { status = "the player system isn't available."; return false; }
+        ((delegate* unmanaged[Thiscall]<IntPtr, byte, void>)fn)(playerSystem, 0);
+        status = "logging off.";
+        return true;
     }
 
     private static bool TryHook(HookResolver.ResolveResult r, string name, IntPtr detour, out IntPtr original)
@@ -234,6 +255,7 @@ internal static unsafe class LogoffOriginProbe
         ChatHooks.OnLogoffRequested();
         RadarHooks.OnLogoffRequested();
         RetailVitalsHooks.OnLogoffRequested();
+        RetailToolbarHooks.OnLogoffRequested();
         long now = Environment.TickCount64;
         IntPtr caller = LogoutLifecycleHooks.LogCaller(fn, "LogoffProbe");
         string callerText = DescribeAcclientAddress(caller);
@@ -343,7 +365,18 @@ internal static unsafe class LogoffOriginProbe
             bool inWorld = false;
             try { inWorld = LoginLifecycleHooks.HasObservedLoginComplete; } catch { }
             if (!inWorld)
+            {
+                // Before LoginComplete too (2026-10-13): a relaunched client that never had any
+                // input carries an idle time of years (last input 0), and AC logged Drakkon off
+                // 0.7 s after he entered the world, before LoginComplete arrived, so the
+                // in-world refresh below never ran. Keep the clock fresh at char-select as well.
+                if (Plugins.EngineSettings.PreventIdleLogoff && idle > IdleRefreshAfterSec && TryRefreshLastInput() && !_preWorldRefreshLogged)
+                {
+                    _preWorldRefreshLogged = true;
+                    RynthLog.Info($"LogoffProbe: reset the client's idle clock before entering the world ({idle:0}s idle) so the idle auto-logoff can't fire on arrival (PreventIdleLogoff; logged once).");
+                }
                 return;
+            }
 
             if (double.IsNaN(limit) || double.IsInfinity(limit) || limit <= 60)
             {
@@ -387,6 +420,7 @@ internal static unsafe class LogoffOriginProbe
     }
 
     private const double IdleRefreshAfterSec = 120;
+    private static bool _preWorldRefreshLogged;
     private static long _lastIdleRefreshLogMs = -600_000;
 
     /// <summary>Sets the input manager's last-input time to Timer::cur_time, as real input

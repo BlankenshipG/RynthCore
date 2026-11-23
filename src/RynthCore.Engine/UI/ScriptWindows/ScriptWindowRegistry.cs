@@ -460,14 +460,26 @@ internal static class ScriptWindowRegistry
     private static readonly Dictionary<string, ScriptWindow> ByPanelKey = new(StringComparer.OrdinalIgnoreCase);
     private static long _lastRejectLogTicks;
 
-    // The bar's Scripts menu: a copy-on-write snapshot of the ShowInBar windows, republished
-    // (under Sync) when the window set, a title or a ShowInBar flag changed. AC's thread
-    // reads it without taking Sync.
+    // The bar's Scripts menu and the windows with a bar button of their own: copy-on-write
+    // snapshots of the ShowInBar windows, republished (under Sync) when the window set, a
+    // title or a ShowInBar/BarButton flag changed. AC's thread reads them without taking Sync.
     private static ScriptBarItem[] _barItems = Array.Empty<ScriptBarItem>();
+    private static ScriptBarItem[] _barButtons = Array.Empty<ScriptBarItem>();
     private static bool _barDirty;
 
     /// <summary>The Scripts menu's items, grouped (empty = no Scripts button). Any thread.</summary>
     public static ScriptBarItem[] BarItems => Volatile.Read(ref _barItems);
+
+    /// <summary>
+    /// The windows that asked for a bar button of their own (ShowInBar + BarButton), sorted
+    /// like the menu. A new array whenever the set or a title changes, so the bar can compare
+    /// references to know when to rebuild its buttons. Any thread.
+    /// </summary>
+    public static ScriptBarItem[] BarButtons => Volatile.Read(ref _barButtons);
+
+    /// <summary>True when a window with these flags gets a bar button of its own (not a Scripts menu line).</summary>
+    public static bool HasOwnBarButton(uint flags) =>
+        (flags & (WindowFlags.ShowInBar | WindowFlags.BarButton)) == (WindowFlags.ShowInBar | WindowFlags.BarButton);
 
     // ── Host functions ───────────────────────────────────────────────────
 
@@ -558,7 +570,8 @@ internal static class ScriptWindowRegistry
         UiInfoNative full = default;
         full.Size = (uint)sizeof(UiInfoNative);
         bool imgui = EngineSettings.EnableImGuiBackend;
-        full.Flags = (imgui ? 1u : 0u) | (Compatibility.LoginLifecycleHooks.HasObservedLoginComplete ? 2u : 0u);
+        full.Flags = (imgui ? 1u : 0u) | (Compatibility.LoginLifecycleHooks.HasObservedLoginComplete ? 2u : 0u)
+            | (PanelRouter.CanPopOut ? 4u : 0u);
         full.MaxFormatVersion = DisplayListParser.FormatVersion;
         full.OpLevel = DisplayListParser.OpLevel;
         full.MaxOpsPerWindow = MaxOpsPerWindow;
@@ -629,28 +642,38 @@ internal static class ScriptWindowRegistry
             ByPanelKey.Clear();
             _barDirty = false;
             Volatile.Write(ref _barItems, Array.Empty<ScriptBarItem>());
+            Volatile.Write(ref _barButtons, Array.Empty<ScriptBarItem>());
         }
+        // Engine reload / shutdown: the Skills embed hides and Oracle's announcement is forgotten.
+        ImGuiBackend.Panels.OracleSkillsEmbed.Shutdown();
     }
 
-    /// <summary>Rebuilds the Scripts menu snapshot when something it shows changed. Caller holds Sync.</summary>
+    /// <summary>
+    /// Rebuilds the Scripts menu and bar button snapshots when something they show changed.
+    /// A ShowInBar window goes in the menu, or on a button of its own with BarButton set.
+    /// Caller holds Sync.
+    /// </summary>
     private static void PublishBarLocked()
     {
         if (!_barDirty) return;
         _barDirty = false;
-        var rows = new List<(string Group, ScriptWindow W)>();
+        var menu = new List<(string Group, ScriptWindow W)>();
+        var buttons = new List<(string Group, ScriptWindow W)>();
         foreach (ScriptWindowOwner o in Owners.Values)
             foreach (ScriptWindow w in o.Windows.Values)
             {
                 if ((w.Flags & WindowFlags.ShowInBar) == 0) continue;
                 int slash = w.Key.LastIndexOf('/');
                 string group = slash > 0 ? w.Key[..slash] : o.Plugin.DisplayName;
-                rows.Add((group, w));
+                (HasOwnBarButton(w.Flags) ? buttons : menu).Add((group, w));
             }
-        if (rows.Count == 0)
-        {
-            Volatile.Write(ref _barItems, Array.Empty<ScriptBarItem>());
-            return;
-        }
+        Volatile.Write(ref _barItems, Snapshot(menu));
+        Volatile.Write(ref _barButtons, Snapshot(buttons));
+    }
+
+    private static ScriptBarItem[] Snapshot(List<(string Group, ScriptWindow W)> rows)
+    {
+        if (rows.Count == 0) return Array.Empty<ScriptBarItem>();
         rows.Sort(static (a, b) =>
         {
             int c = string.Compare(a.Group, b.Group, StringComparison.OrdinalIgnoreCase);
@@ -662,14 +685,21 @@ internal static class ScriptWindowRegistry
         for (int i = 0; i < rows.Count; i++)
             items[i] = new ScriptBarItem(rows[i].W, rows[i].Group,
                 groupStart: i == 0 || !string.Equals(rows[i].Group, rows[i - 1].Group, StringComparison.Ordinal));
-        Volatile.Write(ref _barItems, items);
+        return items;
     }
 
     // ── Windows ──────────────────────────────────────────────────────────
 
     /// <summary>The flag bits that shape the panel spec (a change re-registers the entry).</summary>
     private const uint SpecFlags = WindowFlags.ChromeNone | WindowFlags.NoBackground
-        | WindowFlags.NoScrollbar | WindowFlags.NoScrollWithMouse;
+        | WindowFlags.NoScrollbar | WindowFlags.NoScrollWithMouse | WindowFlags.NoPopOut;
+
+    /// <summary>
+    /// Whether a window with these flags may pop out (↗, Phase 2): a framed window unless the hud
+    /// set NoPopOut. A bare window (ChromeNone) has no header for the ↗ and is drawn over the game
+    /// (an overlay, usually click-through), which an OS window of its own can't be: it stays docked.
+    /// </summary>
+    public static bool CanPopOut(uint flags) => (flags & (WindowFlags.ChromeNone | WindowFlags.NoPopOut)) == 0;
 
     private static void Apply(ScriptWindow w, ParsedWindow pw, uint ackSeq, bool isNew)
     {
@@ -677,7 +707,7 @@ internal static class ScriptWindowRegistry
         bool specChanged = isNew || ((w.Flags ^ pw.Flags) & SpecFlags) != 0
             || w.DefaultSize != pw.DefaultSize || w.MinSize != pw.MinSize || w.DefaultPos != defaultPos;
         bool titleChanged = w.Title != pw.Title;
-        if (isNew || titleChanged || ((w.Flags ^ pw.Flags) & WindowFlags.ShowInBar) != 0)
+        if (isNew || titleChanged || ((w.Flags ^ pw.Flags) & (WindowFlags.ShowInBar | WindowFlags.BarButton)) != 0)
             _barDirty = true;
         w.Flags = pw.Flags;
         w.Title = pw.Title;
@@ -692,7 +722,13 @@ internal static class ScriptWindowRegistry
 
         // DrawPanel reads the entry's spec every frame, so a new spec applies at once.
         if (specChanged)
+        {
             ImGuiPanelHost.RegisterDynamic(w.PanelKey, w.Title, SpecFor(w), () => new ScriptWindowFace(w));
+            // Popped out and no longer allowed to be (NoPopOut set, or the hud went bare): it
+            // comes back into the client, where it was docked. Saved as docked, so it stays there.
+            if (!isNew && !CanPopOut(w.Flags) && ImGuiPanelHost.IsPopped(w.PanelKey))
+                ImGuiPanelHost.Redock(w.PanelKey);
+        }
         else if (titleChanged)
             ImGuiPanelHost.SetDisplayTitle(w.PanelKey, w.Title);
 
@@ -771,6 +807,38 @@ internal static class ScriptWindowRegistry
     }
 
     /// <summary>
+    /// Opens or closes a plugin's script window by its key ("RynthOracle/Oracle"), as the bar
+    /// does (the owner gets a Visibility event, reason 2). False when no live window has the
+    /// key (the plugin isn't loaded or hasn't submitted it yet). Any thread.
+    /// </summary>
+    public static bool PlayerSetVisible(string key, bool visible)
+    {
+        ScriptWindow? w = Find(key);
+        if (w == null) return false;
+        PlayerSetVisible(w, visible);
+        return true;
+    }
+
+    /// <summary>Whether a plugin has submitted a script window with this key (and it is still live). Any thread.</summary>
+    public static bool Has(string key) => Find(key) != null;
+
+    /// <summary>Whether a plugin's script window (by key) is open; false when there is none. Any thread.</summary>
+    public static bool IsOpen(string key)
+    {
+        ScriptWindow? w = Find(key);
+        return w != null && ImGuiPanelHost.IsOpen(w.PanelKey);
+    }
+
+    /// <summary>The live window with a plugin key, or null.</summary>
+    private static ScriptWindow? Find(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return null;
+        ScriptWindow? w;
+        lock (Sync) ByPanelKey.TryGetValue(PanelKeyPrefix + SanitizeKey(key), out w);
+        return w == null || w.Removed ? null : w;
+    }
+
+    /// <summary>
     /// SetNextWindowSize / SetNextWindowPos (§3.2): a request is passed to the panel host
     /// when its value changed since the last one applied, when the window was re-recorded
     /// (a new ListSeq), or when this submit opens the window. A NaN value (none) forgets the
@@ -816,11 +884,12 @@ internal static class ScriptWindowRegistry
         ImGuiNET.ImGuiWindowFlags body = ImGuiNET.ImGuiWindowFlags.None;
         if ((f & WindowFlags.NoScrollbar) != 0) body |= ImGuiNET.ImGuiWindowFlags.NoScrollbar;
         if ((f & WindowFlags.NoScrollWithMouse) != 0) body |= ImGuiNET.ImGuiWindowFlags.NoScrollWithMouse;
-        // ClickThrough stays on the face (IImGuiPanel.ClickThrough), read every frame.
-        // Pop-outs aren't in the MVP (decision 8): no ↗.
+        // ClickThrough stays on the face (IImGuiPanel.ClickThrough), read every frame; popped
+        // out, the host makes the window interactive like any panel.
+        // Pop-outs (Phase 2, decision 8): the ↗ like any panel, unless CanPopOut says no.
         return new PanelSpec(size, min, none ? PanelChrome.None : PanelChrome.Standard,
             Background: (f & WindowFlags.NoBackground) != 0 ? 0u : null,
-            NoPopOut: true,
+            NoPopOut: !CanPopOut(f),
             BodyFlags: body,
             DefaultPos: w.DefaultPos);
     }
@@ -830,6 +899,10 @@ internal static class ScriptWindowRegistry
         w.Removed = true;
         w.SubmittedVisible = false;
         _barDirty = true;
+        // Oracle's window went (plugin unloaded or stopped drawing it): its Skills embed hides now,
+        // not at the next frame, which may never come (reload, shutdown).
+        if (ImGuiBackend.Panels.OracleSkillsEmbed.IsOraclePanel(w.PanelKey))
+            ImGuiBackend.Panels.OracleSkillsEmbed.Clear();
         owner.Windows.Remove(w.Key);
         if (ByPanelKey.TryGetValue(w.PanelKey, out ScriptWindow? cur) && ReferenceEquals(cur, w))
             ByPanelKey.Remove(w.PanelKey);
@@ -862,7 +935,7 @@ internal static class ScriptWindowRegistry
                         + $" flags=0x{w.Flags:X3}({DescribeFlags(w.Flags)}) error={(w.ErrorUtf8 != null ? "shown" : "none")}"
                         + $" ops={w.List.OpCount} listSeq={w.List.ListSeq} playerSeq={w.PlayerVisibilitySeq}");
         }
-        lines.Add($"script windows: {BarItems.Length} in the bar's Scripts menu");
+        lines.Add($"script windows: {BarItems.Length} in the bar's Scripts menu, {BarButtons.Length} with a bar button");
         return lines;
     }
 
@@ -881,6 +954,7 @@ internal static class ScriptWindowRegistry
         Add(WindowFlags.NoPopOut, "NoPopOut");
         Add(WindowFlags.HasError, "HasError");
         Add(WindowFlags.PosIsDefault, "PosIsDefault");
+        Add(WindowFlags.BarButton, "BarButton");
         return sb.Length > 0 ? sb.ToString() : "none";
     }
 }
@@ -915,6 +989,9 @@ internal static unsafe class ScriptWindowMetrics
     {
         long now = Stopwatch.GetTimestamp();
         if (_current != null && now - _takenAt < Stopwatch.Frequency) return;
+        // A popped-out window's context has the monitor's work area for its display, not AC's
+        // window: the snapshot is taken from a docked one (the font metrics are the same).
+        if (_current != null && ImGuiPopOuts.InPopOutFrame) return;
         _takenAt = now;
         var io = ImGuiNET.ImGui.GetIO();
         var style = ImGuiNET.ImGui.GetStyle();
@@ -929,7 +1006,7 @@ internal static unsafe class ScriptWindowMetrics
             SpacingY = style.ItemSpacing.Y,
             PadX = style.FramePadding.X,
             PadY = style.FramePadding.Y,
-            Frame = (uint)ImGuiNET.ImGui.GetFrameCount(),
+            Frame = (uint)ImGuiPopOuts.FrameNumber,   // the main frame number, also when popped out
         };
         byte* one = stackalloc byte[2];
         for (int i = 0; i < 95; i++)

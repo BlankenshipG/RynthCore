@@ -8,7 +8,7 @@ using RynthCore.App.Avalonia;
 // Tests for the launcher's Available plugins list, plugin installs (verified, with progress and
 // Cancel), Remove, old feeds without descriptions, the download meter, and the front page's
 // update card. A throwaway signing key signs feeds served by a local HttpListener.
-internal static class Program
+internal static partial class Program
 {
     private static int _fails, _asserts;
     private static void Check(bool cond, string msg)
@@ -36,6 +36,7 @@ internal static class Program
         try
         {
             await Run(nameof(AvailableIsFeedMinusInstalled), AvailableIsFeedMinusInstalled);
+            await Run(nameof(PluginNamesAndServerSplit), () => { PluginNamesAndServerSplit(); return Task.CompletedTask; });
             await Run(nameof(OnlyRynthLuaIsAutomatic), OnlyRynthLuaIsAutomatic);
             await Run(nameof(OldManifestWithoutDescriptions), OldManifestWithoutDescriptions);
             await Run(nameof(DescriptionsAreOneShortLine), DescriptionsAreOneShortLine);
@@ -60,6 +61,7 @@ internal static class Program
             await Run(nameof(TooNewUpdateIsHeldBack), TooNewUpdateIsHeldBack);
             await Run(nameof(TooNewCompanionWaits), TooNewCompanionWaits);
             await Run(nameof(MinEngineApiAtOrBelowInstalledIsFine), MinEngineApiAtOrBelowInstalledIsFine);
+            await RollbackTests();
         }
         finally
         {
@@ -274,7 +276,7 @@ internal static class Program
         var f = Setup("olddesc", descriptions: false, extraPlugins: new[] { "RynthSomethingElse" });
         var c = await f.Upd.CheckAsync(new[] { f.RynthAiPath });
         Check(c.Manifest.Plugins.All(p => p.Description == ""), "an old feed parses with no descriptions");
-        Check(c.Available.Single(a => a.Entry.Name == "RynthOracle").Description == "Quests, character, titles and leaderboards.",
+        Check(c.Available.Single(a => a.Entry.Name == "RynthOracle").Description == "Quests, character and titles.",
             "a missing description falls back to the launcher's table");
         Check(c.Available.Single(a => a.Entry.Name == "RynthNav").Description.Contains("540 MB"), "RynthNav's says how big its map is");
         Check(c.Available.Single(a => a.Entry.Name == "RynthSomethingElse").Description == "", "a plugin the table doesn't know: no description, still listed");
@@ -699,6 +701,24 @@ internal static class Program
         Check(install.Title == "Installing RynthNav map" && install.ProgressPercent == null && !install.ShowCancel, "installing: indeterminate, no Cancel");
         var verified = UpdateCardModel.Build(new UpdateCardInput { Download = p with { Stage = DownloadStage.Verified } });
         Check(verified.Title == "RynthNav map: verified", "verified step shown");
+    }
+
+    /// <summary>
+    /// The plugin list shows "RynthAi" (not "RynthCore.Plugin.RynthAi"), and a plugin for one game server
+    /// goes on the Server plugins tab (RynthThreads too: DreamWeave only), the rest on Plugins.
+    /// </summary>
+    private static void PluginNamesAndServerSplit()
+    {
+        Check(RynthCore.App.Avalonia.PluginNames.Friendly(@"C:\Games\RynthSuite\RynthAi\RynthCore.Plugin.RynthAi.dll") == "RynthAi", "a DLL path: the short name");
+        Check(RynthCore.App.Avalonia.PluginNames.Friendly("RynthCore.Plugin.RynthNav") == "RynthNav", "a file name without .dll");
+        Check(RynthCore.App.Avalonia.PluginNames.Friendly("RynthOracle") == "RynthOracle", "a feed name stays");
+        Check(RynthCore.App.Avalonia.PluginNames.Friendly("SomeoneElse.dll") == "SomeoneElse", "another plugin keeps its name");
+        foreach (string s in new[] { "RynthDreamWeave", "RynthConquest", "RynthILT", "RynthThreads", "RynthCore.Plugin.RynthAelrynth.dll" })
+            Check(RynthCore.App.Avalonia.PluginNames.IsServerPlugin(s), $"{s}: a server plugin");
+        foreach (string s in new[] { "RynthAi", "RynthNav", "RynthChat", "RynthNet", "RynthLua", "SomeoneElse" })
+            Check(!RynthCore.App.Avalonia.PluginNames.IsServerPlugin(s), $"{s}: a regular plugin");
+        Check(RynthCore.App.Avalonia.PluginNames.ServerOf("RynthThreads")?.Name == "DreamWeave", "RynthThreads is DreamWeave's");
+        Check(RynthUpdater.DescribeByName("RynthNet").Length > 0 && RynthUpdater.DescribeByName("RynthSort").Length > 0, "every RynthSuite plugin has a line");
     }
 
     private static void UpdateCardWhatsNew()

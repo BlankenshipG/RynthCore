@@ -9,8 +9,10 @@
 //            dungeons, towns, portals, with type and distance; takes
 //            coordinates too), favorites and recent places while it's empty,
 //            Go / Route / Arrow / Stop, the "Use portals and recalls" and
-//            "Recalls" switches, the route step by step (the current step
-//            highlighted, with the distance left), then two sections that
+//            "Recalls" switches, the path markers switches (RynthNav 0.6.6:
+//            the trip on the ground, labels, guide line), the route step by
+//            step (the current step highlighted, with the distance left) and
+//            "save as nav route" (a RynthAi .nav in NavProfiles), then two sections that
 //            fold: Recalls (portal ties and where they land, "which tie was
 //            it?", the recalls routes can use) and Info (here, the NavData
 //            folder, the route graph, tiles; Load / Test / Preview and the
@@ -20,6 +22,9 @@
 //    Arrow   the arrow's target, distance and direction; show or hide the
 //            arrow overlay (RynthNavArrowFace), Go / Stop / Clear / favorite,
 //            set it to a place or coordinates, the arrival radius.
+//
+//  Header also toggles the World Map, Mini Map, Radar and Sense (Radar/Sense
+//  left the top bar 2026-10-16; same PanelRouter path as /rc radar|/rc sense).
 //
 //  Our take on GoArrow's arrow, atlas and routes (Digero 2006, Virindi 2011,
 //  MIT). RynthNav (the plugin) owns the arrow, favorites, recent, routing and
@@ -55,7 +60,8 @@ internal sealed class RynthNavFace : IImGuiPanel
     }
 
     private static readonly uint RunGreen = RynthTheme.Argb(0xFF40D973), Sep = RynthTheme.Argb(0xFF1A2A39),
-        RowHot = RynthTheme.Argb(0xFF16283A), Gold = RynthTheme.Argb(0xFFFFD24D), Purple = RynthTheme.Argb(0xFFBF4DFF);
+        Gold = RynthTheme.Argb(0xFFFFD24D), Purple = RynthTheme.Argb(0xFFBF4DFF);
+    private static uint RowHot => RynthTheme.Button;
 
     private const int TabGo = 0, TabAtlas = 1, TabArrow = 2;
 
@@ -84,7 +90,7 @@ internal sealed class RynthNavFace : IImGuiPanel
     // Go tab: the picked destination (a row of the list), what the commands get for it, its line.
     private AtlasRow? _pick;
     private string _pickArg = "", _pickCoord = "", _pickLine = "", _typedLine = "", _typedCoord = "";
-    private bool _recallsOpen, _infoOpen;
+    private bool _recallsOpen, _infoOpen, _learnOpen;
 
     public void OnShown()
     {
@@ -124,7 +130,46 @@ internal sealed class RynthNavFace : IImGuiPanel
         ImFontPtr big = ImGuiFonts.Get(UiFont.UiBold14);
         dl.AddText(big, big.FontSize, p + new Vector2(16, 1), Teal, "RynthNav");
         float tw = ImGuiNET.ImGui.CalcTextSize("RynthNav").X * big.FontSize / ImGuiNET.ImGui.GetFontSize();
-        dl.AddText(p + new Vector2(24 + tw, 6), Mute, "go · atlas · arrow");
+        dl.AddText(p + new Vector2(24 + tw, 6), Mute, "go · atlas · arrow · radar · sense");
+        // Right-side toggles: Sense, Radar (left of Mini), Mini, Map — same open path as the old bar.
+        float hx = p.X + w;
+        if (ImGuiPanelHost.HasFace(WorldMapFace.Title))
+        {
+            bool mapOpen = ImGuiPanelHost.IsOpen(WorldMapFace.Title);
+            hx -= 62;
+            if (Button("##rnav_worldmap", PhosphorIcons.GlobeHemisphereWest + " Map", new Vector2(hx, p.Y - 1), new Vector2(62, 22),
+                    mapOpen ? Teal : Text, mapOpen ? Selected : BtnFill, border: mapOpen ? Teal : 0))
+                UI.PanelRouter.Toggle(WorldMapFace.Title);
+            hx -= 4;
+        }
+        if (ImGuiPanelHost.HasFace(MiniMapFace.Title))
+        {
+            bool miniOpen = ImGuiPanelHost.IsOpen(MiniMapFace.Title);
+            hx -= 40;
+            if (Button("##rnav_minimap", "Mini", new Vector2(hx, p.Y - 1), new Vector2(40, 22),
+                    miniOpen ? Teal : Text, miniOpen ? Selected : BtnFill, border: miniOpen ? Teal : 0))
+                UI.PanelRouter.Toggle(MiniMapFace.Title);
+            hx -= 4;
+        }
+        if (ImGuiPanelHost.HasFace(RadarFace.Title))
+        {
+            bool radarOpen = ImGuiPanelHost.IsOpen(RadarFace.Title);
+            hx -= 58;
+            if (Button("##rnav_radar", PhosphorIcons.Compass + " Radar", new Vector2(hx, p.Y - 1), new Vector2(58, 22),
+                    radarOpen ? Teal : Text, radarOpen ? Selected : BtnFill, border: radarOpen ? Teal : 0))
+                UI.PanelRouter.Toggle(RadarFace.Title);
+            ImGuiNET.ImGui.SetItemTooltip("Radar (/rc radar): nearby objects, walls and floor overlay");
+            hx -= 4;
+        }
+        if (ImGuiPanelHost.HasFace(SenseFace.Title))
+        {
+            bool senseOpen = ImGuiPanelHost.IsOpen(SenseFace.Title);
+            hx -= 58;
+            if (Button("##rnav_sense", PhosphorIcons.Binoculars + " Sense", new Vector2(hx, p.Y - 1), new Vector2(58, 22),
+                    senseOpen ? Teal : Text, senseOpen ? Selected : BtnFill, border: senseOpen ? Teal : 0))
+                UI.PanelRouter.Toggle(SenseFace.Title);
+            ImGuiNET.ImGui.SetItemTooltip("Sense (/rc sense): watch list of names anywhere the client knows");
+        }
         NextLine(p, 22);
         DrawTabs(w);
         DrawStatusLine(w);
@@ -192,7 +237,7 @@ internal sealed class RynthNavFace : IImGuiPanel
         // The whole line on hover (it's clipped to one line).
         ImGuiNET.ImGui.SetCursorScreenPos(p);
         ImGuiNET.ImGui.InvisibleButton("##rnav_status", new Vector2(Math.Max(1, textRight - p.X), h));
-        if (text.Length > 40) ImGuiNET.ImGui.SetItemTooltip(text);
+        if (text.Length > 40) SafeImGui.SetItemTooltip(text);
         if (stop)
         {
             if (IconButton("##rnav_status_stop", PhosphorIcons.Stop, new Vector2(p.X + w - 22, p.Y + 1), new Vector2(20, 20), Text, StopBg, font: UiFont.Ui11))
@@ -270,7 +315,7 @@ internal sealed class RynthNavFace : IImGuiPanel
             {
                 if (IconButton("##go_star", PhosphorIcons.Star, p, new Vector2(18, 18), fav ? Gold : Faded(Mute), fav ? Selected : PanelBg, font: UiFont.Ui11))
                     RynthNavCommands.ToggleFavorite(_pick!.Name, _pick.Ns, _pick.Ew);
-                ImGuiNET.ImGui.SetItemTooltip(fav ? "Remove from favorites" : "Add to favorites");
+                SafeImGui.SetItemTooltip(fav ? "Remove from favorites" : "Add to favorites");
                 lx += 22;
             }
             dl.PushClipRect(new Vector2(lx, p.Y), new Vector2(p.X + w, p.Y + 18), true);
@@ -288,19 +333,19 @@ internal sealed class RynthNavFace : IImGuiPanel
         bool walking = st?.Goto == true;
         float bw = (w - 3 * 4) / 4f;
         if (Button("##go_go", GoLabel, p, new Vector2(bw, 26), Green, BtnFill, enabled: canGo)) Go(text);
-        ImGuiNET.ImGui.SetItemTooltip(travel
+        SafeImGui.SetItemTooltip(travel
             ? (st!.PortalsOn ? "Walk there, through portals and with recalls when that is quicker" : "Walk there (portals and recalls are switched off)")
             : "Walk the navmesh to these coordinates (update RynthNav for places and routes)");
         if (Button("##go_route", PhosphorIcons.Path + " Route", new Vector2(p.X + bw + 4, p.Y), new Vector2(bw, 26), Text, BtnFill, enabled: travel && has))
             RynthNavCommands.Command("route " + Arg(text));
-        ImGuiNET.ImGui.SetItemTooltip(travel ? "Plan only: show the steps below, don't walk" : "Update RynthNav (0.6.0+) for routes");
+        SafeImGui.SetItemTooltip(travel ? "Plan only: show the steps below, don't walk" : "Update RynthNav (0.6.0+) for routes");
         if (Button("##go_arrow", PhosphorIcons.NavigationArrow + " Arrow", new Vector2(p.X + 2 * (bw + 4), p.Y), new Vector2(bw, 26), Teal, BtnFill, enabled: travel && has))
             RynthNavCommands.Command("arrow " + Arg(text));
-        ImGuiNET.ImGui.SetItemTooltip(travel ? "Show the arrow overlay pointing there" : "Update RynthNav (0.6.0+) for the arrow");
+        SafeImGui.SetItemTooltip(travel ? "Show the arrow overlay pointing there" : "Update RynthNav (0.6.0+) for the arrow");
         if (Button("##go_stop", PhosphorIcons.Stop + " Stop", new Vector2(p.X + 3 * (bw + 4), p.Y), new Vector2(bw, 26),
                 walking ? Text : Red, walking ? StopBg : BtnFill, border: walking ? Red : 0))
             RynthNavCommands.Move(5);
-        ImGuiNET.ImGui.SetItemTooltip(walking ? "Stop walking" : "Stop any movement");
+        SafeImGui.SetItemTooltip(walking ? "Stop walking" : "Stop any movement");
         NextLine(p, 32);
 
         // Switches
@@ -327,6 +372,8 @@ internal sealed class RynthNavFace : IImGuiPanel
             }
             NextLine(p, 28);
             if (st.HasAvoid) AvoidRows(st, w);
+            if (st.HasMarkers) MarkerRow(st, w);
+            if (st.HasMesh) MeshRows(st, w);
         }
         Line(w);
 
@@ -339,6 +386,7 @@ internal sealed class RynthNavFace : IImGuiPanel
             DrawRouteView(st, cw);
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
             if (Fold("##go_fold_recalls", _recallsOpen ? RecallsOpenLabel : RecallsShutLabel, ref _recallsOpen, cw)) DrawRecalls(st, cw);
+            if (st?.HasLearn == true && Fold("##go_fold_learn", _learnOpen || st.LearnOn ? LearnOpenLabel : LearnShutLabel, ref _learnOpen, cw)) DrawLearn(st, cw);
             if (Fold("##go_fold_info", _infoOpen ? InfoOpenLabel : InfoShutLabel, ref _infoOpen, cw)) DrawInfo(st, cw);
         }
         ImGuiNET.ImGui.EndChild();
@@ -424,7 +472,7 @@ internal sealed class RynthNavFace : IImGuiPanel
             if (IconButton("##fav", PhosphorIcons.Star, rp + new Vector2(2, 1), new Vector2(btn, btn), r.Favorite ? Gold : Faded(Mute),
                     r.Favorite ? Selected : PanelBg, enabled: travel && r.OnMap, font: UiFont.Ui11))
                 RynthNavCommands.ToggleFavorite(r.Name, r.Ns, r.Ew);
-            ImGuiNET.ImGui.SetItemTooltip(r.Favorite ? "Remove from favorites" : "Add to favorites");
+            SafeImGui.SetItemTooltip(r.Favorite ? "Remove from favorites" : "Add to favorites");
 
             float bodyX = rp.X + btn + 4, bodyW = w - btn - 4;
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(bodyX, rp.Y));
@@ -449,6 +497,8 @@ internal sealed class RynthNavFace : IImGuiPanel
     private const string GoLabel = PhosphorIcons.Play + " Go";
     private const string RecallsOpenLabel = PhosphorIcons.CaretDown + "  RECALLS AND PORTAL TIES",
         RecallsShutLabel = PhosphorIcons.CaretRight + "  RECALLS AND PORTAL TIES",
+        LearnOpenLabel = PhosphorIcons.CaretDown + "  CUSTOM PORTALS (THIS SERVER)",
+        LearnShutLabel = PhosphorIcons.CaretRight + "  CUSTOM PORTALS (THIS SERVER)",
         InfoOpenLabel = PhosphorIcons.CaretDown + "  INFO, LOAD / TEST, MOVEMENT",
         InfoShutLabel = PhosphorIcons.CaretRight + "  INFO, LOAD / TEST, MOVEMENT";
 
@@ -507,6 +557,7 @@ internal sealed class RynthNavFace : IImGuiPanel
                 dl.AddRectFilled(new Vector2(top.X, top.Y), new Vector2(top.X + 3, bottom), RunGreen, 1);
             }
         }
+        DrawSaveRoute(st, cw);
     }
 
     // ── Recalls section ──────────────────────────────────────────────────
@@ -546,6 +597,15 @@ internal sealed class RynthNavFace : IImGuiPanel
                 SectionLabel("WHERE YOUR RECALLS LAND");
                 foreach (string line in st.MineLines) Wrapped(line, Text, iw);
             }
+            // Lifestone Recall's landing, learned from the lifestone selected or stood at (/rnav tie lifestone).
+            {
+                Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+                const string LsLabel = PhosphorIcons.MapPin + " My lifestone is the one selected";
+                if (Button("##rc_tiels", LsLabel, p, new Vector2(Math.Min(iw, ButtonWidth(LsLabel) + 8), 22), Text, BtnFill))
+                    RynthNavCommands.Command("tie lifestone");
+                ImGuiNET.ImGui.SetItemTooltip("Select the lifestone you are tied to (or stand at it), then click: routes can use\nLifestone Recall from then on, without casting it once first. Also: /rnav tie lifestone");
+                NextLine(p, 26);
+            }
         }
         else Wrapped("Update RynthNav (0.6.1) to see your portal ties here and answer \"which tie was it?\" with a button.", Mute, iw);
 
@@ -559,6 +619,70 @@ internal sealed class RynthNavFace : IImGuiPanel
         ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
         ImGuiNET.ImGui.Unindent(4);
     }
+
+    // ── Custom portals section (RynthNav "learn") ─────────────────────────
+
+    /// <summary>
+    /// This server's own portals: the counts, Scan (write down the portals around you), Learn (go
+    /// and try every portal within the range, learn each landing, come back, repeat; Stop ends it)
+    /// and the range with - / +.
+    /// </summary>
+    private static void DrawLearn(RynthNavStatus st, float cw)
+    {
+        ImGuiNET.ImGui.Indent(4);
+        float iw = cw - 4;
+        Wrapped(st.LearnCounts, Text, iw);
+
+        // Range: - [ 200 yd ] +
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        double r = st.LearnRange, step = r >= 500 ? 100 : r >= 100 ? 25 : 10;
+        ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
+        DrawSmallLabel(p + new Vector2(0, 5), Mute, "SEARCH RANGE");
+        ImGuiNET.ImGui.PopFont();
+        float x = p.X + 92;
+        if (Button("##learn_minus", "-", new Vector2(x, p.Y), new Vector2(24, 22), Text, BtnFill, enabled: r > st.LearnMin))
+            RynthNavCommands.Command("portals learn range " + Math.Max(st.LearnMin, r - step).ToString("0", System.Globalization.CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.SetItemTooltip("A smaller range: fewer portals, closer to where learning starts");
+        string rt = r.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " yd";
+        float tw = ImGuiNET.ImGui.CalcTextSize(rt).X;
+        ImGuiNET.ImGui.GetWindowDrawList().AddText(new Vector2(x + 28 + (64 - tw) * 0.5f, p.Y + 3), Teal, rt);
+        if (Button("##learn_plus", "+", new Vector2(x + 96, p.Y), new Vector2(24, 22), Text, BtnFill, enabled: r < st.LearnMax))
+            RynthNavCommands.Command("portals learn range " + Math.Min(st.LearnMax, r + step).ToString("0", System.Globalization.CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.SetItemTooltip($"A bigger range (up to {st.LearnMax:0} yd): more portals, longer runs");
+        NextLine(p, 26);
+
+        // Learn / Stop, Scan
+        p = ImGuiNET.ImGui.GetCursorScreenPos();
+        float bw = (iw - 4) * 0.5f;
+        if (!st.LearnOn)
+        {
+            if (Button("##learn_go", PhosphorIcons.Play + " Learn portals", p, new Vector2(bw, 24), RunGreen, BtnFill, border: RunGreen))
+                RynthNavCommands.Command("portals learn");
+            ImGuiNET.ImGui.SetItemTooltip("From where you stand: walk into every portal within the range it hasn't mapped,\n"
+                + "learn where each one lands, come back here by a route (portals and recalls), and go on\n"
+                + "until all have been tried. Stop (or any movement key) ends it.");
+        }
+        else
+        {
+            if (Button("##learn_stop", PhosphorIcons.Stop + " Stop learning", p, new Vector2(bw, 24), Amber, BtnFill, border: Amber))
+                RynthNavCommands.Command("portals learn stop");
+            ImGuiNET.ImGui.SetItemTooltip("Stop learning portals (the walk stops too)");
+        }
+        if (Button("##learn_scan", PhosphorIcons.MagnifyingGlass + " Scan here", new Vector2(p.X + bw + 4, p.Y), new Vector2(bw, 24), Text, BtnFill,
+                enabled: !st.LearnOn))
+            RynthNavCommands.Command("portals scan " + r.ToString("0", System.Globalization.CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.SetItemTooltip("Write down the portals around you within the range (their landing is learned when one is taken)");
+        NextLine(p, 28);
+
+        if (st.LearnLine.Length > 0) Wrapped(st.LearnLine, st.LearnOn ? Amber : Mute, iw);
+        ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
+        Wrapped("Routes use these with \"Use portals and recalls\" on. A portal that lands in a dungeon is kept, not routed. /rnav portals list shows them.", Mute, iw);
+        ImGuiNET.ImGui.PopFont();
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+        ImGuiNET.ImGui.Unindent(4);
+    }
+
+    private static void DrawSmallLabel(Vector2 at, uint color, string text) => ImGuiNET.ImGui.GetWindowDrawList().AddText(at, color, text);
 
     // ── Info section ─────────────────────────────────────────────────────
 
@@ -590,7 +714,7 @@ internal sealed class RynthNavFace : IImGuiPanel
         ImGuiNET.ImGui.SetItemTooltip("Is there navmesh under you?");
         if (Button("##preview", "Preview", new Vector2(p.X + 2 * (bw + 4), p.Y), new Vector2(bw, 24), Text, BtnFill, enabled: coord.Length > 0))
             RynthNavCommands.Preview(coord);
-        ImGuiNET.ImGui.SetItemTooltip(coord.Length > 0 ? "Plan the navmesh path to the destination (close places only), no walking"
+        SafeImGui.SetItemTooltip(coord.Length > 0 ? "Plan the navmesh path to the destination (close places only), no walking"
             : "Pick a destination on the map first");
         NextLine(p, 30);
 
@@ -634,7 +758,7 @@ internal sealed class RynthNavFace : IImGuiPanel
     {
         if (IconButton("##mv" + cmd, glyph, pos, new Vector2(58, 42), Text, active ? RunGreen : BtnFill))
             RynthNavCommands.Move(cmd);
-        ImGuiNET.ImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);
     }
 
     // Avoidance, one row per kind of thing kept away from: on/off, then − value +. Each click
@@ -660,7 +784,7 @@ internal sealed class RynthNavFace : IImGuiPanel
         }
         else
             Button("##av_" + key, label, p, new Vector2(lw, 22), Text, BtnFill, enabled: false, leftAlign: true);
-        ImGuiNET.ImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);
         bool active = on ?? true;
         float x = p.X + lw + 4;
         string Fmt(double v) => v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
@@ -670,6 +794,116 @@ internal sealed class RynthNavFace : IImGuiPanel
         if (Button("##av_" + key + "_up", "+", new Vector2(x + bw + vw + 8, p.Y), new Vector2(bw, 22), Text, BtnFill, enabled: active))
             RynthNavCommands.Command($"avoid {key} {Fmt(metres + step)}");
         NextLine(p, 26);
+    }
+
+    // Path markers (RynthNav 0.6.6+): the planned trip on the ground, its labels, the guide line.
+    // Each click sends /rnav markers ... (saved in rynthnav.json by RynthNav).
+    private static void MarkerRow(RynthNavStatus st, float w)
+    {
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        float w1 = (w - 8) * 0.40f, w2 = (w - 8) * 0.28f, w3 = w - 8 - w1 - w2;
+        if (Toggle("##mk_on", "Path markers", st.MarkersOn, p, w1))
+            RynthNavCommands.Command(st.MarkersOn ? "markers off" : "markers on");
+        SafeImGui.SetItemTooltip("Show the planned trip on the ground, the way RynthAi shows its nav routes: rings at the\n"
+            + "waypoints, lines between them, the portals, recalls and the goal in their own colours.\n"
+            + "They go when the trip ends, you stop, or you land somewhere that isn't on it."
+            + (st.MarkerStatus.Length > 0 ? "\n\nNow: " + st.MarkerStatus : ""));
+        if (Toggle("##mk_labels", "Labels", st.MarkerLabels, new Vector2(p.X + w1 + 4, p.Y), w2))
+            RynthNavCommands.Command(st.MarkerLabels ? "markers labels off" : "markers labels on");
+        ImGuiNET.ImGui.SetItemTooltip("Names over the portal, recall, Town Network and goal markers.");
+        if (Toggle("##mk_guide", "Guide line", st.MarkerGuide, new Vector2(p.X + w1 + w2 + 8, p.Y), w3))
+            RynthNavCommands.Command(st.MarkerGuide ? "markers guide off" : "markers guide on");
+        ImGuiNET.ImGui.SetItemTooltip("A line from your feet to the next waypoint (to the nearest marker for a plan you're not walking).");
+        NextLine(p, 26);
+    }
+
+    // The navmesh drawn in the world (RynthNav 0.6.7+): green where nav can walk, red walls where
+    // the mesh ends. Each click sends /rnav mesh ... (saved in rynthnav.json by RynthNav).
+    private static void MeshRows(RynthNavStatus st, float w)
+    {
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        float w1 = (w - 8) * 0.44f, w2 = (w - 8) * 0.26f, w3 = w - 8 - w1 - w2;
+        if (Toggle("##ms_on", "Show navmesh", st.MeshOn, p, w1))
+            RynthNavCommands.Command(st.MeshOn ? "mesh off" : "mesh on");
+        SafeImGui.SetItemTooltip("Draw the navigation mesh in the world: green where nav can walk, red walls where the mesh ends\n"
+            + "(buildings, trees, rocks, cliffs, steep ground and the margin round them). Not drawn in dungeons."
+            + (st.MeshOn ? $"\n\nNow: {st.MeshDrawn} triangles drawn." : ""));
+        if (Toggle("##ms_floor", "Green", st.MeshFloor, new Vector2(p.X + w1 + 4, p.Y), w2))
+            RynthNavCommands.Command(st.MeshFloor ? "mesh floor off" : "mesh floor on");
+        ImGuiNET.ImGui.SetItemTooltip("The walkable ground, in green.");
+        if (Toggle("##ms_walls", "Red walls", st.MeshWalls, new Vector2(p.X + w1 + w2 + 8, p.Y), w3))
+            RynthNavCommands.Command(st.MeshWalls ? "mesh walls off" : "mesh walls on");
+        ImGuiNET.ImGui.SetItemTooltip("Upright red strips along every edge nav will not cross.");
+        NextLine(p, 26);
+        MeshStepRow("radius", "Mesh radius", st.MeshRadius, 10, 10, 150, " m", st.MeshOn, w,
+            "How far around you the mesh is drawn.");
+        MeshStepRow("triangles", "Mesh detail", st.MeshTriangles, 500, 200, 7000, "", st.MeshOn, w,
+            "The most triangles the mesh may use. The game's 3D buffer holds 8192 for every plugin, so keep this under about 5000\n"
+            + "when RynthVision's slope overlay is on. The nearest ground and walls are kept first.");
+    }
+
+    private static void MeshStepRow(string key, string label, int value, int step, int min, int max, string unit, bool active, float w, string tip)
+    {
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        float bw = 22, vw = 54, lw = w - 2 * bw - vw - 12;
+        Button("##ms_" + key, label, p, new Vector2(lw, 22), active ? Text : Faded(Mute), BtnFill, enabled: false, leftAlign: true);
+        SafeImGui.SetItemTooltip(tip);
+        float x = p.X + lw + 4;
+        if (Button("##ms_" + key + "_dn", "-", new Vector2(x, p.Y), new Vector2(bw, 22), Text, BtnFill, enabled: value > min))
+            RynthNavCommands.Command($"mesh {key} {Math.Max(min, value - step)}");
+        Button("##ms_" + key + "_v", value + unit, new Vector2(x + bw + 4, p.Y), new Vector2(vw, 22), active ? Text : Faded(Mute), PanelBg, enabled: false);
+        if (Button("##ms_" + key + "_up", "+", new Vector2(x + bw + vw + 8, p.Y), new Vector2(bw, 22), Text, BtnFill, enabled: value < max))
+            RynthNavCommands.Command($"mesh {key} {Math.Min(max, value + step)}");
+        NextLine(p, 26);
+    }
+
+    // ── Save as nav route (RynthNav 0.6.6+) ──────────────────────────────
+
+    private readonly byte[] _saveName = new byte[96];
+    private string _saveSeenFor = "\u0001";
+
+    /// <summary>
+    /// Below the route: a name (the place's, to start with) and Save, which writes the trip as a
+    /// RynthAi nav route into NavProfiles (/rnav saveroute). A name already taken: Replace.
+    /// </summary>
+    private void DrawSaveRoute(RynthNavStatus st, float cw)
+    {
+        if (!st.HasSave || !st.CanSave) return;
+        if (st.SaveFor != _saveSeenFor) { _saveSeenFor = st.SaveFor; WriteUtf8(_saveName, st.SaveName); }
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+        SectionLabel("SAVE AS NAV ROUTE");
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        const float bw = 78;
+        float boxW = Math.Max(60, cw - bw - 4);
+        bool enter = TextBox("##save_name", _saveName, p, boxW, "Route name", out _, ImGuiInputTextFlags.EnterReturnsTrue);
+        string name = Utf8(_saveName).Trim();
+        bool can = name.Length > 0 && !st.SaveBusy;
+        if (Button("##save_go", st.SaveBusy ? "Saving…" : PhosphorIcons.FloppyDisk + " Save", new Vector2(p.X + boxW + 4, p.Y), new Vector2(bw, 22),
+                Teal, BtnFill, enabled: can) || (enter && can))
+            RynthNavCommands.Command("saveroute " + name);
+        SafeImGui.SetItemTooltip("Write this trip as a RynthAi nav route (NavProfiles\\" + (name.Length > 0 ? name : "name") + ".nav):\n"
+            + "the walks as waypoints, portals as portal steps, recalls as recall steps.\n"
+            + "RynthAi lists it in its Nav picker; /ra nav load " + (name.Length > 0 ? name : "<name>") + " loads it.");
+        NextLine(p, 26);
+        if (st.SaveConflict.Length > 0 && st.SaveConflict.Equals(name, StringComparison.OrdinalIgnoreCase))
+        {
+            p = ImGuiNET.ImGui.GetCursorScreenPos();
+            float rw = 78, tw = Math.Max(40, cw - rw - 4);
+            var dl = ImGuiNET.ImGui.GetWindowDrawList();
+            dl.PushClipRect(p, new Vector2(p.X + tw, p.Y + 22), true);
+            dl.AddText(new Vector2(p.X, p.Y + (22 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Amber, name + ".nav is already there.");
+            dl.PopClipRect();
+            if (Button("##save_replace", "Replace", new Vector2(p.X + tw + 4, p.Y), new Vector2(rw, 22), Text, BtnFill, enabled: !st.SaveBusy, border: Amber))
+                RynthNavCommands.Command("saveroute " + name + " overwrite");
+            SafeImGui.SetItemTooltip("Replace NavProfiles\\" + name + ".nav with this trip");
+            NextLine(p, 26);
+        }
+        if (st.SaveLast.Length > 0)
+        {
+            ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
+            Wrapped(st.SaveLast, Mute, cw);
+            ImGuiNET.ImGui.PopFont();
+        }
     }
 
     private static bool Toggle(string id, string label, bool on, Vector2 pos, float width)
@@ -707,7 +941,7 @@ internal sealed class RynthNavFace : IImGuiPanel
                 _mode = Modes[i].Mode;
                 PushQuery();
             }
-            ImGuiNET.ImGui.SetItemTooltip(Modes[i].Tip);
+            SafeImGui.SetItemTooltip(Modes[i].Tip);
         }
         NextLine(p, 26);
 
@@ -732,6 +966,19 @@ internal sealed class RynthNavFace : IImGuiPanel
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui9));
         Label(view.Summary.Length > 0 ? view.Summary : RynthNavAtlas.Status.Length > 0 ? RynthNavAtlas.Status : "Loading…", Mute);
         ImGuiNET.ImGui.PopFont();
+        // Recent: forget them (/rnav recent clear).
+        if (_mode == AtlasMode.Recent && view.Rows.Length > 0)
+        {
+            Vector2 cp = ImGuiNET.ImGui.GetCursorScreenPos();
+            const string ClearLabel = PhosphorIcons.Eraser + " Forget recent places";
+            if (Button("##atl_recent_clear", ClearLabel, cp, new Vector2(ButtonWidth(ClearLabel) + 8, 22), Text, BtnFill))
+            {
+                RynthNavCommands.Command("recent clear");
+                PushQuery();
+            }
+            ImGuiNET.ImGui.SetItemTooltip("Empty the Recent list (favorites stay). Also: /rnav recent clear");
+            NextLine(cp, 26);
+        }
 
         // List
         float listH = Math.Max(60, origin.Y + size.Y - 6 - ImGuiNET.ImGui.GetCursorScreenPos().Y - DetailH - 4);
@@ -770,7 +1017,7 @@ internal sealed class RynthNavFace : IImGuiPanel
             if (IconButton("##fav", PhosphorIcons.Star, starPos, new Vector2(btn, btn), r.Favorite ? Gold : Faded(Mute),
                     r.Favorite ? Selected : PanelBg, enabled: r.OnMap, font: UiFont.Ui11))
                 RynthNavCommands.ToggleFavorite(r.Name, r.Ns, r.Ew);
-            ImGuiNET.ImGui.SetItemTooltip(r.Favorite ? "Remove from favorites" : "Add to favorites");
+            SafeImGui.SetItemTooltip(r.Favorite ? "Remove from favorites" : "Add to favorites");
 
             // Arrow / Go (right)
             var goPos = new Vector2(rp.X + w - btn - 2, rp.Y + 1);
@@ -780,13 +1027,13 @@ internal sealed class RynthNavFace : IImGuiPanel
                 RynthNavCommands.Arrow(r.Name, r.Ns, r.Ew);
                 _sel = r;
             }
-            ImGuiNET.ImGui.SetItemTooltip(r.OnMap ? "Point the arrow here" : "In a dungeon: no arrow");
+            SafeImGui.SetItemTooltip(r.OnMap ? "Point the arrow here" : "In a dungeon: no arrow");
             if (IconButton("##go", PhosphorIcons.Play, goPos, new Vector2(btn, btn), Green, BtnFill, enabled: r.OnMap, font: UiFont.Ui11))
             {
                 RynthNavCommands.Go(r.Name, r.Ns, r.Ew);
                 _sel = r;
             }
-            ImGuiNET.ImGui.SetItemTooltip(r.OnMap ? "Go: RynthNav walks here" : "In a dungeon: RynthNav can't walk there");
+            SafeImGui.SetItemTooltip(r.OnMap ? "Go: RynthNav walks here" : "In a dungeon: RynthNav can't walk there");
 
             // Row body: click selects
             float bodyX = rp.X + btn + 4, bodyW = arPos.X - 4 - bodyX;

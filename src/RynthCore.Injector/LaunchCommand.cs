@@ -109,6 +109,14 @@ internal static class LaunchCommand
                 a.InjectionMode = InjMode.DecalBridge;
         }
 
+        // Headless accounts (rynth-headless.exe instead of acclient) are listed in
+        // headless-accounts.json the same way. This tool only starts acclient: such an account
+        // stays RynthCore here (what appsettings.json says) and is launched as one, with a notice.
+        HashSet<string> headlessIds = RynthCore.App.HeadlessAccountModes.ReadIds(
+            RynthCore.App.HeadlessAccountModes.PathIn(Path.GetDirectoryName(settingsPath)!), out string? headlessModesError);
+        if (headlessModesError != null)
+            Log(headlessModesError);
+
         // ── Resolve account ──────────────────────────────────────────────────
         List<AccountDto> accounts = settings.AccountProfiles ?? new();
         List<ServerDto> servers = settings.ServerProfiles ?? new();
@@ -150,6 +158,9 @@ internal static class LaunchCommand
             return 2;
         }
 
+        if (RynthCore.App.HeadlessAccountModes.IsHeadless(headlessIds, account.Id, (RynthCore.App.InjectionMode)(int)account.InjectionMode))
+            Log($"Account '{account.AccountName}' is set to Headless in the launcher; --launch starts it in acclient.exe with RynthCore instead " +
+                "(the launcher starts rynth-headless.exe for it).");
         if (account.InjectionMode == InjMode.Decal && !withDecal)
             Log($"WARNING: account '{account.AccountName}' is configured for Decal mode; --launch always injects the RynthCore engine (pass --decal for both).");
         // "Decal + RynthCore" accounts launch as --decal does. Registration of the Decal
@@ -253,6 +264,15 @@ internal static class LaunchCommand
                 "Password needs re-entering: edit the account in the launcher and type it again.");
             return 2;
         }
+        if (pwd.Length == 0)
+        {
+            // The client refuses an empty password before it connects ("You can only run the
+            // game from the launcher program") and exits within seconds.
+            Log($"No password is saved for account '{acct}'. Launch it once from the launcher to enter it, or edit the account.");
+            return 2;
+        }
+        if (RynthCore.App.AcClientCommandLine.LosesCharacters(pwd))
+            Log("Note: the password has a quote mark (\"). The AC client can't receive one on its command line, so it logs in with the password less its quote marks.");
 
         string arguments = server.Emulator == EmulatorKind.Gdle
             ? string.Join(" ",
@@ -377,16 +397,8 @@ internal static class LaunchCommand
 
     // Mirrors AcLaunchArgumentBuilder.Quote — only quote when needed, escape
     // backslashes + quotes inside.
-    private static string Quote(string value)
-    {
-        value ??= string.Empty;
-        if (value.Length == 0)
-            return "\"\"";
-        bool needs = value.Any(ch => char.IsWhiteSpace(ch) || ch == '"');
-        if (!needs)
-            return value;
-        return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
-    }
+    /// <summary>One argument by acclient's own rules (AcClientCommandLine), as the launcher writes it.</summary>
+    private static string Quote(string value) => RynthCore.App.AcClientCommandLine.Token(value);
 
     private static string? GetOpt(string[] args, string name)
     {
@@ -439,6 +451,7 @@ internal static class LaunchCommand
 
     private enum EmulatorKind { Ace = 0, Gdle = 1 }
 
+    // No Headless (3): appsettings.json lists Headless accounts as RynthCore (headless-accounts.json above).
     private enum InjMode { RynthCore = 0, Decal = 1, DecalBridge = 2 }
 
     private sealed class LaunchContextDto

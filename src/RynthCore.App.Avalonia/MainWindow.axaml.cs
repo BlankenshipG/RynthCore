@@ -33,6 +33,7 @@ internal partial class MainWindow : Window
     // handle most of the work; this cooldown is a final belt-and-braces.
     private static readonly TimeSpan AutoLaunchCooldown = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan AutoLaunchServerDownLogCooldown = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan AutoLaunchNeedsPasswordLogCooldown = TimeSpan.FromMinutes(5);
 
     // Auto-inject only after the external AC client has been continuously
     // graphics-ready for this long. The window gives Decal/UBLoader time to
@@ -48,6 +49,12 @@ internal partial class MainWindow : Window
     private readonly ObservableCollection<string> _sessionItems = [];
     private readonly ObservableCollection<string> _pluginDllPaths = [];
     private readonly HashSet<int> _launchedSessionPids = [];
+    // rynth-headless.exe processes (InjectionMode.Headless): those this launcher started (until
+    // DetectQuickExits drops them), and those the last FindClientProcesses saw. They count as
+    // clients for sessions, account keys and auto-launch; acclient-only steps skip them.
+    private readonly HashSet<int> _launchedHeadlessPids = [];
+    private readonly HashSet<int> _headlessClientPids = [];
+    private readonly Dictionary<string, DateTime> _headlessRefusalNoticeTimesUtc = new(StringComparer.OrdinalIgnoreCase);
     // Per-PID metadata for crash detection: which account this client belongs
     // to and when we launched it. Used by the auto-relaunch circuit breaker
     // to distinguish "exited normally after a long session" from "quick exit".
@@ -83,6 +90,12 @@ internal partial class MainWindow : Window
     // Last observed window rect per PID — set on first post-login observation,
     // used to detect an actual move before we commit anything to appsettings.
     private readonly Dictionary<int, (int x, int y, int w, int h)> _baselineWindowRects = [];
+    // When each client was first seen logged in: the restore waits from then for AC to reach the saved size (AcWindowPlacementRule).
+    private readonly Dictionary<int, DateTime> _windowLoginSeenUtc = [];
+    // The window size each client was last seen at and since when (the restore waits for it to hold: RestoreSettle).
+    private readonly Dictionary<int, (int w, int h, DateTime since)> _windowSizeSinceUtc = [];
+    // Per client, a new window rect and since when it has held; saved only once it held for StableFor (AcWindowPlacementRule).
+    private readonly Dictionary<int, AcWindowPlacementRule.Pending?> _windowSavePending = [];
     // Serializes prefs-swap launches so two accounts don't race on the live
     // UserPreferences.ini. Non-prefs launches don't acquire this and stay
     // parallel.
@@ -90,6 +103,11 @@ internal partial class MainWindow : Window
     // After CreateProcess+inject+resume, hold the prefs lock this long so AC
     // has a chance to read UserPreferences.ini before another account swaps.
     private static readonly TimeSpan UserPrefsSettleDelay = TimeSpan.FromSeconds(2);
+    // The UserPreferences.ini swap each launched PID started with, so a quick exit can set the
+    // saved copy aside and put the previous live file back (UserPrefsSwapRecovery).
+    private readonly Dictionary<int, PrefsSwapLaunch> _prefsSwapByPid = [];
+    // Counts swaps; a quick exit only restores the live file when no later swap replaced it.
+    private long _prefsSwapGeneration;
     private readonly Dictionary<int, DateTime> _autoInjectFirstReadyAtUtc = [];
     private readonly HashSet<int> _autoInjectAttemptedPids = [];
     private readonly HashSet<int> _autoInjectInFlightPids = [];
@@ -99,6 +117,9 @@ internal partial class MainWindow : Window
     private readonly Dictionary<string, ComboBox> _launchTargetInjectionDropdowns = [];
     private readonly Dictionary<string, DateTime> _autoLaunchAttemptTimesUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> _autoLaunchServerDownNoticeTimesUtc = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTime> _autoLaunchNeedsPasswordNoticeTimesUtc = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTime> _autoLaunchNoServerNoticeTimesUtc = new(StringComparer.OrdinalIgnoreCase);
+    private DateTime _extraArgumentsNoticeUtc = DateTime.MinValue;
     private readonly Dictionary<string, ServerAvailabilityState> _serverStatuses = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<PluginDefinition> _plugins =
     [
@@ -150,6 +171,7 @@ internal partial class MainWindow : Window
         _serverStatusTimer.Tick += async (_, _) => await RefreshServerStatusesAsync();
         _serverStatusTimer.Start();
         Closing += (_, _) => SaveWindowLayout();
+        Closed += (_, _) => _headlessWindow?.Close();
         ShowVersion();
         AppendActivity("Avalonia launcher preview ready.");
         // One-line host/runtime sidecar check (full detail in Desktop RynthCore-Launcher.log).
@@ -158,14 +180,80 @@ internal partial class MainWindow : Window
         _updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync();
         _updateTimer.Start();
         _ = CheckForUpdatesAsync();
-        Opened += async (_, _) => await AskAboutUsageStatsOnceAsync();
+        WireLauncherScroll();
+        Opened += async (_, _) =>
+        {
+            await AskAboutUsageStatsOnceAsync();
+            await CleanUpDecalBridgeIfUnusedAsync(atStartup: true);
+            await CheckFolderAccessAtStartupAsync();   // MainWindow.FolderAccess.cs: can the game client save?
+        };
+    }
+
+    // ── The Launcher tab keeps the player's scroll position ───────────────────
+    // Player report R-20261021-183803-97c0: scrolled down, the tab jumped back to the top. It was
+    // reset on every SelectionChanged that reached the tab control, and that event bubbles: every
+    // ComboBox and ListBox inside the tabs raised it there too, and the launch targets' character
+    // dropdowns are refilled every 2 s (RefreshLaunchTargetCharacterSelections), the server list
+    // every 15 s, the lists whenever a profile changes. Now only the tab control's own selection
+    // counts, and selecting the tab puts the player back where they were.
+    // The reset worked around an earlier layout bug (a * row in the profile cards under this
+    // scroll left Updates and Launch Targets clipped above the viewport). That is fixed in the
+    // layout itself (all-Auto rows, MaxHeight on the lists, MainWindow.axaml), the ScrollViewer
+    // clamps a restored offset to the content's current height, and the Plugins tab's update
+    // button still opens this tab at the top, where the update card is.
+    private global::Avalonia.Vector _launcherScrollOffset;
+    private bool _launcherScrollRestorePending;
+
+    private void WireLauncherScroll()
+    {
+        // ScrollChanged bubbles too (the Launch Targets list and the profile lists scroll inside).
+        LauncherScroll.ScrollChanged += (_, e) =>
+        {
+            if (ReferenceEquals(e.Source, LauncherScroll) && MainTabs.SelectedIndex == 0 && !_launcherScrollRestorePending)
+                _launcherScrollOffset = LauncherScroll.Offset;
+        };
+        MainTabs.SelectionChanged += (_, e) =>
+        {
+            if (ReferenceEquals(e.Source, MainTabs) && MainTabs.SelectedIndex == 0)
+                KeepLauncherScroll();
+        };
+    }
+
+    /// <summary>
+    /// Puts the Launcher tab back where the player had it once layout has run: called when the tab
+    /// is selected again and before its content is refilled (lists, launch targets, update card).
+    /// Runs before input, so it never undoes the player's own scrolling.
+    /// </summary>
+    private void KeepLauncherScroll()
+    {
+        if (_launcherScrollRestorePending)
+            return;
+        _launcherScrollRestorePending = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            _launcherScrollRestorePending = false;
+            try
+            {
+                if (MainTabs.SelectedIndex == 0 && LauncherScroll.Offset != _launcherScrollOffset)
+                    LauncherScroll.Offset = _launcherScrollOffset;   // clamped to the content by the ScrollViewer
+            }
+            catch { /* window closing */ }
+        }, DispatcherPriority.Loaded);
+    }
+
+    /// <summary>The Plugins tab's "show the update card": the Launcher tab, at the top.</summary>
+    private void ShowLauncherTabAtTop()
+    {
+        _launcherScrollOffset = default;
+        MainTabs.SelectedIndex = 0;
+        KeepLauncherScroll();   // also when the tab was already showing
     }
 
     private void WireEvents()
     {
         AddServerButton.Click += async (_, _) => await AddServerAsync();
         EditServerButton.Click += async (_, _) => await EditServerAsync();
-        DeleteServerButton.Click += (_, _) => DeleteServer();
+        DeleteServerButton.Click += async (_, _) => await DeleteServerAsync();
 
         AddAccountButton.Click += async (_, _) => await AddAccountAsync();
         EditAccountButton.Click += async (_, _) => await EditAccountAsync();
@@ -179,17 +267,23 @@ internal partial class MainWindow : Window
         HeaderLaunchButton.Click += async (_, _) => await LaunchCheckedTargetsAsync();
         AutoLaunchHeaderCheckBox.IsCheckedChanged += (_, _) => SaveAutoLaunchPreference();
         SavePathsButton.Click += (_, _) => SaveRuntimePaths();
+        StopHeadlessButton.Click += (_, _) => StopHeadlessClients();
+        ShowHeadlessWindowButton.Click += (_, _) => ShowHeadlessWindow();
+        SessionsHeadlessButton.Click += (_, _) => ShowHeadlessWindow();
         SaveBehaviorButton.Click += (_, _) => SaveLaunchBehavior();
         InjectRunningAcButton.Click += async (_, _) => await InjectRunningAcAsync();
         RefreshSessionsButton.Click += (_, _) => RefreshSessionState();
         ResetOverlayBarButton.Click += (_, _) => ResetOverlayBar();
         CheckDecalBridgeButton.Click += async (_, _) => await CheckDecalBridgeAsync();
+        RepairDecalButton.Click += async (_, _) => await RepairDecalAsync();
+        FixFolderPermissionsButton.Click += async (_, _) => await FixFolderPermissionsAsync();
         AddPluginDllButton.Click += async (_, _) => await AddPluginDllAsync();
         CheckUpdatesButton.Click += async (_, _) => await CheckForUpdatesAsync();
+        RollbackButton.Click += async (_, _) => await RollBackAsync();
         UpdateCardActionButton.Click += async (_, _) => await OnUpdateCardActionAsync();
         CancelDownloadButton.Click += (_, _) => CancelDownload();
         UpdateCardNewPluginsButton.Click += (_, _) => ShowAvailablePlugins();
-        ShowUpdateCardButton.Click += (_, _) => MainTabs.SelectedIndex = 0;
+        ShowUpdateCardButton.Click += (_, _) => ShowLauncherTabAtTop();
         AutoUpdatePluginsCheckBox.IsChecked = _settings.AutoUpdatePlugins;
         AutoUpdatePluginsCheckBox.IsCheckedChanged += (_, _) =>
         {
@@ -305,10 +399,22 @@ internal partial class MainWindow : Window
             ? _settings.EnginePath
             : _injector.TryResolveEnginePath(null) ?? string.Empty;
         LaunchArgumentsTextBox.Text = _settings.LaunchArguments;
+        HeadlessExePathTextBox.Text = _settings.HeadlessExePath;
+        HeadlessPluginPathsTextBox.Text = string.Join(Environment.NewLine, _settings.HeadlessPluginPaths ?? []);
+        // A whole-line override saved by an older launcher (with -a/-v/-h) would now ride along
+        // on every account: launches refuse it, so say so up front.
+        if (AcLaunchArgumentBuilder.ExtraArgumentsProblem(_settings.LaunchArguments, out _) is string extraProblem)
+        {
+            try { AppendActivity($"Runtime > Extra Launch Arguments: {extraProblem} Launches are blocked until it is fixed."); } catch { }
+        }
 
         AllowMultipleClientsCheckBox.IsChecked = _settings.AllowMultipleClients;
         SkipIntroVideosCheckBox.IsChecked = _settings.SkipIntroVideos;
         SkipLoginLogosCheckBox.IsChecked = _settings.SkipLoginLogos;
+        EnableDxvkCheckBox.IsChecked = _settings.EnableDxvk;
+        RefreshDxvkCacheStatus();
+        EnableDxvkCheckBox.IsCheckedChanged += OnEnableDxvkChanged;
+        FetchDxvkButton.Click += async (_, _) => await FetchDxvkAsync();
         AutoLaunchHeaderCheckBox.IsChecked = _settings.AutoLaunch;
         AutoInjectAfterLaunchCheckBox.IsChecked = _settings.AutoInjectAfterLaunch;
         WatchForAcStartCheckBox.IsChecked = _settings.WatchForAcStart;
@@ -324,8 +430,9 @@ internal partial class MainWindow : Window
         // Engine flags live in %APPDATA%\RynthCore\engine.json, not the
         // launcher's own settings. The engine reads them on init; the launcher
         // just provides a UI window into the same file.
-        EnableDcompOverlayCheckBox.IsChecked = EngineJsonStore.GetBool("EnableDcompOverlay") ?? false;
-        EnableDcompOverlayCheckBox.IsCheckedChanged += OnEnableDcompOverlayChanged;
+        // (No "Use DComp overlay" box any more: the DComp overlay is an Avalonia app, and the
+        // shipped CoreCLR engine runs without Avalonia (EngineSettings.EnableAvaloniaOverlay is
+        // always false there), so EnableDcompOverlay changed nothing. A saved key is left alone.)
         // The engine treats a missing key as true.
         EnableImGuiBackendCheckBox.IsChecked = EngineJsonStore.GetBool("EnableImGuiBackend") ?? true;
         EnableImGuiBackendCheckBox.IsCheckedChanged += OnEnableImGuiBackendChanged;
@@ -345,17 +452,70 @@ internal partial class MainWindow : Window
         }
     }
 
-    private void OnEnableDcompOverlayChanged(object? sender, global::Avalonia.Interactivity.RoutedEventArgs e)
+    private void RefreshDxvkCacheStatus()
     {
-        bool value = EnableDcompOverlayCheckBox.IsChecked == true;
+        if (DxvkCacheStatusText == null)
+            return;
+        if (DxvkPackageService.IsCached)
+        {
+            string ver = DxvkPackageService.CachedVersion ?? "?";
+            DxvkCacheStatusText.Text = $"DXVK cache: {ver}";
+        }
+        else
+        {
+            DxvkCacheStatusText.Text = "DXVK: not cached";
+        }
+    }
+
+    private async void OnEnableDxvkChanged(object? sender, global::Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        bool enable = EnableDxvkCheckBox.IsChecked == true;
+        _settings.EnableDxvk = enable;
+        SaveSettings();
+
+        string acPath = AcClientPathTextBox.Text?.Trim() ?? _settings.AcClientPath;
+        if (enable && !DxvkPackageService.IsCached)
+        {
+            AppendActivity("DXVK enabled — cache empty, fetching latest…");
+            string? ver = await DxvkPackageService.EnsureCachedOrFetchAsync(AppendActivity);
+            RefreshDxvkCacheStatus();
+            if (ver == null)
+            {
+                AppendActivity("DXVK: could not fetch a package; leave the checkbox on and use Fetch later, or reinstall.");
+                return;
+            }
+        }
+
+        DxvkPackageService.ApplyToClient(acPath, enable, AppendActivity);
+        RefreshDxvkCacheStatus();
+        AppendActivity(enable
+            ? "DXVK on — relaunch AC clients to load the drop-in d3d9.dll."
+            : "DXVK off — relaunch AC clients to return to System32 d3d9.");
+    }
+
+    private async Task FetchDxvkAsync()
+    {
         try
         {
-            EngineJsonStore.SetBool("EnableDcompOverlay", value);
-            AppendActivity($"Engine setting saved: EnableDcompOverlay={value}. Takes effect on next AC client launch.");
+            FetchDxvkButton.IsEnabled = false;
+            AppendActivity("Fetching latest DXVK (x32) from GitHub…");
+            string version = await DxvkPackageService.EnsureLatestAsync(new Progress<string>(AppendActivity));
+            RefreshDxvkCacheStatus();
+            AppendActivity($"DXVK {version} ready in {DxvkPackageService.CacheDirectory}.");
+            if (EnableDxvkCheckBox.IsChecked == true)
+            {
+                string acPath = AcClientPathTextBox.Text?.Trim() ?? _settings.AcClientPath;
+                DxvkPackageService.ApplyToClient(acPath, enable: true, AppendActivity);
+                AppendActivity("DXVK cache applied to the current AC client path (relaunch clients).");
+            }
         }
         catch (Exception ex)
         {
-            AppendActivity($"Failed to save EnableDcompOverlay to engine.json: {ex.Message}");
+            AppendActivity($"DXVK fetch failed: {ex.Message}");
+        }
+        finally
+        {
+            FetchDxvkButton.IsEnabled = true;
         }
     }
 
@@ -374,18 +534,22 @@ internal partial class MainWindow : Window
             checkBox.IsCheckedChanged += (_, _) => OnPluginSelectionChanged(plugin, checkBox);
             _pluginChecks[plugin.Id] = checkBox;
 
-            PluginLoadoutPanel.Children.Add(BuildPluginCard(checkBox, plugin.Summary, null));
+            PluginLoadoutPanel.Children.Add(BuildPluginCard(checkBox, plugin.Summary, null, null));
         }
 
         var disabledSet = new HashSet<string>(
             _settings.DisabledPluginDllPaths ?? new List<string>(),
             StringComparer.OrdinalIgnoreCase);
 
+        ServerPluginLoadoutPanel.Children.Clear();
         foreach (string dllPath in _pluginDllPaths)
         {
             string capturedPath = dllPath;
-            string pluginName = Path.GetFileNameWithoutExtension(dllPath);
+            // "RynthAi", what it does and its folder - not "RynthCore.Plugin.RynthAi" over the DLL's full path.
+            string pluginName = PluginNames.Friendly(dllPath);
             string pluginVersion = BuildVersion.OfFile(dllPath);
+            KnownServer? server = PluginNames.ServerOf(dllPath);
+            string about = DescribeInstalled(dllPath, server);
 
             var checkBox = new CheckBox
             {
@@ -394,7 +558,8 @@ internal partial class MainWindow : Window
             };
             checkBox.IsCheckedChanged += (_, _) => OnUserPluginEnabledChanged(capturedPath, checkBox);
 
-            PluginLoadoutPanel.Children.Add(BuildPluginCard(checkBox, capturedPath, () =>
+            StackPanel target = server != null ? ServerPluginLoadoutPanel : PluginLoadoutPanel;
+            target.Children.Add(BuildPluginCard(checkBox, about, Path.GetDirectoryName(capturedPath) ?? capturedPath, () =>
             {
                 // Out of the list (and out of the disabled list, so adding it back starts it
                 // enabled). The files stay where they are.
@@ -408,8 +573,23 @@ internal partial class MainWindow : Window
                 RefreshUpdateCard();
             }));
         }
+        ServerPluginsEmptyText.IsVisible = ServerPluginLoadoutPanel.Children.Count == 0;
 
         BuildAvailablePlugins();
+    }
+
+    /// <summary>
+    /// One line about an installed plugin: the update feed's description (or the launcher's own line) for a
+    /// RynthSuite plugin; for a server plugin its server and what that server is; otherwise nothing.
+    /// </summary>
+    private string DescribeInstalled(string dllPath, KnownServer? server)
+    {
+        RynthUpdater.PluginEntry? e = _updateCheck?.Manifest.Plugins.FirstOrDefault(p =>
+            string.Equals(p.File, Path.GetFileName(dllPath), StringComparison.OrdinalIgnoreCase));
+        string feed = e != null ? RynthUpdater.DescribePlugin(e) : RynthUpdater.DescribeByName(PluginNames.Friendly(dllPath));
+        if (server == null) return feed;
+        string forServer = $"For {server.Name} ({server.Address}): {server.Note}";
+        return feed.Length > 0 && !feed.Contains(server.Name, StringComparison.OrdinalIgnoreCase) ? $"{forServer} {feed}" : forServer;
     }
 
     // ── Available plugins (feed plugins not in the list) ──────────────────────
@@ -419,23 +599,36 @@ internal partial class MainWindow : Window
     private void BuildAvailablePlugins()
     {
         AvailablePluginsPanel.Children.Clear();
+        AvailableServerPluginsPanel.Children.Clear();
         _available = _updateCheck == null ? new() : _updater.GetAvailable(_updateCheck, _pluginDllPaths);
         if (_updateCheck == null)
         {
-            AvailablePluginsHint.Text = _updater.IsConfigured
+            string none = _updater.IsConfigured
                 ? "Plugins you can add appear here after the first update check."
                 : "Updates aren't set up in this build, so there is no plugin list to install from.";
+            AvailablePluginsHint.Text = none;
+            AvailableServerPluginsHint.Text = none.Replace("Plugins you can add", "Server plugins you can add");
             return;
         }
-        if (_available.Count == 0)
-        {
-            AvailablePluginsHint.Text = "You have every RynthSuite plugin.";
-            return;
-        }
-        string suite = Path.GetDirectoryName(Path.GetDirectoryName(_available[0].Path)) ?? RynthUpdater.DefaultSuiteDir;
-        AvailablePluginsHint.Text = $"RynthSuite plugins you don't have. Install downloads one into {suite} and adds it to the list above; it loads the next time AC starts.";
-        foreach (RynthUpdater.AvailablePlugin a in _available)
+        // Server plugins (one game server each) go on their own tab; they muddied the regular list.
+        var regular = _available.Where(a => !PluginNames.IsServerPlugin(a.Entry.Name)).ToList();
+        var forServers = _available.Where(a => PluginNames.IsServerPlugin(a.Entry.Name))
+                                   .OrderBy(a => PluginNames.ServerOf(a.Entry.Name)?.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        string suite = _available.Count > 0
+            ? Path.GetDirectoryName(Path.GetDirectoryName(_available[0].Path)) ?? RynthUpdater.DefaultSuiteDir
+            : RynthUpdater.DefaultSuiteDir;
+
+        AvailablePluginsHint.Text = regular.Count == 0
+            ? "You have every RynthSuite plugin."
+            : $"RynthSuite plugins you don't have. Install downloads one into {suite} and adds it to the list above; it loads the next time AC starts.";
+        foreach (RynthUpdater.AvailablePlugin a in regular)
             AvailablePluginsPanel.Children.Add(BuildAvailableCard(a));
+
+        AvailableServerPluginsHint.Text = forServers.Count == 0
+            ? "You have every server plugin."
+            : $"Add the one for the server you play on. Install downloads it into {suite}; RynthCore loads it only when you connect to that server.";
+        foreach (RynthUpdater.AvailablePlugin a in forServers)
+            AvailableServerPluginsPanel.Children.Add(BuildAvailableCard(a));
     }
 
     private Border BuildAvailableCard(RynthUpdater.AvailablePlugin a)
@@ -454,6 +647,8 @@ internal partial class MainWindow : Window
 
         var stack = new StackPanel { Spacing = 4 };
         stack.Children.Add(name);
+        if (PluginNames.ServerOf(a.Entry.Name) is { } server)
+            stack.Children.Add(new TextBlock { Text = $"For {server.Name} ({server.Address}): {server.Note}", TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#9AA8B3") });
         if (a.Description.Length > 0)
             stack.Children.Add(new TextBlock { Text = a.Description, TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#9AA8B3") });
         stack.Children.Add(new TextBlock
@@ -548,7 +743,7 @@ internal partial class MainWindow : Window
         Dispatcher.UIThread.Post(() => AvailablePluginsBorder.BringIntoView(), DispatcherPriority.Background);
     }
 
-    private static Border BuildPluginCard(CheckBox checkBox, string description, Action? onRemove)
+    private static Border BuildPluginCard(CheckBox checkBox, string description, string? location, Action? onRemove)
     {
         var host = new Border
         {
@@ -559,14 +754,23 @@ internal partial class MainWindow : Window
             Padding = new Thickness(12)
         };
 
-        var stack = new StackPanel { Spacing = 6 };
+        var stack = new StackPanel { Spacing = 4 };
         stack.Children.Add(checkBox);
-        stack.Children.Add(new TextBlock
-        {
-            Text = description,
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = Brush.Parse("#9AA8B3")
-        });
+        if (description.Length > 0)
+            stack.Children.Add(new TextBlock
+            {
+                Text = description,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = Brush.Parse("#9AA8B3")
+            });
+        if (!string.IsNullOrEmpty(location))
+            stack.Children.Add(new TextBlock
+            {
+                Text = location,
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = Brush.Parse("#6F7F8A")
+            });
 
         if (onRemove == null)
         {
@@ -599,6 +803,7 @@ internal partial class MainWindow : Window
 
     private void RefreshLists()
     {
+        KeepLauncherScroll();
         _suppressPrimarySelectionChanged = true;
         try
         {
@@ -618,9 +823,19 @@ internal partial class MainWindow : Window
 
     private void RefreshSummary()
     {
-        LaunchServerProfile? server = GetSelectedServer();
         LaunchAccountProfile? account = GetSelectedAccount();
+        // The preview shows what a launch does: the account on its own server, not on the one
+        // selected in the server list (the launch never uses that one for it).
+        LaunchServerProfile? server = account != null ? ResolveServerForAccount(account) : null;
         int checkedTargets = _settings.CheckedLaunchAccountProfileIds?.Count ?? 0;
+        if (account != null && server == null)
+        {
+            string noServer = $"{account.DisplayName}: {AccountServerRules.NoServerMessage(account, _settings.ServerProfiles.Count > 0)}";
+            SummaryText.Text = noServer;
+            LaunchProfileStatusText.Text = noServer;
+            LaunchPreviewText.Text = noServer;
+            return;
+        }
         if (server == null || account == null)
         {
             SummaryText.Text = checkedTargets == 0
@@ -699,13 +914,24 @@ internal partial class MainWindow : Window
         await RefreshServerStatusesAsync();
     }
 
-    private void DeleteServer()
+    private async Task DeleteServerAsync()
     {
         int index = ServerProfilesList.SelectedIndex;
         if (index < 0 || index >= _settings.ServerProfiles.Count)
             return;
 
-        string removedServerId = _settings.ServerProfiles[index].Id;
+        // Refused while accounts log on to it: they are never moved to another server (their
+        // passwords belong to this one). AccountServerRules says why refusing beats clearing.
+        LaunchServerProfile toRemove = _settings.ServerProfiles[index];
+        if (AccountServerRules.DeleteBlocker(toRemove, _settings.AccountProfiles) is string blocker)
+        {
+            AppendActivity($"Server not deleted: {toRemove.DisplayName} still has " +
+                $"{AccountServerRules.AccountsOn(toRemove, _settings.AccountProfiles).Count} account(s). Move or delete them first.");
+            await DecalBridgeDialog.InfoAsync(this, "Server still in use", blocker);
+            return;
+        }
+
+        string removedServerId = toRemove.Id;
         bool removedSelected = string.Equals(removedServerId, _settings.SelectedServerProfileId, StringComparison.OrdinalIgnoreCase);
         _settings.ServerProfiles.RemoveAt(index);
         if (removedSelected)
@@ -715,13 +941,15 @@ internal partial class MainWindow : Window
         RefreshLists();
         ServerProfilesList.SelectedIndex = Math.Min(index, _settings.ServerProfiles.Count - 1);
         RefreshSummary();
-        AppendActivity($"Server removed: {index + 1}");
+        AppendActivity($"Server removed: {toRemove.DisplayName}");
     }
 
     private async System.Threading.Tasks.Task AddAccountAsync()
     {
-        var draft = new RynthCore.App.LaunchAccountProfile();
-        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles);
+        // Defaults to the server selected in the list (a new server's first account), not the
+        // first profile, which RefreshLaunchTargets would otherwise assign.
+        var draft = new RynthCore.App.LaunchAccountProfile { ServerId = GetSelectedServer()?.Id ?? string.Empty };
+        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters, _settings.AcClientPath);
         bool? accepted = await dialog.ShowDialog<bool?>(this);
         if (accepted != true)
             return;
@@ -742,7 +970,7 @@ internal partial class MainWindow : Window
             return;
 
         LaunchAccountProfile draft = selected.Clone();
-        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles);
+        var dialog = new AccountProfileDialog(draft, _settings.ServerProfiles, GetDetectedCharacters, _settings.AcClientPath);
         bool? accepted = await dialog.ShowDialog<bool?>(this);
         if (accepted != true)
             return;
@@ -782,7 +1010,7 @@ internal partial class MainWindow : Window
             _settings.SelectedAccountProfileId = _settings.AccountProfiles.FirstOrDefault()?.Id ?? string.Empty;
         SaveSettings();
         if (removed.InjectionMode == InjectionMode.DecalBridge)
-            UnregisterDecalBridgeIfUnused();
+            _ = CleanUpDecalBridgeIfUnusedAsync(atStartup: false);
         RefreshLists();
         AccountProfilesList.SelectedIndex = Math.Min(index, _settings.AccountProfiles.Count - 1);
         RefreshSummary();
@@ -896,6 +1124,7 @@ internal partial class MainWindow : Window
 
     private void RefreshLaunchTargets()
     {
+        KeepLauncherScroll();
         LaunchTargetsPanel.Children.Clear();
         _launchTargetStatusTexts.Clear();
         _launchTargetChecks.Clear();
@@ -909,13 +1138,10 @@ internal partial class MainWindow : Window
         {
             LaunchAccountProfile account = _settings.AccountProfiles[accountIndex];
 
-            // Try to find the associated server, or fallback to the first one if not set or invalid
-            LaunchServerProfile? server = _settings.ServerProfiles.FirstOrDefault(s => s.Id == account.ServerId);
-            if (server == null && _settings.ServerProfiles.Count > 0)
-            {
-                server = _settings.ServerProfiles.FirstOrDefault();
-                account.ServerId = server?.Id ?? string.Empty;
-            }
+            // The account's own server only. An account whose server is missing used to be bound
+            // to the first server here (and saved), which sent its password to that server on
+            // the next launch; now it shows "No Server" and can't launch (AccountServerRules).
+            LaunchServerProfile? server = ResolveServerForAccount(account);
 
             var container = new Grid
             {
@@ -1041,7 +1267,7 @@ internal partial class MainWindow : Window
 
         button.Click += async (_, _) =>
         {
-            LaunchServerProfile? server = _settings.ServerProfiles.FirstOrDefault(s => s.Id == account.ServerId);
+            LaunchServerProfile? server = ResolveServerForAccount(account);
             var dialog = new LoginCommandsDialog(account, server);
             await dialog.ShowDialog(this);
             if (dialog.ChangesSaved)
@@ -1084,26 +1310,37 @@ internal partial class MainWindow : Window
         global::Avalonia.Controls.ToolTip.SetTip(bridgeItem,
             "EXPERIMENTAL. Decal and RynthCore in the same client: Decal's plugins and RynthCore's " +
             "in-game UI run side by side. RynthCore gets chat from Decal through the RynthCore Decal " +
-            "bridge, which this launcher adds to Decal's filter list before the launch: for your Windows " +
-            "user, or (when AC runs as administrator on this PC) once for all users after a Windows " +
-            "administrator prompt. Recovery Actions > Check Decal bridge shows whether it will load. Run one bot per client (VTank or the RynthAi macro, not both). To stop using it, " +
+            "bridge, which this launcher adds to Decal's filter list for all users when you pick this mode " +
+            "(once; Windows asks for administrator permission). Recovery Actions > Check Decal bridge shows whether it will load. Run one bot per client (VTank or the RynthAi macro, not both). To stop using it, " +
             "set the account back to RynthCore or Decal: once no account uses it, the launcher takes the " +
             "bridge out of Decal's list again (uninstalling RynthCore does too).");
+
+        var headlessItem = new ComboBoxItem { Content = "Headless (experimental)", Tag = InjectionMode.Headless };
+        global::Avalonia.Controls.ToolTip.SetTip(headlessItem,
+            "EXPERIMENTAL. No game window: the launcher starts rynth-headless.exe, RynthCore's own headless " +
+            "client, for this account. ACE servers only (not GDLE). " +
+            "Plugins: the 64-bit ones listed under Runtime > Headless client; with that list empty, the RynthAi " +
+            "that comes with RynthCore. The plugins in the Plugins tab and Decal don't run in it, and nothing is drawn: " +
+            "give RynthAi its orders with the account's on-login commands (for example /ra start). " +
+            "It logs in, runs the plugins and shows in the launcher like any other client; closing it from the launcher logs the character out first.");
 
         dropdown.Items.Add(rynthItem);
         dropdown.Items.Add(decalItem);
         dropdown.Items.Add(bridgeItem);
+        dropdown.Items.Add(headlessItem);
 
         // If the account is set to a Decal mode but Decal isn't installed, fall back to
         // RynthCore in the UI so the user can't accidentally launch into a
         // disabled mode. We don't mutate the saved profile until they click.
-        InjectionMode effectiveMode = (account.InjectionMode != InjectionMode.RynthCore && !decalAvailable)
+        // Headless needs no Decal, so it stays as it is.
+        InjectionMode effectiveMode = ((account.InjectionMode is InjectionMode.Decal or InjectionMode.DecalBridge) && !decalAvailable)
             ? InjectionMode.RynthCore
             : account.InjectionMode;
         dropdown.SelectedItem = effectiveMode switch
         {
             InjectionMode.Decal => decalItem,
             InjectionMode.DecalBridge => bridgeItem,
+            InjectionMode.Headless => headlessItem,
             _ => rynthItem,
         };
 
@@ -1118,45 +1355,129 @@ internal partial class MainWindow : Window
                 SaveSettings();
                 AppendActivity(mode == InjectionMode.DecalBridge
                     ? $"{account.DisplayName}: injection method set to Decal + RynthCore (experimental). " +
-                      "The Decal bridge is registered for your Windows user at this account's next launch."
+                      "Adding the RynthCore Decal bridge to Decal's filter list for all users (once; Windows may ask for administrator permission)."
+                    : mode == InjectionMode.Headless
+                    ? $"{account.DisplayName}: injection method set to Headless (experimental): launches start rynth-headless.exe " +
+                      "with the plugins under Runtime > Headless client (none listed = the RynthAi that comes with RynthCore). ACE servers only, no game window."
                     : $"{account.DisplayName}: injection method set to {mode}.");
-                if (wasBridge)
-                    UnregisterDecalBridgeIfUnused();
+                if (mode == InjectionMode.DecalBridge)
+                    _ = EnableDecalBridgeAsync();
+                else if (wasBridge)
+                    _ = CleanUpDecalBridgeIfUnusedAsync(atStartup: false);
             }
         };
 
         return dropdown;
     }
 
+    // One Decal registry job at a time (start-up cleanup, a mode change, Repair Decal, a launch).
+    private readonly SemaphoreSlim _decalBridgeGate = new(1, 1);
+
     /// <summary>
-    /// The last "Decal + RynthCore" account was switched to another mode: take the Decal bridge
-    /// out of Decal's filter list for this Windows user again (registration is opt-in and only
-    /// lasts while an account uses it). Running clients keep what they loaded; the next
-    /// "Decal + RynthCore" launch registers again.
+    /// No account uses "Decal + RynthCore" (at start, after a mode change or a deleted account):
+    /// take the RynthCore Decal bridge out of Decal's filter list again (registration is opt-in
+    /// and only lasts while an account uses it).
+    ///   - Per-user (no prompt): our entry in a per-user copy of Decal's filter list, and a copy
+    ///     an earlier RynthCore created (backed up first). Only when there is something to remove.
+    ///   - Machine-wide, this install's entry only: asks first, then Windows' administrator prompt
+    ///     (unless the launcher runs elevated). Only when the entry exists; at start, never again
+    ///     after the player said "leave it" (<see cref="AppSettings.DecalFilterRemovalDeclined"/>).
+    /// Running clients keep what they loaded.
     /// </summary>
-    private void UnregisterDecalBridgeIfUnused()
+    private async Task CleanUpDecalBridgeIfUnusedAsync(bool atStartup)
     {
         if (_settings.AccountProfiles.Any(a => a.InjectionMode == InjectionMode.DecalBridge))
             return;
+        await _decalBridgeGate.WaitAsync();
         try
         {
-            DecalBridgeRegistration.Status status = DecalBridgeRegistration.GetStatus();
-            if (status.RegisteredMachineWide)
-                AppendActivity("No account uses Decal + RynthCore any more. The Decal bridge's entry for all users stays (removing it needs administrator rights; uninstalling RynthCore removes it). " +
-                    "It stays idle in Decal clients without RynthCore.");
-            if (!status.RegisteredPerUser)
+            if (_settings.AccountProfiles.Any(a => a.InjectionMode == InjectionMode.DecalBridge))
                 return;
-            bool ok = DecalBridgeRegistration.Unregister(out string report);
-            LauncherDiag.Info($"DECALBRIDGE: no Decal + RynthCore account left - unregister: {report}");
-            AppendActivity(ok
-                ? $"No account uses Decal + RynthCore any more - Decal bridge removed from Decal's filter list. {report}"
-                : $"No account uses Decal + RynthCore any more, but removing the Decal bridge did not finish: {report}");
+
+            if (DecalBridgeRegistration.PerUserCleanupNeeded())
+            {
+                bool ok = DecalBridgeRegistration.Unregister(out string report);
+                LauncherDiag.Info($"DECALBRIDGE: no Decal + RynthCore account - per-user cleanup: {report}");
+                AppendActivity(ok
+                    ? $"No account uses Decal + RynthCore - Decal bridge taken out of your per-user Decal settings: {report}"
+                    : $"No account uses Decal + RynthCore, but taking the Decal bridge out of your per-user Decal settings did not finish: {report}");
+            }
+
+            string dir = DecalBridgeRegistration.DefaultBridgeDirectory;
+            if (!DecalBridgeRegistration.MachineEntryIsOurs(dir))
+                return;
+            if (atStartup && _settings.DecalFilterRemovalDeclined)
+            {
+                LauncherDiag.Info("DECALBRIDGE: no Decal + RynthCore account, machine-wide entry left (the player chose to keep it); not asking at start.");
+                return;
+            }
+
+            var outcome = DecalBridgeRegistration.UnregisterMachineWide(out string mReport, dir);
+            LauncherDiag.Info($"DECALBRIDGE: no Decal + RynthCore account - unregister machine-wide: {outcome}: {mReport}");
+            if (outcome == DecalBridgeRegistration.Outcome.NeedsAdmin)
+            {
+                bool yes = await DecalBridgeDialog.AskAsync(this,
+                    "Decal + RynthCore is not in use",
+                    "No account uses Decal + RynthCore any more, but the RynthCore Decal bridge is still in Decal's plugin list for all users on this PC. " +
+                    "It does nothing without RynthCore, but you can take it out now. Windows will ask for administrator permission.\n\n" +
+                    "If you leave it, the launcher won't ask again when it starts. Uninstalling RynthCore also takes it out.",
+                    "Take it out (asks for administrator)", "Leave it");
+                if (!yes)
+                {
+                    RememberDecalFilterRemovalDeclined(true);
+                    AppendActivity("No account uses Decal + RynthCore. The Decal bridge stays in Decal's list for all users (idle without RynthCore); the launcher won't ask again at start.");
+                    return;
+                }
+                string? self = Environment.ProcessPath;
+                if (self == null)
+                {
+                    AppendActivity("Decal bridge: can't find the launcher's own exe for the administrator step.");
+                    return;
+                }
+                outcome = DecalBridgeRegistration.RunElevated(self, $"--decal-bridge-unregister-machine \"{dir}\"", out mReport);
+                LauncherDiag.Info($"DECALBRIDGE: elevated unregister machine-wide: {outcome}: {mReport}");
+                if (outcome == DecalBridgeRegistration.Outcome.NeedsAdmin)
+                {
+                    RememberDecalFilterRemovalDeclined(true);
+                    AppendActivity("Decal bridge: not taken out (cancelled at the Windows administrator prompt). It stays idle without RynthCore; the launcher won't ask again at start.");
+                    return;
+                }
+            }
+            if (outcome == DecalBridgeRegistration.Outcome.Registered && !DecalBridgeRegistration.MachineEntryIsOurs(dir))
+            {
+                RememberDecalFilterRemovalDeclined(false);
+                AppendActivity("No account uses Decal + RynthCore any more - the Decal bridge is out of Decal's list for all users.");
+            }
+            else
+            {
+                AppendActivity($"No account uses Decal + RynthCore, but taking the Decal bridge out of Decal's list for all users did not finish: {mReport}");
+            }
         }
         catch (Exception ex)
         {
-            LauncherDiag.Info($"DECALBRIDGE: unregister failed ({ex.GetType().Name}: {ex.Message})");
+            LauncherDiag.Info($"DECALBRIDGE: cleanup failed ({ex.GetType().Name}: {ex.Message})");
             AppendActivity($"Removing the Decal bridge failed: {ex.Message}");
         }
+        finally
+        {
+            _decalBridgeGate.Release();
+        }
+    }
+
+    private void RememberDecalFilterRemovalDeclined(bool declined)
+    {
+        if (_settings.DecalFilterRemovalDeclined == declined)
+            return;
+        _settings.DecalFilterRemovalDeclined = declined;
+        SaveSettings();
+    }
+
+    /// <summary>An account was just set to Decal + RynthCore: register now (the one prompt, if needed).</summary>
+    private async Task EnableDecalBridgeAsync()
+    {
+        bool ok = await EnsureDecalBridgeAsync(DecalBridgeAcClientPath, interactive: true);
+        if (ok)
+            AppendActivity("Decal bridge ready: Decal + RynthCore accounts can launch.");
     }
 
     // ── Decal bridge: register where this PC's client reads, check, explain ─────────────
@@ -1165,13 +1486,27 @@ internal partial class MainWindow : Window
         DecalLocator.TryGetDecalAcClientPath() ?? AcClientPathTextBox.Text?.Trim() ?? string.Empty;
 
     /// <summary>
-    /// Registers the Decal bridge where a client started now will read Decal's filter list
-    /// (DecalBridgeRegistration.RegisterForClients) and checks the result. When that place is
-    /// the machine-wide list (AC runs with administrator rights on this PC), asks first and runs
-    /// the one elevated step. False = a Decal + RynthCore client would not load the bridge.
-    /// Automatic launches never prompt: they log the reason and stay blocked.
+    /// Registers the Decal bridge in Decal's filter list for all users
+    /// (DecalBridgeRegistration.RegisterForClients) and checks the result. When this launcher may
+    /// not write that list, asks first and runs the one elevated step
+    /// (--decal-bridge-register-machine), then registers again to finish the per-user side. There
+    /// is no per-user fallback: declined or failed = Decal + RynthCore can't be used until it is
+    /// registered for all users. False = a Decal + RynthCore client would not load the bridge.
+    /// Only interactive callers (the player picked the mode, launched, or pressed Repair) prompt;
+    /// automatic launches log the reason and stay blocked.
     /// </summary>
     private async Task<bool> EnsureDecalBridgeAsync(string acClientPath, bool interactive)
+    {
+        await _decalBridgeGate.WaitAsync();
+        try { return await EnsureDecalBridgeCoreAsync(acClientPath, interactive); }
+        finally { _decalBridgeGate.Release(); }
+    }
+
+    private const string DecalBridgeNotRegisteredText =
+        "Decal + RynthCore can't be used until the RynthCore Decal bridge is in Decal's list for all users. " +
+        "To add it, launch a Decal + RynthCore account (or use Recovery Actions > Check Decal bridge > Repair) and say yes to Windows' administrator prompt.";
+
+    private async Task<bool> EnsureDecalBridgeCoreAsync(string acClientPath, bool interactive)
     {
         string dir = DecalBridgeRegistration.DefaultBridgeDirectory;
         var outcome = DecalBridgeRegistration.RegisterForClients(dir, acClientPath, EngineJsonStore.Path, out string report, out DecalBridgeCheck.Result? check);
@@ -1180,6 +1515,7 @@ internal partial class MainWindow : Window
             LauncherDiag.Info($"DECALBRIDGE: check after register:{Environment.NewLine}{check.ToReport()}");
         if (outcome == DecalBridgeRegistration.Outcome.Registered)
         {
+            RememberDecalFilterRemovalDeclined(false);
             AppendActivity(report);
             return true;
         }
@@ -1188,34 +1524,48 @@ internal partial class MainWindow : Window
         {
             AppendActivity(report);
             if (!interactive)
+            {
+                AppendActivity(DecalBridgeNotRegisteredText);
                 return false;
+            }
             bool yes = await DecalBridgeDialog.AskAsync(this,
                 "Decal + RynthCore: one administrator step",
-                "On this PC, Asheron's Call reads Decal's plugin list for all users, not just for you" +
-                (check != null && check.ClientReason.Length > 0 ? $" ({check.ClientReason})" : "") + ".\n\n" +
-                "RynthCore has to add its Decal bridge to that list once, so Decal loads it next to your other Decal plugins. " +
-                "Windows will now ask for administrator permission. Nothing else changes; switching every account away from " +
-                "Decal + RynthCore, or uninstalling RynthCore, takes the entry out again.",
+                "Decal + RynthCore needs the RynthCore Decal bridge in Decal's plugin list for all users on this PC, " +
+                "so Decal loads it next to your other Decal plugins (it does nothing in clients without RynthCore).\n\n" +
+                "Adding it needs administrator permission once; Windows will ask now. Nothing else in Decal changes. " +
+                "Switching every account away from Decal + RynthCore, or uninstalling RynthCore, takes the entry out again.",
                 "Add it (asks for administrator)", "Cancel");
             if (!yes)
             {
-                AppendActivity("Decal bridge: the administrator step was cancelled.");
+                AppendActivity("Decal bridge: not added (cancelled). " + DecalBridgeNotRegisteredText);
                 return false;
             }
             string? self = Environment.ProcessPath;
             if (self == null)
             {
-                AppendActivity("Decal bridge: can't find the launcher's own exe for the administrator step.");
+                AppendActivity("Decal bridge: can't find the launcher's own exe for the administrator step. " + DecalBridgeNotRegisteredText);
                 return false;
             }
             var elevated = DecalBridgeRegistration.RunElevated(self, $"--decal-bridge-register-machine \"{dir}\"", out string eReport);
             LauncherDiag.Info($"DECALBRIDGE: elevated register: {elevated}: {eReport}");
+            if (elevated != DecalBridgeRegistration.Outcome.Registered)
+            {
+                AppendActivity($"Decal bridge: not added ({eReport}) " + DecalBridgeNotRegisteredText);
+                return false;
+            }
             AppendActivity("Decal bridge: " + eReport);
-            check = RealDecalCheckHost.Check(dir, acClientPath, EngineJsonStore.Path);
-            LauncherDiag.Info($"DECALBRIDGE: check after the administrator step:{Environment.NewLine}{check.ToReport()}");
-            AppendActivity(check.Summary);
-            if (!check.Blocking)
+            // Again, without rights: the machine-wide entry is there now, so this only finishes the
+            // per-user side and checks.
+            outcome = DecalBridgeRegistration.RegisterForClients(dir, acClientPath, EngineJsonStore.Path, out report, out check);
+            LauncherDiag.Info($"DECALBRIDGE: register after the administrator step: {outcome}: {report}");
+            if (check != null)
+                LauncherDiag.Info($"DECALBRIDGE: check after the administrator step:{Environment.NewLine}{check.ToReport()}");
+            AppendActivity(report);
+            if (outcome == DecalBridgeRegistration.Outcome.Registered)
+            {
+                RememberDecalFilterRemovalDeclined(false);
                 return true;
+            }
         }
         else
         {
@@ -1225,6 +1575,68 @@ internal partial class MainWindow : Window
         if (interactive && check != null)
             await DecalBridgeDialog.ShowReportAsync(this, check, offerRepair: false);
         return false;
+    }
+
+    /// <summary>
+    /// Recovery Actions > Repair Decal: Decal is reading an old per-user copy of its settings
+    /// (Windows' UAC virtualization; made by an earlier RynthCore or by Decal itself), which hides
+    /// plugins and filters installed for all users since. Asks, backs the copy up to a .reg file in
+    /// %APPDATA%\RynthCore, removes it, re-registers the bridge for all users when an account uses
+    /// Decal + RynthCore, and reports what it did.
+    /// </summary>
+    private async Task RepairDecalAsync()
+    {
+        DecalBridgeRegistration.RepairResult result;
+        await _decalBridgeGate.WaitAsync();
+        try
+        {
+            List<string> keys = DecalBridgeRegistration.FindVirtualStoreDecalKeys();
+            LauncherDiag.Info($"DECALBRIDGE: Repair Decal: per-user copies found: {(keys.Count == 0 ? "none" : string.Join(", ", keys))}");
+            if (keys.Count == 0)
+            {
+                AppendActivity("Repair Decal: nothing to repair - Decal has no per-user copy of its settings and already reads the settings for all users.");
+                await DecalBridgeDialog.InfoAsync(this, "Repair Decal",
+                    "Nothing to repair: Decal has no per-user copy of its settings, so it already sees every installed plugin.");
+                return;
+            }
+            bool yes = await DecalBridgeDialog.AskAsync(this, "Repair Decal",
+                "Decal is reading an old per-user copy of its settings; this removes it so Decal sees all installed plugins. A backup is saved first.\n\n" +
+                "Close every Asheron's Call client first. Settings you changed in Decal while that copy was in use go back to the ones for all users " +
+                "(the backup has them).\n\nWill be removed:\n" + string.Join("\n", keys),
+                "Back up and remove", "Cancel");
+            if (!yes)
+            {
+                AppendActivity("Repair Decal: cancelled; nothing changed.");
+                return;
+            }
+            result = DecalBridgeRegistration.RepairDecal();
+            LauncherDiag.Info($"DECALBRIDGE: Repair Decal: ok={result.Ok}: {result.Report}");
+            AppendActivity("Repair Decal: " + result.Report);
+        }
+        catch (Exception ex)
+        {
+            LauncherDiag.Info($"DECALBRIDGE: Repair Decal failed ({ex.GetType().Name}: {ex.Message})");
+            AppendActivity($"Repair Decal failed: {ex.Message}");
+            return;
+        }
+        finally
+        {
+            _decalBridgeGate.Release();
+        }
+
+        string bridgeLine = string.Empty;
+        if (result.Removed.Count > 0 && _settings.AccountProfiles.Any(a => a.InjectionMode == InjectionMode.DecalBridge))
+        {
+            bool ok = await EnsureDecalBridgeAsync(DecalBridgeAcClientPath, interactive: true);
+            bridgeLine = ok
+                ? "\n\nThe RynthCore Decal bridge is registered for all users again (an account uses Decal + RynthCore)."
+                : "\n\nThe RynthCore Decal bridge is NOT registered for all users (see the Activity tab); Decal + RynthCore can't be used until it is.";
+        }
+        string text = result.Ok
+            ? "Done. Removed:\n" + string.Join("\n", result.Removed) + $"\n\nBackup: {result.BackupPath}\n(double-click it to put the keys back)"
+            : "Repair Decal did not finish. " + result.Report;
+        text += bridgeLine;
+        await DecalBridgeDialog.InfoAsync(this, "Repair Decal", text);
     }
 
     /// <summary>Recovery Actions > Check Decal bridge: the read-only check, with a Repair button when it fails.</summary>
@@ -1276,11 +1688,15 @@ internal partial class MainWindow : Window
             return;
         }
 
-        // Ensure the account is associated with the currently selected server if it doesn't have one
+        // An account that never had a server (added before any server existed) takes the one
+        // selected beside it, at the player's click and said in Activity. An account that names
+        // a server, even a deleted one, is never changed here (AccountServerRules).
         LaunchServerProfile? selectedServer = GetSelectedServer();
-        if (selectedServer != null && string.IsNullOrEmpty(account.ServerId))
+        if (selectedServer != null && string.IsNullOrWhiteSpace(account.ServerId))
         {
             account.ServerId = selectedServer.Id;
+            SaveSettings();
+            AppendActivity($"{account.DisplayName} had no server; it now logs on to {selectedServer.DisplayName}.");
         }
 
         _settings.CheckedLaunchAccountProfileIds ??= [];
@@ -1302,10 +1718,16 @@ internal partial class MainWindow : Window
         _settings.AcClientPath = AcClientPathTextBox.Text?.Trim() ?? string.Empty;
         _settings.EnginePath = EnginePathTextBox.Text?.Trim() ?? string.Empty;
         _settings.LaunchArguments = LaunchArgumentsTextBox.Text?.Trim() ?? string.Empty;
+        _settings.HeadlessExePath = HeadlessExePathTextBox.Text?.Trim() ?? string.Empty;
+        _settings.HeadlessPluginPaths = ReadHeadlessPluginPathsBox();
         SaveSettings();
         RefreshSummary();
         if (appendActivity)
+        {
             AppendActivity("Runtime paths saved.");
+            if (AcLaunchArgumentBuilder.ExtraArgumentsProblem(_settings.LaunchArguments, out _) is string extraProblem)
+                AppendActivity($"Launches are blocked until this is fixed: {extraProblem}");
+        }
     }
 
     private void SaveLaunchBehavior(bool appendActivity = true)
@@ -1313,6 +1735,7 @@ internal partial class MainWindow : Window
         _settings.AllowMultipleClients = AllowMultipleClientsCheckBox.IsChecked == true;
         _settings.SkipIntroVideos = SkipIntroVideosCheckBox.IsChecked == true;
         _settings.SkipLoginLogos = SkipLoginLogosCheckBox.IsChecked == true;
+        _settings.EnableDxvk = EnableDxvkCheckBox.IsChecked == true;
         _settings.AutoLaunch = AutoLaunchHeaderCheckBox.IsChecked == true;
         _settings.AutoInjectAfterLaunch = AutoInjectAfterLaunchCheckBox.IsChecked == true;
         _settings.WatchForAcStart = WatchForAcStartCheckBox.IsChecked == true;
@@ -1333,6 +1756,10 @@ internal partial class MainWindow : Window
             _settings.EnabledPluginIds.Add("rynthcore-engine");
         SaveSettings();
         SyncPluginPathsToEngineSettings();
+        // Keep the AC folder in sync with the DXVK toggle even when not launching yet.
+        string acPath = AcClientPathTextBox.Text?.Trim() ?? _settings.AcClientPath;
+        DxvkPackageService.ApplyToClient(acPath, _settings.EnableDxvk, appendActivity ? AppendActivity : null);
+        RefreshDxvkCacheStatus();
         if (appendActivity)
         {
             AppendActivity($"Logging level saved: {_settings.LoggingLevel}.");
@@ -1396,68 +1823,149 @@ internal partial class MainWindow : Window
         if (_operationBusy)
             return;
 
+        // Headless accounts start rynth-headless.exe (LaunchOneHeadlessAsync), not acclient.exe:
+        // the client checks below (client and engine paths, Extra Launch Arguments, the engine
+        // plugin, Decal, the Decal bridge) are about the other accounts only. When they fail in
+        // a batch with Headless accounts, the Headless accounts still launch.
+        List<LaunchAccountProfile> headlessAccounts = accountsToLaunch.Where(a => a.InjectionMode == InjectionMode.Headless).ToList();
+        List<LaunchAccountProfile> clientAccounts = accountsToLaunch.Where(a => a.InjectionMode != InjectionMode.Headless).ToList();
+
         string acPath = AcClientPathTextBox.Text?.Trim() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(acPath) || !File.Exists(acPath))
-        {
-            AppendActivity("Launch blocked: AC client path is missing or invalid.");
-            return;
-        }
-
-        string enginePath = EnginePathTextBox.Text?.Trim() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(enginePath))
-            enginePath = _injector.TryResolveEnginePath(null) ?? string.Empty;
-
-        if (string.IsNullOrWhiteSpace(enginePath))
-        {
-            AppendActivity("Launch blocked: engine path is missing and no default engine DLL could be resolved.");
-            return;
-        }
-
-        string overrideArguments = isAutomaticLaunch ? string.Empty : LaunchArgumentsTextBox.Text?.Trim() ?? string.Empty;
-        if (!string.IsNullOrWhiteSpace(overrideArguments) && accountsToLaunch.Count > 1)
-        {
-            AppendActivity("Launch blocked: manual launch arguments can only be used with one account at a time.");
-            return;
-        }
-
+        string enginePath = string.Empty;
+        string extraArguments = string.Empty;
         bool shouldInject = AutoInjectAfterLaunchCheckBox.IsChecked == true;
+        string? decalInjectPath = null;
 
-        // Engine plugin must be selected when at least one chosen account is
-        // RynthCore-mode AND auto-inject is on. Decal-mode accounts don't need
-        // it because they don't load the engine.
-        bool anyRynthCoreMode = accountsToLaunch.Any(a => a.InjectionMode is InjectionMode.RynthCore or InjectionMode.DecalBridge);
-        if (shouldInject && anyRynthCoreMode && !GetSelectedPluginIds().Contains("rynthcore-engine", StringComparer.OrdinalIgnoreCase))
+        if (clientAccounts.Count > 0)
         {
-            AppendActivity("Launch blocked: RynthCore Engine must stay selected in Runtime Loadout when auto-inject is enabled for any RynthCore-mode account.");
-            return;
-        }
+            string? clientBlock = null;   // why the acclient accounts can't launch
+            bool logClientBlock = true;
 
-        // Pre-resolve Decal Inject.dll once if any account needs it.
-        bool anyDecalMode = accountsToLaunch.Any(a => a.InjectionMode is InjectionMode.Decal or InjectionMode.DecalBridge);
-        string? decalInjectPath = anyDecalMode && shouldInject
-            ? DecalLocator.TryGetInjectDllPath()
-            : null;
-        if (shouldInject && anyDecalMode && decalInjectPath == null)
-        {
-            AppendActivity("Launch blocked: one or more accounts are set to Decal mode but Decal is not installed (HKLM\\SOFTWARE\\Decal\\Agent\\AgentPath\\Inject.dll missing).");
-            return;
-        }
+            if (string.IsNullOrWhiteSpace(acPath) || !File.Exists(acPath))
+                clientBlock = "AC client path is missing or invalid.";
 
-        // "Decal + RynthCore" accounts: make sure the Decal bridge is registered for this
-        // Windows user (idempotent; opt-in - only these accounts ever trigger it).
-        // Registered where THIS PC's AC client reads Decal's filter list, then checked: a
-        // client that wouldn't load the bridge runs the old coexistence path (no overlay, then
-        // a crash), so such a launch is blocked with the reason.
-        if (shouldInject && accountsToLaunch.Any(a => a.InjectionMode == InjectionMode.DecalBridge))
-        {
-            string decalAcPath = DecalLocator.TryGetDecalAcClientPath() ?? acPath;
-            if (!await EnsureDecalBridgeAsync(decalAcPath, interactive: !isAutomaticLaunch))
+            if (clientBlock == null)
             {
-                AppendActivity("Launch blocked: a Decal + RynthCore client would not load the Decal bridge on this PC (see the lines above, or Recovery Actions > Check Decal bridge). " +
-                    "Pick RynthCore or Decal for those accounts until it passes.");
-                return;
+                enginePath = EnginePathTextBox.Text?.Trim() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(enginePath))
+                    enginePath = _injector.TryResolveEnginePath(null) ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(enginePath))
+                    clientBlock = "engine path is missing and no default engine DLL could be resolved.";
+            }
+
+            // Extra Launch Arguments go after each account's own arguments, for manual and automatic
+            // launches alike. They used to replace the whole line instead (and only manually, one
+            // account at a time); ExtraArgumentsProblem refuses what an old override would carry.
+            if (clientBlock == null &&
+                AcLaunchArgumentBuilder.ExtraArgumentsProblem(LaunchArgumentsTextBox.Text, out extraArguments) is string extraProblem)
+            {
+                clientBlock = extraProblem;
+                DateTime nowUtc = DateTime.UtcNow;
+                logClientBlock = !isAutomaticLaunch || nowUtc - _extraArgumentsNoticeUtc >= AutoLaunchNeedsPasswordLogCooldown;
+                if (logClientBlock)
+                    _extraArgumentsNoticeUtc = nowUtc;
+            }
+
+            // Engine plugin must be selected when at least one chosen account is
+            // RynthCore-mode AND auto-inject is on. Decal-mode accounts don't need
+            // it because they don't load the engine.
+            bool anyRynthCoreMode = clientAccounts.Any(a => a.InjectionMode is InjectionMode.RynthCore or InjectionMode.DecalBridge);
+            if (clientBlock == null && shouldInject && anyRynthCoreMode &&
+                !GetSelectedPluginIds().Contains("rynthcore-engine", StringComparer.OrdinalIgnoreCase))
+            {
+                clientBlock = "RynthCore Engine must stay selected in Runtime Loadout when auto-inject is enabled for any RynthCore-mode account.";
+            }
+
+            // Pre-resolve Decal Inject.dll once if any account needs it.
+            bool anyDecalMode = clientAccounts.Any(a => a.InjectionMode is InjectionMode.Decal or InjectionMode.DecalBridge);
+            if (clientBlock == null && shouldInject && anyDecalMode)
+            {
+                decalInjectPath = DecalLocator.TryGetInjectDllPath();
+                if (decalInjectPath == null)
+                    clientBlock = "one or more accounts are set to Decal mode but Decal is not installed (HKLM\\SOFTWARE\\Decal\\Agent\\AgentPath\\Inject.dll missing).";
+            }
+
+            // "Decal + RynthCore" accounts: make sure the Decal bridge is registered for this
+            // Windows user (idempotent; opt-in - only these accounts ever trigger it).
+            // Registered where THIS PC's AC client reads Decal's filter list, then checked: a
+            // client that wouldn't load the bridge runs the old coexistence path (no overlay, then
+            // a crash), so such a launch is blocked with the reason.
+            if (clientBlock == null && shouldInject && clientAccounts.Any(a => a.InjectionMode == InjectionMode.DecalBridge))
+            {
+                string decalAcPath = DecalLocator.TryGetDecalAcClientPath() ?? acPath;
+                if (!await EnsureDecalBridgeAsync(decalAcPath, interactive: !isAutomaticLaunch))
+                {
+                    clientBlock = "a Decal + RynthCore client would not load the Decal bridge on this PC (see the lines above, or Recovery Actions > Check Decal bridge). " +
+                                  "Pick RynthCore or Decal for those accounts until it passes.";
+                }
+            }
+
+            if (clientBlock != null)
+            {
+                if (logClientBlock)
+                {
+                    AppendActivity(headlessAccounts.Count > 0
+                        ? $"Launch blocked for the accounts that aren't Headless: {clientBlock} The Headless accounts launch anyway."
+                        : $"Launch blocked: {clientBlock}");
+                }
+                clientAccounts.Clear();
             }
         }
+
+        // rynth-headless.exe must be there (Runtime > Headless client; default <launcher>\Headless).
+        string headlessExePath = string.Empty;
+        List<string> headlessPlugins = [];
+        if (headlessAccounts.Count > 0)
+        {
+            headlessExePath = HeadlessLaunch.ResolveExePath(HeadlessExePathTextBox.Text, AppContext.BaseDirectory);
+            // An empty box = the 64-bit plugins the installer ships in Headless\plugins (RynthAi).
+            headlessPlugins = HeadlessLaunch.ResolvePluginPaths(ReadHeadlessPluginPathsBox(), AppContext.BaseDirectory);
+            if (!File.Exists(headlessExePath))
+            {
+                foreach (LaunchAccountProfile account in headlessAccounts)
+                {
+                    NoteHeadlessRefusal(account, isAutomaticLaunch,
+                        $"{HeadlessLaunch.ExeName} not found at {headlessExePath}. Set its path under Runtime > Headless client.");
+                }
+                headlessAccounts.Clear();
+            }
+
+            // Refused before the First Login dialog could ask for a password it then can't use.
+            headlessAccounts.RemoveAll(account =>
+            {
+                LaunchServerProfile? server = ResolveServerForAccount(account);
+                if (server?.Emulator != AcEmulatorKind.Gdle)
+                    return false;
+                NoteHeadlessRefusal(account, isAutomaticLaunch,
+                    $"Headless runs on ACE servers only, and {server.DisplayName} is a GDLE server. Pick RynthCore or Decal for this account.");
+                return true;
+            });
+        }
+
+        if (clientAccounts.Count + headlessAccounts.Count == 0)
+            return;
+        if (clientAccounts.Count + headlessAccounts.Count < accountsToLaunch.Count)
+            accountsToLaunch = accountsToLaunch.Where(a => clientAccounts.Contains(a) || headlessAccounts.Contains(a)).ToList();
+
+        // No usable password: the client would refuse to start ("You can only run the game from
+        // the launcher program") and exit within seconds. A manual launch asks for it (and the
+        // account) in the First Login dialog; an automatic one skips the account.
+        var ready = new List<LaunchAccountProfile>(accountsToLaunch.Count);
+        foreach (LaunchAccountProfile account in accountsToLaunch)
+        {
+            if (!AcLaunchArgumentBuilder.NeedsPassword(account))
+                ready.Add(account);
+            else if (isAutomaticLaunch)
+                AppendActivity($"Auto launch skipped for {account.DisplayName}: {AcLaunchArgumentBuilder.MissingPasswordMessage(account.AccountName)}");
+            else if (await PromptFirstLoginAsync(account))
+                ready.Add(account);
+            else
+                AppendActivity($"Launch cancelled for {account.DisplayName}: no password entered.");
+        }
+
+        if (ready.Count == 0)
+            return;
+        accountsToLaunch = ready;
 
         SaveRuntimePaths(appendActivity: !isAutomaticLaunch);
         SaveLaunchBehavior(appendActivity: !isAutomaticLaunch);
@@ -1472,7 +1980,9 @@ internal partial class MainWindow : Window
         try
         {
             SetOperationState(true);
-            _launchSettings.Apply(acPath, _settings.AllowMultipleClients, _settings.SkipIntroVideos, AppendActivity);
+            // acclient's own settings (multiple clients, intro videos, DXVK); nothing a Headless launch reads.
+            if (accountsToLaunch.Any(a => a.InjectionMode != InjectionMode.Headless))
+                _launchSettings.Apply(acPath, _settings.AllowMultipleClients, _settings.SkipIntroVideos, _settings.EnableDxvk, AppendActivity);
             AppendActivity($"Preparing {launchLabel}.");
             HashSet<string> activeAccountKeys = GetActiveAccountKeys();
 
@@ -1498,11 +2008,25 @@ internal partial class MainWindow : Window
             var prepared = new List<(LaunchAccountProfile Account, string Args, string Summary, LaunchContextRecord Context)>();
             foreach (LaunchAccountProfile account in accountsToLaunch)
             {
-                if (!TryGetLaunchArgumentsForAccount(
+                bool headless = account.InjectionMode == InjectionMode.Headless;
+                string launchArguments = string.Empty;
+                string launchSummary;
+                if (headless)
+                {
+                    // No acclient command line (it would carry the password): rynth-headless reads
+                    // the password itself, by profile id (HeadlessLaunch).
+                    if (HeadlessLaunchProblem(account) is string headlessProblem)
+                    {
+                        NoteHeadlessRefusal(account, isAutomaticLaunch, headlessProblem);
+                        continue;
+                    }
+                    launchSummary = _launchArgumentBuilder.Describe(ResolveServerForAccount(account)!, account) + " (headless)";
+                }
+                else if (!TryGetLaunchArgumentsForAccount(
                     account,
-                    allowArgumentOverride: !isAutomaticLaunch,
-                    out string launchArguments,
-                    out string launchSummary,
+                    extraArguments,
+                    out launchArguments,
+                    out launchSummary,
                     out string error))
                 {
                     AppendActivity($"Launch blocked for {account.DisplayName}: {error}");
@@ -1521,7 +2045,9 @@ internal partial class MainWindow : Window
                 LaunchContextRecord launchContext = BuildLaunchContext(account, contextServer);
                 // Best-effort legacy write — last writer wins. The PID-specific
                 // writes inside the launch task are the authoritative path.
-                LaunchContextStore.WriteLegacy(launchContext);
+                // (Not for Headless: only an engine inside acclient reads it.)
+                if (!headless)
+                    LaunchContextStore.WriteLegacy(launchContext);
 
                 if (!string.IsNullOrWhiteSpace(accountKey))
                     activeAccountKeys.Add(accountKey);
@@ -1541,7 +2067,13 @@ internal partial class MainWindow : Window
 
                 var p = prepared[i];
                 Task launchTask;
-                if (!shouldInject)
+                if (p.Account.InjectionMode == InjectionMode.Headless)
+                {
+                    // rynth-headless.exe whether or not auto-inject is on (there is nothing to inject).
+                    launchTask = LaunchOneHeadlessAsync(p.Account, ResolveServerForAccount(p.Account), headlessExePath,
+                        HeadlessLaunch.AcFolderFor(acPath), headlessPlugins, p.Summary, p.Context);
+                }
+                else if (!shouldInject)
                 {
                     launchTask = LaunchOneNoInjectAsync(p.Account, acPath, p.Args, p.Summary, p.Context);
                 }
@@ -1592,12 +2124,14 @@ internal partial class MainWindow : Window
     {
         string resolvedPrefsPath = ResolveUserPrefsPath(account, launchContext.ServerName);
         bool needsPrefsSwap = !string.IsNullOrEmpty(resolvedPrefsPath) && File.Exists(resolvedPrefsPath);
+        // Per-account graphics profiles write different values into the one INI: serialize like a swap.
+        bool needsLock = needsPrefsSwap || GraphicsNeedsLaunchLock();
 
         string entryAccountKey = BuildAccountKey(launchContext.AccountName, launchContext.ServerName);
         int crashHistCount = _crashHistoryByAccount.TryGetValue(entryAccountKey, out List<DateTime>? hist0) ? hist0.Count : 0;
         LauncherDiag.Info($"LaunchOneInjected ENTRY account='{launchContext.AccountName}' needsPrefsSwap={needsPrefsSwap} semCount={_userPrefsSwapLock.CurrentCount} sessionPids={_launchedSessionPids.Count} pidInfo={_launchedPidInfo.Count} crashHist={crashHistCount}");
 
-        if (needsPrefsSwap)
+        if (needsLock)
         {
             LauncherDiag.Info($"LaunchOneInjected acquiring _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
             await _userPrefsSwapLock.WaitAsync();
@@ -1606,10 +2140,9 @@ internal partial class MainWindow : Window
 
         try
         {
-            if (needsPrefsSwap)
-            {
-                _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity);
-            }
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath, acPath) : null;
+            // This account's RynthAi graphics profile over whatever the INI holds now (AC rewrites it on exit).
+            ApplyGraphicsForLaunch(acPath, launchContext);
 
             InjectionResult result = await Task.Run(() =>
                 _injector.LaunchSuspendedAndInject(
@@ -1633,6 +2166,7 @@ internal partial class MainWindow : Window
                 {
                     _launchedSessionPids.Add(trackedPid);
                     _launchedPidInfo[trackedPid] = (accountKey, DateTime.UtcNow);
+                    TrackPrefsSwap(trackedPid, prefsSwap);
                     RegisterPidExitWatch(trackedPid);
                 }
 
@@ -1646,12 +2180,12 @@ internal partial class MainWindow : Window
                 AppendActivity($"Launch failed for {launchSummary}: {result.Summary}");
             }
 
-            if (needsPrefsSwap)
+            if (needsLock)
                 await Task.Delay(UserPrefsSettleDelay);
         }
         finally
         {
-            if (needsPrefsSwap)
+            if (needsLock)
             {
                 LauncherDiag.Info($"LaunchOneInjected releasing _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
                 _userPrefsSwapLock.Release();
@@ -1672,12 +2206,14 @@ internal partial class MainWindow : Window
     {
         string resolvedPrefsPath = ResolveUserPrefsPath(account, launchContext.ServerName);
         bool needsPrefsSwap = !string.IsNullOrEmpty(resolvedPrefsPath) && File.Exists(resolvedPrefsPath);
+        // Per-account graphics profiles write different values into the one INI: serialize like a swap.
+        bool needsLock = needsPrefsSwap || GraphicsNeedsLaunchLock();
 
         string entryAccountKey = BuildAccountKey(launchContext.AccountName, launchContext.ServerName);
         int crashHistCount = _crashHistoryByAccount.TryGetValue(entryAccountKey, out List<DateTime>? hist0) ? hist0.Count : 0;
         LauncherDiag.Info($"LaunchOneDecal ENTRY account='{launchContext.AccountName}' needsPrefsSwap={needsPrefsSwap} semCount={_userPrefsSwapLock.CurrentCount} sessionPids={_launchedSessionPids.Count} pidInfo={_launchedPidInfo.Count} crashHist={crashHistCount}");
 
-        if (needsPrefsSwap)
+        if (needsLock)
         {
             LauncherDiag.Info($"LaunchOneDecal acquiring _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
             await _userPrefsSwapLock.WaitAsync();
@@ -1686,10 +2222,9 @@ internal partial class MainWindow : Window
 
         try
         {
-            if (needsPrefsSwap)
-            {
-                _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity);
-            }
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath, acPath) : null;
+            // This account's RynthAi graphics profile over whatever the INI holds now (AC rewrites it on exit).
+            ApplyGraphicsForLaunch(acPath, launchContext);
 
             // enginePath != null: "Decal + RynthCore" - Decal is injected first, then the
             // RynthCore loader, before the client resumes.
@@ -1716,6 +2251,7 @@ internal partial class MainWindow : Window
                 {
                     _launchedSessionPids.Add(trackedPid);
                     _launchedPidInfo[trackedPid] = (accountKey, DateTime.UtcNow);
+                    TrackPrefsSwap(trackedPid, prefsSwap);
                     RegisterPidExitWatch(trackedPid);
                 }
 
@@ -1729,12 +2265,12 @@ internal partial class MainWindow : Window
                 AppendActivity($"Decal launch failed for {launchSummary}: {result.Summary}");
             }
 
-            if (needsPrefsSwap)
+            if (needsLock)
                 await Task.Delay(UserPrefsSettleDelay);
         }
         finally
         {
-            if (needsPrefsSwap)
+            if (needsLock)
             {
                 LauncherDiag.Info($"LaunchOneDecal releasing _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
                 _userPrefsSwapLock.Release();
@@ -1753,10 +2289,12 @@ internal partial class MainWindow : Window
     {
         string resolvedPrefsPath = ResolveUserPrefsPath(account, launchContext.ServerName);
         bool needsPrefsSwap = !string.IsNullOrEmpty(resolvedPrefsPath) && File.Exists(resolvedPrefsPath);
+        // Per-account graphics profiles write different values into the one INI: serialize like a swap.
+        bool needsLock = needsPrefsSwap || GraphicsNeedsLaunchLock();
 
         LauncherDiag.Info($"LaunchOneNoInject ENTRY account='{launchContext.AccountName}' needsPrefsSwap={needsPrefsSwap} semCount={_userPrefsSwapLock.CurrentCount} sessionPids={_launchedSessionPids.Count} pidInfo={_launchedPidInfo.Count}");
 
-        if (needsPrefsSwap)
+        if (needsLock)
         {
             LauncherDiag.Info($"LaunchOneNoInject acquiring _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
             await _userPrefsSwapLock.WaitAsync();
@@ -1765,10 +2303,9 @@ internal partial class MainWindow : Window
 
         try
         {
-            if (needsPrefsSwap)
-            {
-                _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity);
-            }
+            PrefsSwapLaunch? prefsSwap = needsPrefsSwap ? ApplyPrefsSwap(account, launchContext.ServerName, resolvedPrefsPath, acPath) : null;
+            // This account's RynthAi graphics profile over whatever the INI holds now (AC rewrites it on exit).
+            ApplyGraphicsForLaunch(acPath, launchContext);
 
             Process? proc = null;
             Exception? launchEx = null;
@@ -1800,6 +2337,7 @@ internal partial class MainWindow : Window
             {
                 _launchedSessionPids.Add(proc.Id);
                 _launchedPidInfo[proc.Id] = (BuildAccountKey(launchContext.AccountName, launchContext.ServerName), DateTime.UtcNow);
+                TrackPrefsSwap(proc.Id, prefsSwap);
                 RegisterPidExitWatch(proc.Id);
                 LaunchContextStore.WriteForProcess(proc.Id, launchContext);
                 WritePendingSessionState(proc.Id, launchContext);
@@ -1811,12 +2349,12 @@ internal partial class MainWindow : Window
             }
             AppendActivity($"Launched AC (no injection) using {launchSummary}.");
 
-            if (needsPrefsSwap)
+            if (needsLock)
                 await Task.Delay(UserPrefsSettleDelay);
         }
         finally
         {
-            if (needsPrefsSwap)
+            if (needsLock)
             {
                 LauncherDiag.Info($"LaunchOneNoInject releasing _userPrefsSwapLock (semCount={_userPrefsSwapLock.CurrentCount})");
                 _userPrefsSwapLock.Release();
@@ -1824,6 +2362,387 @@ internal partial class MainWindow : Window
             }
             LauncherDiag.Info($"LaunchOneNoInject EXIT account='{launchContext.AccountName}'");
         }
+    }
+
+    // ── Headless accounts (InjectionMode.Headless) ─────────────────────────
+    // One rynth-headless.exe per account, with a run config the launcher writes
+    // (HeadlessLaunch). No acclient, so none of its steps apply: no prefs swap,
+    // window title or placement, graphics readiness, injection or heartbeat log.
+    // The process writes its own session_<pid>.json (--launcher), so the session
+    // poll sees it like any client once FindClientProcesses lists it.
+
+    /// <summary>
+    /// Starts rynth-headless.exe for <paramref name="account"/>: writes the run config
+    /// (%APPDATA%\RynthCore\headless\launch_&lt;profile id&gt;.json, no password in it), starts
+    /// the process without a window, writes its launch context and pending session record, and
+    /// tracks the pid like the other launch paths (exit watch, quick-exit crash accounting).
+    /// </summary>
+    private async Task LaunchOneHeadlessAsync(
+        LaunchAccountProfile account,
+        LaunchServerProfile? server,
+        string exePath,
+        string? acFolder,
+        IReadOnlyList<string> plugins,
+        string launchSummary,
+        LaunchContextRecord launchContext)
+    {
+        string accountKey = BuildAccountKey(launchContext.AccountName, launchContext.ServerName);
+        LauncherDiag.Info($"LaunchOneHeadless ENTRY account='{launchContext.AccountName}' exe='{exePath}' plugins={plugins.Count} sessionPids={_launchedSessionPids.Count} pidInfo={_launchedPidInfo.Count}");
+        if (server == null)
+        {
+            AppendActivity($"Launch blocked for {account.DisplayName}: {AccountServerRules.NoServerMessage(account, _settings.ServerProfiles.Count > 0)}");
+            return;
+        }
+
+        var spec = new HeadlessRunSpec
+        {
+            Host = server.Host,
+            Port = server.Port,
+            ServerName = server.Name,
+            SuiteDir = _settings.HeadlessSuiteDir,
+            StatusDir = _settings.HeadlessStatusDir,
+            Plugins = plugins.ToList(),
+            Sessions =
+            {
+                new HeadlessSessionSpec
+                {
+                    LauncherProfileId = account.Id,
+                    Account = account.AccountName,
+                    // "" = no auto-login for acclient; rynth-headless has no character screen to stop at, so it picks.
+                    Character = string.IsNullOrWhiteSpace(launchContext.TargetCharacter) ? null : launchContext.TargetCharacter,
+                    Commands = launchContext.OnLoginCommands?.ToList() ?? [],
+                    StaySeconds = 0,
+                    Reconnect = true,
+                },
+            },
+        };
+        string configPath = HeadlessLaunch.ConfigPath(AppSettingsStore.SettingsDirectoryPath, account.Id);
+
+        int? pid = null;
+        Exception? launchEx = null;
+        await Task.Run(() =>
+        {
+            try
+            {
+                HeadlessLaunch.WriteConfig(configPath, HeadlessLaunch.BuildConfigJson(spec));
+                var psi = new ProcessStartInfo(exePath)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Path.GetDirectoryName(exePath) ?? string.Empty
+                };
+                foreach (string arg in HeadlessLaunch.BuildArguments(configPath, acFolder))
+                    psi.ArgumentList.Add(arg);
+                using Process? proc = Process.Start(psi);
+                if (proc != null)
+                {
+                    // As the injected paths do from their suspended-launch callback. The process
+                    // overwrites the session record with its own as soon as it is connecting.
+                    LaunchContextStore.WriteForProcess(proc.Id, launchContext);
+                    WritePendingSessionState(proc.Id, launchContext);
+                    pid = proc.Id;
+                }
+            }
+            catch (Exception ex)
+            {
+                launchEx = ex;
+            }
+        });
+
+        if (launchEx != null || pid is not int trackedPid)
+        {
+            RecordCrash(accountKey);
+            string why = launchEx?.Message ?? "the process did not start";
+            AppendActivity($"Headless launch failed for {launchSummary}: {why}");
+            LauncherDiag.Info($"LaunchOneHeadless failed account='{launchContext.AccountName}': {why}");
+            return;
+        }
+
+        _launchedSessionPids.Add(trackedPid);
+        _launchedHeadlessPids.Add(trackedPid);
+        _launchedPidInfo[trackedPid] = (accountKey, DateTime.UtcNow);
+        RegisterPidExitWatch(trackedPid);
+        AppendActivity($"Headless launch complete for {launchSummary} (PID {trackedPid}).");
+        LauncherDiag.Info($"LaunchOneHeadless EXIT account='{launchContext.AccountName}' pid={trackedPid} config='{configPath}'");
+    }
+
+    /// <summary>Why <paramref name="account"/> can't run headless now (null = it can).</summary>
+    private string? HeadlessLaunchProblem(LaunchAccountProfile account)
+    {
+        LaunchServerProfile? server = ResolveServerForAccount(account);
+        if (server == null)
+            return AccountServerRules.NoServerMessage(account, _settings.ServerProfiles.Count > 0);
+        if (server.Emulator == AcEmulatorKind.Gdle)
+            return $"Headless runs on ACE servers only, and {server.DisplayName} is a GDLE server. Pick RynthCore or Decal for this account.";
+        if (string.IsNullOrWhiteSpace(server.Host) || server.Port <= 0)
+            return $"the server profile {server.DisplayName} needs a host and a port.";
+        if (AcLaunchArgumentBuilder.AccountNameProblem(account.AccountName, AcEmulatorKind.Ace) is string nameProblem)
+            return nameProblem;
+        // rynth-headless decrypts the saved password itself; check now that this Windows user can.
+        if (account.PasswordNeedsReentry ||
+            (!string.IsNullOrEmpty(account.PasswordProtected) && !AccountPasswordProtection.CanUnprotect(account.PasswordProtected)))
+        {
+            account.PasswordNeedsReentry = true;
+            return LaunchAccountProfile.PasswordNeedsReentryMessage(account.AccountName);
+        }
+        return null;
+    }
+
+    /// <summary>Logs why a Headless launch of <paramref name="account"/> was refused; automatic launches at most every few minutes.</summary>
+    private void NoteHeadlessRefusal(LaunchAccountProfile account, bool isAutomaticLaunch, string problem)
+    {
+        DateTime nowUtc = DateTime.UtcNow;
+        if (isAutomaticLaunch &&
+            _headlessRefusalNoticeTimesUtc.TryGetValue(account.Id, out DateTime lastUtc) &&
+            nowUtc - lastUtc < AutoLaunchNeedsPasswordLogCooldown)
+        {
+            return;
+        }
+        _headlessRefusalNoticeTimesUtc[account.Id] = nowUtc;
+        AppendActivity($"{(isAutomaticLaunch ? "Auto launch skipped" : "Launch blocked")} for {account.DisplayName} (Headless): {problem}");
+    }
+
+    /// <summary>The Runtime tab's headless plugin box: one DLL path per line, blank lines and surrounding quotes dropped.</summary>
+    private List<string> ReadHeadlessPluginPathsBox() =>
+        (HeadlessPluginPathsTextBox.Text ?? string.Empty)
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim().Trim('"').Trim())
+            .Where(line => line.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    /// <summary>
+    /// acclient.exe and rynth-headless.exe processes: every client the launcher tracks sessions,
+    /// account keys and auto-launch against. Also refreshes <see cref="_headlessClientPids"/>.
+    /// Steps that only apply to acclient (window, injection, heartbeat log) filter with
+    /// <see cref="IsHeadlessPid"/> / <see cref="AcClientsOnly"/>. The caller disposes the array.
+    /// </summary>
+    private Process[] FindClientProcesses()
+    {
+        Process[] acClients = _injector.FindTargetProcesses();
+        Process[] headless;
+        try { headless = Process.GetProcessesByName(HeadlessLaunch.ProcessName); }
+        catch { headless = []; }
+
+        _headlessClientPids.Clear();
+        foreach (Process p in headless)
+        {
+            try { _headlessClientPids.Add(p.Id); } catch { }
+        }
+        return headless.Length == 0 ? acClients : [.. acClients, .. headless];
+    }
+
+    /// <summary>True for a rynth-headless process (seen in the last enumeration, or launched as one here).</summary>
+    private bool IsHeadlessPid(int pid) => _headlessClientPids.Contains(pid) || _launchedHeadlessPids.Contains(pid);
+
+    /// <summary>
+    /// A rynth-headless.exe (from the last FindClientProcesses) already running this account's launch
+    /// config. One a previous launcher started isn't in <see cref="_launchedHeadlessPids"/>, and its
+    /// session records carry the headless client's own per-character ids, so HasTrackedPresence misses
+    /// it: auto launch then started a second one for the same account, which died at once on the
+    /// first one's open log (2026-10-30/31), and could otherwise have logged the account in twice.
+    /// </summary>
+    private bool HeadlessAlreadyRunning(LaunchAccountProfile account)
+    {
+        if (_headlessClientPids.Count == 0) return false;
+        string config = HeadlessLaunch.ConfigPath(AppSettingsStore.SettingsDirectoryPath, account.Id);
+        foreach (int pid in _headlessClientPids)
+        {
+            string? cmd = CrashDumpWriters.TryGetCommandLine(pid);
+            if (cmd != null && cmd.Contains(config, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Runtime > Headless client > Log out headless clients: a headless client has no window to close,
+    /// so every running rynth-headless gets the stop request (<see cref="EndClientProcess"/>: log out,
+    /// exit, killed after the grace time).
+    /// </summary>
+    private void StopHeadlessClients()
+    {
+        Process[] clients = FindClientProcesses();
+        int asked = 0;
+        try
+        {
+            foreach (Process p in clients)
+            {
+                int pid;
+                try { pid = p.Id; } catch { continue; }
+                if (!_headlessClientPids.Contains(pid))
+                    continue;
+                try
+                {
+                    EndClientProcess(p, pid);
+                    asked++;
+                }
+                catch (Exception ex)
+                {
+                    AppendActivity($"PID {pid} (headless): could not stop it: {ex.Message}");
+                }
+            }
+        }
+        finally
+        {
+            foreach (Process p in clients) p.Dispose();
+        }
+        AppendActivity(asked == 0
+            ? "No headless client is running."
+            : $"Asked {asked} headless client(s) to log out." +
+              (_settings.AutoLaunch ? " AutoLaunch is on: checked accounts are started again." : ""));
+    }
+
+    // ── The Headless window (HeadlessWindow): what headless characters are doing ──
+    private HeadlessWindow? _headlessWindow;
+
+    /// <summary>Runtime > Headless client > Show headless clients, and the button under Live Sessions.</summary>
+    private void ShowHeadlessWindow()
+    {
+        if (_headlessWindow != null)
+        {
+            if (_headlessWindow.WindowState == WindowState.Minimized)
+                _headlessWindow.WindowState = WindowState.Normal;
+            _headlessWindow.Activate();
+            return;
+        }
+        var host = new HeadlessWindowHost
+        {
+            Settings = _settings,
+            SaveSettings = SaveSettings,
+            // The folders rynth-headless uses: the launcher's settings, else the CLI's defaults (HeadlessDefaults.cs).
+            StatusDir = () => string.IsNullOrWhiteSpace(_settings.HeadlessStatusDir)
+                ? Path.Combine(RynthInstallPaths.CoreLogsDir, "status")
+                : Environment.ExpandEnvironmentVariables(_settings.HeadlessStatusDir.Trim().Trim('"')),
+            ConfiguredSuiteDir = () => _settings.HeadlessSuiteDir ?? string.Empty,
+            LaunchConfigDir = Path.Combine(AppSettingsStore.SettingsDirectoryPath, HeadlessLaunch.ConfigFolderName),
+            LogOutProcess = LogOutHeadlessProcess,
+            AutoLaunch = () => _settings.AutoLaunch,
+        };
+        _headlessWindow = new HeadlessWindow(host);
+        _headlessWindow.Closed += (_, _) => _headlessWindow = null;
+        _headlessWindow.Show();
+    }
+
+    /// <summary>
+    /// The Headless window's "Log out": the stop request of one rynth-headless process
+    /// (<see cref="EndClientProcess"/>: log out, exit, killed after the grace time). The stop event is
+    /// per process; the launcher starts one process per Headless account, so that is one character.
+    /// Only a pid the enumeration just saw as rynth-headless is touched.
+    /// </summary>
+    private string LogOutHeadlessProcess(int pid)
+    {
+        Process[] clients = FindClientProcesses();
+        try
+        {
+            if (!_headlessClientPids.Contains(pid))
+                return $"PID {pid} isn't a running rynth-headless.exe any more; nothing to do.";
+            foreach (Process p in clients)
+            {
+                int id;
+                try { id = p.Id; } catch { continue; }
+                if (id != pid)
+                    continue;
+                EndClientProcess(p, pid);
+                return $"Asked PID {pid} to log out and exit (closed after {HeadlessLaunch.StopGrace.TotalSeconds:0} s if it doesn't)." +
+                       (_settings.AutoLaunch ? " AutoLaunch is on: a checked account is started again." : "");
+            }
+            return $"PID {pid} isn't running any more.";
+        }
+        finally
+        {
+            foreach (Process p in clients) p.Dispose();
+        }
+    }
+
+    private Process[] AcClientsOnly(Process[] targets) =>
+        _headlessClientPids.Count == 0 && _launchedHeadlessPids.Count == 0
+            ? targets
+            : targets.Where(p => { try { return !IsHeadlessPid(p.Id); } catch { return false; } }).ToArray();
+
+    /// <summary>
+    /// Ends a client the launcher has decided to take down. acclient: killed at once. rynth-headless:
+    /// asked to log every character out and exit (its stop event), and killed after
+    /// <see cref="HeadlessLaunch.StopGrace"/> if it is still running; killed at once when it has no
+    /// stop event. Throws as Process.Kill does.
+    /// </summary>
+    private void EndClientProcess(Process process, int pid)
+    {
+        if (!IsHeadlessPid(pid))
+        {
+            process.Kill();
+            return;
+        }
+
+        if (!HeadlessLaunch.TrySignalStop(pid))
+        {
+            AppendActivity($"PID {pid} (headless) has no stop channel; killing it.");
+            process.Kill();
+            return;
+        }
+
+        DateTime startedUtc = GetProcessStartTimeUtc(process);
+        AppendActivity($"PID {pid} (headless): asked to log out and exit; killed in {HeadlessLaunch.StopGrace.TotalSeconds:0} s if still running.");
+        _ = KillHeadlessAfterGraceAsync(pid, startedUtc);
+    }
+
+    private async Task KillHeadlessAfterGraceAsync(int pid, DateTime startedUtc)
+    {
+        await Task.Delay(HeadlessLaunch.StopGrace);
+        try
+        {
+            using Process p = Process.GetProcessById(pid);
+            // The same process (not a recycled pid): name and start time match.
+            if (p.HasExited ||
+                !string.Equals(p.ProcessName, HeadlessLaunch.ProcessName, StringComparison.OrdinalIgnoreCase) ||
+                Math.Abs((GetProcessStartTimeUtc(p) - startedUtc).TotalSeconds) > 1)
+            {
+                return;
+            }
+            AppendActivity($"PID {pid} (headless) still running {HeadlessLaunch.StopGrace.TotalSeconds:0} s after the stop request; killing it.");
+            LauncherDiag.Info($"HEADLESS: PID {pid} ignored the stop request for {HeadlessLaunch.StopGrace.TotalSeconds:0} s - killed.");
+            p.Kill();
+        }
+        catch (ArgumentException)
+        {
+            // Already gone.
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"PID {pid} (headless): kill after the stop request failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Shows the First Login dialog for <paramref name="account"/> (no usable password). True when
+    /// the player entered one: the profile is updated and saved (password encrypted at once).
+    /// </summary>
+    private async Task<bool> PromptFirstLoginAsync(LaunchAccountProfile account)
+    {
+        LaunchServerProfile? server = ResolveServerForAccount(account);
+        if (server == null)
+        {
+            AppendActivity($"Launch blocked for {account.DisplayName}: {AccountServerRules.NoServerMessage(account, _settings.ServerProfiles.Count > 0)}");
+            return false;
+        }
+
+        LaunchAccountProfile draft = account.Clone();
+        var dialog = new FirstLoginDialog(draft, server, _settings.AccountProfiles,
+            accountName => GetDetectedCharacters(accountName, server.Name));
+        bool? accepted = await dialog.ShowDialog<bool?>(this);
+        if (accepted != true)
+            return false;
+
+        account.CopyFrom(draft);
+        SaveSettings();
+        RefreshLists();
+        RefreshSummary();
+
+        string loginAs = string.IsNullOrWhiteSpace(account.CharacterName) || account.CharacterName == LaunchAccountProfile.NoneOption
+            ? "stopping at character select"
+            : $"logging in as {account.CharacterName}";
+        AppendActivity($"First login on {server.DisplayName}: account '{account.AccountName}', password saved (encrypted), {loginAs}.");
+        return true;
     }
 
     private LaunchContextRecord BuildLaunchContext(LaunchAccountProfile account, LaunchServerProfile? server)
@@ -1866,38 +2785,27 @@ internal partial class MainWindow : Window
         SessionStateStore.WriteForProcess(processId, record);
     }
 
+    /// <param name="extraArguments">Extra Launch Arguments, already checked by
+    /// <see cref="AcLaunchArgumentBuilder.ExtraArgumentsProblem"/>; appended after the account's own.</param>
     private bool TryGetLaunchArgumentsForAccount(
         LaunchAccountProfile account,
-        bool allowArgumentOverride,
+        string extraArguments,
         out string arguments,
         out string launchSummary,
         out string error)
     {
-        string overrideArguments = allowArgumentOverride
-            ? LaunchArgumentsTextBox.Text?.Trim() ?? string.Empty
-            : string.Empty;
-        if (!string.IsNullOrWhiteSpace(overrideArguments))
-        {
-            arguments = overrideArguments;
-            launchSummary = string.IsNullOrWhiteSpace(account.DisplayName)
-                ? "Manual argument override"
-                : $"Manual argument override / {account.DisplayName}";
-            error = string.Empty;
-            return true;
-        }
-
         LaunchServerProfile? server = ResolveServerForAccount(account);
         if (server == null)
         {
             arguments = string.Empty;
             launchSummary = string.Empty;
-            error = "Select a server profile, or enter manual launch arguments.";
+            error = AccountServerRules.NoServerMessage(account, _settings.ServerProfiles.Count > 0);
             return false;
         }
 
         try
         {
-            arguments = _launchArgumentBuilder.BuildArguments(server, account);
+            arguments = AcLaunchArgumentBuilder.WithExtraArguments(_launchArgumentBuilder.BuildArguments(server, account), extraArguments);
             launchSummary = _launchArgumentBuilder.Describe(server, account);
             error = string.Empty;
             return true;
@@ -1911,18 +2819,12 @@ internal partial class MainWindow : Window
         }
     }
 
-    private LaunchServerProfile? ResolveServerForAccount(LaunchAccountProfile account)
-    {
-        if (!string.IsNullOrWhiteSpace(account.ServerId))
-        {
-            LaunchServerProfile? savedServer = _settings.ServerProfiles.FirstOrDefault(server =>
-                string.Equals(server.Id, account.ServerId, StringComparison.OrdinalIgnoreCase));
-            if (savedServer != null)
-                return savedServer;
-        }
-
-        return GetSelectedServer() ?? _settings.ServerProfiles.FirstOrDefault();
-    }
+    /// <summary>
+    /// The server profile the account names, or null. No fallback to the selected or first
+    /// server: that would send this account's password to a server it doesn't belong to.
+    /// </summary>
+    private LaunchServerProfile? ResolveServerForAccount(LaunchAccountProfile account) =>
+        AccountServerRules.ServerFor(account, _settings.ServerProfiles);
 
     private List<LaunchAccountProfile> GetCheckedLaunchAccounts()
     {
@@ -2007,7 +2909,7 @@ internal partial class MainWindow : Window
     {
         try
         {
-            string? pending = RynthInstallPaths.ReadSetting("PendingPluginRegistration");
+            string? pending = InstallerHandoff.ReadSetting("PendingPluginRegistration");
             if (string.IsNullOrWhiteSpace(pending)
                 || string.Equals(pending, _settings.AppliedInstallerPluginRegistration, StringComparison.OrdinalIgnoreCase))
                 return;
@@ -2046,7 +2948,7 @@ internal partial class MainWindow : Window
 
             _settings.AppliedInstallerPluginRegistration = pending;
             SaveSettings();
-            RynthInstallPaths.DeleteUserSetting("PendingPluginRegistration");
+            InstallerHandoff.DeleteUserSetting("PendingPluginRegistration");
 
             _pluginDllPaths.Clear();
             foreach (string p in _settings.PluginDllPaths) _pluginDllPaths.Add(p);
@@ -2217,7 +3119,10 @@ internal partial class MainWindow : Window
             _updateChecking = false;
             AnnounceNewPlugins(_updateCheck);
             BuildAvailablePlugins();
-            if (_settings.AutoUpdatePlugins && (_updateCheck.PluginsToUpdate.Any() || _updateCheck.Companions.Count > 0
+            if (_updateCheck.HoldEnded)
+                EndRollbackHold($"RynthCore {_updateCheck.Manifest.Version} is out: updates are back on after the rollback.");
+            // After Roll back, the release the player left isn't installed again by itself (RynthUpdater.Rollback.cs).
+            if (_settings.AutoUpdatePlugins && !_updateCheck.Held && (_updateCheck.PluginsToUpdate.Any() || _updateCheck.Companions.Count > 0
                                                 || (_updateCheck.NavDataUpdateAvailable && !_navDataCancelledThisSession)))
                 await ApplyPluginUpdatesAsync(automatic: true);
             SendUsageReportIfDue();   // opt-in only, at most once a day, never awaited
@@ -2284,6 +3189,100 @@ internal partial class MainWindow : Window
         }
     }
 
+    // ── World map sizes (RynthUpdater.MapPacks.cs) ───────────────────────
+
+    private string _mapPacksShown = "";
+
+    /// <summary>
+    /// The front page's "World map detail" card: a row per size the feed offers (name, download size, whether it is
+    /// installed) with Download / Update / Remove. Rebuilt only when what it shows changes; the buttons are off while
+    /// a download or an update runs. Called from RefreshUpdateCard, so it follows every check and download.
+    /// </summary>
+    private void RefreshMapPacksCard()
+    {
+        IReadOnlyList<RynthUpdater.MapPackStatus> packs = _updateCheck?.MapPacks ?? Array.Empty<RynthUpdater.MapPackStatus>();
+        MapPacksCard.IsVisible = packs.Count > 0;
+        bool busy = _updateBusy || _downloadCts != null;
+        string signature = busy + "|" + string.Join(";", packs.Select(p => $"{p.Entry.Key}:{p.State}:{p.Entry.Sha256}"));
+        if (signature == _mapPacksShown) return;
+        _mapPacksShown = signature;
+        MapPacksPanel.Children.Clear();
+        foreach (RynthUpdater.MapPackStatus st in packs)
+        {
+            RynthUpdater.MapPackEntry e = st.Entry;
+            string state = st.State switch
+            {
+                RynthUpdater.MapPackState.UpToDate => "installed",
+                RynthUpdater.MapPackState.NeedsUpdate => "installed, a newer one is available",
+                _ => "not installed",
+            };
+            var title = new TextBlock { Text = $"{e.Name}  -  {DownloadProgress.FormatMb(e.Size)}", FontWeight = global::Avalonia.Media.FontWeight.SemiBold, Foreground = global::Avalonia.Media.Brushes.White };
+            var detail = new TextBlock { Text = (e.Description.Length > 0 ? e.Description + "  " : "") + "(" + state + ")", TextWrapping = global::Avalonia.Media.TextWrapping.Wrap, Foreground = global::Avalonia.Media.Brush.Parse("#9AA8B3") };
+            var text = new StackPanel { Spacing = 2, VerticalAlignment = global::Avalonia.Layout.VerticalAlignment.Center };
+            text.Children.Add(title);
+            text.Children.Add(detail);
+
+            var buttons = new WrapPanel { Orientation = global::Avalonia.Layout.Orientation.Horizontal, VerticalAlignment = global::Avalonia.Layout.VerticalAlignment.Center, Margin = new global::Avalonia.Thickness(12, 0, 0, 0) };
+            if (st.State != RynthUpdater.MapPackState.UpToDate)
+            {
+                var get = new Button { Content = st.State == RynthUpdater.MapPackState.NeedsUpdate ? "Update" : "Download", IsEnabled = !busy, Margin = new global::Avalonia.Thickness(0, 0, 8, 0) };
+                get.Click += async (_, _) => await InstallMapPackAsync(st);
+                buttons.Children.Add(get);
+            }
+            if (st.State != RynthUpdater.MapPackState.NotInstalled)
+            {
+                var remove = new Button { Content = "Remove", IsEnabled = !busy };
+                remove.Click += async (_, _) => await RemoveMapPackAsync(st);
+                buttons.Children.Add(remove);
+            }
+            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+            Grid.SetColumn(text, 0);
+            Grid.SetColumn(buttons, 1);
+            row.Children.Add(text);
+            row.Children.Add(buttons);
+            MapPacksPanel.Children.Add(row);
+        }
+    }
+
+    private async Task InstallMapPackAsync(RynthUpdater.MapPackStatus st)
+    {
+        if (_updateBusy || _downloadCts != null) return;
+        _updateBusy = true;
+        RefreshUpdateCard();
+        try
+        {
+            string line = await RunDownloadAsync((progress, ct) => _updater.InstallMapPackAsync(st.Entry, progress, ct));
+            AppendActivity(line);
+        }
+        catch (OperationCanceledException)
+        {
+            AppendActivity($"World map ({st.Entry.Name}) download cancelled. Nothing was changed.");
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"World map ({st.Entry.Name}) download failed: {ex.Message}");
+        }
+        finally { _updateBusy = false; }
+        _updateCheck = await _updater.CheckAsync(_pluginDllPaths.ToList());
+        RefreshUpdateCard();
+    }
+
+    private async Task RemoveMapPackAsync(RynthUpdater.MapPackStatus st)
+    {
+        if (_updateBusy || _downloadCts != null) return;
+        try
+        {
+            bool had = await Task.Run(() => _updater.RemoveMapPack(st.Entry));
+            AppendActivity(had ? $"World map ({st.Entry.Name}) removed." : $"World map ({st.Entry.Name}) wasn't installed.");
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"World map ({st.Entry.Name}) couldn't be removed: {ex.Message} (a running game client may have it open).");
+        }
+        _updateCheck = await _updater.CheckAsync(_pluginDllPaths.ToList());
+        RefreshUpdateCard();
+    }
+
     private void CancelDownload()
     {
         if (_downloadCts is not { IsCancellationRequested: false } cts) return;
@@ -2295,7 +3294,7 @@ internal partial class MainWindow : Window
     {
         switch (_updateCard?.Kind)
         {
-            case UpdateCardKind.CoreUpdate: await InstallCoreUpdateAsync(); break;
+            case UpdateCardKind.CoreUpdate or UpdateCardKind.Held: await InstallCoreUpdateAsync(); break;
             case UpdateCardKind.PluginUpdates: await UpdatePluginsAsync(); break;
         }
     }
@@ -2313,6 +3312,8 @@ internal partial class MainWindow : Window
     /// <summary>Redraws the front page's update card, the Plugins tab's status line and the header.</summary>
     private void RefreshUpdateCard()
     {
+        KeepLauncherScroll();
+        RefreshMapPacksCard();
         RynthUpdater.CheckResult? c = _updateCheck;
         bool coreUpdate = c?.CoreUpdateAvailable == true;
         var card = UpdateCardModel.Build(new UpdateCardInput
@@ -2333,23 +3334,26 @@ internal partial class MainWindow : Window
             ClientsRunning = coreUpdate && _download == null ? RynthCoreClientsRunning() : 0,
             Download = _download,
             CanCancel = _downloadCts is { IsCancellationRequested: false },
+            HeldFromVersion = c is { Held: true } ? FormatRelease(c.HoldThrough) : "",
         });
         _updateCard = card;
 
         UpdateCardTitle.Text = card.Title;
         UpdateCardTitle.Foreground = Brush.Parse(card.Kind switch
         {
-            UpdateCardKind.CoreUpdate or UpdateCardKind.PluginUpdates => "#F2C14E",
+            UpdateCardKind.CoreUpdate or UpdateCardKind.PluginUpdates or UpdateCardKind.Held => "#F2C14E",
             UpdateCardKind.Error => "#E57373",
             _ => "#26C1A6",
         });
-        UpdateCardBorder.BorderBrush = Brush.Parse(card.Kind is UpdateCardKind.CoreUpdate or UpdateCardKind.PluginUpdates ? "#F2C14E" : "#243742");
+        UpdateCardBorder.BorderBrush = Brush.Parse(card.Kind is UpdateCardKind.CoreUpdate or UpdateCardKind.PluginUpdates or UpdateCardKind.Held ? "#F2C14E" : "#243742");
         UpdateCardDetail.Text = card.Detail;
         UpdateCardDetail.IsVisible = card.Detail.Length > 0;
         UpdateCardActionButton.IsVisible = card.ActionButton != null;
         UpdateCardActionButton.Content = card.ActionButton ?? "";
         UpdateCardActionButton.IsEnabled = !_updateBusy;
         CheckUpdatesButton.IsVisible = card.ShowCheckButton;
+        RollbackButton.IsVisible = card.ShowCheckButton && _updater.IsConfigured && _updater.InstalledCoreRelease > 0;
+        RollbackButton.IsEnabled = !_updateBusy;
 
         UpdateCardWhatsNewPanel.Children.Clear();
         if (card.WhatsNew.Count > 0)
@@ -2482,6 +3486,7 @@ internal partial class MainWindow : Window
         RefreshUpdateCard();
         try
         {
+            if (_updateCheck.HoldThrough > 0) EndRollbackHold(null);   // updating by hand ends a rollback's hold
             await ApplyPluginUpdatesAsync(automatic: false);
         }
         catch (Exception ex)
@@ -2558,13 +3563,95 @@ internal partial class MainWindow : Window
         BuildPluginLoadout();
     }
 
+    /// <summary>
+    /// Roll back (RynthUpdater.Rollback.cs): with every game client closed, picks an earlier release,
+    /// downloads and verifies it, puts its plugins in place, holds updates, then runs its installer (the
+    /// launcher restarts as that release).
+    /// </summary>
+    private async Task RollBackAsync()
+    {
+        if (_updateBusy) return;
+        int running = RynthCoreClientsRunning();
+        if (running > 0)
+        {
+            AppendActivity($"Close your {running} game client(s) running RynthCore or its Decal bridge first: going back replaces files they have open.");
+            return;
+        }
+
+        _updateBusy = true;
+        RefreshUpdateCard();
+        try
+        {
+            IReadOnlyList<RynthUpdater.RollbackTarget> targets = await _updater.ListRollbackTargetsAsync();
+            if (targets.Count == 0)
+            {
+                AppendActivity($"There's no earlier release to go back to (going back works to releases from {FormatRelease(RynthUpdater.FirstRollbackRelease)} on).");
+                return;
+            }
+            var dialog = new RollbackDialog(targets, FormatRelease(_updater.InstalledCoreRelease));
+            RynthUpdater.RollbackTarget? chosen = await dialog.ShowDialog<RynthUpdater.RollbackTarget?>(this);
+            if (chosen == null) return;
+
+            RynthUpdater.RollbackPlan plan = await RunDownloadAsync((progress, ct) =>
+                _updater.PrepareRollbackAsync(chosen, _pluginDllPaths.ToList(), progress, ct));
+            if (RynthCoreClientsRunning() > 0)
+            {
+                AppendActivity("A RynthCore client started meanwhile. Close it, then press Roll back again. Nothing was changed.");
+                return;
+            }
+
+            List<string> plugins = _updater.ApplyRollbackPlugins(plan);
+            // The rolled-back launcher may be older than the hold: it would update the plugins straight back.
+            bool turnOff = _settings.AutoUpdatePlugins;
+            _updater.StartHold(plan.LeavingRelease, turnOff);
+            if (turnOff)
+            {
+                _settings.AutoUpdatePlugins = false;
+                AutoUpdatePluginsCheckBox.IsChecked = false;
+                SaveSettings();
+            }
+            AppendActivity($"Going back to RynthCore {plan.Manifest.Version}" +
+                           (plugins.Count > 0 ? $" (plugins: {string.Join(", ", plugins)})" : "") +
+                           $"; the launcher restarts when it's done. Updates are on hold until a release newer than {FormatRelease(plan.LeavingRelease)} comes out.");
+            RynthUpdater.RunInstaller(plan.InstallerPath);
+            (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown();
+        }
+        catch (OperationCanceledException)
+        {
+            AppendActivity("Going back cancelled. Nothing was changed.");
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"Going back failed: {ex.Message}");
+        }
+        finally
+        {
+            _updateBusy = false;
+            RefreshUpdateCard();
+        }
+    }
+
+    /// <summary>Ends a rollback's hold and turns automatic plugin updates back on if the rollback turned them off.</summary>
+    private void EndRollbackHold(string? message)
+    {
+        bool restore = _updater.HoldTurnedOffAutoUpdate;
+        _updater.EndHold();
+        if (restore && !_settings.AutoUpdatePlugins)
+        {
+            _settings.AutoUpdatePlugins = true;
+            AutoUpdatePluginsCheckBox.IsChecked = true;
+            SaveSettings();
+        }
+        if (message != null) AppendActivity(message);
+    }
+
     private async Task InstallCoreUpdateAsync()
     {
         if (_updateBusy || _updateCheck is not { CoreUpdateAvailable: true } c) return;
         int running = RynthCoreClientsRunning();
         if (running > 0)
         {
-            AppendActivity($"Close your {running} game client(s) running RynthCore or its Decal bridge first: the update replaces files they have open.");
+            AppendActivity($"Close your {running} game client(s) running RynthCore or its Decal bridge (headless ones included) first: the update replaces files they have open.");
             RefreshUpdateCard();
             return;
         }
@@ -2579,6 +3666,7 @@ internal partial class MainWindow : Window
                 AppendActivity("A RynthCore client started meanwhile. Close it, then press Update RynthCore again.");
                 return;
             }
+            if (c.HoldThrough > 0) EndRollbackHold(null);   // going forward by hand ends a rollback's hold
             AppendActivity($"Installing RynthCore {c.Manifest.Core.Version}; the launcher restarts when it's done.");
             RynthUpdater.RunInstaller(installer);
             (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown();
@@ -2609,6 +3697,17 @@ internal partial class MainWindow : Window
             catch { }
             finally { p.Dispose(); }
         }
+        // Headless clients (rynth-headless.exe) run RynthCore code and plugins from the install
+        // too; no module check needed (and an x86 launcher can't list an x64 process's modules).
+        try
+        {
+            foreach (Process p in Process.GetProcessesByName(HeadlessLaunch.ProcessName))
+            {
+                n++;
+                p.Dispose();
+            }
+        }
+        catch { }
         return n;
     }
 
@@ -2820,7 +3919,9 @@ internal partial class MainWindow : Window
         Process[] targets;
         try
         {
-            targets = _injector.FindTargetProcesses();
+            // rynth-headless.exe too: its session file would otherwise be deleted as stale every
+            // tick, and auto-launch would start the account again and again.
+            targets = FindClientProcesses();
         }
         catch (Exception ex)
         {
@@ -2829,11 +3930,15 @@ internal partial class MainWindow : Window
         }
 
         HashSet<int> activePids = targets.Select(process => process.Id).ToHashSet();
+        // acclient.exe only: window, injection and heartbeat-log steps below.
+        Process[] acTargets = AcClientsOnly(targets);
         LaunchContextStore.DeleteStaleProcessFiles(activePids);
         SessionStateStore.DeleteStaleProcessFiles(activePids);
         Dictionary<int, LaunchContextRecord> activeContexts = LaunchContextStore.ReadForActiveProcesses(activePids);
         Dictionary<int, SessionStateRecord> activeSessions = SessionStateStore.ReadForActiveProcesses(activePids);
         DetectQuickExits(activePids);
+        // After DetectQuickExits (which asks whether an exited pid was headless): a recycled pid starts fresh.
+        _launchedHeadlessPids.RemoveWhere(pid => !activePids.Contains(pid));
 
         // Audit trail for vanished PIDs: log each removal so a "did the
         // launcher kill this client?" question has a concrete answer. The
@@ -2861,6 +3966,12 @@ internal partial class MainWindow : Window
         _everLoggedInPids.RemoveWhere(pid => !activePids.Contains(pid));
         foreach (int pid in _baselineWindowRects.Keys.Where(pid => !activePids.Contains(pid)).ToList())
             _baselineWindowRects.Remove(pid);
+        foreach (int pid in _windowLoginSeenUtc.Keys.Where(pid => !activePids.Contains(pid)).ToList())
+            _windowLoginSeenUtc.Remove(pid);
+        foreach (int pid in _windowSavePending.Keys.Where(pid => !activePids.Contains(pid)).ToList())
+            _windowSavePending.Remove(pid);
+        foreach (int pid in _windowSizeSinceUtc.Keys.Where(pid => !activePids.Contains(pid)).ToList())
+            _windowSizeSinceUtc.Remove(pid);
 
         // Latch any PID that's currently reporting IsLoggedIn=true. Once
         // latched, the reaper will permanently exempt it — even if some race
@@ -2873,16 +3984,25 @@ internal partial class MainWindow : Window
             }
         }
 
-        AcStatusText.Text = targets.Length switch
+        int headlessCount = targets.Length - acTargets.Length;
+        AcStatusText.Text = (targets.Length switch
         {
             0 => "No running AC clients detected.",
             1 => "1 AC client is running.",
             _ => $"{targets.Length} AC clients are running."
-        };
+        }) + (headlessCount > 0 ? $" ({headlessCount} headless)" : string.Empty);
 
         _sessionItems.Clear();
+        bool? engineRemembersWindow = null;   // engine.json, read once per refresh and only with a window to place
         foreach (Process process in targets.OrderBy(p => p.Id))
         {
+            // Headless: no window, no D3D device. Listed, but none of the window steps apply.
+            if (IsHeadlessPid(process.Id))
+            {
+                _sessionItems.Add($"PID {process.Id}  |  {DescribeSessionOrigin(process, activeContexts, activeSessions)}  |  headless");
+                continue;
+            }
+
             bool graphicsReady = _injector.TryDescribeGraphicsReadiness(process, out string status);
             string readiness = graphicsReady ? "graphics ready" : SimplifyReadinessStatus(status);
             string origin = DescribeSessionOrigin(process, activeContexts, activeSessions);
@@ -2891,7 +4011,8 @@ internal partial class MainWindow : Window
             if (_settings.OverrideWindowTitle)
                 ApplyDesiredWindowTitle(process, activeContexts, activeSessions);
 
-            ApplyOrPersistWindowPlacement(process, graphicsReady, activeContexts, activeSessions);
+            engineRemembersWindow ??= EngineJsonStore.GetBool("RememberAcWindowPosition") == true;
+            ApplyOrPersistWindowPlacement(process, graphicsReady, activeContexts, activeSessions, engineRemembersWindow.Value);
         }
 
         if (_sessionItems.Count == 0)
@@ -2899,9 +4020,11 @@ internal partial class MainWindow : Window
 
         UpdateLaunchTargetStatuses(targets, activeContexts, activeSessions);
         MaybeQueueAutoLaunch(activeContexts, activeSessions);
-        MaybeAutoInjectExternalClients(targets, activePids, activeContexts, activeSessions);
-        MaybeKillStuckClients(targets, activeContexts, activeSessions);
-        MaybeRestartWedgedClients(targets, activeContexts, activeSessions);
+        // acclient only: injection, the not-responding window check and the engine heartbeat log
+        // mean nothing for rynth-headless (it reconnects by itself; the stop event ends it).
+        MaybeAutoInjectExternalClients(acTargets, activePids, activeContexts, activeSessions);
+        MaybeKillStuckClients(acTargets, activeContexts, activeSessions);
+        MaybeRestartWedgedClients(acTargets, activeContexts, activeSessions);
 
         // Dispose this tick's Process handles. FindTargetProcesses() allocates fresh
         // System.Diagnostics.Process objects (each holds a native OS handle); on the 2s
@@ -2927,6 +4050,8 @@ internal partial class MainWindow : Window
     ///     heuristic would falsely reap working Decal sessions)
     ///   - <see cref="SessionStateRecord.IsLoggedIn"/> is still false
     ///   - Time-since-launch exceeds the configured timeout
+    /// Headless clients (rynth-headless) are never passed in (RefreshSessionState filters
+    /// them) and their profiles say Headless, not RynthCore.
     /// </summary>
     private void MaybeKillStuckClients(
         IReadOnlyList<Process> targets,
@@ -3016,10 +4141,14 @@ internal partial class MainWindow : Window
             if (responding)
                 continue;
 
+            // A client being crash-dumped doesn't answer either; killing it cuts the dump short.
+            if (HoldKillForCrashDump(pid, "stuck-client kill"))
+                continue;
+
             try
             {
                 AppendActivity($"Killing stuck PID {pid} ({accountName}) — {reason} and window is not responding.");
-                process.Kill();
+                EndClientProcess(process, pid);   // a headless client is asked to stop first (never reaches here today)
                 _launchedSessionPids.Remove(pid);
                 _launchedPidInfo.Remove(pid);
 
@@ -3058,6 +4187,109 @@ internal partial class MainWindow : Window
     // thread not draining the marshalled-action queue), and a stale heartbeat
     // file.
     private readonly Dictionary<int, DateTime> _wedgeZeroFpsSinceUtc = new();
+    // One open handle per client log for the wedge check's tail read (2026-11-02): reopening the
+    // log every poll made Windows Defender rescan the whole changed file on each open (300 ms at
+    // worst on an old PC). Reopened when the engine's startup rotation has moved the file: the open
+    // one (now .log.old) is shorter than the file on disk once that outgrows it, or far longer
+    // while the new one is small. Closed when the client goes.
+    private readonly Dictionary<int, FileStream> _wedgeLogStreams = new();
+
+    private FileStream WedgeLog(int pid, string path, long lengthOnDisk)
+    {
+        if (_wedgeLogStreams.TryGetValue(pid, out FileStream? open))
+        {
+            long held = open.Length;   // the engine may have written since lengthOnDisk was read
+            if (held >= lengthOnDisk && held - lengthOnDisk < 1_000_000) return open;
+            CloseWedgeLog(pid);
+        }
+        var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        _wedgeLogStreams[pid] = fs;
+        return fs;
+    }
+
+    private void CloseWedgeLog(int pid)
+    {
+        if (_wedgeLogStreams.Remove(pid, out FileStream? fs))
+            try { fs.Dispose(); } catch { }
+    }
+    // PIDs held off for a full-memory dump, and since when (DumpInProgressRule.Decide caps the
+    // hold at MaxHold). Kept while held or expired, dropped once no dump is in progress.
+    private readonly Dictionary<int, DateTime> _dumpHoldSinceUtc = new();
+
+    // Last write of the newest acclient_oom_<pid>_*.dmp in the shared Dumps folder, or null.
+    private static DateTime? NewestOomDumpWriteUtc(int pid)
+    {
+        try
+        {
+            string dir = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.CoreDir, "Dumps");
+            if (!Directory.Exists(dir)) return null;
+            DateTime? newest = null;
+            foreach (string f in Directory.EnumerateFiles(dir, $"{RynthCore.Install.DumpInProgressRule.OomDumpPrefix}{pid}_*.dmp"))
+            {
+                DateTime w = File.GetLastWriteTimeUtc(f);
+                if (newest == null || w > newest) newest = w;
+            }
+            return newest;
+        }
+        catch { return null; }
+    }
+    // Clients a crash dump is being written of (CrashDumpWriterRule): pid -> when the launcher
+    // first held its kill, when a writer naming it was last seen, and whether an expiry was logged.
+    private readonly Dictionary<int, (DateTime Since, DateTime LastSeen, bool ExpiryLogged)> _crashDumpHolds = new();
+    private Dictionary<int, string> _crashDumpWriters = new();
+    private DateTime _crashDumpWritersAtUtc;
+
+    /// <summary>
+    /// True when the launcher must not kill <paramref name="pid"/> now (<paramref name="kill"/> names
+    /// the kill, for the log): createdump.exe or WerFault.exe is writing a crash dump of it, or was
+    /// within the last <see cref="CrashDumpWriterRule.Grace"/> (CrashDumpWriterRule; at most
+    /// MaxHold in all). Looks for the writers only when a kill is due, at most once a second.
+    /// </summary>
+    private bool HoldKillForCrashDump(int pid, string kill)
+    {
+        DateTime now = DateTime.UtcNow;
+        if (now - _crashDumpWritersAtUtc > TimeSpan.FromSeconds(1))
+        {
+            _crashDumpWriters = CrashDumpWriters.Find();
+            _crashDumpWritersAtUtc = now;
+            // Holds of clients long gone (exited mid-hold) are dropped; a recycled pid starts fresh.
+            foreach (int stale in _crashDumpHolds.Where(kv => now - kv.Value.LastSeen > CrashDumpWriterRule.MaxHold + CrashDumpWriterRule.Grace)
+                         .Select(kv => kv.Key).ToList())
+                _crashDumpHolds.Remove(stale);
+        }
+
+        bool running = _crashDumpWriters.TryGetValue(pid, out string? writer);
+        bool known = _crashDumpHolds.TryGetValue(pid, out var held);
+        var hold = CrashDumpWriterRule.Decide(running, known ? held.LastSeen : null, known ? held.Since : null, now);
+        if (hold == CrashDumpWriterRule.Hold.None)
+        {
+            if (known)
+            {
+                _crashDumpHolds.Remove(pid);
+                LauncherDiag.Info($"CRASHDUMP: PID {pid} kill hold ended (no dump writer for {CrashDumpWriterRule.Grace.TotalSeconds:0} s) - kill checks resume.");
+            }
+            return false;
+        }
+
+        DateTime lastSeen = running ? now : held.LastSeen;
+        if (!known)
+        {
+            _crashDumpHolds[pid] = (now, lastSeen, false);
+            AppendActivity($"PID {pid}: {writer} is writing a crash dump of it - {kill} held off until it ends, then {CrashDumpWriterRule.Grace.TotalSeconds:0} s more.");
+            LauncherDiag.Info($"CRASHDUMP: PID {pid} {kill} held off - {writer} is writing a crash dump of it (hold lasts while it runs + {CrashDumpWriterRule.Grace.TotalSeconds:0} s, at most {CrashDumpWriterRule.MaxHold.TotalMinutes:0} min).");
+            return true;
+        }
+        if (hold == CrashDumpWriterRule.Hold.Expired)
+        {
+            if (!held.ExpiryLogged)
+                LauncherDiag.Info($"CRASHDUMP: PID {pid} kill hold expired after {CrashDumpWriterRule.MaxHold.TotalMinutes:0} min - {kill} goes ahead.");
+            _crashDumpHolds[pid] = (held.Since, lastSeen, true);
+            return false;
+        }
+        _crashDumpHolds[pid] = (held.Since, lastSeen, held.ExpiryLogged);
+        return true;
+    }
+
     // fps (1), plug pump rate (2), login (3), qd = main-thread queue depth (4, optional on older engines).
     private static readonly System.Text.RegularExpressions.Regex WedgeHbRegex =
         new(@"hb #\d+ .*?fps=(\d+) .*?plug=(\d+)/s .*?login=(\d)(?:.*?qd=(\d+))?", System.Text.RegularExpressions.RegexOptions.Compiled);
@@ -3092,6 +4324,9 @@ internal partial class MainWindow : Window
         foreach (int stale in _wedgeZeroFpsSinceUtc.Keys.ToList())
             if (!targets.Any(p => { try { return p.Id == stale; } catch { return false; } }))
                 _wedgeZeroFpsSinceUtc.Remove(stale);
+        foreach (int gone in _wedgeLogStreams.Keys.ToList())
+            if (!targets.Any(p => { try { return p.Id == gone; } catch { return false; } }))
+                CloseWedgeLog(gone);
 
         foreach (Process process in targets)
         {
@@ -3118,7 +4353,7 @@ internal partial class MainWindow : Window
 
             // Tail the per-PID log for the last heartbeat line. Cheap: seek to
             // the end, read ~2KB, FileShare-tolerant of the engine's writer.
-            string logPath = System.IO.Path.Combine(RynthInstallPaths.CoreLogsDir, $"RynthCore.{pid}.log");
+            string logPath = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.CoreLogsDir, $"RynthCore.{pid}.log");
             string tail;
             try
             {
@@ -3129,7 +4364,7 @@ internal partial class MainWindow : Window
                 // as wedged too (same containment applies).
                 bool hbStale = (DateTime.Now - fi.LastWriteTime).TotalSeconds > 120;
 
-                using var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                FileStream fs = WedgeLog(pid, logPath, fi.Length);
                 // 16KB tail: enough to contain the every-30s combat-mode-stuck
                 // line for the item-lock detector, still cheap per poll.
                 long want = Math.Min(16384, fs.Length);
@@ -3138,6 +4373,35 @@ internal partial class MainWindow : Window
                 int read = fs.Read(buf, 0, (int)want);
                 tail = System.Text.Encoding.UTF8.GetString(buf, 0, read);
 
+                // The engine's OUT OF MEMORY full-memory dump suspends every thread for minutes:
+                // the log goes silent and the main thread looks hung, but killing now would cut
+                // the dump short. Hold off both kills below while it is being written
+                // (DumpInProgressRule); the restart for the box that follows is unchanged.
+                DateTime holdNow = DateTime.UtcNow;
+                DateTime? heldSince = _dumpHoldSinceUtc.TryGetValue(pid, out DateTime hs) ? hs : null;
+                var hold = RynthCore.Install.DumpInProgressRule.Decide(tail, fi.LastWriteTimeUtc, NewestOomDumpWriteUtc(pid), heldSince, holdNow);
+                if (hold == RynthCore.Install.DumpInProgressRule.Hold.Holding)
+                {
+                    if (heldSince == null)
+                    {
+                        _dumpHoldSinceUtc[pid] = holdNow;
+                        LauncherDiag.Info($"WEDGE: PID {pid} is writing a full-memory dump - kill held off until it ends (at most {RynthCore.Install.DumpInProgressRule.MaxHold.TotalMinutes:0} min).");
+                    }
+                    continue;
+                }
+                if (hold == RynthCore.Install.DumpInProgressRule.Hold.Expired)
+                {
+                    if (heldSince is DateTime heldAt && heldAt != DateTime.MinValue)
+                    {
+                        _dumpHoldSinceUtc[pid] = DateTime.MinValue;   // logged; stays expired until the signs clear
+                        LauncherDiag.Info($"WEDGE: PID {pid} dump hold expired after {RynthCore.Install.DumpInProgressRule.MaxHold.TotalMinutes:0} min - kill checks resume.");
+                    }
+                }
+                else
+                {
+                    _dumpHoldSinceUtc.Remove(pid);
+                }
+
                 if (hbStale)
                 {
                     KillWedgedClient(process, pid, activeContexts, activeSessions,
@@ -3145,7 +4409,7 @@ internal partial class MainWindow : Window
                     continue;
                 }
             }
-            catch { continue; }
+            catch { CloseWedgeLog(pid); continue; }
 
             // STRONGEST signal: the engine's own watchdog confirmed a permanent
             // main-thread wedge. Act immediately — it already held ~10s+ before
@@ -3233,6 +4497,12 @@ internal partial class MainWindow : Window
         IReadOnlyDictionary<int, SessionStateRecord> activeSessions,
         string reason)
     {
+        // Every wedge kill goes through here. While a crash dump of the client is written the
+        // wedge signs stay (silent log, fps=0): held, the next poll asks again; the fps timer is
+        // kept, so a client still wedged once the hold ends is restarted at once.
+        if (HoldKillForCrashDump(pid, "wedge restart"))
+            return;
+
         _wedgeZeroFpsSinceUtc.Remove(pid);
 
         activeSessions.TryGetValue(pid, out SessionStateRecord? sess);
@@ -3245,7 +4515,7 @@ internal partial class MainWindow : Window
             AppendActivity($"Wedge restart: killing PID {pid} ({accountName ?? "?"}) — {reason}."
                 + (_settings.AutoLaunch ? " Auto-launch will relaunch it." : " AutoLaunch is OFF — enable it for automatic relaunch."));
             LauncherDiag.Info($"WEDGE: PID {pid} ({accountName ?? "?"}) killed — {reason}");
-            process.Kill();
+            EndClientProcess(process, pid);   // a headless client is asked to stop first (never reaches here today)
             _launchedSessionPids.Remove(pid);
             _launchedPidInfo.Remove(pid);
 
@@ -3409,8 +4679,26 @@ internal partial class MainWindow : Window
     {
         try
         {
-            // Never decrypts: a saved password shows as the mask.
-            return _launchArgumentBuilder.BuildMaskedArguments(server, account);
+            // Headless: no acclient command line; rynth-headless gets a run config (no password in it).
+            if (account.InjectionMode == InjectionMode.Headless)
+            {
+                if (server.Emulator == AcEmulatorKind.Gdle)
+                    return $"Headless runs on ACE servers only, and {server.DisplayName} is a GDLE server.";
+                if (AcLaunchArgumentBuilder.NeedsPassword(account))
+                    return AcLaunchArgumentBuilder.MissingPasswordMessage(account.AccountName);
+                return $"{HeadlessLaunch.ExeName} " + string.Join(" ", HeadlessLaunch.BuildArguments(
+                    HeadlessLaunch.ConfigPath(AppSettingsStore.SettingsDirectoryPath, account.Id),
+                    HeadlessLaunch.AcFolderFor(AcClientPathTextBox.Text)).Select(a => a.Contains(' ') ? $"\"{a}\"" : a));
+            }
+
+            // Never decrypts: a saved password shows as the mask. Extra Launch Arguments follow,
+            // as they do at launch.
+            string masked = _launchArgumentBuilder.BuildMaskedArguments(server, account);
+            if (AcLaunchArgumentBuilder.NeedsPassword(account))
+                return masked;   // the message saying why, not a command line
+            return AcLaunchArgumentBuilder.ExtraArgumentsProblem(LaunchArgumentsTextBox.Text, out string extra) is string problem
+                ? problem
+                : AcLaunchArgumentBuilder.WithExtraArguments(masked, extra);
         }
         catch (Exception ex)
         {
@@ -3420,16 +4708,17 @@ internal partial class MainWindow : Window
 
     private HashSet<string> GetActiveAccountKeys()
     {
-        Process[] targets = _injector.FindTargetProcesses();
+        Process[] targets = FindClientProcesses();
         HashSet<int> activePids = targets.Select(process => process.Id).ToHashSet();
 
         // Processes whose window is gone but whose OS process is still alive
         // (slow native shutdown, crash dump collection, etc.) should not block
         // relaunch for their account. Only applies to PIDs that completed at
         // least one login — startup-phase clients keep blocking normally.
+        // Headless clients never have a window: they count while they run.
         foreach (Process p in targets)
         {
-            if (!_everLoggedInPids.Contains(p.Id))
+            if (!_everLoggedInPids.Contains(p.Id) || IsHeadlessPid(p.Id))
                 continue;
             try
             {
@@ -3628,6 +4917,12 @@ internal partial class MainWindow : Window
                 AppendActivity($"Account '{entry.Value.AccountKey}' client (PID {entry.Key}) exited after {uptime.TotalSeconds:F0}s — counted as crash.");
                 int hist = _crashHistoryByAccount.TryGetValue(entry.Value.AccountKey, out List<DateTime>? h) ? h.Count : 0;
                 LauncherDiag.Info($"DetectQuickExits: PID {entry.Key} ({entry.Value.AccountKey}) uptime={uptime.TotalSeconds:F1}s -> RecordCrash. crashHist now {hist}.");
+                RecoverFailedPrefsSwap(entry.Key, entry.Value.AccountKey, uptime);
+            }
+            else if (!string.IsNullOrEmpty(entry.Value.AccountKey) && _launchedHeadlessPids.Contains(entry.Key))
+            {
+                // Headless: no acclient ran, so the live UserPreferences.ini isn't this account's.
+                LauncherDiag.Info($"DetectQuickExits: PID {entry.Key} ({entry.Value.AccountKey}) uptime={uptime.TotalSeconds:F1}s -> normal close (headless, no prefs snapshot).");
             }
             else if (!string.IsNullOrEmpty(entry.Value.AccountKey))
             {
@@ -3644,6 +4939,7 @@ internal partial class MainWindow : Window
             foreach (int pid in toRemove)
             {
                 _launchedPidInfo.Remove(pid);
+                _prefsSwapByPid.Remove(pid);
                 // Drop the exit-watcher Process handle so the OS can reclaim
                 // the kernel object. Exited already fired (or never will),
                 // so we no longer need to hold the handle alive.
@@ -3657,8 +4953,10 @@ internal partial class MainWindow : Window
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetWindowTextW(IntPtr hWnd, string lpString);
+    private static extern IntPtr SendMessageTimeoutW(IntPtr hWnd, uint msg, IntPtr wParam, string lParam, uint flags, uint timeoutMs, out IntPtr result);
+
+    private const uint WM_SETTEXT = 0x000C;
+    private const uint SMTO_ABORTIFHUNG = 0x0002;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct WinRect { public int Left, Top, Right, Bottom; }
@@ -3682,8 +4980,56 @@ internal partial class MainWindow : Window
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hWnd);
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public int cbSize;
+        public WinRect rcMonitor;
+        public WinRect rcWork;
+        public uint dwFlags;
+    }
+
+    private delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdcMonitor, IntPtr lprcMonitor, IntPtr dwData);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr lprcClip, MonitorEnumProc lpfnEnum, IntPtr dwData);
+
+    [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MonitorInfo lpmi);
+
+    /// The work area (screen minus taskbar) of every monitor, for AcWindowPlacementRule.ClampToWorkArea.
+    /// Empty if the calls fail; the rule then leaves the window where AC put it.
+    private static List<AcWindowPlacementRule.WorkArea> MonitorWorkAreas()
+    {
+        var list = new List<AcWindowPlacementRule.WorkArea>(4);
+        try
+        {
+            EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (mon, _, _, _) =>
+            {
+                var mi = new MonitorInfo { cbSize = Marshal.SizeOf<MonitorInfo>() };
+                if (GetMonitorInfo(mon, ref mi))
+                    list.Add(new AcWindowPlacementRule.WorkArea(mi.rcWork.Left, mi.rcWork.Top, mi.rcWork.Right, mi.rcWork.Bottom));
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch
+        {
+            list.Clear();
+        }
+        return list;
+    }
+
+    // The launcher never resizes an AC window (AcWindowPlacementRule): every SetWindowPos on one carries this.
+    private const uint SWP_NOSIZE = 0x0001;
     private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_NOACTIVATE = 0x0010;
+    // Posts the move to the client's thread instead of waiting for it: a plain
+    // SetWindowPos on a frozen client's window never returns, and this runs on
+    // the launcher's UI thread (2026-10-22: a frozen +Buffy kept the launcher
+    // from ever showing its window).
+    private const uint SWP_ASYNCWINDOWPOS = 0x4000;
     private const int GWL_EXSTYLE = -20;
     private const int WS_EX_LAYERED = 0x00080000;
 
@@ -3718,18 +5064,36 @@ internal partial class MainWindow : Window
     }
 
     /// <summary>
-    /// On the first tick after AC reaches graphics-ready for a tracked client,
-    /// applies the saved window placement for that account. After that, every
-    /// tick reads the current rect and persists changes back to the profile so
-    /// user-initiated moves/resizes survive restart. Idempotent within a tolerance
-    /// to avoid spamming SaveSettings on DWM-frame fudge.
+    /// Once a tracked client is logged in, puts the account's saved window
+    /// position back (position only: AC sizes its own window from its
+    /// resolution), then saves the window's rect to the profile whenever a new
+    /// one has held for a while, so the player's own moves survive a restart.
+    /// The decisions are AcWindowPlacementRule's (2026-11-15, a #rynth-issues
+    /// report, 2026-11-14: a saved logout-size rect shrank the next login's
+    /// window and cut the HUD off).
     /// </summary>
     private void ApplyOrPersistWindowPlacement(
         Process process,
         bool graphicsReady,
         IReadOnlyDictionary<int, LaunchContextRecord> activeContexts,
-        IReadOnlyDictionary<int, SessionStateRecord> activeSessions)
+        IReadOnlyDictionary<int, SessionStateRecord> activeSessions,
+        bool engineRemembersWindow)
     {
+        // 2026-11-15, report R-20261115-160655-1201: the engine's opt-in "Remember Game Window
+        // Position" (engine.json RememberAcWindowPosition, AcWindowChrome) keeps its own rect per
+        // character, the launcher one per account. Both moving the window after a login means two
+        // saved spots fighting over it, each saving the other's move 30 s later. The player who
+        // turned the engine's option on chose it, so while it is on the launcher stays out: no
+        // restore and no save. The client counts as placed, so turning the option off later in
+        // the session only starts the saves again and never moves the window late.
+        if (engineRemembersWindow)
+        {
+            _windowSavePending.Remove(process.Id);
+            if (_windowPositionAppliedPids.Add(process.Id))
+                LauncherDiag.Info($"WindowPos PID {process.Id}: left to the engine (its Remember Game Window Position is on).");
+            return;
+        }
+
         string? accountName = null;
         string? serverName = null;
         if (activeSessions.TryGetValue(process.Id, out SessionStateRecord? s))
@@ -3771,8 +5135,11 @@ internal partial class MainWindow : Window
         if (hwnd == IntPtr.Zero)
             hwnd = FindLargestVisibleWindowForProcess(process.Id);
 
-        bool hasSaved = profile.WindowX.HasValue && profile.WindowY.HasValue
-                        && profile.WindowWidth.HasValue && profile.WindowHeight.HasValue;
+        AcWindowPlacementRule.Placement? saved =
+            profile.WindowX.HasValue && profile.WindowY.HasValue && profile.WindowWidth.HasValue && profile.WindowHeight.HasValue
+                ? new AcWindowPlacementRule.Placement(profile.WindowX.Value, profile.WindowY.Value,
+                                                      profile.WindowWidth.Value, profile.WindowHeight.Value)
+                : null;
 
         // Only act once AC reports IsLoggedIn — graphicsReady fires while AC
         // is still in its small login window, and AC will resize itself again
@@ -3782,122 +5149,98 @@ internal partial class MainWindow : Window
         // a transient size that gets restored too early next launch.
         bool loggedIn = activeSessions.TryGetValue(process.Id, out SessionStateRecord? sess) && sess.IsLoggedIn;
         if (!loggedIn)
-            return;
-
-        if (!_windowPositionAppliedPids.Contains(process.Id))
         {
-            _windowPositionAppliedPids.Add(process.Id);
-
-            if (hwnd == IntPtr.Zero)
-            {
-                LauncherDiag.Info($"WindowPos PID {process.Id} ({accountName}@{serverName}): hwnd=0 — cannot restore or capture.");
-                return;
-            }
-
-            if (hasSaved)
-            {
-                SetWindowPos(
-                    hwnd,
-                    IntPtr.Zero,
-                    profile.WindowX!.Value,
-                    profile.WindowY!.Value,
-                    profile.WindowWidth!.Value,
-                    profile.WindowHeight!.Value,
-                    SWP_NOZORDER | SWP_NOACTIVATE);
-                LauncherDiag.Info($"WindowPos PID {process.Id} ({accountName}@{serverName}): restored to ({profile.WindowX},{profile.WindowY},{profile.WindowWidth}x{profile.WindowHeight}).");
-                return;
-            }
-            // No saved position — don't capture immediately. The window may still
-            // be at character-select/login size. Record the baseline on the next
-            // poll and only persist once the user actually moves or resizes it.
+            // A rect pending from before the logout must not count its time at
+            // character select toward StableFor and save itself on the relogin.
+            _windowSavePending.Remove(process.Id);
+            return;
         }
 
+        DateTime nowUtc = DateTime.UtcNow;
+        if (!_windowLoginSeenUtc.TryGetValue(process.Id, out DateTime loginSeenUtc))
+            _windowLoginSeenUtc[process.Id] = loginSeenUtc = nowUtc;
+
         if (hwnd == IntPtr.Zero)
+        {
+            if (_windowPositionAppliedPids.Add(process.Id))
+                LauncherDiag.Info($"WindowPos PID {process.Id} ({accountName}@{serverName}): hwnd=0 — cannot restore or capture.");
             return;
+        }
 
         if (!GetWindowRect(hwnd, out WinRect rect))
             return;
+        var current = new AcWindowPlacementRule.Placement(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
 
-        int x = rect.Left;
-        int y = rect.Top;
-        int w = rect.Right - rect.Left;
-        int h = rect.Bottom - rect.Top;
-
-        if (w < 200 || h < 200)
-            return;
-
-        // Reject windows parked off-screen — AC places the window at (-10000,-10000)
-        // during startup before moving it into view. Multi-monitor setups can have
-        // negative coords, but never this negative.
-        if (x < -2000 || y < -2000)
-            return;
-
-        const int Tolerance = 2;
-
-        // On first observation with no saved position, record the current rect as
-        // baseline in memory without persisting. Only save once the window moves
-        // or resizes away from that baseline — that's user intent, not a transient.
-        if (!hasSaved)
+        // ── Restore: position only, once per client ──────────────────────────
+        // Until it is decided nothing is saved, so the saved spot can't be
+        // overwritten by AC's placement while the restore still waits for AC
+        // to reach the saved size.
+        if (!_windowPositionAppliedPids.Contains(process.Id))
         {
-            if (!_baselineWindowRects.TryGetValue(process.Id, out var baseline))
+            if (saved is AcWindowPlacementRule.Placement sv)
             {
-                _baselineWindowRects[process.Id] = (x, y, w, h);
-                return; // wait for the user to move/resize before saving
+                if (!AcWindowPlacementRule.IsCapturable(current))
+                    return;   // parked off-screen / still tiny: look again next tick
+                if (!_windowSizeSinceUtc.TryGetValue(process.Id, out var size) || size.w != current.Width || size.h != current.Height)
+                    _windowSizeSinceUtc[process.Id] = size = (current.Width, current.Height, nowUtc);
+                AcWindowPlacementRule.RestoreDecision d = AcWindowPlacementRule.DecideRestore(
+                    sv, current.Width, current.Height, nowUtc - size.since, nowUtc - loginSeenUtc, MonitorWorkAreas());
+                if (d.Action == AcWindowPlacementRule.RestoreAction.Wait)
+                    return;
+                _windowPositionAppliedPids.Add(process.Id);
+                if (d.Action == AcWindowPlacementRule.RestoreAction.Move)
+                {
+                    // SWP_NOSIZE: the size stays AC's own; it renders at its
+                    // resolution, and a smaller window crops the game and the HUD.
+                    SetWindowPos(hwnd, IntPtr.Zero, d.X, d.Y, 0, 0,
+                                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+                    LauncherDiag.Info(d.Clamped
+                        ? $"WindowPos PID {process.Id} ({accountName}@{serverName}): restored position to ({d.X},{d.Y}), pulled onto the screen from ({sv.X},{sv.Y}); size left to AC ({current.Width}x{current.Height})."
+                        : $"WindowPos PID {process.Id} ({accountName}@{serverName}): restored position to ({d.X},{d.Y}); size left to AC ({current.Width}x{current.Height}).");
+                    return;
+                }
+                LauncherDiag.Info($"WindowPos PID {process.Id} ({accountName}@{serverName}): saved position ({sv.X},{sv.Y}) not restored ({d.Why}); left where AC put it.");
             }
-
-            bool movedFromBaseline = Math.Abs(baseline.x - x) > Tolerance
-                || Math.Abs(baseline.y - y) > Tolerance
-                || Math.Abs(baseline.w - w) > Tolerance
-                || Math.Abs(baseline.h - h) > Tolerance;
-            if (!movedFromBaseline)
-                return;
-        }
-        else
-        {
-            bool changed = Math.Abs(profile.WindowX!.Value - x) > Tolerance
-                || Math.Abs(profile.WindowY!.Value - y) > Tolerance
-                || Math.Abs(profile.WindowWidth!.Value - w) > Tolerance
-                || Math.Abs(profile.WindowHeight!.Value - h) > Tolerance;
-            if (!changed)
-                return;
+            else
+            {
+                // No saved position — nothing to put back. The first capturable
+                // rect becomes the baseline below; only a move away from it
+                // (the player's) is ever saved.
+                _windowPositionAppliedPids.Add(process.Id);
+            }
         }
 
-        // ── Reject AC's character-select / login window ──────────────────────
-        // IsLoggedIn latches true for the whole acclient.exe process: it is set
-        // once at the first LoginComplete and is deliberately never flipped back
-        // at char-select (so the stuck-client reaper can't kill a healthy in-game
-        // client — see SessionStateRegistry). So when the player logs a character
-        // back out to character-select, AC shrinks its own window to the small
-        // login/char-select size while this method still sees loggedIn==true and
-        // would happily persist that tiny rect over the real in-game geometry.
-        // Next launch then restores the tiny size and the game is unplayable.
-        //
-        // AC's char-select/login window is *much* smaller than any window a player
-        // games in, so treat a capture that collapses the window below half the
-        // established in-game area as that transient window and skip it. Growth
-        // and moderate resizes (genuine user intent) still persist; a profile
-        // whose saved size was already corrupted small self-heals on the first
-        // resize back up to a real in-game size.
-        int refW = profile.WindowWidth ?? 0;
-        int refH = profile.WindowHeight ?? 0;
-        if ((refW <= 0 || refH <= 0) && _baselineWindowRects.TryGetValue(process.Id, out var refRect))
+        // ── Save: only a rect that held for StableFor ────────────────────────
+        if (saved is null && AcWindowPlacementRule.IsCapturable(current) && !_baselineWindowRects.ContainsKey(process.Id))
         {
-            refW = refRect.w;
-            refH = refRect.h;
-        }
-        if (refW > 0 && refH > 0 && (long)w * h * 2L < (long)refW * refH)
-        {
-            LauncherDiag.Info($"WindowPos PID {process.Id} ({accountName}@{serverName}): ignored char-select/login shrink ({w}x{h}, <50% of in-game {refW}x{refH}).");
+            _baselineWindowRects[process.Id] = (current.X, current.Y, current.Width, current.Height);
             return;
         }
+        AcWindowPlacementRule.Placement? reference = saved
+            ?? (_baselineWindowRects.TryGetValue(process.Id, out var b)
+                ? new AcWindowPlacementRule.Placement(b.x, b.y, b.w, b.h)
+                : null);
 
-        _baselineWindowRects[process.Id] = (x, y, w, h);
-        profile.WindowX = x;
-        profile.WindowY = y;
-        profile.WindowWidth = w;
-        profile.WindowHeight = h;
-        SaveSettings();
-        LauncherDiag.Info($"WindowPos PID {process.Id} ({accountName}@{serverName}): saved ({x},{y},{w}x{h}).");
+        _windowSavePending.TryGetValue(process.Id, out AcWindowPlacementRule.Pending? pending);
+        AcWindowPlacementRule.SaveDecision save = AcWindowPlacementRule.DecideSave(current, reference, ref pending, nowUtc);
+        _windowSavePending[process.Id] = pending;
+
+        switch (save.Action)
+        {
+            case AcWindowPlacementRule.SaveAction.LoginShrink:
+                if (save.FirstSeen)
+                    LauncherDiag.Info($"WindowPos PID {process.Id} ({accountName}@{serverName}): ignored char-select/login shrink ({current.Width}x{current.Height}, <50% of in-game {reference!.Value.Width}x{reference.Value.Height}).");
+                return;
+            case AcWindowPlacementRule.SaveAction.Save:
+                _baselineWindowRects[process.Id] = (current.X, current.Y, current.Width, current.Height);
+                profile.WindowX = current.X;
+                profile.WindowY = current.Y;
+                profile.WindowWidth = current.Width;
+                profile.WindowHeight = current.Height;
+                SaveSettings();
+                LauncherDiag.Info($"WindowPos PID {process.Id} ({accountName}@{serverName}): saved ({current.X},{current.Y},{current.Width}x{current.Height}), unchanged for {AcWindowPlacementRule.StableFor.TotalSeconds:0} s.");
+                return;
+        }
     }
 
     /// <summary>
@@ -3930,7 +5273,17 @@ internal partial class MainWindow : Window
         if (hwnd == IntPtr.Zero)
             return;
 
-        SetWindowTextW(hwnd, desired);
+        // SetWindowText waits for the client's thread to take WM_SETTEXT, with no
+        // time limit, and this runs on the launcher's UI thread every tick: one
+        // frozen client froze the launcher (2026-10-22, +Buffy). Reading the title
+        // never waits on another process, so skip the send when it already reads
+        // right; otherwise give up on a hung or busy window and try next tick.
+        string current;
+        try { current = process.MainWindowTitle; } catch { current = string.Empty; }
+        if (string.Equals(current, desired, StringComparison.Ordinal))
+            return;
+
+        SendMessageTimeoutW(hwnd, WM_SETTEXT, IntPtr.Zero, desired, SMTO_ABORTIFHUNG, 250, out _);
     }
 
     private static string ComputeDesiredWindowTitle(
@@ -3984,17 +5337,14 @@ internal partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(account.UserPrefsPath))
             return account.UserPrefsPath.Trim();
 
-        if (string.IsNullOrWhiteSpace(account.AccountName))
+        string legacyPath = ResolveLegacyUserPrefsPath(account);
+        if (string.IsNullOrEmpty(legacyPath))
             return string.Empty;
-
-        string appdata = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string prefsDir = Path.Combine(appdata, "RynthCore", "prefs");
-        string safeName = SafePrefsFileName(account.AccountName);
-        string legacyPath = Path.Combine(prefsDir, $"{safeName}.ini");
         if (string.IsNullOrWhiteSpace(serverName))
             return legacyPath;
 
-        string scopedPath = Path.Combine(prefsDir, $"{safeName}@{SafePrefsFileName(serverName)}.ini");
+        string prefsDir = Path.GetDirectoryName(legacyPath)!;
+        string scopedPath = Path.Combine(prefsDir, $"{SafePrefsFileName(account.AccountName)}@{SafePrefsFileName(serverName)}.ini");
         if (!File.Exists(scopedPath) && File.Exists(legacyPath))
         {
             try { File.Copy(legacyPath, scopedPath, overwrite: false); }
@@ -4004,8 +5354,142 @@ internal partial class MainWindow : Window
         return scopedPath;
     }
 
+    /// <summary>
+    /// The account's old name-only stash (%APPDATA%\RynthCore\prefs\name.ini), which seeds a
+    /// missing per-server one. Empty when the account has no name yet.
+    /// </summary>
+    private static string ResolveLegacyUserPrefsPath(LaunchAccountProfile account)
+    {
+        if (string.IsNullOrWhiteSpace(account.AccountName))
+            return string.Empty;
+
+        string appdata = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        return Path.Combine(appdata, "RynthCore", "prefs", $"{SafePrefsFileName(account.AccountName)}.ini");
+    }
+
     private static string SafePrefsFileName(string name) =>
         string.Join("_", name.Trim().Split(Path.GetInvalidFileNameChars()));
+
+    /// <summary>
+    /// A launch's UserPreferences.ini swap. <see cref="IsProfileOverride"/>: the stash is a file the
+    /// user picked on the profile (never renamed by the launcher). <see cref="LegacyPath"/>: the
+    /// account's name-only stash, set aside with a failed per-server one when identical.
+    /// </summary>
+    private sealed record PrefsSwapLaunch(UserPrefsSwap Swap, long Generation, bool IsProfileOverride, string LegacyPath);
+
+    /// <summary>
+    /// Copies the account's saved UserPreferences.ini over the live one (caller holds
+    /// _userPrefsSwapLock) and returns what was swapped, or null when nothing was.
+    /// </summary>
+    private PrefsSwapLaunch? ApplyPrefsSwap(LaunchAccountProfile account, string? serverName, string resolvedPrefsPath, string acPath)
+    {
+        // Into the INI this install's clients actually read (the game folder's when it has one).
+        UserPrefsSwap? swap = _launchSettings.SwapUserPreferences(resolvedPrefsPath, _settings.AllowMultipleClients, AppendActivity, acPath);
+        if (swap == null)
+            return null;
+
+        long generation = ++_prefsSwapGeneration;
+        bool isOverride = !string.IsNullOrWhiteSpace(account.UserPrefsPath);
+        LauncherDiag.Info($"PrefsSwap: account='{account.AccountName}' server='{serverName}' gen={generation} override={isOverride} changedLive={UserPrefsSwapRecovery.SwapChangedPrefs(swap)} stash='{swap.StashPath}'");
+        return new PrefsSwapLaunch(swap, generation, isOverride, ResolveLegacyUserPrefsPath(account));
+    }
+
+    /// <summary>
+    /// True when any account has a RynthAi graphics profile (graphics.json): accounts started
+    /// together would write different values into the one UserPreferences.ini, so the launch takes
+    /// _userPrefsSwapLock and waits for AC to read it before the next account writes.
+    /// </summary>
+    private static bool GraphicsNeedsLaunchLock()
+    {
+        try
+        {
+            return RynthCore.Graphics.AcGraphicsProfiles.Load(RynthCore.Graphics.AcGraphicsPrefs.ConfigPath).Accounts.Count > 0;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Writes the launching account's RynthAi graphics profile (Settings > Graphics, graphics.json) into
+    /// the UserPreferences.ini files AC reads, just before the client starts (after any per-account prefs
+    /// swap, so RynthAi's values win). Keys left on "AC's choice" are not touched; an account with no
+    /// profile changes nothing. Never throws.
+    /// </summary>
+    private void ApplyGraphicsForLaunch(string acPath, LaunchContextRecord launchContext)
+    {
+        try
+        {
+            var all = RynthCore.Graphics.AcGraphicsProfiles.Load(RynthCore.Graphics.AcGraphicsPrefs.ConfigPath);
+            string accountKey = RynthCore.Graphics.AcGraphicsPrefs.AccountKey(launchContext.ServerName, launchContext.AccountName);
+            RynthCore.Graphics.AcGraphicsConfig cfg = all.For(accountKey);
+            if (!cfg.HasAny)
+                return;
+            Dictionary<string, string> values = cfg.IniValues();
+            foreach (string ini in RynthCore.Graphics.AcGraphicsPrefs.IniPaths(Path.GetDirectoryName(acPath)))
+            {
+                List<string> changed = RynthCore.Graphics.AcPrefsIni.Apply(ini, values);
+                if (changed.Count > 0)
+                    AppendActivity($"Graphics profile applied for account {launchContext.AccountName}: {string.Join(", ", changed)} ({Path.GetFileName(Path.GetDirectoryName(ini))}).");
+                LauncherDiag.Info($"Graphics: {ini} account='{accountKey}' changed=[{string.Join(", ", changed)}]");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"Graphics settings not applied: {ex.Message}");
+        }
+    }
+
+    /// <summary>Remembers which swap a launched client started with (no-op without a swap).</summary>
+    private void TrackPrefsSwap(int pid, PrefsSwapLaunch? prefsSwap)
+    {
+        if (prefsSwap != null)
+            _prefsSwapByPid[pid] = prefsSwap;
+    }
+
+    /// <summary>
+    /// A client quit within CrashQuickExitWindow. If it started with a saved UserPreferences.ini
+    /// that differs from the live one, that saved copy is the likely cause (the game reads its
+    /// display mode from it: "Could not initialize Direct3D"), and it would be swapped in again on
+    /// every launch because it is only refreshed after a normal session. So: set the saved copy
+    /// aside (renamed, kept), and put the previous live file back when no later launch replaced it.
+    /// The next normal session saves a fresh copy.
+    /// </summary>
+    private void RecoverFailedPrefsSwap(int pid, string accountKey, TimeSpan uptime)
+    {
+        if (!_prefsSwapByPid.Remove(pid, out PrefsSwapLaunch? launch))
+            return;
+
+        if (!UserPrefsSwapRecovery.SwapChangedPrefs(launch.Swap))
+        {
+            LauncherDiag.Info($"PrefsSwap: PID {pid} ({accountKey}) quick exit, but its stash matched the live file; left alone.");
+            return;
+        }
+
+        bool restoreLive = launch.Generation == _prefsSwapGeneration;
+        try
+        {
+            UserPrefsRecoveryResult result = UserPrefsSwapRecovery.Recover(
+                launch.Swap,
+                quarantineStash: !launch.IsProfileOverride,
+                restoreLive,
+                launch.LegacyPath,
+                DateTime.Now);
+
+            LauncherDiag.Info($"PrefsSwap: PID {pid} ({accountKey}) recovery: quarantined='{result.QuarantinedStashPath}' legacy='{result.QuarantinedLegacyPath}' liveRestored={result.LiveRestored}.");
+
+            string stashName = Path.GetFileName(launch.Swap.StashPath);
+            string what = launch.IsProfileOverride
+                ? $"the UserPreferences file set on its profile ({launch.Swap.StashPath}). Fix or clear that file in the account's settings if launches keep failing"
+                : $"this account's saved game settings ({stashName}). They were set aside as {Path.GetFileName(result.QuarantinedStashPath ?? stashName)}, so the next launch uses the current UserPreferences.ini";
+            string live = result.LiveRestored
+                ? " The previous UserPreferences.ini was put back."
+                : " UserPreferences.ini was left as is (another launch has swapped it since).";
+            AppendActivity($"Account '{accountKey}' client (PID {pid}) quit after {uptime.TotalSeconds:F0}s using {what}.{live}");
+        }
+        catch (Exception ex)
+        {
+            AppendActivity($"Account '{accountKey}': could not undo the UserPreferences.ini swap after a quick exit: {ex.Message}");
+        }
+    }
 
     /// <summary>
     /// Copies the current live UserPreferences.ini to the resolved stash for
@@ -4027,10 +5511,8 @@ internal partial class MainWindow : Window
         if (string.IsNullOrEmpty(stashPath))
             return;
 
-        string livePath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "Asheron's Call",
-            "UserPreferences.ini");
+        // The INI the session actually wrote (the game folder's when it has one).
+        string livePath = AcClientLaunchSettingsService.LivePrefsPath(_settings.AcClientPath);
         if (!File.Exists(livePath))
             return;
 
@@ -4110,12 +5592,26 @@ internal partial class MainWindow : Window
         foreach (LaunchAccountProfile account in GetCheckedLaunchAccounts())
         {
             LaunchServerProfile? server = ResolveServerForAccount(account);
-            if (HasTrackedPresence(account, server, activeContexts, activeSessions))
+            if (HasTrackedPresence(account, server, activeContexts, activeSessions) || HeadlessAlreadyRunning(account))
                 continue;
+
+            // No server profile (deleted, or never picked): never launched on another server.
+            if (server == null)
+            {
+                MaybeLogAutoLaunchNoServer(account, nowUtc);
+                continue;
+            }
 
             if (IsServerKnownDown(server))
             {
                 MaybeLogAutoLaunchServerDown(account, server, nowUtc);
+                continue;
+            }
+
+            // Needs the First Login dialog, which only a manual launch shows.
+            if (AcLaunchArgumentBuilder.NeedsPassword(account))
+            {
+                MaybeLogAutoLaunchNeedsPassword(account, nowUtc);
                 continue;
             }
 
@@ -4171,6 +5667,30 @@ internal partial class MainWindow : Window
         AppendActivity($"Auto launch waiting for {account.DisplayName}: {(server?.DisplayName ?? "the selected server")} is reporting down.");
     }
 
+    private void MaybeLogAutoLaunchNeedsPassword(LaunchAccountProfile account, DateTime nowUtc)
+    {
+        if (_autoLaunchNeedsPasswordNoticeTimesUtc.TryGetValue(account.Id, out DateTime lastNoticeUtc) &&
+            nowUtc - lastNoticeUtc < AutoLaunchNeedsPasswordLogCooldown)
+        {
+            return;
+        }
+
+        _autoLaunchNeedsPasswordNoticeTimesUtc[account.Id] = nowUtc;
+        AppendActivity($"Auto launch waiting for {account.DisplayName}: {AcLaunchArgumentBuilder.MissingPasswordMessage(account.AccountName)}");
+    }
+
+    private void MaybeLogAutoLaunchNoServer(LaunchAccountProfile account, DateTime nowUtc)
+    {
+        if (_autoLaunchNoServerNoticeTimesUtc.TryGetValue(account.Id, out DateTime lastNoticeUtc) &&
+            nowUtc - lastNoticeUtc < AutoLaunchNeedsPasswordLogCooldown)
+        {
+            return;
+        }
+
+        _autoLaunchNoServerNoticeTimesUtc[account.Id] = nowUtc;
+        AppendActivity($"Auto launch skipped for {account.DisplayName}: {AccountServerRules.NoServerMessage(account, _settings.ServerProfiles.Count > 0)}");
+    }
+
     private bool IsServerKnownDown(LaunchServerProfile? server)
     {
         if (server == null)
@@ -4209,7 +5729,7 @@ internal partial class MainWindow : Window
         // Dispose the Process[] only if WE allocated it here (standalone call). When
         // called from RefreshSessionState the array is passed in and that caller owns it.
         bool ownTargets = targets is null;
-        targets ??= _injector.FindTargetProcesses();
+        targets ??= FindClientProcesses();   // headless clients have session files too
         HashSet<int> activePids = targets.Select(process => process.Id).ToHashSet();
 
         activeContexts ??= LaunchContextStore.ReadForActiveProcesses(activePids);
@@ -4248,7 +5768,7 @@ internal partial class MainWindow : Window
 
             string character = !string.IsNullOrWhiteSpace(session.CharacterName) ? session.CharacterName
                 : !string.IsNullOrWhiteSpace(session.TargetCharacter) ? session.TargetCharacter
-                : !string.IsNullOrWhiteSpace(account.CharacterName) ? account.CharacterName
+                : !string.IsNullOrWhiteSpace(account.CharacterName) && account.CharacterName != LaunchAccountProfile.NoneOption ? account.CharacterName
                 : "Logged in";
             string elapsed = FormatElapsed(DateTime.UtcNow - (session.LoginCompletedAtUtc ?? session.LaunchStartedAtUtc));
             return ($"{character} | online {elapsed}", "#66D687");
@@ -4262,12 +5782,16 @@ internal partial class MainWindow : Window
             Process? process = targets.FirstOrDefault(p => p.Id == pid);
             DateTime since = process != null ? GetProcessStartTimeUtc(process) : context.CreatedAtUtc.ToUniversalTime();
             string character = !string.IsNullOrWhiteSpace(context.TargetCharacter) ? context.TargetCharacter
-                : !string.IsNullOrWhiteSpace(account.CharacterName) ? account.CharacterName
-                : "Pending";
+                : !string.IsNullOrWhiteSpace(account.CharacterName) && account.CharacterName != LaunchAccountProfile.NoneOption ? account.CharacterName
+                : "Character select";
             string elapsed = FormatElapsed(DateTime.UtcNow - since);
             return ($"{character} | starting {elapsed}", "#E2B348");
         }
 
+        if (AcLaunchArgumentBuilder.NeedsPassword(account))
+            return ("Needs password | launch to set up", "#E2B348");
+        if (account.CharacterName == LaunchAccountProfile.NoneOption)
+            return ("Character select | offline", "#73828D");
         return (!string.IsNullOrWhiteSpace(account.CharacterName) ? $"{account.CharacterName} | offline" : "Offline", "#73828D");
     }
 
@@ -4340,16 +5864,23 @@ internal partial class MainWindow : Window
             // "(None)" at the top — selecting it opts out of auto-login for this account
             detectedCharacters.Insert(0, LaunchAccountProfile.NoneOption);
 
+            string? wanted = account.CharacterName == LaunchAccountProfile.NoneOption
+                ? LaunchAccountProfile.NoneOption
+                : !string.IsNullOrWhiteSpace(account.CharacterName) && detectedCharacters.Contains(account.CharacterName)
+                    ? account.CharacterName
+                    : null;
+            // This runs every 2 s: refill a dropdown only when its list or choice changed, so the
+            // Launcher tab isn't refilled (and its selection events raised) for nothing.
+            if (dropdown.ItemsSource is IEnumerable<string> shown && shown.SequenceEqual(detectedCharacters)
+                && Equals(dropdown.SelectedItem as string, wanted))
+                continue;
+
+            KeepLauncherScroll();
             _suppressLaunchTargetCharacterSelectionChanged = true;
             try
             {
                 dropdown.ItemsSource = detectedCharacters;
-                if (account.CharacterName == LaunchAccountProfile.NoneOption)
-                    dropdown.SelectedItem = LaunchAccountProfile.NoneOption;
-                else
-                    dropdown.SelectedItem = !string.IsNullOrWhiteSpace(account.CharacterName) && detectedCharacters.Contains(account.CharacterName)
-                        ? account.CharacterName
-                        : null;
+                dropdown.SelectedItem = wanted;
             }
             finally
             {
@@ -4458,6 +5989,7 @@ internal partial class MainWindow : Window
 
     private void RefreshServerProfileDisplay()
     {
+        KeepLauncherScroll();
         int selectedIndex = ServerProfilesList.SelectedIndex;
         _suppressPrimarySelectionChanged = true;
         try

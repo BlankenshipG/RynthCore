@@ -1,23 +1,24 @@
 // ============================================================================
 //  RynthCore.Engine - ImGui/Panels/SkillsFace.Progression.cs
 //  The Skills panel's Progression tab, shown on ILT-like worlds only:
-//    - XP planner: exact XP for the next N raises of every attribute and vital,
-//      from the client's XP tables (raising stays on the Attributes & Vitals tab).
-//    - Attribute raiser: infinite attributes past the retail cap. RynthAi reads the
-//      server's costs ("/xp all") and raises with "/attr", by hand or on a timer from
-//      unassigned XP, in the order and mode set here. Laid out like UB's Leaftide XP
-//      tab: "+1 Level" / "+10 Levels" buttons labelled with their (projected) cost.
+//    - Attributes: one section - client XP-table planner for retail ranks, plus (when the
+//      server supports infinite attributes) the ILT raiser to auto-raise past the retail
+//      cap with "/xp all" + "/attr" (UB Leaftide XP tab layout). RynthILT reads the
+//      server's costs and raises, by hand or on a timer from unassigned XP.
 //    - Augmentations: UB's Augs tab - Refresh current (/aug), Current / Target / Inc /
 //      Luminance / Coins with a totals row, Reset targets, Copy Discord / In-Game.
-//    - Augmentations / Enlightenment: RynthAi's ILT Hub planners. RynthAi owns the
-//      math and the saved inputs (UiSources.Progression snapshot); edits and
-//      actions go back as "prog ..." remote commands. /enl and arming
+//    - Augmentations / Enlightenment: the ILT Hub's planners (RynthILT's since
+//      2026-10-13; RynthAi's before). The plugin owns the math and the saved inputs
+//      (UiSources.Progression snapshot); edits and actions go back as "prog ..."
+//      commands (IltCommands.Progression). /enl and arming
 //      auto-enlighten ask here first; the server still shows its own dialog.
 // ============================================================================
 
 using System;
+using RynthCore.Engine.Compatibility;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Engine.UI;
@@ -37,11 +38,11 @@ internal sealed partial class SkillsFace
     private string _progConfirmTitle = "", _progConfirmText = "", _progConfirmYes = "", _progConfirmCommand = "";
     private bool _progConfirmOpenRequested;
 
-    // Set by ShowProgression (any panel, AC thread); the tab is selected once RynthAi's snapshot
+    // Set by ShowProgression (any panel, AC thread); the tab is selected once RynthILT's snapshot
     // says it exists (the first poll lands a step after the panel opens).
     private static bool _progressionRequested;
 
-    /// <summary>RynthAi reports an ILT-like world (its ILT Hub exists and the server has ILT features).</summary>
+    /// <summary>RynthILT reports an ILT-like world (its ILT Hub exists and the server has ILT features).</summary>
     private static bool ProgressionTabVisible => UiSources.Progression.Current?.Value.Available == true;
 
     /// <summary>Opens the Skills panel (if closed) on the Progression tab. AC thread.</summary>
@@ -75,10 +76,10 @@ internal sealed partial class SkillsFace
         UiSources.Progression.Unsubscribe();
     }
 
-    /// <summary>Sends "prog &lt;value&gt;" to RynthAi; the snapshot re-polls after its next tick applies it.</summary>
+    /// <summary>Sends "prog &lt;value&gt;" to RynthILT (an older RynthAi takes it too); the snapshot re-polls after.</summary>
     private static void SendProg(string value)
     {
-        RynthAiCommands.ApplyRemoteCommand("prog", value);
+        IltCommands.Progression(value);
         UiSources.Progression.RequestRefreshAfterPluginTick();
     }
 
@@ -99,15 +100,23 @@ internal sealed partial class SkillsFace
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6, 4));
         try
         {
-            DrawXpPlanner(w);
+            // Off Infinite Leaftide (2026-11-11, Silentkelpie: "progress should still show for all, but the progress top
+            // section should be hidden unless on leaftide"): the retail XP planner only - no infinite attributes, no
+            // augmentation / enlightenment planners and no word about them.
+            bool ilt = (info != null && info.Available) || IltInfo.IsIlt;
+            if (!ilt)
+            {
+                DrawRetailOnly(w);
+                return;
+            }
+            // One Attributes section: retail XP planner + (when supported) infinite-attr raiser.
+            DrawAttributes(info?.Attr, w);
             ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
             if (info == null || !info.Available)
             {
-                Message("Augmentations and Enlightenment need RynthAi's ILT Hub on an ILT world.", w);
+                Message("Augmentations and Enlightenment need RynthILT's ILT features on an ILT world.", w);
                 return;
             }
-            DrawAttrRaiser(info.Attr, w);
-            ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
             DrawAugPlanner(info.Aug, w);
             ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
             DrawEnlPlanner(info.Enl, w);
@@ -119,15 +128,64 @@ internal sealed partial class SkillsFace
         }
     }
 
-    private void DrawXpPlanner(float w)
+    /// <summary>Off Infinite Leaftide: the retail XP planner, under its own heading.</summary>
+    private void DrawRetailOnly(float w)
     {
-        Section("XP planner", w);
+        Section("Attribute raises", w);
+        ImGuiNET.ImGui.Indent(8);
+        ImGuiNET.ImGui.PushTextWrapPos(ImGuiNET.ImGui.GetCursorPosX() + w - 24);
+        try { DrawRetailXpPlanner(w); }
+        finally
+        {
+            ImGuiNET.ImGui.PopTextWrapPos();
+            ImGuiNET.ImGui.Unindent(8);
+        }
+    }
+
+    /// <summary>
+    /// Single Attributes section: client XP-table costs up to the retail cap, and - when the
+    /// server supports infinite attributes - the controls to auto-raise past that cap.
+    /// </summary>
+    private void DrawAttributes(AttrRaiser? a, float w)
+    {
+        Section("Attributes", w);
+        ImGuiNET.ImGui.Indent(8);
+        float wrap = ImGuiNET.ImGui.GetCursorPosX() + w - 24;
+        ImGuiNET.ImGui.PushTextWrapPos(wrap);
+        try
+        {
+            DrawRetailXpPlanner(w);
+
+            // Infinite-attributes segment: only when RynthILT reports the server can raise past retail.
+            bool infiniteOk = a != null && !a.Off;
+            ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+            ImGuiNET.ImGui.Separator();
+            Label(infiniteOk
+                    ? "Infinite attributes (past retail max)"
+                    : "Infinite attributes",
+                infiniteOk ? Amber : Mute);
+            if (a == null)
+                Label("Update RynthILT to raise attributes past the retail cap on this server.", Mute);
+            else if (a.Off)
+                Label(a.Reason.Length > 0 ? a.Reason : "This server does not support infinite attributes (/xp /attr).", Mute);
+            else
+                DrawInfiniteAttrControls(a, w);
+        }
+        finally
+        {
+            ImGuiNET.ImGui.PopTextWrapPos();
+            ImGuiNET.ImGui.Unindent(8);
+        }
+    }
+
+    /// <summary>Client XP tables for the next N retail raises (Attributes & Vitals tab still spends them).</summary>
+    private void DrawRetailXpPlanner(float w)
+    {
         if (_snap == null || _dat == null || _attributes.Count == 0)
         {
             Message("Waiting for your character's data...", w);
             return;
         }
-        ImGuiNET.ImGui.Indent(8);
         long have = _snap.UnassignedXp;
         Label($"Unassigned XP: {have:N0}", have > 0 ? Teal : Mute);
         ImGuiNET.ImGui.SetNextItemWidth(160);
@@ -145,9 +203,7 @@ internal sealed partial class SkillsFace
             foreach (Row r in _vitals) PlannerRow(r, have);
             ImGuiNET.ImGui.EndTable();
         }
-        Label("Exact costs from the client's XP tables. Raise on the Attributes & Vitals tab"
-              + (ProgressionTabVisible ? ", or past the cap with the Attribute raiser below." : "."), Dim);
-        ImGuiNET.ImGui.Unindent(8);
+        Label("Exact costs from the client's XP tables (up to the retail cap). Raise those on the Attributes & Vitals tab.", Dim);
     }
 
     private void PlannerRow(Row r, long have)
@@ -179,89 +235,76 @@ internal sealed partial class SkillsFace
     private string? _attrKeepEdit;   // reserve box being typed in (null = show RynthAi's value)
     private int? _attrEveryEdit;     // interval box being typed in
 
-    private void DrawAttrRaiser(AttrRaiser? a, float w)
+    /// <summary>Infinite-attribute raiser controls (only drawn when the server supports /xp + /attr past retail).</summary>
+    private void DrawInfiniteAttrControls(AttrRaiser a, float w)
     {
-        Section("Attribute raiser (infinite attributes)", w);
-        ImGuiNET.ImGui.Indent(8);
-        float wrap = ImGuiNET.ImGui.GetCursorPosX() + w - 24;
-        ImGuiNET.ImGui.PushTextWrapPos(wrap);
-        try
+        Label(a.XpHeader.Length > 0 ? a.XpHeader : a.Unassigned, Teal);
+        if (a.XpHeader.Length > 0 && a.Unassigned.Contains("spendable", StringComparison.Ordinal)) Label(a.Unassigned, Dim);
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        if (a.Running)
         {
-            if (a == null) { Label("Update RynthAi to use the attribute raiser.", Mute); return; }
-            if (a.Off) { Label(a.Reason, Mute); return; }
-
-            Label(a.XpHeader.Length > 0 ? a.XpHeader : a.Unassigned, Teal);
-            if (a.XpHeader.Length > 0 && a.Unassigned.Contains("spendable", StringComparison.Ordinal)) Label(a.Unassigned, Dim);
-            Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
-            if (a.Running)
-            {
-                if (Button("##attr_stop", "Stop", p, new Vector2(90, 24), Text, StopBg)) SendProg("attrstop");
-            }
-            else if (Button("##attr_run", "Raise now", p, new Vector2(110, 24), Text, StartBg, border: Teal))
-                SendProg("attrrun");
-            if (Button("##attr_costs", "Refresh XP", new Vector2(p.X + 116, p.Y), new Vector2(100, 24), Text, BtnFill, enabled: !a.Running))
-                SendProg("attrcosts");
-            ImGuiNET.ImGui.SetItemTooltip("Re-reads every next-level cost with /xp all.");
-            if (a.Updated.Length > 0)
-            {
-                ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + 224, p.Y + 4));
-                Label("Last updated: " + a.Updated, Dim);
-            }
-            NextLine(p, 28);
-            if (a.Status.Length > 0) ImGuiNET.ImGui.TextWrapped(a.Status);
-            if (a.LastRun.Length > 0) Label("Last run: " + a.LastRun, Dim);
-
-            ImGuiNET.ImGui.Separator();
-            bool auto = a.Auto;
-            if (ImGuiNET.ImGui.Checkbox("Auto-raise from unassigned XP##attr_auto", ref auto))
-                SendProg("attrauto " + (auto ? "on" : "off"));
-            ImGuiNET.ImGui.SameLine();
-            // Commit on Enter, the +/- buttons or focus loss (not on every keystroke: each send
-            // restarts the auto-raise timer).
-            int every = _attrEveryEdit ?? a.Every;
-            ImGuiNET.ImGui.SetNextItemWidth(90);
-            bool everyCommit = ImGuiNET.ImGui.InputInt("every (min)##attr_every", ref every, 1, 10, ImGuiInputTextFlags.EnterReturnsTrue);
-            bool everyActive = ImGuiNET.ImGui.IsItemActive();
-            if (everyCommit || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
-            {
-                _attrEveryEdit = null;
-                if (every != a.Every) SendProg("attrevery " + Math.Clamp(every, 1, 1440).ToString(CultureInfo.InvariantCulture));
-            }
-            else _attrEveryEdit = everyActive ? every : null;
-            if (a.Auto && a.Next.Length > 0) Label($"Next auto-raise: {a.Next}", Dim);
-
-            int mode = Math.Clamp(a.Mode, 0, AttrModes.Length - 1);
-            ImGuiNET.ImGui.SetNextItemWidth(260);
-            if (ImGuiNET.ImGui.Combo("Raise order##attr_mode", ref mode, AttrModes, AttrModes.Length))
-                SendProg("attrmode " + mode.ToString(CultureInfo.InvariantCulture));
-
-            // The box holds the exact reserve (KeepFull); it is sent only when the text changed, so an
-            // Enter on an untouched box can't round the reserve.
-            string shownKeep = a.KeepFull.Length > 0 ? a.KeepFull : a.Keep;
-            string keep = _attrKeepEdit ?? shownKeep;
-            ImGuiNET.ImGui.SetNextItemWidth(140);
-            bool enter = ImGuiNET.ImGui.InputTextWithHint("Keep in reserve (XP)##attr_keep", "0, 500m, 2b", ref keep, 32u,
-                ImGuiInputTextFlags.EnterReturnsTrue);
-            bool keepActive = ImGuiNET.ImGui.IsItemActive();
-            if (enter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
-            {
-                _attrKeepEdit = null;
-                if (!string.Equals(keep.Trim(), shownKeep, StringComparison.Ordinal))
-                    SendProg("attrkeep " + keep.Replace(" ", "", StringComparison.Ordinal).Replace(",", "", StringComparison.Ordinal));
-            }
-            else _attrKeepEdit = keepActive ? keep : null;
-            ImGuiNET.ImGui.SetItemTooltip("Unassigned XP the raiser never spends. Accepts k / m / b / t suffixes.");
-
-            DrawAttrTable(a, w);
-            Label("Auto: the stats Raise now / auto-raise may spend on; arrows set the order. "
-                  + "+1 / +10 raise by hand (red = not enough unassigned XP). "
-                  + "+10 is an estimate (7.7% dearer per level); the server charges the real cost. " + a.CostsAge + ".", Dim);
+            if (Button("##attr_stop", "Stop", p, new Vector2(90, 24), Text, StopBg)) SendProg("attrstop");
         }
-        finally
+        else if (Button("##attr_run", "Raise now", p, new Vector2(110, 24), Text, StartBg, border: Teal))
+            SendProg("attrrun");
+        if (Button("##attr_costs", "Refresh XP", new Vector2(p.X + 116, p.Y), new Vector2(100, 24), Text, BtnFill, enabled: !a.Running))
+            SendProg("attrcosts");
+        ImGuiNET.ImGui.SetItemTooltip("Re-reads every next-level cost with /xp all.");
+        if (a.Updated.Length > 0)
         {
-            ImGuiNET.ImGui.PopTextWrapPos();
-            ImGuiNET.ImGui.Unindent(8);
+            ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + 224, p.Y + 4));
+            Label("Last updated: " + a.Updated, Dim);
         }
+        NextLine(p, 28);
+        if (a.Status.Length > 0) ImGuiNET.ImGui.TextWrapped(a.Status);
+        if (a.LastRun.Length > 0) Label("Last run: " + a.LastRun, Dim);
+
+        ImGuiNET.ImGui.Separator();
+        bool auto = a.Auto;
+        if (ImGuiNET.ImGui.Checkbox("Auto-raise past retail max##attr_auto", ref auto))
+            SendProg("attrauto " + (auto ? "on" : "off"));
+        ImGuiNET.ImGui.SetItemTooltip("Spends unassigned XP with /attr past the retail attribute cap (server costs from /xp all).");
+        ImGuiNET.ImGui.SameLine();
+        // Commit on Enter, the +/- buttons or focus loss (not on every keystroke: each send
+        // restarts the auto-raise timer).
+        int every = _attrEveryEdit ?? a.Every;
+        ImGuiNET.ImGui.SetNextItemWidth(90);
+        bool everyCommit = ImGuiNET.ImGui.InputInt("every (min)##attr_every", ref every, 1, 10, ImGuiInputTextFlags.EnterReturnsTrue);
+        bool everyActive = ImGuiNET.ImGui.IsItemActive();
+        if (everyCommit || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
+        {
+            _attrEveryEdit = null;
+            if (every != a.Every) SendProg("attrevery " + Math.Clamp(every, 1, 1440).ToString(CultureInfo.InvariantCulture));
+        }
+        else _attrEveryEdit = everyActive ? every : null;
+        if (a.Auto && a.Next.Length > 0) Label($"Next auto-raise: {a.Next}", Dim);
+
+        int mode = Math.Clamp(a.Mode, 0, AttrModes.Length - 1);
+        ImGuiNET.ImGui.SetNextItemWidth(260);
+        if (ImGuiNET.ImGui.Combo("Raise order##attr_mode", ref mode, AttrModes, AttrModes.Length))
+            SendProg("attrmode " + mode.ToString(CultureInfo.InvariantCulture));
+
+        // The box holds the exact reserve (KeepFull); it is sent only when the text changed, so an
+        // Enter on an untouched box can't round the reserve.
+        string shownKeep = a.KeepFull.Length > 0 ? a.KeepFull : a.Keep;
+        string keep = _attrKeepEdit ?? shownKeep;
+        ImGuiNET.ImGui.SetNextItemWidth(140);
+        bool enter = ImGuiNET.ImGui.InputTextWithHint("Keep in reserve (XP)##attr_keep", "0, 500m, 2b", ref keep, 32u,
+            ImGuiInputTextFlags.EnterReturnsTrue);
+        bool keepActive = ImGuiNET.ImGui.IsItemActive();
+        if (enter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
+        {
+            _attrKeepEdit = null;
+            if (!string.Equals(keep.Trim(), shownKeep, StringComparison.Ordinal))
+                SendProg("attrkeep " + keep.Replace(" ", "", StringComparison.Ordinal).Replace(",", "", StringComparison.Ordinal));
+        }
+        else _attrKeepEdit = keepActive ? keep : null;
+        ImGuiNET.ImGui.SetItemTooltip("Unassigned XP the raiser never spends. Accepts k / m / b / t suffixes.");
+
+        DrawAttrTable(a, w);
+        Label("Auto: the stats Raise now / auto-raise may spend on; arrows set the order. "
+              + "+1 / +10 raise by hand (red = not enough unassigned XP). "
+              + "+10 is an estimate (7.7% dearer per level); the server charges the real cost. " + a.CostsAge + ".", Dim);
     }
 
     /// <summary>
@@ -337,7 +380,7 @@ internal sealed partial class SkillsFace
                    : $"{what}: {exact} XP.";
         if (known && !afford) tip += " Not enough unassigned XP.";
         if (a.Running) tip += " Wait for the raise run to finish.";
-        ImGuiNET.ImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);
     }
 
     /// <summary>The client's own base value for a raiser row (0 when the snapshot has none).</summary>
@@ -410,6 +453,19 @@ internal sealed partial class SkillsFace
                     ImGuiNET.ImGui.TableNextColumn(); Label(a.TotalLum, Amber);
                     ImGuiNET.ImGui.TableNextColumn(); Label(a.TotalCoins.ToString("N0", CultureInfo.InvariantCulture), Amber);
                 }
+                // What is still to find: the plan's luminance less banked + character, and the coins short.
+                if (a.StillLum.Length > 0 && a.StillLum != "-")
+                {
+                    bool done = a.StillLum == "0" && a.StillCoins == 0;
+                    uint c = done ? Green : Amber;
+                    ImGuiNET.ImGui.TableNextRow();
+                    ImGuiNET.ImGui.TableNextColumn(); Label("STILL NEEDED", c);
+                    ImGuiNET.ImGui.TableNextColumn();
+                    ImGuiNET.ImGui.TableNextColumn(); Label("after banked lum", Dim);
+                    ImGuiNET.ImGui.TableNextColumn();
+                    ImGuiNET.ImGui.TableNextColumn(); Label(a.StillLum, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(a.StillCoins > 0 ? a.StillCoins.ToString("N0", CultureInfo.InvariantCulture) : "0", c);
+                }
                 ImGuiNET.ImGui.EndTable();
             }
 
@@ -440,6 +496,7 @@ internal sealed partial class SkillsFace
                 if (a.Short.Length > 0) Label(a.Short, Text);
             }
             Label(a.Banked, Dim);
+            if (a.StillLine.Length > 0) Label(a.StillLine, Amber);
             if (a.Config != null) DrawAugCostSettings(a.Config, w);
         }
         finally
@@ -573,7 +630,7 @@ internal sealed partial class SkillsFace
         }
         else if (active) _augTargetEdit[row.Key] = tgt;
         else _augTargetEdit.Remove(row.Key);
-        ImGuiNET.ImGui.SetItemTooltip($"Target {row.Label} level (up to {row.Cap.ToString("N0", CultureInfo.InvariantCulture)}).");
+        SafeImGui.SetItemTooltip($"Target {row.Label} level (up to {row.Cap.ToString("N0", CultureInfo.InvariantCulture)}).");
     }
 
     private void DrawEnlPlanner(EnlPlanner e, float w)
@@ -588,17 +645,30 @@ internal sealed partial class SkillsFace
             Label(e.Header, Text);
             Label(e.Next, Teal);
 
+            // Plan-to-target: calculator uses character AvailableLuminance + pack mats.
             int target = e.Target;
             ImGuiNET.ImGui.SetNextItemWidth(100);
-            if (ImGuiNET.ImGui.InputInt("Plan to level##prog_enlt", ref target))
+            if (ImGuiNET.ImGui.InputInt("Plan to enl##prog_enlt", ref target))
                 SendProg("enltarget " + Math.Max(e.Level + 1, target).ToString(CultureInfo.InvariantCulture));
-            foreach (string line in e.Plan) ImGuiNET.ImGui.BulletText(line);
+            ImGuiNET.ImGui.SetItemTooltip("Target enlightenment level. The calculator below shows each step and what you still need.");
+
+            if (e.Plan.Length > 0)
+            {
+                Label("Totals to plan:", Dim);
+                foreach (string line in e.Plan) SafeImGui.BulletText(line);
+            }
+
+            DrawEnlCalculator(e, w);
+
+            DrawEnlCalculator(e, w);
 
             int coinsPerToken = e.CoinsPerToken;
             ImGuiNET.ImGui.SetNextItemWidth(100);
             if (ImGuiNET.ImGui.InputInt("Coins per token (shop price)##prog_cpt", ref coinsPerToken))
                 SendProg("coinspertoken " + Math.Max(0, coinsPerToken).ToString(CultureInfo.InvariantCulture));
             if (e.TokensShort.Length > 0) Label(e.TokensShort, Dim);
+            if (!string.IsNullOrEmpty(e.Ecoins)) Label(e.Ecoins, Text);
+            if (!string.IsNullOrEmpty(e.EcoinsLum)) Label(e.EcoinsLum, Dim);
 
             ImGuiNET.ImGui.Separator();
             if (e.Blockers.Length == 0) Label("Client-side checks pass.", Green);
@@ -639,12 +709,209 @@ internal sealed partial class SkillsFace
             if (ImGuiNET.ImGui.InputInt("Check every (s)##prog_every", ref every))
                 SendProg("checkevery " + Math.Max(10, every).ToString(CultureInfo.InvariantCulture));
             Label(e.Armed ? "Armed." : "Disarmed.", e.Armed ? Amber : Dim);
-            if (e.Status.Length > 0) ImGuiNET.ImGui.TextWrapped(e.Status);
+            if (e.Status.Length > 0) SafeImGui.TextWrapped(e.Status);
         }
         finally
         {
             ImGuiNET.ImGui.PopTextWrapPos();
             ImGuiNET.ImGui.Unindent(8);
+        }
+    }
+
+    // ── Enl calculator ──────────────────────────────────────────────────
+    //
+    // RynthILT's AppendEnlCalculatorJson (Silentkelpie's rynth PR 6 drew it first): per-level cost rows, still-need /
+    // have materials and the 301-325 sigil craft chain. Read-only: it only draws the Progression snapshot already
+    // subscribed by ProgressionShown, so it adds no subscription and no per-frame work beyond the table rows
+    // (row text is formatted once per snapshot, in the DTOs). A snapshot without the fields (older RynthILT) has
+    // empty arrays and nothing here is drawn.
+    //
+    // Width: the three tables are w - 16 wide inside the Indent(8) of DrawEnlPlanner, with a stretch label
+    // column and narrow fixed number columns scaled down below the retail width (300); text in a cell wraps at
+    // the cell instead of running off the panel. Level rows show a preview (12), "Show all" lists up to 100 in a
+    // table that scrolls on its own.
+
+    private const float EnlRetailTableWidth = 284f;   // retail panel width (300) - 16
+    private bool _enlShowAllLevels;
+    private string _enlToggleLabel = "";
+    private int _enlToggleTotal = -1;
+    private bool _enlToggleAll;
+
+    private void DrawEnlCalculator(EnlPlanner e, float w)
+    {
+        if (!e.HasCalculator) return;
+
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
+        if (!ImGuiNET.ImGui.CollapsingHeader("Enl calculator##prog_enl_calc", ImGuiTreeNodeFlags.DefaultOpen))
+            return;
+
+        float tw = Math.Max(120f, w - 16);
+        float k = Math.Min(1f, tw / EnlRetailTableWidth);   // fixed columns shrink on a narrower panel
+        DrawEnlLevels(e.Levels, tw, k);
+        DrawEnlMaterials(e.Materials, tw, k);
+        DrawEnlChain(e, tw, k);
+        if (e.Chain.Length > 0 && e.ExtractsPerAscension >= 0) DrawChainTrades(e);
+    }
+
+    /// <summary>
+    /// The sigil chain's vendor rates (RynthILT 0.2.23+): Necrolytic Extracts per Ascension Coin,
+    /// and the extracts-for-Trophies trade. 0 hides a trade.
+    /// </summary>
+    private void DrawChainTrades(EnlPlanner e)
+    {
+        int perAsc = e.ExtractsPerAscension;
+        ImGuiNET.ImGui.SetNextItemWidth(100);
+        if (ImGuiNET.ImGui.InputInt("Extracts per Ascension Coin (vendor)##prog_epa", ref perAsc))
+            SendProg("extractsperasc " + Math.Max(0, perAsc).ToString(CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.SetItemTooltip("Necrolytic Extracts a vendor takes for one Ascension Coin. 0 = no such vendor.");
+        int trEx = e.TrophyExtracts, trCount = e.TrophyCount;
+        ImGuiNET.ImGui.SetNextItemWidth(100);
+        if (ImGuiNET.ImGui.InputInt("extracts##prog_tre", ref trEx))
+            SendProg("trophyextracts " + Math.Max(0, trEx).ToString(CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.SetItemTooltip("Necrolytic Extracts the vendor takes for one Trophy trade. 0 = don't show the trade.");
+        ImGuiNET.ImGui.SameLine();
+        ImGuiNET.ImGui.SetNextItemWidth(100);
+        if (ImGuiNET.ImGui.InputInt("Trophies (vendor trade)##prog_trc", ref trCount))
+            SendProg("trophycount " + Math.Max(0, trCount).ToString(CultureInfo.InvariantCulture));
+        ImGuiNET.ImGui.SetItemTooltip("Trophies that trade gives you.");
+    }
+
+    private void DrawEnlLevels(EnlLevelRow[] rows, float tw, float k)
+    {
+        if (rows.Length == 0) return;
+        bool canExpand = EnlCalculatorView.CanExpand(rows.Length);
+        bool all = canExpand && _enlShowAllLevels;
+        int shown = EnlCalculatorView.VisibleLevels(rows.Length, all);
+
+        ImGuiTableFlags flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp;
+        var size = new Vector2(tw, 0);
+        if (all)
+        {
+            // Own scroll area, a preview's worth of rows tall (+ header): the long list never pushes the panel.
+            flags |= ImGuiTableFlags.ScrollY;
+            size.Y = (ImGuiNET.ImGui.GetTextLineHeightWithSpacing() + 4f) * (EnlCalculatorView.PreviewLevels + 1);
+        }
+
+        ImGuiNET.ImGui.PushTextWrapPos(0f);   // wrap in the cell, not at the panel's wrap position
+        try
+        {
+            if (ImGuiNET.ImGui.BeginTable("##enl_levels", 4, flags, size))
+            {
+                ImGuiNET.ImGui.TableSetupColumn("Enl", ImGuiTableColumnFlags.WidthFixed, 40 * k);
+                ImGuiNET.ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthFixed, 84 * k);
+                ImGuiNET.ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.WidthFixed, 44 * k);
+                ImGuiNET.ImGui.TableSetupColumn("Lum");
+                if (all) ImGuiNET.ImGui.TableSetupScrollFreeze(0, 1);
+                ImGuiNET.ImGui.TableHeadersRow();
+                for (int i = 0; i < shown; i++)
+                {
+                    EnlLevelRow row = rows[i];
+                    uint c = row.Ok ? Green : Amber;
+                    ImGuiNET.ImGui.TableNextRow();
+                    ImGuiNET.ImGui.TableNextColumn(); Label(row.LevelText, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(row.Item, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(row.CountText, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(row.Lum, c);
+                }
+                ImGuiNET.ImGui.EndTable();
+            }
+        }
+        finally
+        {
+            ImGuiNET.ImGui.PopTextWrapPos();
+        }
+
+        if (canExpand)
+        {
+            // The label is rebuilt only when the row count or the mode changes, not every frame.
+            if (_enlToggleTotal != rows.Length || _enlToggleAll != all)
+            {
+                _enlToggleTotal = rows.Length;
+                _enlToggleAll = all;
+                _enlToggleLabel = (all ? "Show first " + EnlCalculatorView.PreviewLevels.ToString(CultureInfo.InvariantCulture)
+                                       : "Show all " + Math.Min(rows.Length, EnlCalculatorView.MaxLevels).ToString(CultureInfo.InvariantCulture) + " steps")
+                                  + "##enl_lv_all";
+            }
+            if (ImGuiNET.ImGui.SmallButton(_enlToggleLabel)) _enlShowAllLevels = !all;
+        }
+        Label("Green = pack items and banked luminance still cover that step (simulated in order).", Dim);
+    }
+
+    private static void DrawEnlMaterials(EnlMaterialRow[] rows, float tw, float k)
+    {
+        if (rows.Length == 0) return;
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+        Label("Still need / have", Text);
+        ImGuiNET.ImGui.PushTextWrapPos(0f);
+        try
+        {
+            // RynthILT 0.2.23+ says how to get a material (recipe or vendor trade): a fourth column.
+            bool how = rows.Any(m => m.How.Length > 0);
+            if (ImGuiNET.ImGui.BeginTable("##enl_mats", how ? 4 : 3,
+                ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp, new Vector2(tw, 0)))
+            {
+                ImGuiNET.ImGui.TableSetupColumn("Material");
+                ImGuiNET.ImGui.TableSetupColumn("Still need", ImGuiTableColumnFlags.WidthFixed, 72 * k);
+                ImGuiNET.ImGui.TableSetupColumn("Have", ImGuiTableColumnFlags.WidthFixed, 72 * k);
+                if (how) ImGuiNET.ImGui.TableSetupColumn("How to get");
+                ImGuiNET.ImGui.TableHeadersRow();
+                int n = Math.Min(rows.Length, EnlCalculatorView.MaxListRows);
+                for (int i = 0; i < n; i++)
+                {
+                    EnlMaterialRow m = rows[i];
+                    uint c = m.Ok ? Green : Amber;
+                    ImGuiNET.ImGui.TableNextRow();
+                    ImGuiNET.ImGui.TableNextColumn(); Label(m.Label, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(m.Need, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(m.Have, c);
+                    if (how) { ImGuiNET.ImGui.TableNextColumn(); Label(m.How, Dim); }
+                }
+                ImGuiNET.ImGui.EndTable();
+            }
+        }
+        finally
+        {
+            ImGuiNET.ImGui.PopTextWrapPos();
+        }
+    }
+
+    private static void DrawEnlChain(EnlPlanner e, float tw, float k)
+    {
+        EnlChainRow[] rows = e.Chain;
+        if (rows.Length == 0) return;
+        ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
+        Label("Sigil craft chain (301-325)", Text);
+        if (!string.IsNullOrEmpty(e.ChainNote)) Label(e.ChainNote, Dim);   // wraps at the panel's wrap position
+        ImGuiNET.ImGui.PushTextWrapPos(0f);
+        try
+        {
+            // RynthILT 0.2.23+ says how to get each item (its recipe or a vendor trade): a fourth column.
+            bool how = rows.Any(r => r.How.Length > 0);
+            if (ImGuiNET.ImGui.BeginTable("##enl_chain", how ? 4 : 3,
+                ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp, new Vector2(tw, 0)))
+            {
+                ImGuiNET.ImGui.TableSetupColumn("Item");
+                ImGuiNET.ImGui.TableSetupColumn("Need", ImGuiTableColumnFlags.WidthFixed, 72 * k);
+                ImGuiNET.ImGui.TableSetupColumn("Have", ImGuiTableColumnFlags.WidthFixed, 72 * k);
+                if (how) ImGuiNET.ImGui.TableSetupColumn("How to get");
+                ImGuiNET.ImGui.TableHeadersRow();
+                int n = Math.Min(rows.Length, EnlCalculatorView.MaxListRows);
+                for (int i = 0; i < n; i++)
+                {
+                    EnlChainRow r = rows[i];
+                    uint c = r.Ok ? Green : Amber;
+                    ImGuiNET.ImGui.TableNextRow();
+                    ImGuiNET.ImGui.TableNextColumn(); Label(r.DisplayLabel, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(r.NeedText, c);
+                    ImGuiNET.ImGui.TableNextColumn(); Label(r.HaveText, c);
+                    if (how) { ImGuiNET.ImGui.TableNextColumn(); Label(r.How, Dim); }
+                }
+                ImGuiNET.ImGui.EndTable();
+            }
+        }
+        finally
+        {
+            ImGuiNET.ImGui.PopTextWrapPos();
         }
     }
 

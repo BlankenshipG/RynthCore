@@ -40,12 +40,21 @@ if (Test-Path $pidFile) {
     }
 }
 
+# The loader refuses hot reloads past engine.json MaxHotReloads (default 20 since 2026-10-15): a soak
+# of more reloads needs "MaxHotReloads": -1 in the -Settings file.
+if ($Reloads -gt 20 -and -not ((Test-Path $Settings) -and (Select-String -Path $Settings -Pattern '"MaxHotReloads"' -Quiet))) {
+    Write-Warning "-Reloads $Reloads is over the default cap of 20 hot reloads per client: add ""MaxHotReloads"": -1 to $Settings, or reloads past the 20th are refused."
+}
 $env:RYNTHCORE_ENGINE_SETTINGS = $Settings
 $env:RYNTHCORE_TEST_CLIENT = "Test-ClrWorld"   # the loader logs "TestClient: ..." (monitors skip test clients)
 # Panel layout (panel_state.txt) lives in %LOCALAPPDATA%\RynthCore and is shared with real
 # clients: a test client gets its own so it never moves the player's bar or panels.
 $env:LOCALAPPDATA = "C:\Games\RynthCore\Test\localappdata"
 New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+# The engine finds %LOCALAPPDATA% through the known-folder API, which ignores the variable above:
+# the hotkeys (shared by every client, and changed by the item bar's keys) get their own file here.
+New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\RynthCore" | Out-Null
+$env:RYNTHCORE_HOTKEYS_FILE = "$env:LOCALAPPDATA\RynthCore\hotkeys.txt"
 $dispatch = "C:\Games\RynthCore\Test\dispatch.txt"
 $env:RYNTHCORE_DISPATCH_FILE = $dispatch
 Set-Content $dispatch "# test dispatch file"

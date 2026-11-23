@@ -14,9 +14,11 @@
 //      three vital maximums.
 //    - Raise: "+1" raises one rank at once; the caret beside it drops down +10,
 //      +100 and Max (each with its XP cost; Max asks first only when it spends
-//      over half the unassigned XP). PlayerTraining.Raise(defer) queues it for
-//      AC's main thread outside the ImGui frame; raise buttons stay locked until
-//      the new values arrive (or 5 s pass). Train (skill credits) always asks first.
+//      over half the unassigned XP, and says when it stops short of the top).
+//      PlayerTraining.Raise(defer) queues it for AC's main thread outside the
+//      ImGui frame; raise buttons stay locked until the new values arrive (or 5 s
+//      pass: then the panel says the server hasn't taken it). Train (skill
+//      credits) always asks first.
 //    - Aelrynth only (ServerInfo.IsAelrynth): skill mastery from the SkillMastery
 //      mod's /mastery-data reply (MasteryFeed). A crown badge with the mastery
 //      points on trained rows that have any; the open row shows points, bonus,
@@ -37,6 +39,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Numerics;
+using System.Threading;
 using ImGuiNET;
 using RynthCore.Engine.Compatibility;
 using RynthCore.Engine.ImGuiBackend.Hud;
@@ -58,8 +61,8 @@ internal sealed partial class SkillsFace : IImGuiPanel
 
     // ── Palette (FaceKit's, plus the vitals') ────────────────────────────
     private static readonly uint Mana = RynthTheme.Argb(0xFF4DA6FF), Dim = RynthTheme.Argb(0xFF7F8FA0),
-        ExpandedBg = RynthTheme.Argb(0xFF1A2E42), GroupBg = RynthTheme.Argb(0xFF0F1A24),
-        MasteryColor = RynthTheme.Argb(0xFFC9A2FF);
+        GroupBg = RynthTheme.Argb(0xFF0F1A24), MasteryColor = RynthTheme.Argb(0xFFC9A2FF);
+    private static uint ExpandedBg => RynthTheme.Selected;
 
     private const float RowH = 24f, IconSize = 20f, ColBuffed = 46f, ColBase = 46f, ColCost = 76f, ColButton = 52f,
         CaretW = 16f, MultiW = 190f;
@@ -168,6 +171,11 @@ internal sealed partial class SkillsFace : IImGuiPanel
     private long _pendingUnassigned;
     private int _pendingCredits;
     private int _pendingVersion;
+    // The raise in flight (-1 key: a train), to tell the player when the server never took it.
+    private int _pendingKey = -1;
+    private uint _pendingRanks, _pendingSpent;
+    private long _pendingCost;
+    private string _pendingWhat = "";
 
     private string _status = "";
     private uint _statusColor;
@@ -186,7 +194,17 @@ internal sealed partial class SkillsFace : IImGuiPanel
     private long _masteryPendingUntilMs;
     private int _masteryPendingVersion;
 
-    public void OnShown()
+    // Shown / hidden exactly once per visible stretch, however often the host (or the Oracle embed) asks:
+    // the Progression subscription it takes in OnShownCore is given back in OnHiddenCore, once.
+    private readonly ShownLatch _life;
+
+    public SkillsFace() => _life = new ShownLatch(OnShownCore, OnHiddenCore);
+
+    public void OnShown() => _life.Show();
+
+    public void OnHidden() => _life.Hide();
+
+    private void OnShownCore()
     {
         PlayerProgressHooks.Want();
         PlayerProgressHooks.RefreshSoon();
@@ -196,22 +214,85 @@ internal sealed partial class SkillsFace : IImGuiPanel
         ProgressionShown();
     }
 
-    public void OnHidden() => ProgressionHidden();
+    private void OnHiddenCore() => ProgressionHidden();
 
     public void Draw()
     {
+        int req = Interlocked.Exchange(ref _requestedTab, -1);
+        if (req >= 0) _tab = req;
         PlayerProgressHooks.Want();
         Refresh();
         ApplyProgressionRequest();
         if (_tab == 2 && !ProgressionTabVisible) _tab = 0;
 
         float w = Begin(out Vector2 origin, out Vector2 size);
+        DrawBody(w, origin, size, showOwnTabs: true);
+        End(origin, size);
+
+        _picker.Draw();
+        DrawMulti();
+        DrawConfirm();
+        DrawProgressionConfirm();
+    }
+
+    /// <summary>
+    /// Oracle-hosted body (the old Skills panel's tabs, without its frame or tab strip).
+    /// Called each frame the Oracle window shows a Skills / Attributes / Progress tab.
+    /// The first frame runs OnShown (via OracleSkillsEmbed's latch); OracleSkillsEmbed.Clear,
+    /// the Oracle window closing and the idle sweep run OnHidden. AC thread.
+    /// </summary>
+    public static void DrawEmbedded(int tab)
+    {
+        if (_embed == null)
+        {
+            _embed = new SkillsFace();
+            OracleSkillsEmbed.Bind(_embed.OnShown, _embed.OnHidden);
+        }
+        OracleSkillsEmbed.NoteDrawn(Environment.TickCount64);
+        _embed.DrawHosted(tab);
+    }
+
+    /// <summary>Selects Skills (0), Attributes (1) or Progress (2) on the next standalone Draw.</summary>
+    public static void RequestTab(int tab)
+    {
+        tab = tab < 0 ? 0 : tab > 2 ? 2 : tab;
+        Volatile.Write(ref _requestedTab, tab);
+    }
+
+    private static int _requestedTab = -1;
+
+    /// <summary>Shared instance that draws inside Oracle (no separate Skills window).</summary>
+    private static SkillsFace? _embed;
+
+    private void DrawHosted(int tab)
+    {
+        _tab = tab < 0 ? 0 : tab > 2 ? 2 : tab;
+        PlayerProgressHooks.Want();
+        Refresh();
+        ApplyProgressionRequest();
+        // Progress tab on a world without ILT: the tab stays selected and DrawProgression explains.
+
+        Vector2 avail = ImGuiNET.ImGui.GetContentRegionAvail();
+        float w = Math.Max(40f, avail.X);
+        Vector2 origin = ImGuiNET.ImGui.GetCursorScreenPos();
+        DrawBody(w, origin, new Vector2(w, Math.Max(120f, avail.Y)), showOwnTabs: false);
+
+        _picker.Draw();
+        DrawMulti();
+        DrawConfirm();
+        DrawProgressionConfirm();
+    }
+
+    private void DrawBody(float w, Vector2 origin, Vector2 size, bool showOwnTabs)
+    {
         DrawSummary(w);
-        DrawTabs(w);
+        if (showOwnTabs) DrawTabs(w);
         if (_tab == 0) DrawToolbar(w);
         if (_tab != 2) DrawColumnHeader(w, _tab == 0 ? "Skill" : "Attribute");
 
-        float bodyH = Math.Max(60, Remaining(origin, size) - GripOverlap());
+        float bodyH = Math.Max(60, showOwnTabs
+            ? Remaining(origin, size) - GripOverlap()
+            : size.Y - (ImGuiNET.ImGui.GetCursorScreenPos().Y - origin.Y));
         ImGuiNET.ImGui.PushStyleColor(ImGuiCol.ChildBg, PanelBg);
         ImGuiNET.ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(0, 0));
         ImGuiNET.ImGui.BeginChild("##skills_body", new Vector2(w, bodyH));
@@ -230,12 +311,6 @@ internal sealed partial class SkillsFace : IImGuiPanel
         ImGuiNET.ImGui.EndChild();
         ImGuiNET.ImGui.PopStyleVar();
         ImGuiNET.ImGui.PopStyleColor();
-        End(origin, size);
-
-        _picker.Draw();
-        DrawMulti();
-        DrawConfirm();
-        DrawProgressionConfirm();
     }
 
     // ── Data ────────────────────────────────────────────────────────────
@@ -282,10 +357,19 @@ internal sealed partial class SkillsFace : IImGuiPanel
             Order();
         }
 
-        if (_pending && (now > _pendingUntilMs
-            || (snap != null && snap.Version != _pendingVersion
-                && (snap.UnassignedXp != _pendingUnassigned || snap.SkillCredits != _pendingCredits))))
-            _pending = false;
+        if (_pending)
+        {
+            if (snap != null && snap.Version != _pendingVersion
+                && (snap.UnassignedXp != _pendingUnassigned || snap.SkillCredits != _pendingCredits))
+                _pending = false;
+            else if (now > _pendingUntilMs)
+            {
+                _pending = false;
+                // Only while the panel kept drawing (its numbers kept coming): not on a reopen much later.
+                if (now - _pendingUntilMs < 2000) NoteUnanswered(snap);
+                else _pendingKey = -1;
+            }
+        }
 
         // The open row's time-left text, once a second.
         if (second != _detailSecond && _byKey.TryGetValue(_expandedKey, out Row? open))
@@ -676,7 +760,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
             dl.AddText(new Vector2(x, y), _summaryColors[i], _summary[i]);
             if (i == _radiancePart && _masteryTip.Length > 0
                 && ImGuiNET.ImGui.IsMouseHoveringRect(new Vector2(x, y), new Vector2(x + tw, y + lineH)))
-                ImGuiNET.ImGui.SetTooltip(_masteryTip);
+                SafeImGui.SetTooltip(_masteryTip);
             x += tw + 14;
         }
         long now = Environment.TickCount64;
@@ -735,7 +819,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
             _descending = !_descending;
             _orderDirty = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(_descending ? "Highest first" : "Lowest first");
+        SafeImGui.SetItemTooltip(_descending ? "Highest first" : "Lowest first");
         NextLine(p, 26);
     }
 
@@ -910,7 +994,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
         if (ImGuiNET.ImGui.IsItemHovered() && !expanded)
             dl.AddRect(p, p + new Vector2(w, RowH), BtnBord);
         if (r.MasteryText.Length > 0 && _masteryTip.Length > 0 && ImGuiNET.ImGui.IsMouseHoveringRect(badgeMin, badgeMax))
-            ImGuiNET.ImGui.SetTooltip(r.MasteryHover);
+            SafeImGui.SetTooltip(r.MasteryHover);
 
         // The row's action buttons: "+1" (raise one rank now, no confirm) and a caret that
         // opens +10 / +100 / Max on trained rows, attributes and vitals; Train (skill
@@ -923,13 +1007,13 @@ internal sealed partial class SkillsFace : IImGuiPanel
             if (Button("##raise1", r.Max ? "max" : "+1", btnMin, oneSize, Teal, BtnFill, canRaise, border: canRaise ? Teal : 0)
                 && _snap != null)
                 SendRaise(r, _snap, 1);
-            ImGuiNET.ImGui.SetItemTooltip(why);
+            SafeImGui.SetItemTooltip(why);
             bool canMore = !r.Max && PlayerTraining.Available && !_pending;
             var caretMin = new Vector2(btnMin.X + oneSize.X + 2, btnMin.Y);
             if (IconButton("##raiseN", PhosphorIcons.CaretDown, caretMin, new Vector2(CaretW, RowH - 2), Teal, BtnFill,
                     canMore, font: UiFont.Ui11))
                 OpenMulti(r, caretMin + new Vector2(CaretW - MultiW, RowH));
-            ImGuiNET.ImGui.SetItemTooltip(canMore ? "Raise more: +10, +100 or Max"
+            SafeImGui.SetItemTooltip(canMore ? "Raise more: +10, +100 or Max"
                 : r.Max ? "At the top rank" : _pending ? "Waiting for the last raise to land"
                 : "Raising isn't available on this client build");
         }
@@ -938,7 +1022,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
             bool canTrain = CanTrain(r, out string why);
             if (Button("##train", "Train", btnMin, btnSize, Amber, BtnFill, canTrain, border: canTrain ? Amber : 0))
                 OpenConfirm(r, train: true);
-            ImGuiNET.ImGui.SetItemTooltip(why);
+            SafeImGui.SetItemTooltip(why);
         }
         ImGuiNET.ImGui.PopID();
         NextLine(p, RowH);
@@ -1063,7 +1147,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
         {
             float tw = ImGuiNET.ImGui.CalcTextSize(r.MasteryLine).X;
             if (ImGuiNET.ImGui.IsMouseHoveringRect(new Vector2(x, y), new Vector2(x + 18 + tw, y + lineH)))
-                ImGuiNET.ImGui.SetTooltip(_masteryTip);
+                SafeImGui.SetTooltip(_masteryTip);
         }
         y += lineH;
         if (r.MasteryLine2.Length > 0)
@@ -1083,7 +1167,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
             if (Button("##mastery_raise", PhosphorIcons.Crown + " Raise mastery", new Vector2(x + 18, y), new Vector2(130, 22),
                     MasteryColor, BtnFill, can, border: can ? MasteryColor : 0))
                 OpenMasteryConfirm(r);
-            ImGuiNET.ImGui.SetItemTooltip(can ? why + "\nAsks before it spends anything." : why);
+            SafeImGui.SetItemTooltip(can ? why + "\nAsks before it spends anything." : why);
             ImGuiNET.ImGui.PopID();
             y += 26;
         }
@@ -1210,14 +1294,17 @@ internal sealed partial class SkillsFace : IImGuiPanel
             }
             PlayerProgress s = _snap;
             long have = s.UnassignedXp;
-            int maxLeft = Math.Max(0, r.Table.Length - 1 - (int)Math.Min(r.Ranks, (uint)int.MaxValue));
-            int affordable = SkillDat.Affordable(r.Table, r.Ranks, r.Spent, have);
+            MaxRaisePlan plan = TrainingCosts.PlanMax(r.Table, r.Ranks, r.Spent, have);
+            int maxLeft = plan.RanksLeft;
+            int affordable = plan.Ranks;
             ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.Ui10));
             Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
             float y = p.Y;
             MultiItem(r, s, "##m10", "+10", 10, maxLeft, have, p.X, ref y);
             MultiItem(r, s, "##m100", "+100", 100, maxLeft, have, p.X, ref y);
-            MultiItem(r, s, "##mmax", affordable > 0 ? $"Max (+{affordable})" : "Max", affordable, maxLeft, have, p.X, ref y);
+            // Max says when the XP doesn't reach the top ("+150 of 208"), and the tooltip how much more it needs.
+            string maxLabel = affordable <= 0 ? "Max" : plan.ReachesTop ? $"Max (+{affordable})" : $"Max (+{affordable} of {maxLeft})";
+            MultiItem(r, s, "##mmax", maxLabel, affordable, maxLeft, have, p.X, ref y, plan);
             NextLine(p, y - p.Y);
             ImGuiNET.ImGui.PopFont();
         }
@@ -1228,7 +1315,8 @@ internal sealed partial class SkillsFace : IImGuiPanel
     }
 
     /// <summary>One drop-down line: label left, XP cost right; greyed with the reason when it can't act.</summary>
-    private void MultiItem(Row r, PlayerProgress s, string id, string label, int n, int maxLeft, long have, float x, ref float y)
+    private void MultiItem(Row r, PlayerProgress s, string id, string label, int n, int maxLeft, long have, float x, ref float y,
+        MaxRaisePlan plan = default)
     {
         const float h = 22;
         long cost = n > 0 && n <= maxLeft ? SkillDat.CostOf(r.Table!, r.Ranks, r.Spent, n) : -1;
@@ -1251,7 +1339,10 @@ internal sealed partial class SkillsFace : IImGuiPanel
             right = Compact(cost) + " XP";
             ok = !_pending && PlayerTraining.Available;
             why = $"Raise {r.Name} {r.Base} → {r.Base + n} for {cost:N0} XP"
-                + (isMax && cost * 2 > have ? " (asks first: over half your unassigned XP)" : "");
+                + (isMax && cost * 2 > have ? " (asks first: over half your unassigned XP)" : "")
+                + (isMax && !plan.ReachesTop && plan.Missing > 0
+                    ? $"\nThe top rank is {maxLeft} ranks away and costs {plan.CostToTop:N0} XP: {plan.Missing:N0} more than you have."
+                    : "");
         }
         var pos = new Vector2(x, y);
         var size = new Vector2(MultiW - 6, h);
@@ -1263,7 +1354,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
                 SendRaise(r, s, n);
             ImGuiNET.ImGui.CloseCurrentPopup();
         }
-        ImGuiNET.ImGui.SetItemTooltip(why);
+        SafeImGui.SetItemTooltip(why);
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         float tw = ImGuiNET.ImGui.CalcTextSize(right).X;
         dl.AddText(new Vector2(x + size.X - 6 - tw, y + (h - ImGuiNET.ImGui.GetFontSize()) * 0.5f), ok ? Teal : Dim, right);
@@ -1335,6 +1426,12 @@ internal sealed partial class SkillsFace : IImGuiPanel
         Label(cost >= 0 && cost <= have
             ? $"Unassigned: {have:N0} → {have - cost:N0}"
             : $"Unassigned: {have:N0} (not enough)", Mute);
+        if (n < maxLeft && cost >= 0)
+        {
+            long toTop = SkillDat.CostOf(table, r.Ranks, r.Spent, maxLeft);
+            int gap = maxLeft - n;
+            Label($"Stops {gap} rank{(gap == 1 ? "" : "s")} short of the top: that needs {Math.Max(0L, toTop - have):N0} more XP.", Amber);
+        }
         ImFontPtr f9 = ImGuiFonts.Get(UiFont.Ui9);
         ImGuiNET.ImGui.PushFont(f9);
         Label("That is more than half of your unassigned XP. Spent XP can't be taken back.", Dim);
@@ -1390,7 +1487,7 @@ internal sealed partial class SkillsFace : IImGuiPanel
     {
         if (PlayerTraining.TrainSkill(r.Stype, (uint)r.TrainCost, defer: true))
         {
-            MarkPending(s);
+            MarkPending(s, null, 0);
             SetStatus($"Sent: train {r.Name} for {Credits(r.TrainCost)}.", Teal);
         }
         else
@@ -1399,15 +1496,41 @@ internal sealed partial class SkillsFace : IImGuiPanel
         }
     }
 
-    private void MarkPending(PlayerProgress s)
+    /// <summary>Locks the buttons until the server answers; <paramref name="raised"/> is the raise's row (null for a train).</summary>
+    private void MarkPending(PlayerProgress s, Row? raised, long cost)
     {
         _pending = true;
         _pendingUntilMs = Environment.TickCount64 + 5000;
         _pendingUnassigned = s.UnassignedXp;
         _pendingCredits = s.SkillCredits;
         _pendingVersion = s.Version;
+        _pendingKey = raised?.Key ?? -1;
+        _pendingRanks = raised?.Ranks ?? 0;
+        _pendingSpent = raised?.Spent ?? 0;
+        _pendingCost = cost;
+        _pendingWhat = raised?.Name ?? "";
         PlayerProgressHooks.RefreshSoon();
     }
+
+    /// <summary>
+    /// The 5 s lock ran out with nothing changed. ACE turns a raise down without a word (more XP
+    /// than it thinks is left to the top, or than you have), so say so here and log the numbers
+    /// the raise was worked out from.
+    /// </summary>
+    private void NoteUnanswered(PlayerProgress? snap)
+    {
+        int key = _pendingKey;
+        _pendingKey = -1;
+        if (key < 0 || snap == null || !_byKey.TryGetValue(key, out Row? r) || r.Table == null) return;
+        if (r.Ranks != _pendingRanks || r.Spent != _pendingSpent || snap.UnassignedXp != _pendingUnassigned) return;
+        SetStatus($"{_pendingWhat}: the server hasn't taken the raise ({_pendingCost:N0} XP) after 5 s; nothing was spent.", Red);
+        RynthLog.Compat($"Skills panel: {_pendingWhat} raise for {_pendingCost:N0} XP got no answer in 5 s " +
+            $"(rank {r.Ranks}, XP spent {r.Spent:N0}, unassigned {snap.UnassignedXp:N0}, class {RowClass(r, snap)}, " +
+            $"top rank {r.Table.Length - 1} at {r.Table[^1]:N0} XP)");
+    }
+
+    private static uint RowClass(Row r, PlayerProgress s) =>
+        r.Kind == RowKind.Skill && r.Stype <= PlayerProgress.MaxSkill ? s.SkillClass[r.Stype] : 0;
 
     /// <summary>
     /// Raises <paramref name="n"/> ranks at once: the XP is worked out from the current
@@ -1432,7 +1555,9 @@ internal sealed partial class SkillsFace : IImGuiPanel
         uint stype = r.Kind == RowKind.Vital ? r.Stype * 2 - 1 : r.Stype;   // vitals by their maximum
         if (PlayerTraining.Raise(kind, stype, (uint)cost, defer: true))
         {
-            MarkPending(s);
+            RynthLog.Compat($"Skills panel: raise {r.Name} +{n} from rank {r.Ranks} (XP spent {r.Spent:N0}, " +
+                $"unassigned {s.UnassignedXp:N0}) for {cost:N0} XP");
+            MarkPending(s, r, cost);
             SetStatus($"Sent: raise {r.Name} +{n} for {cost:N0} XP.", Teal);
         }
         else

@@ -11,6 +11,14 @@
 //                 your own plate), engine-side (Hud/MonsterHudSettingsUi);
 //    Combat text  floating damage / heal numbers, kill burst and gains.
 //
+//  2026-10-27: RynthVision draws the Vision window itself (its manifest's
+//  "takeOver" window, RynthVision Ui/VisionWindow.cs, on engines with plugin
+//  API v91): this face then steps aside (ImGuiPanelHost.TakeOver; same key, so
+//  the saved place, bar button, hotkeys and /rc commands carry over) and comes back
+//  when RynthVision unloads. Its Nameplates and Combat text tabs are drawn into
+//  RynthVision's window by the engine (SettingsDrawerBodies "nameplates" /
+//  "combattext"). Kept for an older RynthVision; goes a release after.
+//
 //  Terrain edits a private copy and saves just the changed field
 //  (VisionCommands) when a control finishes changing (a slider on release).
 //  A newer snapshot replaces the copy unless a control is in use. The other
@@ -210,7 +218,7 @@ internal sealed class VisionFace : IImGuiPanel
     {
         ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        ImGuiNET.ImGui.TextColored(HeaderColor, text);
+        SafeImGui.TextColored(HeaderColor, text);
         ImGuiNET.ImGui.PopFont();
     }
 
@@ -251,7 +259,7 @@ internal sealed class VisionFace : IImGuiPanel
             WriteUtf8(hex, argb.ToString("X8"));
         }
         if (ImGuiNET.ImGui.IsItemDeactivatedAfterEdit()) Save(f.Key);
-        ImGuiNET.ImGui.SetItemTooltip("0% = invisible, 100% = solid. Ctrl+click to type a value");
+        SafeImGui.SetItemTooltip("0% = invisible, 100% = solid. Ctrl+click to type a value");
         return ImGuiNET.ImGui.IsItemActive();
     }
 

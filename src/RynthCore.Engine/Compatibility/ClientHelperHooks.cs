@@ -36,6 +36,16 @@ internal static class ClientHelperHooks
     [UnmanagedFunctionPointer(CallingConvention.ThisCall)]
     private delegate void GmSalvageUISalvageDelegate(IntPtr thisPtr);
 
+    // CM_Inventory::Event_CreateTinkeringTool(ulong toolId, PackableList<ulong> const& items) - cdecl,
+    // returns bool. The 0x027D CreateTinkeringTool game action: what gmSalvageUI::Salvage (the panel's
+    // Salvage button) sends, with the panel's tool (+0x608) and the ids of the items in its list. Chorizite
+    // map 002AB790 -> live VA 0x006AC790; its one caller is gmSalvageUI::Salvage (call at 0x004CC4DB).
+    // Same generated Event_* template as Event_DropItem etc., except the list is packed through its own
+    // vtable (slot 3, PackableList<ulong>::Pack, called once with size 0 for the size, then to write):
+    // wire = opcode, toolId, count, ids. ACE: GameActionCreateTinkeringTool -> Player.HandleSalvaging.
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate byte EventCreateTinkeringToolDelegate(uint toolId, IntPtr packableList);
+
     [UnmanagedFunctionPointer(CallingConvention.ThisCall)]
     private delegate void UseEquippedItemDelegate(IntPtr acPlugin, uint sourceObjectId, uint targetObjectId);
 
@@ -74,6 +84,16 @@ internal static class ClientHelperHooks
     // (Re-checked 2026-10-01; the old delegate had the two ids swapped.)
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate byte EventGiveObjectRequestDelegate(uint targetId, uint objectId, int amount);
+
+    // CM_Inventory::Event_PutItemInContainer(item, container, placement) @0x006ACC80 - the 0x19
+    // PutItemInContainer game action, the packet only: item, container, then the SLOT in that
+    // container (what a drop on a cell of the pack grid asks for; retail and OpenAC both send it).
+    // MoveItemInternal (the native move) always lands an item in the first empty slot. Same
+    // template as Event_GiveObjectRequest (0x10 after the first inner call, arguments written in
+    // wire order) ending in the 0x19 opcode. Unique (1 match @0x006ACC80) in both acclient copies,
+    // checked 2026-10-09 by deriving the pattern from the give pattern.
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate byte EventPutItemInContainerDelegate(uint itemId, uint containerId, int placement);
 
     // CM_Inventory::Event_GetAndWieldItem(ulong itemId, ulong equipMask) — the 0x001A
     // GetAndWieldItem game action ("wield this item at these locations"). Same generated
@@ -142,6 +162,7 @@ internal static class ClientHelperHooks
     private const int EventStackableMergeVa = 0x006ACDD0;
     // CM_Inventory::Event_GiveObjectRequest — public give-to-NPC API (FALLBACK only; pattern-scanned).
     private const int EventGiveObjectRequestVa = 0x006ACA60;
+    private const int EventPutItemInContainerVa = 0x006ACC80;
     // CM_Inventory::Event_GetAndWieldItem — wield into a chosen slot (FALLBACK only; pattern-scanned).
     private const int EventGetAndWieldItemVa = 0x006AC950;
     // CM_Inventory::Event_DropItem — drop an item on the ground (FALLBACK only; pattern-scanned).
@@ -159,6 +180,11 @@ internal static class ClientHelperHooks
     private const int SendNoticeOpenSalvagePanelVa = 0x006AD4F0;
     private const int GmSalvageUIAddNewItemVa = 0x004CC020;
     private const int GmSalvageUISalvageVa = 0x004CC430;
+    // CM_Inventory::Event_CreateTinkeringTool (FALLBACK only; pattern-scanned).
+    private const int EventCreateTinkeringToolVa = 0x006AC790;
+    // PackableList<ulong>'s vtable (.rdata), FALLBACK only: read from the immediate gmSalvageUI::Salvage
+    // writes into its local list (mov [esp+10h], offset vtable @0x004CC448).
+    private const int PackableListULongVtableVa = 0x007A4ED0;
 
     private static SetSelectedObjectDelegate? _setSelectedObject;
     private static UseObjectDelegate? _useObject;
@@ -169,6 +195,7 @@ internal static class ClientHelperHooks
     private static MoveItemInternalDelegate? _moveItemInternal;
     private static EventStackableMergeDelegate? _eventStackableMerge;
     private static EventGiveObjectRequestDelegate? _eventGiveObjectRequest;
+    private static EventPutItemInContainerDelegate? _eventPutItemInContainer;
     private static EventGetAndWieldItemDelegate? _eventGetAndWieldItem;
     private static EventDropItemDelegate? _eventDropItem;
     private static EventNoLongerViewingContentsDelegate? _eventNoLongerViewingContents;
@@ -179,6 +206,8 @@ internal static class ClientHelperHooks
     private static SendNoticeOpenSalvagePanelDelegate? _sendNoticeOpenSalvagePanel;
     private static GmSalvageUIAddNewItemDelegate? _gmSalvageUIAddNewItem;
     private static GmSalvageUISalvageDelegate? _gmSalvageUISalvage;
+    private static EventCreateTinkeringToolDelegate? _eventCreateTinkeringTool;
+    private static IntPtr _packableListULongVtable;
     private static bool _initialized;
     private static string _statusMessage = "Not probed yet.";
     private static int _interactionLogCount;
@@ -197,6 +226,7 @@ internal static class ClientHelperHooks
     public static bool HasSplitStackInternal => _moveItemInternal != null;
     public static bool HasMergeStackInternal => _eventStackableMerge != null;
     public static bool HasGiveObjectTo => _eventGiveObjectRequest != null;
+    public static bool HasPutItemInContainer => _eventPutItemInContainer != null;
     public static bool HasWieldItem => _eventGetAndWieldItem != null;
     public static bool HasDropItem => _eventDropItem != null;
     public static bool HasCloseContainer => _eventNoLongerViewingContents != null;
@@ -206,6 +236,11 @@ internal static class ClientHelperHooks
     public static bool HasWriteToChat => _addTextToScroll != null;
     public static bool HasInvokeParser => true;
     public static bool HasSalvagePanel => _sendNoticeOpenSalvagePanel != null && _gmSalvageUIAddNewItem != null && _gmSalvageUISalvage != null;
+    /// <summary>v82: <see cref="SalvageDirect"/> (the 0x027D salvage request without the panel).</summary>
+    public static bool HasSalvageDirect => _eventCreateTinkeringTool != null && _packableListULongVtable != IntPtr.Zero;
+    /// <summary>Most item ids one <see cref="SalvageDirect"/> request carries. ACE reads any count; 100 ids
+    /// keep the game action (header + tool + count + ids, 420 bytes) inside one network fragment.</summary>
+    public const int MaxSalvageDirectItems = 100;
     private static int _currentGroundContainerId;
 
     // ── Pattern-resolved binding (1a hardening, 2026-06-05) ─────────────
@@ -227,6 +262,7 @@ internal static class ClientHelperHooks
     // so do NOT trim it. Generated + verified unique (1 match @0x006ACA60) via
     // pe_pattern.py GEN against both acclient copies.
     private static readonly byte?[] PatEventGiveObjectRequest = [ 0x83, 0xEC, 0x0C, 0x53, 0x56, 0x57, 0xE8, null, null, null, null, 0x89, 0x44, 0x24, 0x14, 0x6A, 0x00, 0x8D, 0x44, 0x24, 0x10, 0x50, 0x8D, 0x4C, 0x24, 0x18, 0xC7, 0x44, 0x24, 0x18, 0x2C, 0x2C, 0x80, 0x00, 0xC7, 0x44, 0x24, 0x14, 0x00, 0x00, 0x00, 0x00, 0xE8, null, null, null, null, 0x8B, 0xF0, 0x83, 0xC6, 0x10, 0x56, 0xE8, null, null, null, null, 0x83, 0xC4, 0x04, 0x56, 0x8D, 0x4C, 0x24, 0x10, 0x51, 0x8D, 0x4C, 0x24, 0x18, 0x89, 0x44, 0x24, 0x14, 0x8B, 0xF8, 0xE8, null, null, null, null, 0x8B, 0x54, 0x24, 0x0C, 0x8B, 0x4C, 0x24, 0x1C, 0xC7, 0x02, 0xCD ];
+    private static readonly byte?[] PatEventPutItemInContainer = [  0x83, 0xEC, 0x0C, 0x53, 0x56, 0x57, 0xE8, null, null, null, null, 0x89, 0x44, 0x24, 0x14, 0x6A, 0x00, 0x8D, 0x44, 0x24, 0x10, 0x50, 0x8D, 0x4C, 0x24, 0x18, 0xC7, 0x44, 0x24, 0x18, 0x2C, 0x2C, 0x80, 0x00, 0xC7, 0x44, 0x24, 0x14, 0x00, 0x00, 0x00, 0x00, 0xE8, null, null, null, null, 0x8B, 0xF0, 0x83, 0xC6, 0x10, 0x56, 0xE8, null, null, null, null, 0x83, 0xC4, 0x04, 0x56, 0x8D, 0x4C, 0x24, 0x10, 0x51, 0x8D, 0x4C, 0x24, 0x18, 0x89, 0x44, 0x24, 0x14, 0x8B, 0xF8, 0xE8, null, null, null, null, 0x8B, 0x54, 0x24, 0x0C, 0x8B, 0x4C, 0x24, 0x1C, 0xC7, 0x02, 0x19 ];
     // CM_Inventory::Event_GetAndWieldItem @0x006AC950. Same template as the two above but with
     // one fewer argument (so +0x0C, not +0x10, after the first inner call) and the 0x1A opcode
     // as the last byte. Generated + verified unique (1 match @0x006AC950) via pe_pattern.py GEN
@@ -249,6 +285,17 @@ internal static class ClientHelperHooks
     private static readonly byte?[] PatSendNoticeOpenSalvagePanel = [ 0xE8, null, null, null, null, 0x8B, 0x10, 0x68, 0x22 ];
     private static readonly byte?[] PatGmSalvageUIAddNewItem = [ 0x8B, 0x44, 0x24, 0x04, 0x56, 0x57, 0x50, 0x8B, 0xF9 ];
     private static readonly byte?[] PatGmSalvageUISalvage = [ 0x83, 0xEC, 0x14, 0x53, 0x56, 0x8B, 0xF1, 0x8B, 0x8E ];
+    // CM_Inventory::Event_CreateTinkeringTool @0x006AC790. The Event_* template with the list argument:
+    // `mov edi,[esp+20h]` (the list) right after the first call, `call [eax+0Ch]` (the list's Pack), and the
+    // 0x027D opcode write (C7 01 7D 02 00 00) at the end. Verified unique (1 match @0x006AC790) via
+    // pe_pattern.py against C:\Games\RynthCore\AcClient and C:\Turbine acclient.exe, 2026-10-12.
+    private static readonly byte?[] PatEventCreateTinkeringTool = [ 0x83, 0xEC, 0x0C, 0x53, 0x56, 0x57, 0xE8, null, null, null, null, 0x8B, 0x7C, 0x24, 0x20, 0x6A, 0x00, 0x8D, 0x4C, 0x24, 0x10, 0x89, 0x44, 0x24, 0x18, 0x8B, 0x07, 0x51, 0x8B, 0xCF, 0xC7, 0x44, 0x24, 0x18, 0x2C, 0x2C, 0x80, 0x00, 0xC7, 0x44, 0x24, 0x14, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x50, 0x0C, 0x6A, 0x00, 0x8D, 0x54, 0x24, 0x10, 0x52, 0x8D, 0x4C, 0x24, 0x18, 0x8B, 0xF0, 0xE8, null, null, null, null, 0x8D, 0x74, 0x06, 0x08, 0x56, 0xE8, null, null, null, null, 0x83, 0xC4, 0x04, 0x89, 0x44, 0x24, 0x0C, 0x8B, 0xD8, 0x56, 0x8D, 0x44, 0x24, 0x10, 0x50, 0x8D, 0x4C, 0x24, 0x18, 0xE8, null, null, null, null, 0x8B, 0x4C, 0x24, 0x0C, 0x8B, 0x54, 0x24, 0x1C, 0xC7, 0x01, 0x7D, 0x02 ];
+    // Data xref for PackableList<ulong>'s vtable: gmSalvageUI::Salvage builds its local list with
+    // `mov [esp+10h], vtable` then zeroes head/tail/count (`mov [esp+14h/18h/1Ch], ebx`) and calls
+    // GetNumUIItems. Operand at +4. Unique (1 site @0x004CC448) in both acclient copies, 2026-10-12.
+    private static readonly byte?[] PatXrefPackableListULongVtable = [ 0xC7, 0x44, 0x24, 0x10, null, null, null, null, 0x89, 0x5C, 0x24, 0x14, 0x89, 0x5C, 0x24, 0x18, 0x89, 0x5C, 0x24, 0x1C, 0xE8 ];
+    // PackableList<ulong>::Pack (vtable slot 3) starts push esi; push edi; mov esi,ecx; call pack_size.
+    private static readonly byte[] PackableListULongPackPrologue = [ 0x56, 0x57, 0x8B, 0xF1, 0xE8 ];
 
     private static T? Bind<T>(AcClientTextSection text, string name, byte?[] pattern, int fallbackVa) where T : Delegate
     {
@@ -302,6 +349,7 @@ internal static class ClientHelperHooks
             _moveItemInternal = Bind<MoveItemInternalDelegate>(text, "ClientHelper.MoveItemInternal", PatMoveItemInternal, MoveItemInternalVa);
             _eventStackableMerge = Bind<EventStackableMergeDelegate>(text, "ClientHelper.Event_StackableMerge", PatEventStackableMerge, EventStackableMergeVa);
             _eventGiveObjectRequest = Bind<EventGiveObjectRequestDelegate>(text, "ClientHelper.Event_GiveObjectRequest", PatEventGiveObjectRequest, EventGiveObjectRequestVa);
+            _eventPutItemInContainer = Bind<EventPutItemInContainerDelegate>(text, "ClientHelper.Event_PutItemInContainer", PatEventPutItemInContainer, EventPutItemInContainerVa);
             _eventGetAndWieldItem = Bind<EventGetAndWieldItemDelegate>(text, "ClientHelper.Event_GetAndWieldItem", PatEventGetAndWieldItem, EventGetAndWieldItemVa);
             _eventDropItem = Bind<EventDropItemDelegate>(text, "ClientHelper.Event_DropItem", PatEventDropItem, EventDropItemVa);
             _eventNoLongerViewingContents = Bind<EventNoLongerViewingContentsDelegate>(text, "ClientHelper.Event_NoLongerViewingContents", PatEventNoLongerViewingContents, EventNoLongerViewingContentsVa);
@@ -312,6 +360,7 @@ internal static class ClientHelperHooks
             _sendNoticeOpenSalvagePanel = Bind<SendNoticeOpenSalvagePanelDelegate>(text, "ClientHelper.SendNotice_OpenSalvagePanel", PatSendNoticeOpenSalvagePanel, SendNoticeOpenSalvagePanelVa);
             _gmSalvageUIAddNewItem = Bind<GmSalvageUIAddNewItemDelegate>(text, "ClientHelper.gmSalvageUI_AddNewItem", PatGmSalvageUIAddNewItem, GmSalvageUIAddNewItemVa);
             _gmSalvageUISalvage = Bind<GmSalvageUISalvageDelegate>(text, "ClientHelper.gmSalvageUI_Salvage", PatGmSalvageUISalvage, GmSalvageUISalvageVa);
+            BindSalvageDirect(text);
             _selectedIdAddr = HookResolver.ResolveData(text, "ClientHelper.s_selected_id", PatXrefSelectedId, 2, SelectedIdVa).Address.ToInt32();
             _prevSelectedIdAddr = HookResolver.ResolveData(text, "ClientHelper.s_previous_selected_id", PatXrefPrevSelectedId, 2, PreviousSelectedIdVa).Address.ToInt32();
             _uiSystemAddr = HookResolver.ResolveData(text, "ClientHelper.ClientUISystem", PatXrefUiSystem, 2, UiSystemVa).Address.ToInt32();
@@ -325,6 +374,9 @@ internal static class ClientHelperHooks
             // Skills panel raises (CM_Train senders).
             try { PlayerTraining.Probe(text); }
             catch (Exception ex) { RynthLog.Compat($"Compat: raise senders binding failed - {ex.Message}"); }
+            // v81 confirmation answers (CM_Character::Event_ConfirmationResponse).
+            try { ConfirmationResponder.Probe(text); }
+            catch (Exception ex) { RynthLog.Compat($"Compat: confirmation response binding failed - {ex.Message}"); }
             _initialized = true;
             _statusMessage = "Ready.";
             RynthLog.Verbose("Compat: helper hooks ready - validated select/state/chat helpers plus mapped interaction and inventory helpers.");
@@ -356,7 +408,7 @@ internal static class ClientHelperHooks
         // (every UseObject/MoveItem/cast sibling already marshals). Drain re-invokes
         // this on the main thread, where the gate is satisfied and it runs directly.
         // SelectItem() funnels through here, so this one gate covers both.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueSetSelectedObject(objectId);
 
         if (_setSelectedObject == null)
@@ -385,7 +437,7 @@ internal static class ClientHelperHooks
     /// </summary>
     public static bool SelectFromOverlay(uint objectId)
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueOverlaySelect(objectId);
 
         if (objectId == 0 || _setSelectedObject == null)
@@ -418,7 +470,7 @@ internal static class ClientHelperHooks
         // main thread (via the OnEndScene drain), not off the pump thread. Off-thread
         // UseObject mutated AC's animation sequence (CSequence) and corrupted it ->
         // the CSequence::update_internal AV captured after looting was enabled.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueUseObject(objectId);
 
         if (_useObject == null || !IsValidObjectId(objectId))
@@ -451,7 +503,7 @@ internal static class ClientHelperHooks
         // Marshal onto AC's main thread (off-thread use-on-target mutates AC's
         // object/animation graph and corrupts it — see UseObject). Drain re-invokes
         // this on the main thread, where the gate is satisfied and it runs directly.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueUseObjectOn(sourceObjectId, targetObjectId);
 
         if (_useWithTargetEvent == null || !IsValidObjectId(sourceObjectId) || !IsValidObjectId(targetObjectId))
@@ -477,7 +529,7 @@ internal static class ClientHelperHooks
 
     public static bool UseEquippedItem(uint sourceObjectId, uint targetObjectId)
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueUseEquippedItem(sourceObjectId, targetObjectId);
 
         if (_useEquippedItem == null || !IsValidObjectId(sourceObjectId) || !IsValidObjectId(targetObjectId))
@@ -502,7 +554,7 @@ internal static class ClientHelperHooks
     {
         // Marshal onto AC's main thread — off-thread item moves race AC's per-tick
         // object/container bookkeeping (the looting null-deref AV class).
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueMoveItemExternal(objectId, targetContainerId, amount);
 
         if (_moveItemExternal == null || !IsValidObjectId(objectId) || !IsValidContainerId(targetContainerId) || amount < 0)
@@ -532,7 +584,7 @@ internal static class ClientHelperHooks
 
     public static bool MoveItemInternal(uint objectId, uint targetContainerId, int slot, int amount)
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueMoveItemInternal(objectId, targetContainerId, slot, amount);
 
         if (_moveItemInternal == null) return false;
@@ -589,7 +641,7 @@ internal static class ClientHelperHooks
     /// </summary>
     public static bool SplitStackInternal(uint objectId, uint targetContainerId, int slot, int amount)
     {
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueSplitStackInternal(objectId, targetContainerId, slot, amount);
 
         if (_moveItemInternal == null) return false;
@@ -643,7 +695,7 @@ internal static class ClientHelperHooks
     {
         // Every exit records its outcome in MergeStackResults so the plugin can poll
         // GetMergeStackResult instead of guessing from a later inventory snapshot.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
         {
             bool queued = AcMainThreadQueue.EnqueueMergeStackInternal(sourceObjectId, targetObjectId);
             MergeStackResults.Record(sourceObjectId, targetObjectId,
@@ -708,6 +760,36 @@ internal static class ClientHelperHooks
     }
 
     /// <summary>
+    /// Put an item into a container at a given slot (CM_Inventory::Event_PutItemInContainer, the
+    /// 0x19 game action): the drop on a cell of the pack grid, or a reorder inside one pack. The
+    /// server decides (full pack, wrong kind of item) and answers as for any move; this is the
+    /// packet only, so unlike <see cref="MoveItemInternal"/> it never walks the client's slot
+    /// table. <paramref name="slot"/> is the index in the container (the server clamps it).
+    /// </summary>
+    public static bool PutItemInContainerAt(uint objectId, uint containerId, int slot)
+    {
+        if (AcMainThreadQueue.MustQueue(teardown: false))
+            return AcMainThreadQueue.EnqueuePutItemInContainer(objectId, containerId, slot);
+
+        if (_eventPutItemInContainer == null) return false;
+        if (!IsValidObjectId(objectId)) return false;
+        if (!IsValidContainerId(containerId)) return false;
+        if (slot < 0) return false;
+
+        try
+        {
+            byte rv = _eventPutItemInContainer(objectId, containerId, slot);
+            RynthLog.Verbose($"Compat: Event_PutItemInContainer item=0x{objectId:X8} -> container=0x{containerId:X8} slot={slot} rv={rv}");
+            return rv != 0;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"Compat: Event_PutItemInContainer threw - {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Give an item to an NPC (or another player) via the canonical public API
     /// CM_Inventory::Event_GiveObjectRequest (cdecl) at 0x006ACA60 — the F7B1 give
     /// GameAction, the same path the drag-onto-NPC UI uses. This is the CORRECT
@@ -721,7 +803,7 @@ internal static class ClientHelperHooks
         // Marshal onto AC's main thread — off-thread F7B1 inventory sends race AC's
         // per-tick object/container bookkeeping (the looting null-deref AV class),
         // exactly like MoveItemExternal / MergeStackInternal.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueGiveObjectTo(objectId, targetId, amount);
 
         if (_eventGiveObjectRequest == null) return false;
@@ -767,7 +849,7 @@ internal static class ClientHelperHooks
     public static bool WieldItem(uint objectId, uint equipMask)
     {
         // Inventory sends run on AC's main thread, like MoveItemExternal / GiveObjectTo.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return _eventGetAndWieldItem != null && IsValidObjectId(objectId) && equipMask != 0
                 && AcMainThreadQueue.EnqueueWieldItem(objectId, equipMask);
 
@@ -797,7 +879,7 @@ internal static class ClientHelperHooks
     public static bool DropItem(uint objectId)
     {
         // Inventory sends run on AC's main thread, like WieldItem / GiveObjectTo.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return _eventDropItem != null && IsValidObjectId(objectId)
                 && AcMainThreadQueue.EnqueueDropItem(objectId);
 
@@ -831,7 +913,7 @@ internal static class ClientHelperHooks
     public static bool CloseContainer(uint containerId)
     {
         // An inventory game-action send, like DropItem / WieldItem: main thread only.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: true))
             return _eventNoLongerViewingContents != null && IsValidObjectId(containerId)
                 && AcMainThreadQueue.EnqueueCloseContainer(containerId);
 
@@ -900,6 +982,9 @@ internal static class ClientHelperHooks
     // refreshed every EndScene by EngineFrameController, 0 = no player / not ready.
     private static int _cachedPlayerId;
 
+    /// <summary>The player id last read on the main thread (0 = none yet); no native call.</summary>
+    public static uint CachedPlayerId => unchecked((uint)Volatile.Read(ref _cachedPlayerId));
+
     public static uint GetPlayerId()
     {
         if (_getPlayerId == null)
@@ -933,6 +1018,7 @@ internal static class ClientHelperHooks
             return;
 
         Interlocked.Exchange(ref _currentGroundContainerId, unchecked((int)objectId));
+        AutoIdService.OnContainerOpened(objectId);
     }
 
     public static void NotifyStopViewingObjectContents(uint objectId)
@@ -1026,10 +1112,11 @@ internal static class ClientHelperHooks
     // also hook the same function in ChatCallbackHooks.IncomingChatAddTextDetour,
     // which fires when AC processes our own WriteToChat output — guard
     // against unbounded recursion into ourselves.
-    private const int WriteToChatMinIntervalMs = 100;
+    // A burst of up to 12 lines, then one per 100 ms (ChatRateLimiter, 2026-10-28; it was one line
+    // per 100 ms, which cut every multi-line command reply to its first line).
+    private static readonly ChatRateLimiter _chatLimiter = new();
     [System.Runtime.CompilerServices.ModuleInitializer]
     internal static void EnsureChatRateLimiterReady() { /* triggers static init */ }
-    private static long _lastWriteToChatTick;
     [ThreadStatic] private static int _writeToChatDepth;
 
     public static bool WriteToChat(string? text, int chatType)
@@ -1044,11 +1131,8 @@ internal static class ClientHelperHooks
         // dropped before they queue, and drained messages are never re-dropped.
         if (!MainThreadGuard.IsOnMainThread())
         {
-            long now = Environment.TickCount64;
-            long last = System.Threading.Interlocked.Read(ref _lastWriteToChatTick);
-            if (last != 0 && now - last < WriteToChatMinIntervalMs)
+            if (!_chatLimiter.TryTake(Environment.TickCount64))
                 return false;
-            System.Threading.Interlocked.Exchange(ref _lastWriteToChatTick, now);
             return AcMainThreadQueue.EnqueueWriteToChat(text!, chatType);
         }
 
@@ -1120,7 +1204,7 @@ internal static class ClientHelperHooks
         // same class as the SetSelectedObject 0x60D1D AV. The ring is FIFO with
         // one consumer, so open -> add -> execute keep their order. Drain calls
         // back into this method on the main thread, where the gate is satisfied.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueSalvageOpen(toolId);
 
         try
@@ -1162,7 +1246,7 @@ internal static class ClientHelperHooks
         // queued entry carries only the item id: on the main thread this method
         // runs again and re-reads the instance, since the panel may have closed
         // or been rebuilt in between.
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueSalvageAddItem(itemId);
 
         try
@@ -1197,7 +1281,7 @@ internal static class ClientHelperHooks
 
         // Off-thread: same shape as SalvagePanelAddItem (instance re-read on the
         // main thread when the entry drains).
-        if (!MainThreadGuard.IsOnMainThread())
+        if (AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueSalvageExecute();
 
         try
@@ -1208,6 +1292,120 @@ internal static class ClientHelperHooks
         catch (Exception ex)
         {
             RynthLog.Compat($"Compat: SalvagePanelExecute threw - {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Binds CM_Inventory::Event_CreateTinkeringTool and finds PackableList&lt;ulong&gt;'s vtable (the
+    /// sender packs the item list through it). The vtable is accepted only when its slot 3 lands in the
+    /// scanned window on PackableList&lt;ulong&gt;::Pack's prologue, so a wrong address leaves
+    /// <see cref="HasSalvageDirect"/> false instead of handing AC a bad list.
+    /// </summary>
+    private static void BindSalvageDirect(AcClientTextSection text)
+    {
+        _eventCreateTinkeringTool = null;
+        _packableListULongVtable = IntPtr.Zero;
+        try
+        {
+            var send = Bind<EventCreateTinkeringToolDelegate>(text, "ClientHelper.Event_CreateTinkeringTool",
+                PatEventCreateTinkeringTool, EventCreateTinkeringToolVa);
+            int vtable = HookResolver.ResolveData(text, "ClientHelper.PackableList_ulong_vtable",
+                PatXrefPackableListULongVtable, 4, PackableListULongVtableVa).Address.ToInt32();
+
+            int slotOff = vtable + 3 * 4 - text.TextBaseVa;
+            if (send == null || slotOff < 0 || slotOff + 4 > text.Bytes.Length)
+            {
+                RynthLog.Compat($"Compat: salvage without the panel unavailable (sender {(send == null ? "not found" : "ok")}, vtable 0x{vtable:X8}).");
+                return;
+            }
+            int pack = BitConverter.ToInt32(text.Bytes, slotOff);
+            int packOff = pack - text.TextBaseVa;
+            bool prologueOk = packOff >= 0 && packOff + PackableListULongPackPrologue.Length <= text.Bytes.Length;
+            for (int i = 0; prologueOk && i < PackableListULongPackPrologue.Length; i++)
+                prologueOk = text.Bytes[packOff + i] == PackableListULongPackPrologue[i];
+            if (!prologueOk)
+            {
+                RynthLog.Compat($"Compat: salvage without the panel unavailable - vtable 0x{vtable:X8} slot 3 (0x{pack:X8}) is not PackableList<ulong>::Pack.");
+                return;
+            }
+
+            _packableListULongVtable = new IntPtr(vtable);
+            _eventCreateTinkeringTool = send;
+            RynthLog.Verbose($"Compat: salvage without the panel ready (PackableList<ulong> vtable 0x{vtable:X8}, Pack 0x{pack:X8}).");
+        }
+        catch (Exception ex)
+        {
+            _eventCreateTinkeringTool = null;
+            _packableListULongVtable = IntPtr.Zero;
+            RynthLog.Compat($"Compat: salvage-without-panel binding failed - {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Salvage without the salvage panel: sends the 0x027D CreateTinkeringTool game action (what the
+    /// panel's Salvage button sends) through AC's own sender, CM_Inventory::Event_CreateTinkeringTool,
+    /// with <paramref name="toolId"/> (the UST) and <paramref name="itemIds"/> (at most
+    /// <see cref="MaxSalvageDirectItems"/>). The list is a PackableList&lt;ulong&gt; built on this
+    /// stack frame (AC's layout: vtable, head, tail, count; nodes of value, next, prev) and only read by
+    /// the sender, so nothing is allocated in AC's heap and nothing outlives the call. The panel is
+    /// never opened, nothing in the UI changes, and the client's busy count is not touched.
+    ///
+    /// ACE (Player.HandleSalvaging) checks the tool is a UST (wcid 20646) the player owns (else
+    /// "That is not a salvaging tool." / "You do not own that salvage tool!"), then for each id an item
+    /// in the player's packs (not worn), with a material and workmanship and not retained, is consumed;
+    /// ids that fail are skipped silently. Salvage bags in the list are merged with the new salvage.
+    /// The answer: the items' removal, new salvage bags created in the pack, and one "You obtain ..."
+    /// line per skill (SalvageOperationsResult, printed by ClientUISystem, not the panel).
+    ///
+    /// Off AC's main thread it is queued (the list is copied); true = sent, or queued.
+    /// </summary>
+    public static bool SalvageDirect(uint toolId, uint[] itemIds)
+    {
+        if (!HasSalvageDirect || toolId == 0 || itemIds == null || itemIds.Length == 0 || itemIds.Length > MaxSalvageDirectItems)
+            return false;
+        foreach (uint id in itemIds)
+            if (id == 0 || id == toolId) return false;
+
+        // PR #8's gate: also queued on the main thread while a death/portal transition holds work.
+        if (AcMainThreadQueue.MustQueue(teardown: false))
+            return AcMainThreadQueue.EnqueueSalvageDirect(toolId, itemIds);
+
+        return SendCreateTinkeringTool(toolId, itemIds);
+    }
+
+    private static unsafe bool SendCreateTinkeringTool(uint toolId, uint[] itemIds)
+    {
+        // Main thread only (SalvageDirect marshals; this is its main-thread half).
+        if (!MainThreadGuard.IsOnMainThread()) return false;
+        IntPtr vtable = _packableListULongVtable;
+        if (_eventCreateTinkeringTool == null || vtable == IntPtr.Zero) return false;
+
+        int n = itemIds.Length;
+        // Header (4 dwords) + n nodes of 3 dwords, all on this frame (n <= 100: at most 1216 bytes).
+        uint* buf = stackalloc uint[4 + 3 * MaxSalvageDirectItems];
+        uint* nodes = buf + 4;
+        for (int i = 0; i < n; i++)
+        {
+            uint* node = nodes + 3 * i;
+            node[0] = itemIds[i];                                                     // value
+            node[1] = i + 1 < n ? (uint)(nint)(nodes + 3 * (i + 1)) : 0u;            // next
+            node[2] = i > 0 ? (uint)(nint)(nodes + 3 * (i - 1)) : 0u;                // prev
+        }
+        buf[0] = (uint)vtable.ToInt32();                                             // vtable
+        buf[1] = (uint)(nint)nodes;                                                  // head
+        buf[2] = (uint)(nint)(nodes + 3 * (n - 1));                                  // tail
+        buf[3] = (uint)n;                                                            // count
+
+        try
+        {
+            byte rv = _eventCreateTinkeringTool(toolId, (IntPtr)buf);
+            RynthLog.Verbose($"Compat: Event_CreateTinkeringTool tool=0x{toolId:X8} items={n} rv={rv}");
+            return rv != 0;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Compat($"Compat: Event_CreateTinkeringTool threw - {ex.Message}");
             return false;
         }
     }
@@ -1245,6 +1443,7 @@ internal static class ClientHelperHooks
         _moveItemInternal = null;
         _eventStackableMerge = null;
         _eventGiveObjectRequest = null;
+        _eventPutItemInContainer = null;
         _eventGetAndWieldItem = null;
         _eventDropItem = null;
         _eventNoLongerViewingContents = null;
@@ -1256,6 +1455,8 @@ internal static class ClientHelperHooks
         _sendNoticeOpenSalvagePanel = null;
         _gmSalvageUIAddNewItem = null;
         _gmSalvageUISalvage = null;
+        _eventCreateTinkeringTool = null;
+        _packableListULongVtable = IntPtr.Zero;
         _initialized = false;
     }
 

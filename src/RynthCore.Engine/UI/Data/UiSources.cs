@@ -17,36 +17,44 @@ internal static class UiSources
     public static readonly RynthAiSource RynthAi = new();
     public static readonly PatrolSource Patrol = new();
     public static readonly ProgressionSource Progression = new();
-    public static readonly CharmsSource Charms = new();
     public static readonly RadarSource Radar = new();
     public static readonly SettingsSource Settings = new();
     public static readonly MetaSource Meta = new();
     public static readonly LuaSource Lua = new();
     public static readonly NavSource Nav = new();
     public static readonly ItemsSource Items = new();
+    public static readonly ItemToolSource ItemTool = new();
     public static readonly VisionSource Vision = new();
     public static readonly RynthNavSource RynthNav = new();
     public static readonly RynthNavAtlasSource RynthNavAtlas = new();
     public static readonly RynthNavArrowWatch RynthNavArrowWatch = new();
+    public static readonly RynthSortWatch RynthSortWatch = new();
     public static readonly ChatSource Chat = new();
     public static readonly DamageSource Damage = new();
     public static readonly MonsterRulesSource MonsterRules = new();
     public static readonly MonsterDetailSource MonsterDetail = new();
     public static readonly LootEditSource LootEdit = new();
     public static readonly SenseSource Sense = new();
+    public static readonly BountiesSource Bounties = new();
+    public static readonly IltStatusSource IltStatus = new();
+    public static readonly CharactersSource Characters = new();
 
     static UiSources()
     {
+        UiDataHub.Register(Bounties);
+        UiDataHub.Register(IltStatus);
         UiDataHub.Register(Settings);
         UiDataHub.Register(Meta);
         UiDataHub.Register(LootEdit);
         UiDataHub.Register(Lua);
         UiDataHub.Register(Nav);
         UiDataHub.Register(Items);
+        UiDataHub.Register(ItemTool);
         UiDataHub.Register(Vision);
         UiDataHub.Register(RynthNav);
         UiDataHub.Register(RynthNavAtlas);
         UiDataHub.Register(RynthNavArrowWatch);
+        UiDataHub.Register(RynthSortWatch);
         UiDataHub.Register(Chat);
         UiDataHub.Register(Damage);
         UiDataHub.Register(MonsterRules);
@@ -55,11 +63,11 @@ internal static class UiSources
         UiDataHub.Register(RynthAi);
         UiDataHub.Register(Patrol);
         UiDataHub.Register(Progression);
-        UiDataHub.Register(Charms);
         UiDataHub.Register(PluginStatus);
         UiDataHub.Register(Log);
         UiDataHub.Register(Tracker);
         UiDataHub.Register(Sense);
+        UiDataHub.Register(Characters);
     }
 }
 

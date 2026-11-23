@@ -84,6 +84,8 @@ internal sealed class RynthNavStatus
     public int OpenArrow;
     public RynthNavArrow? Arrow;
     public string RouteFor = "", RouteSummary = "";
+    /// <summary>The walking path RynthNav worked out for the trip: segments (one per walk), each a flat list of ns, ew pairs in degrees. Empty: none (older RynthNav, or no trip on the ground).</summary>
+    public float[][] PathSegments = Array.Empty<float[]>();
     public bool RouteActive;
     public int RouteIdx = -1;
     public RynthNavRouteStep[] Route = Array.Empty<RynthNavRouteStep>();
@@ -106,6 +108,19 @@ internal sealed class RynthNavStatus
     // The Town Network (RynthNav 0.6.2+): townnet.json loaded or not, and why.
     public bool HasTownNet, TownNetLoaded;
     public string TownNetStatus = "";
+    // Path markers and "save as nav route" (RynthNav 0.6.6+; HasMarkers / HasSave false on older plugins).
+    public bool HasMarkers, MarkersOn, MarkerLabels, MarkerGuide, MarkersShown;
+    public string MarkerStatus = "";
+    // The navmesh drawn in the world (/rnav mesh; RynthNav 0.6.7+ status "mesh"; HasMesh false on older plugins).
+    public bool HasMesh, MeshOn, MeshFloor, MeshWalls;
+    public int MeshRadius = 40, MeshTriangles = 3000, MeshDrawn;
+    public bool HasSave, CanSave, SaveBusy;
+    public string SaveFor = "", SaveName = "", SaveConflict = "", SaveLast = "";
+    // Custom-server portals and learning them (RynthNav "learn", 2026-10-29; HasLearn false on older plugins).
+    public bool HasLearn, LearnOn;
+    public double LearnRange = 200, LearnMin = 20, LearnMax = 2000;
+    public int LearnSaved, LearnRoutable, LearnTried, LearnLearned;
+    public string LearnServer = "", LearnLine = "", LearnCounts = "";
     public bool HasTies;
     public int Tie1Known = -1, Tie2Known = -1;
     public string TiePending = "";
@@ -273,6 +288,68 @@ internal sealed class RynthNavStatus
             s.HasTownNet = info.TryGetProperty("townNet", out _);
             s.TownNetLoaded = Int(info, "townNet") != 0;
             s.TownNetStatus = Str(info, "townNetStatus");
+        }
+        if (r.TryGetProperty("learn", out var ln) && ln.ValueKind == JsonValueKind.Object)
+        {
+            s.HasLearn = true;
+            s.LearnOn = Int(ln, "on") != 0;
+            s.LearnRange = Num(ln, "range");
+            s.LearnMin = Num(ln, "min");
+            s.LearnMax = Num(ln, "max");
+            s.LearnServer = Str(ln, "server");
+            s.LearnSaved = Int(ln, "saved");
+            s.LearnRoutable = Int(ln, "routable");
+            s.LearnTried = Int(ln, "tried");
+            s.LearnLearned = Int(ln, "learned");
+            s.LearnLine = Str(ln, "line");
+            s.LearnCounts = s.LearnServer.Length == 0 ? "Not logged in yet."
+                : $"{s.LearnServer}: {s.LearnSaved} custom portal(s) saved, {s.LearnRoutable} with a known landing (used by routes).";
+        }
+        if (r.TryGetProperty("markers", out var mk) && mk.ValueKind == JsonValueKind.Object)
+        {
+            s.HasMarkers = true;
+            s.MarkersOn = Int(mk, "on") != 0;
+            s.MarkerLabels = Int(mk, "labels") != 0;
+            s.MarkerGuide = Int(mk, "guide") != 0;
+            s.MarkersShown = Int(mk, "shown") != 0;
+            s.MarkerStatus = Str(mk, "status");
+        }
+        if (r.TryGetProperty("path", out var pa) && pa.ValueKind == JsonValueKind.Array)
+        {
+            var segs = new List<float[]>();
+            foreach (JsonElement seg in pa.EnumerateArray())
+            {
+                if (seg.ValueKind != JsonValueKind.Array) continue;
+                var arr = new float[seg.GetArrayLength() & ~1];     // whole ns, ew pairs
+                int i = 0;
+                foreach (JsonElement v in seg.EnumerateArray())
+                {
+                    if (i >= arr.Length) break;
+                    arr[i++] = v.ValueKind == JsonValueKind.Number ? (float)v.GetDouble() : 0f;
+                }
+                if (arr.Length >= 4) segs.Add(arr);
+            }
+            s.PathSegments = segs.ToArray();
+        }
+        if (r.TryGetProperty("mesh", out var ms) && ms.ValueKind == JsonValueKind.Object)
+        {
+            s.HasMesh = true;
+            s.MeshOn = Int(ms, "on") != 0;
+            s.MeshFloor = Int(ms, "floor", 1) != 0;
+            s.MeshWalls = Int(ms, "walls", 1) != 0;
+            s.MeshRadius = Int(ms, "radius", 40);
+            s.MeshTriangles = Int(ms, "triangles", 3000);
+            s.MeshDrawn = Int(ms, "drawn");
+        }
+        if (r.TryGetProperty("save", out var sv) && sv.ValueKind == JsonValueKind.Object)
+        {
+            s.HasSave = true;
+            s.CanSave = Int(sv, "can") != 0;
+            s.SaveBusy = Int(sv, "busy") != 0;
+            s.SaveFor = Str(sv, "for");
+            s.SaveName = Str(sv, "name");
+            s.SaveConflict = Str(sv, "conflict");
+            s.SaveLast = Str(sv, "last");
         }
         string meshHere = !s.HasInfo ? (s.TileLoaded ? "loaded" : "not loaded")
             : s.TileHere == 1 ? "yes" : s.TileHere == 0 ? "no (no tile for this landblock)" : "not checked yet";

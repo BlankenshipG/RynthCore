@@ -32,6 +32,9 @@ internal static class Program
         RaiseCommand();
         StatusFileReads();
         MoveProtocol();
+        LogRollover();
+        ServeGuards();
+        HeadlessClients();
         if (Arg(args, "--atlas") is { } atlas) RealAtlas(atlas);
         if (portal != null) RealSpellTable(portal);
         if (cell != null) RealWorldMap(cell, outFile);
@@ -39,6 +42,110 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine(_failed == 0 ? $"PASS ({_checks} checks)" : $"FAIL ({_failed} of {_checks} checks failed)");
         return _failed == 0 ? 0 : 1;
+    }
+
+    // ── headless characters (rynth-headless) ────────────────────────────────
+
+    private static void HeadlessClients()
+    {
+        Console.WriteLine("headless clients");
+        var names = new Dictionary<int, string> { [100] = "acclient", [200] = "rynth-headless", [300] = "notepad" };
+        string? Name(int pid) => names.TryGetValue(pid, out string? n) ? n : null;
+
+        Check(ClientLiveness.IsAlive(100, false, 0, Name), "a retail file: its own pid is an acclient");
+        Check(!ClientLiveness.IsAlive(300, false, 0, Name), "a recycled pid that isn't an acclient is dead");
+        Check(!ClientLiveness.IsAlive(1_000_000_001, false, 0, Name), "no such process: dead");
+        Check(ClientLiveness.IsAlive(1_000_000_001, true, 200, Name), "headless: the host process is a rynth-headless");
+        Check(!ClientLiveness.IsAlive(1_000_000_001, true, 300, Name), "headless: a recycled host pid is dead");
+        Check(!ClientLiveness.IsAlive(1_000_000_001, true, 0, Name), "headless with no host pid: dead");
+        Check(!ClientLiveness.IsAlive(200, false, 0, Name), "a retail file never counts a rynth-headless as an acclient");
+
+        // What StatusExporter writes (trimmed): the agent's model reads the headless fields.
+        var m = JsonSerializer.Deserialize("""
+            {"schema":"rynthcore.client-status/1","ts":"2026-10-28T12:00:00.000Z","host":"PC","pid":1012345600,
+             "account":"testaccount","character":"+Test Character","server":"ACEmulator","fps":66,"pluginTicksPerSec":66,"inWorld":true,
+             "bot":null,"enchantments":[{"spellId":2,"secondsRemaining":12.5}],
+             "opos":{"cell":"01D90108","indoor":true,"wx":100.5,"wy":200.25,"z":-6,"heading":90},
+             "headless":true,"hostPid":4242,"hostProcess":"rynth-headless"}
+            """, AgentJsonContext.Default.StatusFileModel)!;
+        Check(m.Headless && m.HostPid == 4242 && m.HostProcess == "rynth-headless", "headless fields read");
+        Check(m.Pid == 1012345600 && m.InWorld && m.Fps == 66, "the usual fields still read");
+        var retail = JsonSerializer.Deserialize("""{"schema":"rynthcore.client-status/1","pid":7}""", AgentJsonContext.Default.StatusFileModel)!;
+        Check(!retail.Headless && retail.HostPid == 0, "a retail file is not headless");
+    }
+
+    // ── serve guards (remote access) ────────────────────────────────────────
+
+    private static void ServeGuards()
+    {
+        Section("status server: loopback, token length, lockout, bounded bodies, log-safe text");
+        Check(ServeGuard.IsLoopbackPrefix("http://127.0.0.1:8740/"), "127.0.0.1 is loopback");
+        Check(ServeGuard.IsLoopbackPrefix("http://localhost:8740/"), "localhost is loopback");
+        Check(ServeGuard.IsLoopbackPrefix("http://[::1]:8740/"), "[::1] is loopback");
+        Check(!ServeGuard.IsLoopbackPrefix("http://+:8740/"), "+ is every address");
+        Check(!ServeGuard.IsLoopbackPrefix("http://*:8740/"), "* is every address");
+        Check(!ServeGuard.IsLoopbackPrefix("http://100.64.1.2:8740/"), "a Tailscale address is not");
+        Check(!ServeGuard.IsLoopbackPrefix("http://127.0.0.1.evil.example:8740/"), "a name starting 127.0.0.1 is not");
+
+        Check(ServeGuard.TokenProblem("http://127.0.0.1:8740/", "") != null, "no token: never serves");
+        Check(ServeGuard.TokenProblem("http://127.0.0.1:8740/", "short") == null, "loopback: any token");
+        Check(ServeGuard.TokenProblem("http://+:8740/", "short") != null, "remote bind: a short token is refused");
+        Check(ServeGuard.TokenProblem("http://+:8740/", new string('k', 16)) == null, "remote bind: 16 characters is fine");
+
+        var t = new AuthThrottle();
+        var lan = System.Net.IPAddress.Parse("192.168.1.50");
+        var t0 = new DateTime(2026, 10, 13, 12, 0, 0, DateTimeKind.Utc);
+        bool started = false;
+        for (int i = 0; i < AuthThrottle.MaxFailures - 1; i++) started |= t.Fail(lan, t0.AddSeconds(i));
+        Check(!started && !t.IsBlocked(lan, t0.AddSeconds(10)), "under the limit: not blocked");
+        Check(t.Fail(lan, t0.AddSeconds(10)), "the limit starts a lockout (reported once)");
+        Check(t.IsBlocked(lan, t0.AddMinutes(4)), "still blocked inside the lockout");
+        Check(!t.IsBlocked(lan, t0.AddMinutes(6)), "free again after it");
+        var slow = System.Net.IPAddress.Parse("192.168.1.51");
+        for (int i = 0; i < AuthThrottle.MaxFailures * 2; i++) t.Fail(slow, t0.AddSeconds(i * 61));
+        Check(!t.IsBlocked(slow, t0.AddSeconds(AuthThrottle.MaxFailures * 2 * 61)), "failures spread past the window don't add up");
+        var other = System.Net.IPAddress.Parse("192.168.1.52");
+        for (int i = 0; i < AuthThrottle.MaxFailures - 1; i++) t.Fail(other, t0);
+        t.Succeed(other);
+        Check(!t.Fail(other, t0), "a good token clears the count");
+        for (int i = 0; i < AuthThrottle.MaxFailures * 2; i++) t.Fail(System.Net.IPAddress.Loopback, t0);
+        Check(!t.IsBlocked(System.Net.IPAddress.Loopback, t0), "loopback is never locked out");
+
+        Check(ServeGuard.TryReadBounded(new MemoryStream(Encoding.UTF8.GetBytes("{\"pid\":1}")), 9, 64, null, out string small) && small == "{\"pid\":1}", "a small body reads");
+        Check(!ServeGuard.TryReadBounded(new MemoryStream(new byte[100]), 100, 64, null, out _), "a declared length over the limit is refused");
+        Check(!ServeGuard.TryReadBounded(new MemoryStream(new byte[100]), -1, 64, null, out _), "chunked (no length) over the limit is refused");
+        Check(ServeGuard.TryReadBounded(new MemoryStream(new byte[64]), -1, 64, null, out _), "exactly the limit reads");
+
+        Check(ServeGuard.LogSafe("a\r\nFAKE LOG LINE") == "a  FAKE LOG LINE", "CR/LF can't start a log line");
+        Check(ServeGuard.LogSafe(new string('x', 500), 10) == "xxxxxxxxxx...", "capped");
+        Check(ServeGuard.LogSafe(null) == "", "null is empty");
+    }
+
+    // ── log rollover ────────────────────────────────────────────────────────
+
+    private static void LogRollover()
+    {
+        Section("StatusAgent.log rolls over past its cap");
+        string dir = Path.Combine(Path.GetTempPath(), "sa-logroll-" + Environment.ProcessId);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string f = Path.Combine(dir, "StatusAgent.log");
+            File.WriteAllText(f, new string('x', 2000));
+            File.WriteAllText(f + ".old", "older");
+            AgentLog.RollIfBig(f, maxBytes: 1000);
+            Check(!File.Exists(f), "the first write checks at once (a big log from before starts over)");
+            Check(File.Exists(f + ".old") && new FileInfo(f + ".old").Length == 2000, "to .old, replacing the older copy");
+            File.WriteAllText(f, new string('y', 3000));
+            for (int i = 0; i < 199; i++) AgentLog.RollIfBig(f, maxBytes: 1000);
+            Check(File.Exists(f), "then only every 200th write checks the size");
+            AgentLog.RollIfBig(f, maxBytes: 1000);
+            Check(!File.Exists(f) && new FileInfo(f + ".old").Length == 3000, "the 200th rolls it over");
+            File.WriteAllText(f, "small");
+            for (int i = 0; i < 400; i++) AgentLog.RollIfBig(f, maxBytes: 1000);
+            Check(File.Exists(f), "under the cap it stays");
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
     }
 
     // ── landblocks ──────────────────────────────────────────────────────────

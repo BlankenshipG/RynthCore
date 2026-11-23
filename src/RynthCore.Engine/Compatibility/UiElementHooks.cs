@@ -10,6 +10,7 @@
 //        stores the owner at +0x2F4, builds the tooltip element into +0x2F8.
 //    ResetTooltip()   0x0045C440  frees +0x2F8, then tail-jumps into CheckTooltip.
 //    CheckTooltip()   0x0045B7C0  per-frame tooltip timer (+0x325, +0x2D4, +0x24C).
+//        Its `this` is also kept as Manager for AcMouseOver (AC's mouse-over, +0x244).
 //    StartDragandDrop(UIElement*, int x, int y) -> bool  0x0045E120, ret 0Ch
 //        on success the drag icon is at +0x31C and its owner at +0x320; it calls
 //        itself once for a drag proxy (we report only the outermost call).
@@ -247,6 +248,13 @@ internal static unsafe class UiElementHooks
     /// <summary>The object whose tooltip AC shows, or 0 (any thread; a plain field).</summary>
     public static uint CurrentTooltipObject => _tooltipShown ? _tooltipObject : 0;
 
+    /// <summary>
+    /// AC's main thread: the UIElementManager singleton (`this` of the detours; CheckTooltip
+    /// runs every frame from UseTime), or zero before the first call and after Client::Cleanup.
+    /// AcMouseOver reads AC's mouse-over element through it.
+    /// </summary>
+    public static IntPtr Manager => _dead ? IntPtr.Zero : _mgr;
+
     /// <summary>UiFlowHooks, leaving the world (main thread): forget tooltip/drag state; no events.</summary>
     public static void OnScreenLeaving()
     {
@@ -300,6 +308,7 @@ internal static unsafe class UiElementHooks
     private static void ResetTooltipDetour(IntPtr mgr)
     {
         ((delegate* unmanaged[Thiscall]<IntPtr, void>)_origResetTooltip)(mgr);
+        if (!_dead && mgr != IntPtr.Zero) _mgr = mgr;
         if (ResetTooltipSlot.Enabled)
             AfterTooltipCheck(mgr, ResetTooltipSlot);
     }
@@ -308,6 +317,7 @@ internal static unsafe class UiElementHooks
     private static void CheckTooltipDetour(IntPtr mgr)
     {
         ((delegate* unmanaged[Thiscall]<IntPtr, void>)_origCheckTooltip)(mgr);
+        if (!_dead && mgr != IntPtr.Zero) _mgr = mgr;   // the manager for AcMouseOver, every frame
         if (CheckTooltipSlot.Enabled)
             AfterTooltipCheck(mgr, CheckTooltipSlot);
     }
@@ -373,9 +383,8 @@ internal static unsafe class UiElementHooks
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvThiscall)])]
     private static byte CatchDroppedItemDetour(IntPtr catcher, IntPtr dragDropInfo)
     {
-        var original = (delegate* unmanaged[Thiscall]<IntPtr, IntPtr, byte>)_origCatchDrop;
         if (!CatchDropSlot.Enabled || _dead || dragDropInfo == IntPtr.Zero)
-            return original(catcher, dragDropInfo);
+            return CallOriginalCatchDrop(catcher, dragDropInfo);
 
         uint obj = 0, spell = 0;
         try
@@ -401,7 +410,7 @@ internal static unsafe class UiElementHooks
             LogOnce("CatchDroppedItem", ex);
         }
 
-        byte result = original(catcher, dragDropInfo);
+        byte result = CallOriginalCatchDrop(catcher, dragDropInfo);
         try
         {
             _dragObject = _dragSpell = 0;
@@ -463,6 +472,29 @@ internal static unsafe class UiElementHooks
             element = Parent(element);
         }
         return false;
+    }
+
+    private static int _catchDropFaults;
+
+    /// <summary>
+    /// AC's CatchDroppedItem, called through the SEH trampoline. AC's own drop handlers can fault
+    /// (seen 11-09: a null read inside the item-list drop code at a vault). Without our detour the
+    /// game-tick guard survives that; with a managed frame in between, the CLR would end the
+    /// process. So the fault is caught here, the drop counts as not caught, and the client goes on.
+    /// </summary>
+    private static byte CallOriginalCatchDrop(IntPtr catcher, IntPtr dragDropInfo)
+    {
+        if (!SehTrampoline.IsAvailable)
+            return ((delegate* unmanaged[Thiscall]<IntPtr, IntPtr, byte>)_origCatchDrop)(catcher, dragDropInfo);
+
+        byte result = SehTrampoline.ThiscallByteUint(_origCatchDrop, catcher, (uint)dragDropInfo, out bool faulted);
+        if (!faulted)
+            return result;
+
+        int n = Interlocked.Increment(ref _catchDropFaults);
+        if (n <= 5)
+            try { RynthLog.Compat($"UiElementHooks: AC's CatchDroppedItem faulted (access violation) on element 0x{(catcher != IntPtr.Zero ? *(uint*)(catcher + ElementId) : 0):X8}; drop treated as not caught, client kept running ({n} so far)."); } catch { }
+        return 0;
     }
 
     private static int _loggedErrors;

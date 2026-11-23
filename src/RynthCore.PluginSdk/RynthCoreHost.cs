@@ -142,6 +142,25 @@ public readonly unsafe struct RynthCoreHost
     public bool HasGetCharacterTitles => _api.Version >= 75 && _api.GetCharacterTitlesFn != IntPtr.Zero;
     /// <summary>v75: <see cref="TryGetServerInfo"/> (which server this is).</summary>
     public bool HasGetServerInfo => _api.Version >= 75 && _api.GetServerInfoFn != IntPtr.Zero;
+    /// <summary>v86: <see cref="TryGetServerStateJson"/> (the server list for every plugin).</summary>
+    public bool HasGetServerStateJson => _api.Version >= 86 && _api.GetServerStateJsonFn != IntPtr.Zero;
+    /// <summary>v87: <see cref="TryGetWieldedItems"/> (what the player wields, from the server's messages).</summary>
+    public bool HasGetWieldedItems => _api.Version >= 87 && _api.GetWieldedItemsFn != IntPtr.Zero;
+    /// <summary>v89: <see cref="GetUiColor"/> and <see cref="GetUiFont"/> (the engine's look, for a plugin's own windows).</summary>
+    public bool HasUiTheme => _api.Version >= 89 && _api.GetUiColorFn != IntPtr.Zero && _api.GetUiFontFn != IntPtr.Zero;
+    /// <summary>v89: <see cref="SetPanelOpen"/> (open, close or toggle a panel by its key, a plugin window's title included).</summary>
+    public bool HasSetPanelOpen => _api.Version >= 89 && _api.SetPanelOpenFn != IntPtr.Zero;
+    /// <summary>v90: windows that draw their own frame: the manifest's "chrome": "none" and "fitHeight",
+    /// <see cref="PanelDragWithLastItem"/>, <see cref="SetPanelPopOut"/>, <see cref="PanelTextSize"/>, and the
+    /// v90 colours (Muted, KeyFace, Hairline, Inset, Faint) and fonts (Dash*, Narrow*).</summary>
+    public bool HasFramelessWindows => _api.Version >= 90 && _api.PanelDragWithLastItemFn != IntPtr.Zero
+        && _api.SetPanelPopOutFn != IntPtr.Zero && _api.PanelTextSizeFn != IntPtr.Zero;
+    /// <summary>v90: <see cref="RenderSettingsDrawer"/> (the dashboard drawers that show Settings rows).</summary>
+    public bool HasSettingsDrawers => _api.Version >= 90 && _api.RenderSettingsDrawerFn != IntPtr.Zero;
+    /// <summary>v90: the player's AC shortcut slots (<see cref="GetShortcuts"/>, <see cref="ShortcutAction"/>),
+    /// AC's key bindings (<see cref="GetActionKeys"/>) and item pictures (<see cref="GetIconTexture"/>).</summary>
+    public bool HasShortcuts => _api.Version >= 90 && _api.GetShortcutsFn != IntPtr.Zero && _api.ShortcutActionFn != IntPtr.Zero
+        && _api.GetActionKeysFn != IntPtr.Zero && _api.GetIconTextureFn != IntPtr.Zero;
     /// <summary>v76: <see cref="CloseContainer"/> (close a corpse or chest like the client's window close).</summary>
     public bool HasCloseContainer => _api.Version >= 76 && _api.CloseContainerFn != IntPtr.Zero;
     /// <summary>v77: <see cref="GetScreenMode"/>, <see cref="GetUiHookFlags"/> and the UI callbacks
@@ -155,9 +174,37 @@ public readonly unsafe struct RynthCoreHost
     /// (spend unassigned XP and skill credits like the character window).</summary>
     public bool HasTraining => _api.Version >= 79 && _api.GetTrainingInfoFn != IntPtr.Zero
                                && _api.RaiseFn != IntPtr.Zero && _api.TrainSkillFn != IntPtr.Zero;
+
+    /// <summary>v80: <see cref="TryGetContainerOrder"/> (a container's items in real slot order, and the
+    /// side packs' order in the pack column).</summary>
+    public bool HasContainerOrder => _api.Version >= 80 && _api.GetContainerOrderFn != IntPtr.Zero;
+
+    /// <summary>v80: <see cref="PutItemInContainer"/> (a move that lands at a slot; a reorder within a
+    /// pack). The sender can still be unbound on an odd client: the call then answers -1.</summary>
+    public bool HasPutItemInContainer => _api.Version >= 80 && _api.PutItemInContainerFn != IntPtr.Zero;
+
+    /// <summary>v82: <see cref="SalvageDirect"/> (salvage without opening AC's salvage panel). The sender
+    /// can still be unbound on an odd client: the call then answers -1.</summary>
+    public bool HasSalvageDirect => _api.Version >= 82 && _api.SalvageDirectFn != IntPtr.Zero;
+
+    /// <summary>v82: most ids one <see cref="SalvageDirect"/> request takes (the engine refuses more).</summary>
+    public const int MaxSalvageDirectItems = 100;
+
+    /// <summary>v83: <see cref="GetObjectServerAge"/> (when the server last talked about an object).</summary>
+    public bool HasGetObjectServerAge => _api.Version >= 83 && _api.GetObjectServerAgeFn != IntPtr.Zero;
+
+    /// <summary>v83: <see cref="RemoveClientObject"/> (drop a ghost creature from the client).</summary>
+    public bool HasRemoveClientObject => _api.Version >= 83 && _api.RemoveClientObjectFn != IntPtr.Zero;
+
+    /// <summary>v84: <see cref="TryGetObjectProperties"/> (every property of an object at once).</summary>
+    public bool HasGetObjectProperties => _api.Version >= 84 && _api.GetObjectPropertiesFn != IntPtr.Zero;
     public bool HasGetPluginExportJson     => _api.Version >= 66 && _api.GetPluginExportJsonFn     != IntPtr.Zero;
     // Version-checked first: on an older engine the field lies past the end of its API table.
-    public bool HasGetMergeStackResult     => _api.Version >= 80 && _api.GetMergeStackResultFn     != IntPtr.Zero;
+    public bool HasGetMergeStackResult     => _api.Version >= 81 && _api.GetMergeStackResultFn     != IntPtr.Zero;
+    /// <summary>v85: <see cref="ArmConfirmation"/> and <see cref="TryGetLastConfirmation"/>.</summary>
+    public bool HasConfirmationAnswers     => _api.Version >= 85 && _api.ArmConfirmationFn != IntPtr.Zero && _api.GetLastConfirmationFn != IntPtr.Zero;
+    /// <summary>v97: <see cref="ArmConfirmationLeaveBelow"/> (a sticky arm that leaves prompts below its minimum to the client).</summary>
+    public bool HasConfirmationLeaveBelow  => HasConfirmationAnswers && _api.Version >= 97;
     public bool HasGetPluginInterface      => _api.Version >= 68 && _api.GetPluginInterfaceFn      != IntPtr.Zero;
     public bool HasGetLiveObjectIds        => _api.Version >= 69 && _api.GetLiveObjectIdsFn        != IntPtr.Zero;
     public bool HasGetLastUseDone          => _api.Version >= 70 && _api.GetLastUseDoneFn          != IntPtr.Zero;
@@ -595,6 +642,103 @@ public readonly unsafe struct RynthCoreHost
         return status;
     }
 
+    /// <summary>Server yes/no prompt types (ConfirmationRequest 0x0274).</summary>
+    public static class ConfirmationKind
+    {
+        public const uint SwearAllegiance = 1;
+        public const uint AlterSkill = 2;
+        public const uint AlterAttribute = 3;
+        public const uint Fellowship = 4;
+        public const uint CraftInteraction = 5;
+        public const uint Augmentation = 6;
+        public const uint YesNo = 7;
+    }
+
+    /// <summary>Flags OR'ed into <see cref="ArmConfirmation"/>'s minPercent.</summary>
+    public static class ConfirmationArmFlags
+    {
+        /// <summary>v97: the sticky slot. A prompt below the minimum (or without a percent) is left to the client
+        /// instead of answered No, and the arm stays armed for later prompts until it times out or is disarmed.
+        /// Engines before v97 refuse it (-3).</summary>
+        public const int LeaveBelow = 0x100;
+    }
+
+    /// <summary>What happened to the last prompt (<see cref="TryGetLastConfirmation"/>).</summary>
+    public static class ConfirmationOutcome
+    {
+        public const int None = 0;       // no prompt this session
+        public const int Shown = 1;      // not armed: the client showed its dialog
+        public const int Accepted = 2;   // answered Yes for the plugin
+        public const int Declined = 3;   // answered No: the server's percent was below the minimum
+        public const int SendFailed = 4; // armed, but the send failed: the client showed it
+        public const int AcceptedSticky = 5; // v97: answered Yes by the sticky arm (ArmConfirmationLeaveBelow)
+    }
+
+    /// <summary>
+    /// v81: answer the next server prompt of <paramref name="type"/> (a
+    /// <see cref="ConfirmationKind"/>) that arrives within <paramref name="timeoutMs"/>,
+    /// without the client opening its dialog: Yes when the server's "N percent chance" is at
+    /// least <paramref name="minPercent"/> (or it is 0), else No. One-shot; timeoutMs &lt;= 0
+    /// disarms. 1 armed, 0 unavailable (engine before v81, sender or hook missing), -3 bad
+    /// arguments.
+    /// </summary>
+    public int ArmConfirmation(uint type, int minPercent, int timeoutMs)
+    {
+        if (!HasConfirmationAnswers)
+            return 0;
+        return ((delegate* unmanaged[Cdecl]<uint, int, int, int>)_api.ArmConfirmationFn)(type, minPercent, timeoutMs);
+    }
+
+    /// <summary>
+    /// v97: a sticky arm for prompts of <paramref name="type"/>: every one that arrives within
+    /// <paramref name="timeoutMs"/> (1-120000) is answered Yes when the server's percent is at least
+    /// <paramref name="minPercent"/> (1-100), with outcome <see cref="ConfirmationOutcome.AcceptedSticky"/>;
+    /// one below it, or without a percent, is left to the client's own dialog (never answered No). The arm
+    /// stays until it times out, <see cref="DisarmConfirmationLeaveBelow"/>, or another sticky arm replaces
+    /// it (one sticky slot per client, shared by every plugin). A one-shot <see cref="ArmConfirmation"/>
+    /// goes first, and its arm or disarm never touches the sticky arm. 1 armed, 0 unavailable, -3 bad
+    /// arguments, and -3 from an engine before v97 (check <see cref="HasConfirmationLeaveBelow"/> first).
+    /// </summary>
+    public int ArmConfirmationLeaveBelow(uint type, int minPercent, int timeoutMs)
+    {
+        if (minPercent < 1 || minPercent > 100 || timeoutMs <= 0)
+            return -3;
+        return ArmConfirmation(type, minPercent | ConfirmationArmFlags.LeaveBelow, timeoutMs);
+    }
+
+    /// <summary>
+    /// v97: drops the sticky arm (<see cref="ArmConfirmationLeaveBelow"/>); a one-shot arm stays. Does
+    /// nothing (0) before v97, where a disarm would clear the one-shot arm instead.
+    /// </summary>
+    public int DisarmConfirmationLeaveBelow(uint type)
+    {
+        if (!HasConfirmationLeaveBelow)
+            return 0;
+        return ArmConfirmation(type, ConfirmationArmFlags.LeaveBelow, 0);
+    }
+
+    /// <summary>
+    /// v85: the last prompt the server sent. <paramref name="seq"/> counts them (0 = none yet);
+    /// <paramref name="contextId"/> is the server's context for it; <paramref name="percent"/> is
+    /// -1 when the text has none; <paramref name="outcome"/> is a <see cref="ConfirmationOutcome"/>.
+    /// False on an engine before v85.
+    /// </summary>
+    public bool TryGetLastConfirmation(out int seq, out uint type, out uint contextId, out int percent, out int outcome, out int ageMs)
+    {
+        seq = 0; type = 0; contextId = 0; percent = -1; outcome = 0; ageMs = 0;
+        if (!HasConfirmationAnswers)
+            return false;
+        uint t = 0, ctx = 0;
+        int pct = -1, oc = 0, age = 0;
+        seq = ((delegate* unmanaged[Cdecl]<uint*, uint*, int*, int*, int*, int>)_api.GetLastConfirmationFn)(&t, &ctx, &pct, &oc, &age);
+        type = t; contextId = ctx; percent = pct; outcome = oc; ageMs = age;
+        return true;
+    }
+
+    /// <summary>v85: <see cref="TryGetLastConfirmation(out int, out uint, out uint, out int, out int, out int)"/> without the context id.</summary>
+    public bool TryGetLastConfirmation(out int seq, out uint type, out int percent, out int outcome, out int ageMs)
+        => TryGetLastConfirmation(out seq, out type, out _, out percent, out outcome, out ageMs);
+
     /// <summary>
     /// Gives an item to an NPC or another player by sending the F7B1 give
     /// GameAction (CM_Inventory::Event_GiveObjectRequest). This is the correct
@@ -1030,6 +1174,58 @@ public readonly unsafe struct RynthCoreHost
         return true;
     }
 
+    /// <summary>
+    /// v86: which server this is, as JSON: every server the engine knows (built in, or declared
+    /// by a loaded server plugin) with its verdict, this character's override, the reason and the
+    /// plugin that owns its settings, plus "active" / "activePlugin" and the Diagnostics "pick".
+    /// Schema: RynthCore.Engine UI/Sections/ServerStateJson.cs. False when the engine predates
+    /// v86 or the call failed. Any thread; a few hundred bytes, so poll it (every second or two)
+    /// rather than caching it for a session: an override changes it live.
+    /// </summary>
+    /// <summary>
+    /// v87: what the player wields and where (EquipMask: 0x00100000 MeleeWeapon, 0x00200000 Shield,
+    /// 0x00400000 MissileWeapon, 0x00800000 MissileAmmo, 0x01000000 Held, 0x02000000 TwoHanded, ...),
+    /// from the server's wield / contain / drop messages. False when the engine doesn't have it or
+    /// can't start yet (no player). Any thread.
+    /// </summary>
+    public bool TryGetWieldedItems(out (uint Id, uint Location)[] items)
+    {
+        items = Array.Empty<(uint, uint)>();
+        if (!HasGetWieldedItems) return false;
+        const int Max = 64;
+        uint* ids = stackalloc uint[Max];
+        uint* locs = stackalloc uint[Max];
+        int n = ((delegate* unmanaged[Cdecl]<uint*, uint*, int, int>)_api.GetWieldedItemsFn)(ids, locs, Max);
+        if (n < 0) return false;
+        var list = new (uint, uint)[n];
+        for (int i = 0; i < n; i++) list[i] = (ids[i], locs[i]);
+        items = list;
+        return true;
+    }
+
+    public bool TryGetServerStateJson(out string json)
+    {
+        json = string.Empty;
+        if (!HasGetServerStateJson)
+            return false;
+        var fn = (delegate* unmanaged[Cdecl]<byte*, int, int>)_api.GetServerStateJsonFn;
+        int capacity = 2048;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            byte[] buffer = new byte[capacity];
+            int length;
+            fixed (byte* p = buffer) length = fn(p, capacity);
+            if (length < 0) return false;
+            if (length < capacity)
+            {
+                json = System.Text.Encoding.UTF8.GetString(buffer, 0, length);
+                return true;
+            }
+            capacity = length + 256;
+        }
+        return false;
+    }
+
     public bool TryGetObjectBoolProperty(uint objectId, uint stype, out bool value)
     {
         value = false;
@@ -1362,6 +1558,547 @@ public readonly unsafe struct RynthCoreHost
     }
 
     // ─── Chat parser ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// v89: a colour of the player's theme as ImGui's packed colour (ABGR, for draw lists and
+    /// PushStyleColor), or <paramref name="fallback"/> on an older engine. Any thread; cheap, so
+    /// read it each frame and a theme change shows at once.
+    /// </summary>
+    public uint GetUiColor(RynthUiColor token, uint fallback)
+    {
+        if (!HasUiTheme) return fallback;
+        uint c = ((delegate* unmanaged[Cdecl]<int, uint>)_api.GetUiColorFn)((int)token);
+        return c != 0 ? c : fallback;
+    }
+
+    /// <summary>
+    /// v89: the engine's <c>ImFont*</c> for <paramref name="font"/> at the text size of the panel being
+    /// drawn (wrap it in ImGuiNET's ImFontPtr and PushFont it). Zero on an older engine, for an
+    /// unknown font, or off AC's render thread (call it from RynthPluginRenderEmbed).
+    /// </summary>
+    public IntPtr GetUiFont(RynthUiFont font)
+        => HasUiTheme ? ((delegate* unmanaged[Cdecl]<int, IntPtr>)_api.GetUiFontFn)((int)font) : IntPtr.Zero;
+
+    /// <summary>
+    /// v89: opens, closes or toggles the panel <paramref name="key"/> (a plugin window's title, or an
+    /// engine panel's), or asks. Returns 1 open / 0 closed afterwards (the change lands on the next
+    /// frame), -1 for no such panel or an older engine. Any thread.
+    /// </summary>
+    public int SetPanelOpen(string key, RynthPanelOpen mode)
+    {
+        if (!HasSetPanelOpen || string.IsNullOrEmpty(key) || key.Length > 64) return -1;
+        Span<byte> utf8 = stackalloc byte[260];
+        int n = System.Text.Encoding.UTF8.GetBytes(key, utf8[..^1]);
+        utf8[n] = 0;
+        fixed (byte* p = utf8)
+            return ((delegate* unmanaged[Cdecl]<byte*, int, int>)_api.SetPanelOpenFn)(p, (int)mode);
+    }
+
+    /// <summary>
+    /// v90: while ImGui's last item is held and dragged, the panel being drawn follows the mouse (a
+    /// frameless window's own title row: call it right after that row's InvisibleButton). Docked, the
+    /// window moves within the game view; popped out, its OS window. Only from RynthPluginRenderEmbed
+    /// on AC's render thread; does nothing elsewhere or on an older engine.
+    /// </summary>
+    public void PanelDragWithLastItem()
+    {
+        if (!HasFramelessWindows) return;
+        ((delegate* unmanaged[Cdecl]<void>)_api.PanelDragWithLastItemFn)();
+    }
+
+    /// <summary>
+    /// v90: pops the open panel <paramref name="key"/> out into its own window, docks it back, toggles,
+    /// or asks. Returns 1 popped out / 0 docked afterwards (the change lands on the next frame), -1 for
+    /// no such open panel or an older engine. Any thread.
+    /// </summary>
+    public int SetPanelPopOut(string key, RynthPanelPopOut mode) => CallWithKey(_api.SetPanelPopOutFn, key, (int)mode);
+
+    /// <summary>
+    /// v90: steps the panel <paramref name="key"/>'s text size by <paramref name="delta"/> (0 = just ask)
+    /// and returns it as a percentage of normal (100 to 250); -1 for no such panel or an older engine.
+    /// The fonts re-bake a moment later. Any thread.
+    /// </summary>
+    public int PanelTextSize(string key, int delta) => CallWithKey(_api.PanelTextSizeFn, key, delta);
+
+    /// <summary>
+    /// v90: how big the frameless window <paramref name="key"/> draws itself, in percent of normal
+    /// (30-250; Settings > Interface > In The Retail Toolbar's Place sets it too): <paramref name="percent"/> 0 asks, -1 goes back to
+    /// following the text size, 30-250 sets it. Returns it now: 0 = follow the text size (draw at the
+    /// fonts' size), -1 on an older engine. Any thread; cheap to ask every frame.
+    /// </summary>
+    public int PanelScale(string key, int percent = 0) =>
+        _api.Version >= 90 && _api.PanelScaleFn != IntPtr.Zero ? CallWithKey(_api.PanelScaleFn, key, percent) : -1;
+
+    /// <summary>
+    /// v90: draws the body of one of the dashboard drawers that show Settings rows, which are still
+    /// RynthCore's (the Settings panel hasn't moved to RynthAi): "ranges" (the selected monster and the
+    /// key ranges), "patrol" (the Dungeon Patrol settings, hazards and routes) or "pinned" (My settings;
+    /// <paramref name="openPinList"/> opens its list of settings to pin). At ImGui's cursor in the window
+    /// being drawn, <paramref name="width"/> pixels wide and at most <paramref name="room"/> tall (0 = its
+    /// own height). Returns the height it wants (pixels), or -1 for another key, an older engine, or a
+    /// call outside a docked window's RynthPluginRenderEmbed on AC's render thread.
+    /// 2026-10-27 (engines with v91): also "nameplates" and "combattext", the Vision window's tabs for
+    /// RynthCore's nameplates and combat text (RynthVision's own Vision window), docked or popped out.
+    /// </summary>
+    public float RenderSettingsDrawer(string key, float width, float room, bool openPinList = false)
+    {
+        if (!HasSettingsDrawers || string.IsNullOrEmpty(key) || key.Length > 64) return -1f;
+        Span<byte> utf8 = stackalloc byte[260];
+        int n = System.Text.Encoding.UTF8.GetBytes(key, utf8[..^1]);
+        utf8[n] = 0;
+        fixed (byte* p = utf8)
+            return ((delegate* unmanaged[Cdecl]<byte*, float, float, int, float>)_api.RenderSettingsDrawerFn)(p, width, room, openPinList ? 1 : 0);
+    }
+
+    /// <summary>
+    /// v90: the player's 18 shortcut slots (AC's own: what the retail toolbar shows and its keys
+    /// use): each slot's object id (0 = empty) and spell id. Returns 18, or 0 out of the world or on
+    /// an older engine. Any thread.
+    /// </summary>
+    public int GetShortcuts(Span<uint> objectIds, Span<uint> spellIds)
+    {
+        if (!HasShortcuts) return 0;
+        int max = Math.Min(objectIds.Length, spellIds.Length);
+        fixed (uint* o = objectIds)
+        fixed (uint* s = spellIds)
+            return ((delegate* unmanaged[Cdecl]<uint*, uint*, int, int>)_api.GetShortcutsFn)(o, s, max);
+    }
+
+    /// <summary>
+    /// v90: uses shortcut slot <paramref name="slot"/> (0-17) as its key would, puts
+    /// <paramref name="objectId"/> in it, or empties it: through the retail toolbar's own functions
+    /// on AC's game thread, so the server, the retail toolbar and the keys all follow. True when
+    /// queued. Any thread.
+    /// </summary>
+    public bool ShortcutAction(RynthShortcutOp op, int slot, uint objectId = 0)
+    {
+        if (!HasShortcuts) return false;
+        return ((delegate* unmanaged[Cdecl]<int, int, uint, int>)_api.ShortcutActionFn)((int)op, slot, objectId) == 1;
+    }
+
+    /// <summary>
+    /// v90: AC's keys for keymap action <paramref name="action"/> (e.g. "UseQuickSlot_1") as the player
+    /// reads them, "1, Ctrl+1", or the engine hotkeys running a chat command ("/rdef use 2"); "" when
+    /// unbound, unknown, or on an older engine. Any thread.
+    /// </summary>
+    public string GetActionKeys(string action)
+    {
+        if (!HasShortcuts || string.IsNullOrEmpty(action) || action.Length > 64) return string.Empty;
+        Span<byte> name = stackalloc byte[260];
+        int n = System.Text.Encoding.UTF8.GetBytes(action, name[..^1]);
+        name[n] = 0;
+        Span<byte> text = stackalloc byte[256];
+        int len;
+        fixed (byte* a = name)
+        fixed (byte* t = text)
+            len = ((delegate* unmanaged[Cdecl]<byte*, byte*, int, int>)_api.GetActionKeysFn)(a, t, text.Length);
+        if (len <= 0) return string.Empty;
+        return System.Text.Encoding.UTF8.GetString(text[..Math.Min(len, text.Length - 1)]);
+    }
+
+    /// <summary>
+    /// v90: an item's (kind Object: its icon with underlay and overlay), a spell's or an icon id's
+    /// picture as an ImGui texture id for ImGui.Image; IntPtr.Zero while it is being made (ask again
+    /// next frame). AC's render thread, inside a docked window's draw.
+    /// </summary>
+    public IntPtr GetIconTexture(RynthIconKind kind, uint id)
+    {
+        if (!HasShortcuts || id == 0) return IntPtr.Zero;
+        return ((delegate* unmanaged[Cdecl]<int, uint, IntPtr>)_api.GetIconTextureFn)((int)kind, id);
+    }
+
+    /// <summary>v90: changing keys: <see cref="BeginKeyCapture"/> ("press a key") and <see cref="BindActionKey"/>.</summary>
+    public bool HasKeyBinding => _api.Version >= 90 && _api.KeyCaptureFn != IntPtr.Zero && _api.SetActionKeyFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v90: waits for the next key the player presses (with Ctrl/Alt/Shift held); it never reaches AC, and
+    /// Esc cancels. Ask with <see cref="PollKeyCapture"/> each frame. AC's main thread (a window's draw).
+    /// </summary>
+    public void BeginKeyCapture()
+    {
+        if (HasKeyBinding) ((delegate* unmanaged[Cdecl]<int, byte*, int, int>)_api.KeyCaptureFn)(0, null, 0);
+    }
+
+    /// <summary>v90: stops waiting for a key.</summary>
+    public void CancelKeyCapture()
+    {
+        if (HasKeyBinding) ((delegate* unmanaged[Cdecl]<int, byte*, int, int>)_api.KeyCaptureFn)(2, null, 0);
+    }
+
+    /// <summary>
+    /// v90: the key capture: still waiting (<paramref name="text"/>: why the last key couldn't be taken, or
+    /// ""), pressed (<paramref name="text"/>: its name, "Ctrl+F5") or cancelled. AC's main thread.
+    /// </summary>
+    public RynthKeyCapture PollKeyCapture(out string text)
+    {
+        text = string.Empty;
+        if (!HasKeyBinding) return RynthKeyCapture.Cancelled;
+        Span<byte> buf = stackalloc byte[128];
+        int r;
+        fixed (byte* b = buf)
+            r = ((delegate* unmanaged[Cdecl]<int, byte*, int, int>)_api.KeyCaptureFn)(1, b, buf.Length);
+        int n = buf.IndexOf((byte)0);
+        text = System.Text.Encoding.UTF8.GetString(buf[..(n < 0 ? buf.Length : n)]);
+        return r switch { 1 => RynthKeyCapture.Pressed, 0 => RynthKeyCapture.Waiting, _ => RynthKeyCapture.Cancelled };
+    }
+
+    /// <summary>
+    /// v90: what binding <paramref name="key"/> ("Ctrl+F5") to <paramref name="action"/> would take from
+    /// others. The action is AC's keymap action ("UseQuickSlot_5": AC's own keys, the retail toolbar's) or a
+    /// chat command for an engine hotkey ("/rdef use 2"). <paramref name="message"/> names what has the key
+    /// now, or why it can't be bound. Any thread.
+    /// </summary>
+    public RynthKeyCheck CheckActionKey(string action, string key, out string message) =>
+        (RynthKeyCheck)Math.Clamp(CallSetActionKey(action, key, 0, out message), -1, 1);
+
+    /// <summary>
+    /// v90: binds <paramref name="key"/> to <paramref name="action"/> (see <see cref="CheckActionKey"/>): it
+    /// comes off everything else that had it, in AC's keymap and RynthCore's hotkeys, and every running
+    /// client follows within a second. Done on AC's game thread; the result goes to chat. False (why in
+    /// <paramref name="message"/>) when it can't be. Any thread.
+    /// </summary>
+    public bool BindActionKey(string action, string key, out string message) => CallSetActionKey(action, key, 1, out message) == 1;
+
+    /// <summary>
+    /// v90: removes <paramref name="key"/> from <paramref name="action"/>; the key may be one of the names
+    /// <see cref="GetActionKeys"/> gave ("Ctrl+1", "Mouse4"). Queued like <see cref="BindActionKey"/>.
+    /// </summary>
+    public bool UnbindActionKey(string action, string key, out string message) => CallSetActionKey(action, key, 2, out message) == 1;
+
+    /// <summary>v92: <see cref="BindCommandKeyOnly"/> works (SetActionKey op 3).</summary>
+    public bool HasCommandKeyOnly => HasKeyBinding && _api.Version >= 92;
+
+    /// <summary>
+    /// Binds <paramref name="key"/> ("Ctrl+F5") to a RynthCore chat command (<paramref name="command"/>, starting
+    /// with '/': "/rdef use 3") as an engine hotkey only, for a bar whose slots are its own: the key comes off
+    /// RynthCore's other hotkeys, but AC's keymap is not edited and no client reloads its keys. AC keeps any
+    /// action it has on that key; RynthCore's hotkey takes the key before AC sees it. Done on AC's game thread;
+    /// the result goes to chat. Needs plugin API v92 (SetActionKey op 3, after release 2026.10.27.1): an older
+    /// engine refuses it, and this returns false (why in <paramref name="message"/>), never falling back to
+    /// <see cref="BindActionKey"/>. False too for an action that isn't a command. Any thread.
+    /// </summary>
+    public bool BindCommandKeyOnly(string command, string key, out string message)
+    {
+        if (string.IsNullOrEmpty(command) || command[0] != '/') { message = "Not a RynthCore command (\"/rdef use 3\")."; return false; }
+        if (!HasCommandKeyOnly) { message = "This RynthCore can't bind a command's key on its own (it needs a newer engine)."; return false; }
+        int r = CallSetActionKey(command, key, 3, out message);
+        if (r != 1 && message == "Unknown op.") message = "This RynthCore can't bind a command's key on its own (it needs a newer engine).";
+        return r == 1;
+    }
+
+    /// <summary>
+    /// Removes <paramref name="key"/> from a RynthCore chat command's engine hotkeys (<paramref name="command"/>,
+    /// starting with '/'), the other half of <see cref="BindCommandKeyOnly"/>: AC's keymap is never touched.
+    /// An engine command's unbind has never touched AC's keymap, so this works on any v90 engine (it is
+    /// <see cref="UnbindActionKey"/> for a command); false for an action that isn't a command, or when it
+    /// can't be (why in <paramref name="message"/>). Queued like <see cref="BindActionKey"/>. Any thread.
+    /// </summary>
+    public bool UnbindCommandKeyOnly(string command, string key, out string message)
+    {
+        if (string.IsNullOrEmpty(command) || command[0] != '/') { message = "Not a RynthCore command (\"/rdef use 3\")."; return false; }
+        return CallSetActionKey(command, key, 2, out message) == 1;
+    }
+
+    /// <summary>v90: items dragged out of AC's UI can be dropped on a plugin window (<see cref="DropTarget"/>).</summary>
+    public bool HasDropTargets => _api.Version >= 90 && _api.DropTargetFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v90: the plugin window <paramref name="window"/> (its panel title) takes items dragged out of AC's
+    /// UI (a pack, the inventory) and let go over <paramref name="min"/>-<paramref name="max"/> (ImGui
+    /// screen coordinates). Call it every frame the window draws; <paramref name="accepting"/> false =
+    /// drawn but a drop isn't wanted now (it goes to AC as usual). A drop taken never reaches AC: the item
+    /// stays where it was. Returns the object dropped since the last call (0 = none);
+    /// <paramref name="dragging"/>: an item is being dragged now. AC's main thread, in the window's draw.
+    /// </summary>
+    public uint DropTarget(string window, System.Numerics.Vector2 min, System.Numerics.Vector2 max, bool accepting, out bool dragging)
+    {
+        dragging = false;
+        if (!HasDropTargets || string.IsNullOrEmpty(window) || window.Length > 64) return 0;
+        Span<byte> utf8 = stackalloc byte[260];
+        int n = System.Text.Encoding.UTF8.GetBytes(window, utf8[..^1]);
+        utf8[n] = 0;
+        int drag = 0;
+        uint item;
+        fixed (byte* p = utf8)
+            item = ((delegate* unmanaged[Cdecl]<byte*, float, float, float, float, int, int*, uint>)_api.DropTargetFn)(
+                p, min.X, min.Y, max.X, max.Y, accepting ? 1 : 0, &drag);
+        dragging = drag != 0;
+        return item;
+    }
+
+    /// <summary>v98: the engine keeps a plugin window's spot per character (<see cref="TryGetWindowPlacement"/>).</summary>
+    public bool HasWindowPlacements => _api.Version >= 98 && _api.GetWindowPlacementFn != IntPtr.Zero && _api.SetWindowPlacementFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v94: where the player left the plugin's own floating window <paramref name="key"/> on this character
+    /// (ImGui screen pixels; a zero size = the window sized itself). False when nothing is saved, no
+    /// character is logged in yet, or the engine is older. Keys: up to 96 characters, no '=' or line break;
+    /// prefix them with the plugin's name. Any thread. Plugins/Shared SavedWindow wraps this.
+    /// </summary>
+    public bool TryGetWindowPlacement(string key, out System.Numerics.Vector2 pos, out System.Numerics.Vector2 size)
+    {
+        pos = size = default;
+        if (!HasWindowPlacements || string.IsNullOrEmpty(key) || key.Length > 96) return false;
+        Span<byte> utf8 = stackalloc byte[392];
+        int n = System.Text.Encoding.UTF8.GetBytes(key, utf8[..^1]);
+        utf8[n] = 0;
+        float* v = stackalloc float[4];
+        int r;
+        fixed (byte* p = utf8)
+            r = ((delegate* unmanaged[Cdecl]<byte*, float*, int>)_api.GetWindowPlacementFn)(p, v);
+        if (r != 1) return false;
+        pos = new System.Numerics.Vector2(v[0], v[1]);
+        size = new System.Numerics.Vector2(v[2], v[3]);
+        return true;
+    }
+
+    /// <summary>v98: saves window <paramref name="key"/>'s spot for this character (see <see cref="TryGetWindowPlacement"/>). False when not saved.</summary>
+    public bool SetWindowPlacement(string key, System.Numerics.Vector2 pos, System.Numerics.Vector2 size)
+    {
+        if (!HasWindowPlacements || string.IsNullOrEmpty(key) || key.Length > 96) return false;
+        Span<byte> utf8 = stackalloc byte[392];
+        int n = System.Text.Encoding.UTF8.GetBytes(key, utf8[..^1]);
+        utf8[n] = 0;
+        fixed (byte* p = utf8)
+            return ((delegate* unmanaged[Cdecl]<byte*, float, float, float, float, int>)_api.SetWindowPlacementFn)(
+                p, pos.X, pos.Y, size.X, size.Y) == 1;
+    }
+
+    /// <summary>v90: AC's own panels (<see cref="IsAcPanelOpen"/>, <see cref="AcPanel"/>).</summary>
+    public bool HasAcPanels => _api.Version >= 90 && _api.AcPanelFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v90: whether AC's panel is open: true, false, or null when this client has no such panel or the
+    /// engine can't tell. AC's main thread (a window's draw); cheap to ask every frame.
+    /// </summary>
+    public bool? IsAcPanelOpen(RynthAcPanel panel)
+    {
+        if (!HasAcPanels) return null;
+        int r = ((delegate* unmanaged[Cdecl]<int, int, int>)_api.AcPanelFn)((int)panel, 0);
+        return r < 0 ? null : r == 1;
+    }
+
+    /// <summary>
+    /// v90: opens, closes or toggles AC's own panel, the way AC's toolbar buttons and keys do (one main
+    /// panel shows at a time, as in AC). Done on AC's game thread; true when queued. Any thread.
+    /// </summary>
+    public bool AcPanel(RynthAcPanel panel, RynthAcPanelOp op = RynthAcPanelOp.Toggle)
+    {
+        if (!HasAcPanels) return false;
+        return ((delegate* unmanaged[Cdecl]<int, int, int>)_api.AcPanelFn)((int)panel, (int)op) == 1;
+    }
+
+    /// <summary>
+    /// v91: <see cref="SetAmbientLightFloor"/> and <see cref="TryGetAmbientLight"/> (a floor under the
+    /// world's ambient light). True on an engine that has the call; whether its hook is live is what
+    /// SetAmbientLightFloor returns.
+    /// </summary>
+    public bool HasAmbientLight => _api.Version >= 91 && _api.SetAmbientLightFloorFn != IntPtr.Zero && _api.GetAmbientLightFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v91: the least ambient light AC may draw the world with, 0x00RRGGBB (alpha ignored), 0 = none (AC's
+    /// own). Per channel the brighter of AC's and this, from the next frame; drawing only, in this client
+    /// (nothing goes to the server). AC lights dungeons at 0x333333 (20 %), outdoors from the sky. One floor
+    /// for all plugins (the last call wins); the engine clears it when the plugins unload, so a plugin
+    /// clears it itself when it stops wanting it (and in Shutdown). Returns true when the engine's hook is
+    /// live, false when it isn't (an older engine, not installed, or switched off with /rc hooks). Any thread.
+    /// </summary>
+    public bool SetAmbientLightFloor(uint rgb)
+    {
+        if (!HasAmbientLight) return false;
+        return ((delegate* unmanaged[Cdecl]<uint, int>)_api.SetAmbientLightFloorFn)(rgb & 0x00FFFFFFu) == 1;
+    }
+
+    /// <summary>
+    /// v91: the ambient colour AC last asked for (<paramref name="client"/>) and the one drawn
+    /// (<paramref name="applied"/>), 0xAARRGGBB, 0 before the first frame. False when the hook isn't live
+    /// (or the engine is older). Any thread.
+    /// </summary>
+    public bool TryGetAmbientLight(out uint client, out uint applied)
+    {
+        client = 0;
+        applied = 0;
+        if (!HasAmbientLight) return false;
+        uint c = 0, a = 0;
+        int r = ((delegate* unmanaged[Cdecl]<uint*, uint*, int>)_api.GetAmbientLightFn)(&c, &a);
+        client = c;
+        applied = a;
+        return r == 1;
+    }
+
+    /// <summary>
+    /// v93: <see cref="TryGetMonsterHealth"/> (the monster plates' last server health reading per object).
+    /// </summary>
+    public bool HasMonsterHealth => _api.Version >= 93 && _api.GetMonsterHealthFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v93: the last health ratio (0..1) the server sent for <paramref name="id"/>, as the engine's monster
+    /// plates keep it, and how many ms ago (<paramref name="ageMs"/>). The plates ask the server for the
+    /// monsters around the player round-robin (about one a second; ones in a fight every 2 s, quiet ones
+    /// every 12 s), so this covers monsters whose health the server streams to nobody else here. Those
+    /// probe replies never arrive as UpdateHealth events (a plugin must not count someone else's hit as
+    /// its own): use this for ranking, not for kill or damage tracking. Never the plates' estimates from
+    /// the player's hits. False when the server never sent this object's health, or on an older engine.
+    /// Read-only, any thread.
+    /// </summary>
+    public bool TryGetMonsterHealth(uint id, out float ratio, out uint ageMs)
+    {
+        ratio = -1f;
+        ageMs = uint.MaxValue;
+        if (!HasMonsterHealth || id == 0) return false;
+        float r = -1f;
+        uint age = uint.MaxValue;
+        int ok = ((delegate* unmanaged[Cdecl]<uint, float*, uint*, int>)_api.GetMonsterHealthFn)(id, &r, &age);
+        if (ok != 1 || float.IsNaN(r) || r < 0f) return false;
+        ratio = Math.Min(r, 1f);
+        ageMs = age;
+        return true;
+    }
+
+    // ── v94: a web panel over the game window (number provisional) ───────────
+
+    /// <summary>
+    /// v94: <see cref="OpenWebPanel"/>, <see cref="NavigateWebPanel"/>, <see cref="CloseWebPanel"/> and
+    /// <see cref="GetWebPanelState"/>. True only on an engine at API 94 or newer that fills all four.
+    /// </summary>
+    public bool HasWebPanel => _api.Version >= 94 && _api.WebPanelOpenFn != IntPtr.Zero && _api.WebPanelNavigateFn != IntPtr.Zero
+                            && _api.WebPanelCloseFn != IntPtr.Zero && _api.WebPanelGetStateFn != IntPtr.Zero;
+
+    /// <summary>
+    /// v94: opens the web panel over the game window (a second call replaces the first). Returns a handle
+    /// &gt; 0, or a <see cref="WebPanelResult"/> (BadArgs for an empty URL or allowlist, more than 16
+    /// entries or a newline inside one; Unavailable on an older engine). Never blocks; the panel loads
+    /// after this returns - poll <see cref="GetWebPanelState"/>. Any thread.
+    /// </summary>
+    public int OpenWebPanel(WebPanelOptions options)
+    {
+        if (options == null || string.IsNullOrEmpty(options.Url) || options.Allowlist == null
+            || options.Allowlist.Count < 1 || options.Allowlist.Count > 16)
+            return (int)WebPanelResult.BadArgs;
+        foreach (string entry in options.Allowlist)
+            if (string.IsNullOrEmpty(entry) || entry.Contains('\n')) return (int)WebPanelResult.BadArgs;
+        if (!HasWebPanel) return (int)WebPanelResult.Unavailable;
+
+        string allowlist = string.Join("\n", options.Allowlist);
+        string profile = options.ProfileKey ?? "";
+        string title = options.Title ?? "";
+        var enc = System.Text.Encoding.UTF8;
+        int nUrl = enc.GetByteCount(options.Url), nAllow = enc.GetByteCount(allowlist);
+        int nProfile = enc.GetByteCount(profile), nTitle = enc.GetByteCount(title);
+        int total = nUrl + nAllow + nProfile + nTitle + 4;
+
+        byte[]? rented = null;
+        Span<byte> buf = total <= 1024 ? stackalloc byte[total] : (rented = System.Buffers.ArrayPool<byte>.Shared.Rent(total)).AsSpan(0, total);
+        try
+        {
+            int o = 0;
+            int oUrl = o; o += enc.GetBytes(options.Url, buf[o..]); buf[o++] = 0;
+            int oAllow = o; o += enc.GetBytes(allowlist, buf[o..]); buf[o++] = 0;
+            int oProfile = o; o += enc.GetBytes(profile, buf[o..]); buf[o++] = 0;
+            int oTitle = o; o += enc.GetBytes(title, buf[o..]); buf[o++] = 0;
+            fixed (byte* b = buf)
+            {
+                var open = new WebPanelOpenNative
+                {
+                    Size = (uint)sizeof(WebPanelOpenNative),
+                    Flags = (uint)options.Flags,
+                    Url = b + oUrl,
+                    Allowlist = b + oAllow,
+                    ProfileKey = nProfile == 0 ? null : b + oProfile,
+                    Title = nTitle == 0 ? null : b + oTitle,
+                    WidthPercent = options.WidthPercent,
+                    HeightPercent = options.HeightPercent,
+                };
+                return ((delegate* unmanaged[Cdecl]<WebPanelOpenNative*, int>)_api.WebPanelOpenFn)(&open);
+            }
+        }
+        finally
+        {
+            if (rented != null) System.Buffers.ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    /// <summary>
+    /// v94: points the panel <paramref name="handle"/> at <paramref name="url"/>. 1 queued; -2
+    /// (UrlNotAllowed) when it is off the allowlist (the engine opens it in the system browser when that is
+    /// safe); -6 (StaleHandle) when the handle is not the live panel. Never blocks. Any thread.
+    /// </summary>
+    public int NavigateWebPanel(int handle, string url)
+    {
+        if (string.IsNullOrEmpty(url)) return (int)WebPanelResult.BadArgs;
+        if (!HasWebPanel) return (int)WebPanelResult.Unavailable;
+        int n = System.Text.Encoding.UTF8.GetByteCount(url);
+        byte[]? rented = null;
+        Span<byte> buf = n + 1 <= 1024 ? stackalloc byte[n + 1] : (rented = System.Buffers.ArrayPool<byte>.Shared.Rent(n + 1)).AsSpan(0, n + 1);
+        try
+        {
+            System.Text.Encoding.UTF8.GetBytes(url, buf);
+            buf[n] = 0;
+            fixed (byte* p = buf)
+                return ((delegate* unmanaged[Cdecl]<int, byte*, int>)_api.WebPanelNavigateFn)(handle, p);
+        }
+        finally
+        {
+            if (rented != null) System.Buffers.ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    /// <summary>v94: closes the panel <paramref name="handle"/>. 1 queued, 0 already closed, -6 stale handle. Never blocks. Any thread.</summary>
+    public int CloseWebPanel(int handle)
+    {
+        if (!HasWebPanel) return (int)WebPanelResult.Unavailable;
+        return ((delegate* unmanaged[Cdecl]<int, int>)_api.WebPanelCloseFn)(handle);
+    }
+
+    /// <summary>
+    /// v94: where the panel <paramref name="handle"/> is. A handle that is not the live panel reads
+    /// Superseded. None (and a default <paramref name="state"/>) on an older engine or bad arguments.
+    /// Any thread.
+    /// </summary>
+    public WebPanelStatus GetWebPanelState(int handle, out WebPanelState state)
+    {
+        state = default;
+        if (!HasWebPanel) return WebPanelStatus.None;
+        WebPanelStateNative native = default;
+        native.Size = (uint)sizeof(WebPanelStateNative);
+        int r = ((delegate* unmanaged[Cdecl]<int, WebPanelStateNative*, int>)_api.WebPanelGetStateFn)(handle, &native);
+        if (r < 0) return WebPanelStatus.None;
+        var status = (WebPanelStatus)native.Status;
+        state = new WebPanelState(native.Handle, status, (WebPanelStateFlags)native.Flags, (WebPanelResult)native.Error, native.LastHttpStatus, native.NavigationCount);
+        return status;
+    }
+
+    private int CallSetActionKey(string action, string key, int op, out string message)
+    {
+        message = string.Empty;
+        if (!HasKeyBinding) { message = "This RynthCore can't change keys."; return -1; }
+        if (string.IsNullOrEmpty(action) || action.Length > 64 || string.IsNullOrEmpty(key) || key.Length > 40) { message = "No action or key."; return -1; }
+        Span<byte> a = stackalloc byte[260];
+        Span<byte> k = stackalloc byte[164];
+        Span<byte> msg = stackalloc byte[512];
+        int an = System.Text.Encoding.UTF8.GetBytes(action, a[..^1]);
+        a[an] = 0;
+        int kn = System.Text.Encoding.UTF8.GetBytes(key, k[..^1]);
+        k[kn] = 0;
+        int r;
+        fixed (byte* ap = a)
+        fixed (byte* kp = k)
+        fixed (byte* mp = msg)
+            r = ((delegate* unmanaged[Cdecl]<byte*, byte*, int, byte*, int, int>)_api.SetActionKeyFn)(ap, kp, op, mp, msg.Length);
+        int n = msg.IndexOf((byte)0);
+        message = System.Text.Encoding.UTF8.GetString(msg[..(n < 0 ? msg.Length : n)]);
+        return r;
+    }
+
+    private int CallWithKey(IntPtr fn, string key, int arg)
+    {
+        if (!HasFramelessWindows || fn == IntPtr.Zero || string.IsNullOrEmpty(key) || key.Length > 64) return -1;
+        Span<byte> utf8 = stackalloc byte[260];
+        int n = System.Text.Encoding.UTF8.GetBytes(key, utf8[..^1]);
+        utf8[n] = 0;
+        fixed (byte* p = utf8)
+            return ((delegate* unmanaged[Cdecl]<byte*, int, int>)fn)(p, arg);
+    }
 
     public bool InvokeChatParser(string text)
     {
@@ -1816,6 +2553,126 @@ public readonly unsafe struct RynthCoreHost
         => HasTraining
             ? (RaiseResult)((delegate* unmanaged[Cdecl]<uint, int, int>)_api.TrainSkillFn)(stype, expectedCredits)
             : RaiseResult.EngineTooOld;
+
+    // ─── Slot order and placed moves (API v80) ─────────────────────────────
+    // The server keeps every container's items in an order (the pack grid on screen); the engine
+    // follows it from the login message, a pack's contents list and every item move. A container
+    // is only known once a full list for it was seen: then and only then is there an order.
+
+    /// <summary>
+    /// v80: the items in <paramref name="containerId"/> in real slot order (slot 0 first), or with
+    /// <paramref name="slotKind"/> the side packs and foci in the main pack (the pack column, top
+    /// first). <paramref name="count"/> = how many there are; the buffer grows to fit. False on an
+    /// engine before v80 or when the order isn't known (no full list for that container yet).
+    /// Any thread.
+    /// </summary>
+    public bool TryGetContainerOrder(uint containerId, bool slotKind, ref uint[] buffer, out int count)
+    {
+        count = 0;
+        if (!HasContainerOrder || containerId == 0) return false;
+        buffer ??= new uint[64];
+        var fn = (delegate* unmanaged[Cdecl]<uint, int, uint*, int, int>)_api.GetContainerOrderFn;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            int n;
+            fixed (uint* p = buffer) n = fn(containerId, slotKind ? 1 : 0, buffer.Length > 0 ? p : null, buffer.Length);
+            if (n < 0) return false;
+            if (n <= buffer.Length) { count = n; return true; }
+            buffer = new uint[Math.Max(n, buffer.Length * 2)];
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// v80: moves <paramref name="itemId"/> into <paramref name="containerId"/> at slot
+    /// <paramref name="placement"/> (the index it should end at, counted without it), like a drop on
+    /// a cell of the pack grid; within one container it reorders. The server decides and answers as
+    /// for any move. 1 sent or queued, 0 refused before sending, -1 the sender isn't bound on this
+    /// client, -2 an engine before v80. Any thread (queued to AC's main thread).
+    /// </summary>
+    public int PutItemInContainer(uint itemId, uint containerId, int placement)
+        => HasPutItemInContainer
+            ? ((delegate* unmanaged[Cdecl]<uint, uint, int, int>)_api.PutItemInContainerFn)(itemId, containerId, placement)
+            : -2;
+
+    // ─── Salvage without the panel (API v82) ───────────────────────────────
+
+    /// <summary>
+    /// v82: salvages <paramref name="itemIds"/> with the UST <paramref name="toolId"/> without opening
+    /// AC's salvage panel: the engine sends the 0x027D salvage request through AC's own sender, the
+    /// same game action the panel's Salvage button sends. Salvage bags in the list are merged with the
+    /// new salvage. At most <see cref="MaxSalvageDirectItems"/> ids; none zero, none the tool. The
+    /// server checks the UST is carried, salvages each item it can (in the packs, not worn, not
+    /// retained, with a material) and skips the rest without a word; its answer is the items leaving
+    /// the pack, new salvage bags and a "You obtain ..." chat line. Returns the count sent or queued,
+    /// 0 refused before sending, -1 the sender isn't bound on this client, -2 an engine before v82.
+    /// Any thread (queued to AC's main thread).
+    /// </summary>
+    // ─── Ghost creatures (API v83) ─────────────────────────────────────────
+
+    /// <summary>
+    /// v83: milliseconds since the server last sent a message about <paramref name="objectId"/>
+    /// (create, position, motion, vector, state, parent, pickup, effects, object description,
+    /// update object). -1 when it sent none since the engine started watching (or the object was
+    /// deleted), -2 an engine before v83. A monster fighting anyone near the player gets motion
+    /// updates every few seconds; one that sends nothing for a long time while it is attacked and
+    /// no swing at it ever starts is a ghost. Any thread.
+    /// </summary>
+    public int GetObjectServerAge(uint objectId)
+        => HasGetObjectServerAge
+            ? ((delegate* unmanaged[Cdecl]<uint, int>)_api.GetObjectServerAgeFn)(objectId)
+            : -2;
+
+    /// <summary>
+    /// v83: removes a ghost creature from the client the way a server DeleteObject would (plugins
+    /// get OnDeleteObject). Refused for the player, players, anything that isn't a creature, and an
+    /// object the server sent a message about in the last 5 s. A real object comes back with the
+    /// server's next CreateObject for it. Returns 1 removed, 2 queued for AC's main thread, 0
+    /// refused, -1 the client's DeleteObject isn't bound yet, -2 an engine before v83. Any thread.
+    /// </summary>
+    public int RemoveClientObject(uint objectId)
+        => HasRemoveClientObject
+            ? ((delegate* unmanaged[Cdecl]<uint, int>)_api.RemoveClientObjectFn)(objectId)
+            : -2;
+
+    // ─── Every property of an object (API v84) ─────────────────────────────
+
+    /// <summary>
+    /// v84: every property the engine knows for <paramref name="objectId"/> (int, int64, bool,
+    /// float, string, data id, instance id and the spell book), merged from the client's
+    /// CreateObject copy, its qualities tables, the last identify and the server's property
+    /// updates, the way the per-key reads (TryGetObjectIntProperty, ...) answer. False on an
+    /// engine before v84 (fall back to per-key reads) or when the engine knows nothing about
+    /// the object. Item details need an identify first (<see cref="RequestId"/>, then
+    /// <see cref="ObjectProperties.HasIdData"/>). When <see cref="ObjectProperties.QualitiesPending"/>
+    /// is set, the client's qualities tables are read at AC's next main-thread tick: ask again
+    /// shortly. Any thread.
+    /// </summary>
+    public bool TryGetObjectProperties(uint objectId, out ObjectProperties? properties)
+    {
+        properties = null;
+        if (!HasGetObjectProperties || objectId == 0) return false;
+        var fn = (delegate* unmanaged[Cdecl]<uint, byte*, int, int>)_api.GetObjectPropertiesFn;
+        byte[] buffer = new byte[8192];
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            int n;
+            fixed (byte* p = buffer) n = fn(objectId, p, buffer.Length);
+            if (n <= 0) return false;
+            if (n <= buffer.Length)
+                return ObjectProperties.TryParse(new ReadOnlySpan<byte>(buffer, 0, n), out properties);
+            buffer = new byte[Math.Max(n + 1024, buffer.Length * 2)];   // grew between calls: some room
+        }
+        return false;
+    }
+
+    public int SalvageDirect(uint toolId, ReadOnlySpan<uint> itemIds)
+    {
+        if (!HasSalvageDirect) return -2;
+        if (toolId == 0 || itemIds.Length == 0 || itemIds.Length > MaxSalvageDirectItems) return 0;
+        fixed (uint* p = itemIds)
+            return ((delegate* unmanaged[Cdecl]<uint, uint*, int, int>)_api.SalvageDirectFn)(toolId, p, itemIds.Length);
+    }
 
     /// <summary>
     /// v78: which reassembled server messages this plugin wants on its

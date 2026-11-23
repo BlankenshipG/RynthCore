@@ -48,9 +48,6 @@ internal static class ItemsPanel
     private static readonly IBrush ColBtnBord = new SolidColorBrush(Color.FromRgb(0x26, 0x40, 0x59));
     private static readonly IBrush ColHdrBg  = new SolidColorBrush(Color.FromRgb(0x1A, 0x2E, 0x42));
 
-    private static readonly string[] Elements =
-        { "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether" };
-
     private static readonly string[] ConsumableTypes =
         { "General", "Lockpick", "HealthKit", "HealthPotion", "ManaPotion", "StaminaPotion", "ManaStone", "Stamina", "Pet" };
 
@@ -61,7 +58,15 @@ internal static class ItemsPanel
         [JsonPropertyName("enableManaTapping")] public bool                  EnableManaTapping { get; set; }
         [JsonPropertyName("manaTapMinMana")]    public int                   ManaTapMinMana    { get; set; } = 2500;
         [JsonPropertyName("manaStoneKeepCount")]public int                   ManaStoneKeepCount{ get; set; } = 5;
+        // Mana tap with macro off (RynthAi from 2026-11-19). Null from an older plugin: the toggle is hidden.
+        [JsonPropertyName("manaTapMacroOff")]   public bool?                 ManaTapMacroOff   { get; set; }
         [JsonPropertyName("currentTargetName")] public string                CurrentTargetName { get; set; } = string.Empty;
+        /// <summary>
+        /// Listed weapons the character no longer carries (not in the pack, not wielded), by id
+        /// (RynthAi from 2026-10-11; empty from older plugins). Display only: RynthAi ignores
+        /// it when the payload is saved back.
+        /// </summary>
+        [JsonPropertyName("missingIds")]        public List<int>             MissingIds        { get; set; } = new();
         // Null when the plugin predates shields (RynthAi < 0.6.20); the plugin then ignores it on write-back.
         [JsonPropertyName("autoEquipShield")]   public bool?                 AutoEquipShield   { get; set; }
     }
@@ -73,8 +78,21 @@ internal static class ItemsPanel
         [JsonPropertyName("element")] public string Element { get; set; } = "Slash";
         // "Weapon" or "Shield" (older settings may hold "Loot"). Round-tripped untouched.
         [JsonPropertyName("action")]  public string Action  { get; set; } = "Weapon";
+        // Melee, Missile, "War Magic", "Void Magic", Shield, Ammo, or "" (not known). Set by RynthAi for
+        // display (the Items face groups by it); sent back untouched and ignored there.
+        [JsonPropertyName("kind")]    public string Kind    { get; set; } = string.Empty;
+        // True = "No buff" (RynthAi ItemRule.KeepBuffed off), sent for every entry by RynthAi and
+        // applied back by it for shield entries only. Null = the plugin predates it: no toggle is
+        // drawn, and none is written back (RynthAi keeps its saved value).
+        [JsonPropertyName("noBuff")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public bool? NoBuff { get; set; }
 
         public bool IsShield => string.Equals(Action, ItemsCommands.ShieldAction, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>The faces draw their "No buff" toggle: a shield entry (Action "Shield", the only
+        /// kind RynthAi applies it to) from a plugin that sends the field.</summary>
+        [JsonIgnore] public bool ShowsNoBuff => IsShield && NoBuff.HasValue;
     }
 
     internal sealed class ConsumableEntry
@@ -514,8 +532,9 @@ internal static class ItemsPanel
         Grid.SetColumn(nameTb, 0);
         grid.Children.Add(nameTb);
 
-        // Element picker button
-        int elemIdx = Array.IndexOf(Elements, w.Element);
+        // Element picker button (missile weapons and ammo can also be Prismatic: universal damage).
+        string[] choices = UI.Data.ItemsCommands.ElementsFor(w.Kind);
+        int elemIdx = Array.IndexOf(choices, w.Element);
         if (elemIdx < 0) elemIdx = 0;
         var elemBtn = new Button
         {
@@ -531,9 +550,9 @@ internal static class ItemsPanel
         };
         elemBtn.Click += (_, _) =>
         {
-            showPicker(elemBtn, Elements, Array.IndexOf(Elements, w.Element), picked =>
+            showPicker(elemBtn, choices, Array.IndexOf(choices, w.Element), picked =>
             {
-                w.Element = Elements[picked];
+                w.Element = choices[picked];
                 elemBtn.Content = w.Element;
                 onChanged();
             });
@@ -865,7 +884,8 @@ internal static class ItemsPanel
         if (a.Count != b.Count) return true;
         for (int i = 0; i < a.Count; i++)
             if (a[i].Id != b[i].Id || a[i].Name != b[i].Name || a[i].Element != b[i].Element
-                || !string.Equals(a[i].Action, b[i].Action, StringComparison.OrdinalIgnoreCase)) return true;
+                || !string.Equals(a[i].Action, b[i].Action, StringComparison.OrdinalIgnoreCase)
+                || a[i].NoBuff != b[i].NoBuff) return true;   // so this panel never saves back a stale noBuff
         return false;
     }
 

@@ -9,7 +9,7 @@ namespace RynthCore.App.Avalonia;
 
 /// <summary>
 /// Small code-built dialogs for the Decal bridge: the "Check Decal bridge" report (with
-/// Repair / Copy) and the yes/no before the one administrator step.
+/// Repair / Copy), the yes/no before an administrator step or Repair Decal, and plain messages.
 /// </summary>
 internal static class DecalBridgeDialog
 {
@@ -31,6 +31,18 @@ internal static class DecalBridgeDialog
             yesButton, noButton);
         bool? result = await dialog.ShowDialog<bool?>(owner);
         return result == true;
+    }
+
+    /// <summary>A message with one OK button (selectable text, so paths can be copied).</summary>
+    public static async Task InfoAsync(Window owner, string title, string message)
+    {
+        var dialog = NewWindow(title, 620);
+        var ok = new Button { Content = "OK", IsDefault = true, IsCancel = true };
+        ok.Click += (_, _) => dialog.Close(true);
+        dialog.Content = Layout(title,
+            new SelectableTextBlock { Text = message, TextWrapping = TextWrapping.Wrap, Foreground = Text },
+            ok);
+        await dialog.ShowDialog<bool?>(owner);
     }
 
     /// <summary>

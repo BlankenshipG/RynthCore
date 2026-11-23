@@ -130,6 +130,24 @@ internal sealed class LaunchAccountProfile
         PasswordNeedsReentry = false;
     }
 
+    /// <summary>
+    /// Reuses <paramref name="source"/>'s saved password (the same account name on another server).
+    /// The encrypted blob is copied as it is, so the plain text is never handled; it is readable
+    /// here because both profiles belong to the same Windows user's settings.
+    /// </summary>
+    public void CopyPasswordFrom(LaunchAccountProfile source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (!string.IsNullOrEmpty(source.LegacyPlainPassword))
+        {
+            SetPassword(source.LegacyPlainPassword);
+            return;
+        }
+        PasswordProtected = source.PasswordProtected;
+        LegacyPlainPassword = null;
+        PasswordNeedsReentry = source.PasswordNeedsReentry;
+    }
+
     public void ClearPassword()
     {
         PasswordProtected = string.Empty;

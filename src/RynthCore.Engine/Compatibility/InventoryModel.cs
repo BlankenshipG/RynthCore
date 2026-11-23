@@ -17,6 +17,9 @@
 //  One item action at a time: AC keeps one pending inventory request and refuses
 //  a second ("You can only move or use one item at a time"; ClientActionGates).
 //  Request() refuses while an action is waiting; nothing is ever queued behind it.
+//  Several items (the panel's multi-selection) go through RequestBatch
+//  (InventoryModel.Batch.cs), which feeds them to this same path one at a time,
+//  each only after the one before it has ended.
 //
 //  The client's own gate (ClientActionGates, read on the main thread here):
 //    Before the send  while AC's pending-request slot holds anyone's request (the
@@ -185,6 +188,8 @@ internal sealed class InventoryRequest
     public uint TargetId;
     /// <summary>Split: how many to split off. Give: 0 = the whole stack.</summary>
     public int Amount;
+    /// <summary>Move: the slot in the target pack the item should end at (the server's order), or -1 for the first empty one.</summary>
+    public int Slot = -1;
     public string ItemName = string.Empty;
     public string TargetName = string.Empty;
 }
@@ -210,7 +215,7 @@ internal sealed class InventoryResult
     public long AtTicks;
 }
 
-internal static class InventoryModel
+internal static partial class InventoryModel
 {
     // ── Cadence ─────────────────────────────────────────────────────────
     private static readonly long Freq = Stopwatch.Frequency;
@@ -249,6 +254,9 @@ internal static class InventoryModel
     public static InventoryPending? Pending => Volatile.Read(ref _pending);
     public static InventoryResult? LastResult => Volatile.Read(ref _result);
     public static InventoryTarget? Target => Volatile.Read(ref _target);
+    /// <summary>The object selected in the game when it is one of the character's items, else 0 (4 Hz while subscribed).</summary>
+    public static uint SelectedItem => Volatile.Read(ref _selectedItem);
+    private static uint _selectedItem;
     public static bool DropAvailable => ClientHelperHooks.HasDropItem;
     public static bool GiveAvailable => ClientHelperHooks.HasGiveObjectTo;
     public static bool WieldAvailable => ClientHelperHooks.HasWieldItem;
@@ -290,6 +298,11 @@ internal static class InventoryModel
     /// </summary>
     public static bool Request(InventoryRequest request, out string why)
     {
+        if (BatchRunning)
+        {
+            why = "Several items are being sent; wait, or press Stop.";
+            return false;
+        }
         InventoryPending? busy = Pending;
         if (busy != null)
         {
@@ -352,7 +365,8 @@ internal static class InventoryModel
     public static void MainThreadTick()
     {
         bool open = Volatile.Read(ref _subscribers) > 0;
-        if (!open && _inFlight == null && _held == null && Volatile.Read(ref _requested) == null)
+        if (!open && _inFlight == null && _held == null && Volatile.Read(ref _requested) == null
+            && Volatile.Read(ref _batchActive) == 0)
             return;
         if (!MainThreadGuard.IsOnMainThread())
             return;
@@ -370,6 +384,8 @@ internal static class InventoryModel
                 _lastWatch = now;
                 Watch(now);
             }
+            // After the watch, so an item that just ended is counted before the next is sent.
+            if (Volatile.Read(ref _batchActive) != 0) BatchTick(now);
             if (!open) return;
 
             bool dirty = Volatile.Read(ref _dirty) != 0;
@@ -387,6 +403,7 @@ internal static class InventoryModel
                 SampleTarget();
             }
             HoverTick(now);
+            IdentifyQueueTick(now);
         }
         catch (Exception ex)
         {
@@ -415,6 +432,7 @@ internal static class InventoryModel
         {
             _items.Clear();       // another character: nothing carries over
             _identified.Clear();
+            ClearIdentifyQueue();
             _lastPlayer = player;
             _lastSignature = 0;
             _playerName = string.Empty;
@@ -495,7 +513,7 @@ internal static class InventoryModel
             _playerName = name ?? string.Empty;
         }
         sig = Mix(sig, (uint)burden, (uint)pyreals, (uint)capacity, (uint)(pyreals >> 32), (uint)_scratchItems.Count,
-            aetheria, (uint)_playerName.Length, (uint)containerSlots, 0);
+            aetheria, (uint)_playerName.Length, (uint)containerSlots, Net.InventoryOrder.ListHash(player, true));
 
         if (sig == _lastSignature && _current.PlayerId == player) return;
         _lastSignature = sig;
@@ -559,6 +577,10 @@ internal static class InventoryModel
             packs[p + 1].Used = CountTowardCapacity(packs[p + 1].Items);
             packs[p + 1].FillText = Fill(packs[p + 1].Used, cap);
         }
+        // The side packs in the pack column's order, top first (the server's pack-slot list, as retail's
+        // column and RynthSort's pack numbers have them), when that list names every one; else id order.
+        if (Net.InventoryOrder.TryGetOrder(player, true, out uint[] column))
+            Net.InventoryOrder.SortByColumn(packs, 1, static p => p.Id, column);
         view.Packs = packs;
         view.SlotItems = slotItems.ToArray();
         view.Worn = worn.ToArray();
@@ -571,7 +593,12 @@ internal static class InventoryModel
         if (burden < 0) { view.BurdenText = "?"; view.BurdenTip = "Burden not known yet."; }
         else if (capacity > 0)
         {
-            int pct = (int)Math.Round(100.0 * burden / capacity);
+            // Retail's own arithmetic (OpenAC BurdenMath.LoadToPercent, checked against the retail panel): the
+            // load ratio in single precision, the meter's fill (0-300%), and the percent shown is that rounded
+            // DOWN. Rounding to nearest showed 36 where retail showed 35.
+            float load = (float)burden / capacity;
+            float fill = Math.Clamp(load / 3f, 0f, 1f);
+            int pct = (int)MathF.Floor(fill * 300f);
             view.BurdenText = pct.ToString(CultureInfo.InvariantCulture) + "%";
             view.BurdenTip = $"Burden {burden:N0} of {capacity:N0} ({pct}%). Over 100% you move slower; 300% is the limit.";
         }
@@ -662,6 +689,7 @@ internal static class InventoryModel
     {
         uint sel = ClientHelperHooks.GetSelectedItemId();
         uint player = ClientHelperHooks.GetPlayerId();
+        Volatile.Write(ref _selectedItem, sel != 0 && _items.ContainsKey(sel) ? sel : 0u);
         InventoryTarget? cur = _target;
         if (sel == 0 || sel == player || _items.ContainsKey(sel)
             || !ClientObjectHooks.TryGetItemType(sel, out uint type) || (type & 0x10u) == 0)   // creatures and players only
@@ -817,10 +845,14 @@ internal static class InventoryModel
                     Finish("That pack is gone.", false, now);
                     return;
                 }
-                if (f.Container == r.TargetId && !worn) { Finish($"{r.ItemName} is already there.", true, now); return; }
+                if (f.Container == r.TargetId && !worn && r.Slot < 0) { Finish($"{r.ItemName} is already there.", true, now); return; }
                 int amount = Math.Max(1, (int)f.StackSize);
-                // The helper refuses (false) a full pack of the player's own before sending.
-                ok = ClientHelperHooks.MoveItemInternal(r.ItemId, r.TargetId, 0, amount);
+                // A slot (a drop on a cell of the grid, or a reorder) goes out as the packet itself; the
+                // server answers a full pack or a wrong kind of item. Without one the helper picks the
+                // first empty slot, and refuses (false) a full pack of the player's own before sending.
+                ok = r.Slot >= 0 && ClientHelperHooks.HasPutItemInContainer
+                    ? ClientHelperHooks.PutItemInContainerAt(r.ItemId, r.TargetId, r.Slot)
+                    : ClientHelperHooks.MoveItemInternal(r.ItemId, r.TargetId, 0, amount);
                 if (!ok) { Finish($"{r.TargetName} is full, or the move isn't possible.", false, now); return; }
                 break;
             }
@@ -1103,13 +1135,78 @@ internal static class InventoryModel
             _identified[id] = now;
             _lastIdentify = now;
             sentRecently = true;
-            ClientActionHooks.RequestId(id);   // main thread: the 0xC8 is sent now
+            using (Net.EngineSendMarker.Enter(Net.IdRequester.Ui))
+                ClientActionHooks.RequestId(id);   // main thread: the 0xC8 is sent now
             tip = null;                        // rebuild below with "identifying"
         }
 
         if (tip != null && tip.Id == id && now - _lastTooltip < TooltipRefreshTicks) return;
         _lastTooltip = now;
         Volatile.Write(ref _tooltip, BuildTooltip(id, appraised, !appraised && sentRecently));
+    }
+
+    // ── Identify queue (the attribute filter's "Identify N") ────────────
+
+    private static readonly long QueuedIdentifyGapTicks = Freq / 4;   // 4 a second
+    private const int MaxQueuedIdentifies = 1024;
+    private static readonly object IdQueueSync = new();
+    private static readonly Queue<uint> _idQueue = new();               // guarded by IdQueueSync
+    private static readonly HashSet<uint> _idQueued = new();            // guarded by IdQueueSync
+    private static long _lastQueuedIdentify;
+
+    /// <summary>Items still waiting in the identify queue. Any thread.</summary>
+    public static int IdentifyQueueCount
+    {
+        get { lock (IdQueueSync) return _idQueue.Count; }
+    }
+
+    /// <summary>
+    /// Asks the server to identify <paramref name="ids"/>, a few a second on AC's main thread
+    /// while the panel is open. Items already appraised, sent in the last minute, already
+    /// queued or no longer carried are skipped. Any thread.
+    /// </summary>
+    public static void QueueIdentify(IReadOnlyList<uint> ids)
+    {
+        lock (IdQueueSync)
+        {
+            foreach (uint id in ids)
+            {
+                if (id == 0 || _idQueue.Count >= MaxQueuedIdentifies) continue;
+                if (_idQueued.Add(id)) _idQueue.Enqueue(id);
+            }
+        }
+    }
+
+    /// <summary>Drops every queued identify. Any thread.</summary>
+    public static void ClearIdentifyQueue()
+    {
+        lock (IdQueueSync)
+        {
+            _idQueue.Clear();
+            _idQueued.Clear();
+        }
+    }
+
+    /// <summary>Main thread: sends the next queued identify that still needs sending.</summary>
+    private static void IdentifyQueueTick(long now)
+    {
+        if (now - _lastQueuedIdentify < QueuedIdentifyGapTicks) return;
+        while (true)
+        {
+            uint id;
+            lock (IdQueueSync)
+            {
+                if (!_idQueue.TryDequeue(out id)) return;
+                _idQueued.Remove(id);
+            }
+            if (AppraisalHooks.HasAppraisalData(id) || !_items.ContainsKey(id)) continue;
+            if (_identified.TryGetValue(id, out long sentAt) && now - sentAt < IdentifyRepeatTicks) continue;
+            if (_identified.Count > 2048) _identified.Clear();
+            _identified[id] = now;
+            _lastQueuedIdentify = now;
+            ClientActionHooks.RequestId(id);   // main thread: the 0xC8 is sent now
+            return;
+        }
     }
 
     private static InventoryTooltip BuildTooltip(uint id, bool appraised, bool identifying)
@@ -1136,6 +1233,8 @@ internal static class InventoryModel
                 lines.Add(sb.ToString());
             }
         }
+        if (appraised && item != null && (item.Type & WeaponTypeMask) != 0)
+            AddWeaponSpecials(id, lines);
         if (item != null && item.SpellId != 0 && (lines.Count == 0 || !appraised))
         {
             if (!PortalSpellTable.Ready) PortalSpellTable.EnsureLoadQueued();
@@ -1144,6 +1243,94 @@ internal static class InventoryModel
         if (identifying) lines.Add("Identifying...");
         else if (!appraised) lines.Add("Not identified yet.");
         return new InventoryTooltip { Id = id, Lines = lines.ToArray(), Identifying = identifying };
+    }
+
+    // ── Weapon imbues and slayer (tooltip, 2026-10-25) ──────────────────
+    // ItemType melee weapon | missile weapon | caster.
+    private const uint WeaponTypeMask = 0x1 | 0x100 | 0x8000;
+    // ACE: ImbuedEffect 179 (+ ImbuedEffect2..5 = 303..306), SlayerCreatureType 166,
+    // SlayerDamageBonus 138 (rarely sent), LongDesc 16 (ACECustom "Property Details:" strengths).
+    private const uint StypeImbuedEffect = 179, StypeSlayerCreature = 166, StypeSlayerBonus = 138, StypeLongDesc = 16;
+    private static readonly uint[] ImbueStypes = { StypeImbuedEffect, 303, 304, 305, 306 };
+
+    // ACE ImbuedEffectType bits, in the order the appraisal lists them.
+    private static readonly (int Bit, string Name, string Detail)[] ImbueNames =
+    {
+        (0x0001, "Critical Strike", "Critical Strike"), (0x0002, "Crippling Blow", "Crippling Blow"),
+        (0x0004, "Armor Rending", "Armor Rending"), (0x0008, "Slash Rending", "Slash"),
+        (0x0010, "Pierce Rending", "Pierc"), (0x0020, "Bludgeon Rending", "Bludg"),
+        (0x0040, "Acid Rending", "Acid"), (0x0080, "Cold Rending", "Cold|Frost"),
+        (0x0100, "Lightning Rending", "Electric|Lightning"), (0x0200, "Fire Rending", "Fire"),
+        (0x4000, "Nether Rending", "Nether"), (0x0400, "Melee Defense imbue", ""),
+        (0x0800, "Missile Defense imbue", ""), (0x1000, "Magic Defense imbue", ""),
+        (0x2000, "Spellbook (Hematited)", ""),
+    };
+
+    // ACE CreatureType, index = value (same list as RynthAi's MagItemInfoTables / LootRuleText).
+    private static readonly string[] CreatureTypeNames =
+    {
+        "Invalid", "Olthoi", "Banderling", "Drudge", "Mosswart", "Lugian", "Tumerok", "Mite", "Tusker",
+        "Phyntos Wasp", "Rat", "Auroch", "Cow", "Golem", "Undead", "Gromnie", "Reedshark", "Armoredillo",
+        "Fae", "Virindi", "Wisp", "Knathtead", "Shadow", "Mattekar", "Mumiyah", "Rabbit", "Sclavus",
+        "Shallows Shark", "Monouga", "Zefir", "Skeleton", "Human", "Shreth", "Chittick", "Moarsman",
+        "Olthoi Larvae", "Slithis", "Deru", "Fire Elemental", "Snowman", "Unknown", "Bunny",
+        "Lightning Elemental", "Rockslide", "Grievver", "Niffis", "Ursuin", "Crystal", "Hollow Minion",
+        "Scarecrow", "Idol", "Empyrean", "Hopeslayer", "Doll", "Marionette", "Carenzi", "Siraluun",
+        "Aun Tumerok", "Hea Tumerok", "Simulacrum", "Acid Elemental", "Frost Elemental", "Elemental",
+        "Statue", "Wall", "Altered Human", "Device", "Harbinger", "Dark Sarcophagus", "Chicken",
+        "Gotrok Lugian", "Margul", "Bleached Rabbit", "Nasty Rabbit", "Grimacing Rabbit", "Burun",
+        "Target", "Ghost", "Fiun", "Eater", "Penguin", "Ruschk", "Thrungus", "Viamontian Knight",
+        "Remoran", "Swarm", "Moar", "Enchanted Arms", "Sleech", "Mukkir", "Merwart", "Food",
+        "Paradox Olthoi", "Harvest", "Energy", "Apparition", "Aerbax", "Touched", "Blighted Moarsman",
+        "Gear Knight", "Gurog", "Anekshay",
+    };
+
+    // "- Fire Rending: +176% Dmg", "- Armor Rending: 12.5% Ignored", "- Crippling Blow: 2.5x Crit Dmg".
+    private static readonly System.Text.RegularExpressions.Regex ImbueDetailLine = new(
+        @"^\s*-\s*(?<name>[A-Za-z' ]+?)\s*:\s*(?<value>[+-]?[\d.,]+\s?[%x])",
+        System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>"Imbues: Armor Rending 16%, Slash Rending +161%" and "Slayer: Undead" for an identified weapon.</summary>
+    private static void AddWeaponSpecials(uint id, List<string> lines)
+    {
+        int mask = 0;
+        foreach (uint stype in ImbueStypes)
+            if (ClientObjectHooks.TryGetObjectIntProperty(id, stype, out int v)) mask |= v;
+        if (mask != 0)
+        {
+            string desc = ClientObjectHooks.TryGetObjectStringProperty(id, StypeLongDesc, out string d) ? d ?? string.Empty : string.Empty;
+            var parts = new List<string>(2);
+            foreach (var (bit, name, detail) in ImbueNames)
+            {
+                if ((mask & bit) == 0) continue;
+                string strength = detail.Length > 0 ? ImbueStrength(desc, detail) : string.Empty;
+                parts.Add(strength.Length > 0 ? name + " " + strength : name);
+            }
+            if (parts.Count > 0) lines.Add("Imbues: " + string.Join(", ", parts));
+        }
+
+        if (ClientObjectHooks.TryGetObjectIntProperty(id, StypeSlayerCreature, out int slay) && slay > 0)
+        {
+            string creature = slay < CreatureTypeNames.Length ? CreatureTypeNames[slay] : "creature type " + slay.ToString(CultureInfo.InvariantCulture);
+            string bonus = ClientObjectHooks.TryGetObjectDoubleProperty(id, StypeSlayerBonus, out double b) && b > 1
+                ? $" ({b.ToString("0.##", CultureInfo.InvariantCulture)}x damage)" : string.Empty;
+            lines.Add($"Slayer: {creature}{bonus}");
+        }
+    }
+
+    /// <summary>The strength of one imbue from the "Property Details:" text, or empty.</summary>
+    private static string ImbueStrength(string desc, string detail)
+    {
+        if (desc.Length == 0) return string.Empty;
+        bool rending = detail is not ("Critical Strike" or "Crippling Blow" or "Armor Rending");
+        foreach (System.Text.RegularExpressions.Match m in ImbueDetailLine.Matches(desc))
+        {
+            string name = m.Groups["name"].Value;
+            if (!Array.Exists(detail.Split('|'), k => name.Contains(k, StringComparison.OrdinalIgnoreCase))) continue;
+            if (rending && !name.Contains("Rending", StringComparison.OrdinalIgnoreCase)) continue;
+            return m.Groups["value"].Value.Replace(" ", "");
+        }
+        return string.Empty;
     }
 
     private static string SpellName(uint spellId)

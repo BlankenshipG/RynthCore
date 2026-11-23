@@ -1,12 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Launcher assembly version (bump when changing launcher-only behavior). Previous: 0.1.4.
+    <!-- Launcher assembly version (bump when changing launcher-only behavior). Previous: 0.1.8.
          No hard-coded InformationalVersion: release builds pass -p:Version=yyyy.m.d.n, and the
          product version derived from it is what the launcher/About show (BuildVersion.Format). -->
-    <Version>0.1.5</Version>
-    <AssemblyVersion>0.1.5.0</AssemblyVersion>
-    <FileVersion>0.1.5.0</FileVersion>
+    <Version>0.1.9</Version>
+    <AssemblyVersion>0.1.9.0</AssemblyVersion>
+    <FileVersion>0.1.9.0</FileVersion>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows7.0</TargetFramework>
     <PlatformTarget>x86</PlatformTarget>
@@ -43,15 +43,27 @@
 
   <ItemGroup>
     <Compile Include="..\RynthCore.App\LaunchServerProfile.cs" Link="Shared\LaunchServerProfile.cs" />
+    <Compile Include="..\RynthCore.App\KnownServerCatalog.cs" Link="Shared\KnownServerCatalog.cs" />
     <Compile Include="..\RynthCore.App\LaunchAccountProfile.cs" Link="Shared\LaunchAccountProfile.cs" />
     <Compile Include="..\RynthCore.App\AccountPasswordProtection.cs" Link="Shared\AccountPasswordProtection.cs" />
+    <Compile Include="..\RynthCore.App\SavedPasswordReveal.cs" Link="Shared\SavedPasswordReveal.cs" />
     <Compile Include="..\RynthCore.App\InjectionMode.cs" Link="Shared\InjectionMode.cs" />
     <Compile Include="..\RynthCore.App\DecalLocator.cs" Link="Shared\DecalLocator.cs" />
     <Compile Include="..\RynthCore.App\DecalBridgeRegistration.cs" Link="Shared\DecalBridgeRegistration.cs" />
+    <Compile Include="..\RynthCore.App\FolderAccess.cs" Link="Shared\FolderAccess.cs" />
     <Compile Include="..\RynthCore.App\DecalBridgeCheck.cs" Link="Shared\DecalBridgeCheck.cs" />
     <Compile Include="..\RynthCore.App\RealDecalCheckHost.cs" Link="Shared\RealDecalCheckHost.cs" />
     <Compile Include="..\RynthCore.App\AcLaunchArgumentBuilder.cs" Link="Shared\AcLaunchArgumentBuilder.cs" />
+    <Compile Include="..\RynthCore.App\AcClientCommandLine.cs" Link="Shared\AcClientCommandLine.cs" />
+    <Compile Include="..\RynthCore.App\FirstLoginRules.cs" Link="Shared\FirstLoginRules.cs" />
+    <Compile Include="..\RynthCore.App\AccountServerRules.cs" Link="Shared\AccountServerRules.cs" />
+    <Compile Include="..\RynthCore.App\CrashDumpWriterRule.cs" Link="Shared\CrashDumpWriterRule.cs" />
+    <Compile Include="..\RynthCore.App\AcWindowPlacementRule.cs" Link="Shared\AcWindowPlacementRule.cs" />
     <Compile Include="..\RynthCore.App\AcClientLaunchSettingsService.cs" Link="Shared\AcClientLaunchSettingsService.cs" />
+    <Compile Include="..\RynthCore.App\DxvkPackageService.cs" Link="Shared\DxvkPackageService.cs" />
+    <Compile Include="..\RynthCore.App\UserPrefsSwapRecovery.cs" Link="Shared\UserPrefsSwapRecovery.cs" />
+    <!-- RynthAi's Settings > Graphics: graphics.json, enforced on UserPreferences.ini before each launch. -->
+    <Compile Include="..\RynthCore.Engine\Graphics\AcGraphicsPrefs.cs" Link="Shared\AcGraphicsPrefs.cs" />
     <Compile Include="..\RynthCore.App\AcClientLoginAutomationService.cs" Link="Shared\AcClientLoginAutomationService.cs" />
     <Compile Include="..\RynthCore.App\CharacterCacheStore.cs" Link="Shared\CharacterCacheStore.cs" />
     <Compile Include="..\RynthCore.App\LaunchContextStore.cs" Link="Shared\LaunchContextStore.cs" />
@@ -60,6 +72,9 @@
     <Compile Include="..\RynthCore.App\AppSettings.cs" Link="Shared\AppSettings.cs" />
     <Compile Include="..\RynthCore.App\AppSettingsStore.cs" Link="Shared\AppSettingsStore.cs" />
     <Compile Include="..\RynthCore.App\DecalAccountModes.cs" Link="Shared\DecalAccountModes.cs" />
+    <Compile Include="..\RynthCore.App\HeadlessAccountModes.cs" Link="Shared\HeadlessAccountModes.cs" />
+    <Compile Include="..\RynthCore.App\HeadlessLaunch.cs" Link="Shared\HeadlessLaunch.cs" />
+    <Compile Include="..\RynthCore.App\HeadlessMonitor.cs" Link="Shared\HeadlessMonitor.cs" />
     <Compile Include="..\RynthCore.App\PluginDefinition.cs" Link="Shared\PluginDefinition.cs" />
     <!-- The plugin API of the engine installed with this launcher (RynthUpdater.InstalledEngineApi). -->
     <Compile Include="..\RynthCore.Engine\Plugins\PluginContractVersion.cs" Link="Shared\PluginContractVersion.cs" />
@@ -68,8 +83,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Install-location resolver (installer-chosen RynthCore / RynthSuite folders). -->
-    <Compile Include="..\RynthCore.App\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <!-- Install-folder resolver (env, HKCU, HKLM, default C:\Games). Read only; same file in RynthSuite Plugins\Shared. -->
+    <Compile Include="..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <Compile Include="..\Shared\DumpInProgressRule.cs" Link="Shared\DumpInProgressRule.cs" />
   </ItemGroup>
 
 </Project>

@@ -57,6 +57,8 @@ internal static unsafe class ChatCommandDispatcher
     private const uint WM_KEYUP = 0x0101;
     private const uint WM_CHAR = 0x0102;
     private const int VK_RETURN = 0x0D;
+    /// <summary>ChatMessageType AC prints its own command notices in ("Someone must @tell you first!").</summary>
+    private const int ChatTypeNotice = 0x1A;
 
     /// <summary>
     /// When true, all commands are dispatched via keyboard simulation
@@ -73,6 +75,14 @@ internal static unsafe class ChatCommandDispatcher
     /// </summary>
     [ThreadStatic]
     private static bool _inPluginPreDispatch;
+
+    /// <summary>
+    /// True on AC's main thread while Dispatch sends a line (a plugin's InvokeChatParser, RynthChat's
+    /// box, a login command): AC's outgoing-chat hook then knows the line wasn't typed in AC's own
+    /// chat bar (ChatCallbackHooks.OutgoingChatDetour, ChatReplyTab). 2026-10-26.
+    /// </summary>
+    [ThreadStatic]
+    internal static bool InDispatch;
 
     /// <summary>
     /// AC1Legacy::PStringBase&lt;char&gt; for Event_* functions.
@@ -106,7 +116,14 @@ internal static unsafe class ChatCommandDispatcher
         }
     }
 
-    public static bool Dispatch(string? text)
+    /// <summary>A line from a plugin, a command file or the login commands (<see cref="ChatCommandOrigin.Script"/>).</summary>
+    public static bool Dispatch(string? text) => Dispatch(text, ChatCommandOrigin.Script);
+
+    /// <summary>
+    /// Runs a chat line as if typed. <paramref name="origin"/> says who sent it, for the answer of an
+    /// engine /rc command (RynthCoreChatCommands): Player for a RynthCore hotkey, Script for the rest.
+    /// </summary>
+    public static bool Dispatch(string? text, ChatCommandOrigin origin)
     {
         if (string.IsNullOrWhiteSpace(text))
             return false;
@@ -126,8 +143,10 @@ internal static unsafe class ChatCommandDispatcher
         // from the drain, where IsOnMainThread is satisfied and the body
         // below runs directly — so there's only one code path to keep in sync.
         if (!MainThreadGuard.IsOnMainThread())
-            return AcMainThreadQueue.EnqueueChatCommand(text);
+            return AcMainThreadQueue.EnqueueChatCommand(text, origin);
 
+        bool outerDispatch = InDispatch;
+        InDispatch = true;
         try
         {
             string trimmed = text.Trim();
@@ -137,7 +156,7 @@ internal static unsafe class ChatCommandDispatcher
             // RynthCore engine commands (/rc ...) are handled before plugin
             // pre-dispatch and before any AC chat routing so they work even
             // when the overlay is hidden and no plugin can eat the line.
-            if (RynthCoreChatCommands.TryHandle(trimmed))
+            if (RynthCoreChatCommands.TryHandle(trimmed, origin))
                 return true;
 
             // Expand shorthand: /s → /say, /t → /tell, /e → /emote
@@ -159,7 +178,15 @@ internal static unsafe class ChatCommandDispatcher
                 _inPluginPreDispatch = true;
                 try
                 {
-                    if (PluginManager.DispatchChatBarEnter(trimmed))
+                    // The player's line (a hotkey's /ra command): a /rc line a plugin runs while it
+                    // handles it is the player's too (RynthCoreChatCommands.PlayerLine).
+                    if (origin == ChatCommandOrigin.Player)
+                    {
+                        using (RynthCoreChatCommands.PlayerLine())
+                            if (PluginManager.DispatchChatBarEnter(trimmed))
+                                return true;
+                    }
+                    else if (PluginManager.DispatchChatBarEnter(trimmed))
                         return true;
                 }
                 catch (Exception ex)
@@ -167,6 +194,18 @@ internal static unsafe class ChatCommandDispatcher
                     RynthLog.Compat($"ChatDispatch: plugin pre-dispatch threw on '{trimmed}' - {ex.GetType().Name}: {ex.Message}");
                 }
                 finally { _inPluginPreDispatch = false; }
+            }
+
+            // /reply (/r) and /retell (/rt) become a /tell to the last person who told you
+            // something / you told something (TellMemory.cs says why AC can't do them here).
+            if (TellMemory.Shared.TryRewrite(trimmed, out string? tellLine, out string? tellError))
+            {
+                if (tellLine == null)
+                {
+                    AcMainThreadQueue.EnqueueWriteToChat(tellError!, ChatTypeNotice);
+                    return false;
+                }
+                trimmed = tellLine;
             }
 
             // Direct Chat Input mode — everything goes through keyboard sim
@@ -189,12 +228,19 @@ internal static unsafe class ChatCommandDispatcher
             if (StartsWithCmd(trimmed, "/tell "))
                 return DispatchTell(trimmed.Substring(6));
 
-            // /a message (allegiance channel broadcast)
+            // /a message (allegiance): AC's own chat command, like /f. Event_ChannelBroadcast(1)
+            // got "You do not have permission to talk in that channel" (2026-10-11): the server
+            // gives each allegiance its own Turbine chat room, which only AC's /a knows.
             if (StartsWithCmd(trimmed, "/a "))
-                return DispatchChannelBroadcast(1, trimmed.Substring(3));
+                return DispatchRaw(trimmed);
 
             // /f message (fellowship — no direct Event_*; use the raw chat path)
             if (StartsWithCmd(trimmed, "/f "))
+                return DispatchRaw(trimmed);
+
+            // AC's emote forms without a '/' (@e, @emote, "; text", "*wave*"): AC's own parser,
+            // as typed in its chat bar (ChatLineRoute.cs). As speech they were said word for word.
+            if (ChatLineRoute.IsAcEmoteLine(trimmed))
                 return DispatchRaw(trimmed);
 
             // Bare text → say
@@ -209,6 +255,7 @@ internal static unsafe class ChatCommandDispatcher
             RynthLog.Compat($"ChatDispatch: error - {ex.GetType().Name}: {ex.Message}");
             return false;
         }
+        finally { InDispatch = outerDispatch; }
     }
 
     /// <summary>
@@ -298,6 +345,8 @@ internal static unsafe class ChatCommandDispatcher
         if (targetName.Length == 0 || message.Length == 0)
             return false;
 
+        // AC's /tell would remember this name for its /retell; this call skips AC's parser.
+        TellMemory.Shared.NoteTellSent(targetName);
         var psMsg = LegacyPString.Create(message);
         var psTarget = LegacyPString.Create(targetName);
         try
@@ -346,8 +395,28 @@ internal static unsafe class ChatCommandDispatcher
             return DecalBridgeHost.TryInvokeChatParser(command);
         if (ChatCallbackHooks.TryDispatchDirect(command))
             return true;
+        // No chat target captured yet this login (nothing has gone through AC's chat bar since):
+        // the keystroke fallback types into AC's window, and on a client in the background, or
+        // with RynthChat's window popped out, those keystrokes were lost while the dispatch said
+        // ok (2026-10-30: /fship list from RynthChat never left two of five clients). A server
+        // command goes to the server as "@command" instead (ACE runs "@x" exactly as a forwarded
+        // "/x"). Only commands AC handles itself still need the keystrokes.
+        if (ServerCommandFallback.TryAsServerCommand(command, out string? atCommand))
+        {
+            LogoffOriginProbe.RecordChat("ServerCommand fallback", atCommand!);
+            if (DispatchSay(atCommand!))
+            {
+                if (Interlocked.Increment(ref _fallbackSentLogged) <= 5)
+                    RynthLog.Compat($"ChatDispatch: no chat target captured yet; '{command.Trim()}' sent to the server as '{atCommand}'.");
+                return true;
+            }
+        }
+        if (Interlocked.Increment(ref _fallbackKeysLogged) <= 5)
+            RynthLog.Compat($"ChatDispatch: no chat target captured yet; '{command.Trim()}' typed into AC's window with simulated keys (lost if AC doesn't take them).");
         return SimulateChatInput(command);
     }
+
+    private static int _fallbackSentLogged, _fallbackKeysLogged;
 
     /// <summary>
     /// Simulates keyboard input to type and submit a chat command.

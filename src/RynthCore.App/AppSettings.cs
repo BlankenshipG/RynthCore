@@ -4,20 +4,31 @@ namespace RynthCore.App;
 
 internal sealed class AppSettings
 {
-    public string AcClientPath { get; set; } = string.Empty;
+    // A new install starts with the standard client folder (2026-10-14); a saved path always wins.
+    public string AcClientPath { get; set; } = DefaultAcClientPath;
+    public const string DefaultAcClientPath = @"C:\Turbine\Asheron's Call\acclient.exe";
     public string EnginePath { get; set; } = string.Empty;
     public string LaunchArguments { get; set; } = string.Empty;
     public string SelectedServerProfileId { get; set; } = string.Empty;
     public string SelectedAccountProfileId { get; set; } = string.Empty;
     public List<string> CheckedLaunchAccountProfileIds { get; set; } = [];
     public string SelectedMainTabId { get; set; } = "launcher";
-    public bool AllowMultipleClients { get; set; }
-    public bool SkipIntroVideos { get; set; }
-    public bool SkipLoginLogos { get; set; }
+    // New-install defaults (2026-10-14): multiple clients, no intro videos or logos, inject after
+    // launch, kill stuck clients; leave clients launched outside RynthCore alone.
+    public bool AllowMultipleClients { get; set; } = true;
+    public bool SkipIntroVideos { get; set; } = true;
+    public bool SkipLoginLogos { get; set; } = true;
+
+    /// <summary>
+    /// When true, each launch (and Save Launch Behavior) installs DXVK's x86
+    /// <c>d3d9.dll</c> next to <see cref="AcClientPath"/>. Off by default — opt-in.
+    /// Package lives under &lt;RynthCore&gt;\Runtime\dxvk\ (installer seed or GitHub fetch).
+    /// </summary>
+    public bool EnableDxvk { get; set; }
     public bool AutoLaunch { get; set; }
     public bool AutoInjectAfterLaunch { get; set; } = true;
-    public bool WatchForAcStart { get; set; } = true;
-    public bool InjectAllRunningClients { get; set; } = true;
+    public bool WatchForAcStart { get; set; }
+    public bool InjectAllRunningClients { get; set; }
     public string LoggingLevel { get; set; } = "Info";
     public int LaunchStaggerMs { get; set; } = 250;
     public int CrashRelaunchLimitInWindow { get; set; } = 3;
@@ -36,13 +47,19 @@ internal sealed class AppSettings
     /// True once the launcher has explained usage statistics and asked (shown once).
     public bool UsageStatsAsked { get; set; }
 
+    /// The player said "leave it" (or no at Windows' prompt) when the launcher offered to take
+    /// the RynthCore Decal bridge out of Decal's list for all users because no account uses
+    /// Decal + RynthCore any more. The launcher then doesn't ask again at start (switching the
+    /// last account away still asks). Cleared when the bridge is registered again.
+    public bool DecalFilterRemovalDeclined { get; set; }
+
     /// When true, the launcher kills any RynthCore-mode acclient.exe it
     /// launched that hasn't reached IsLoggedIn within
     /// <see cref="StuckClientTimeoutSeconds"/>. Catches stuck char-select,
     /// patcher hangs, and "you have been disconnected" failure screens at
     /// the front of the launch flow. Off by default — destructive.
     /// Decal-mode clients are skipped (no engine = no IsLoggedIn signal).
-    public bool KillStuckClients { get; set; }
+    public bool KillStuckClients { get; set; } = true;
     public int StuckClientTimeoutSeconds { get; set; } = 60;
 
     /// When true (default), the launcher kills+relaunches a RynthCore-mode
@@ -72,6 +89,25 @@ internal sealed class AppSettings
     /// </summary>
     public string? AppliedInstallerPluginRegistration { get; set; }
 
+    // ── Headless accounts (InjectionMode.Headless, experimental; HeadlessLaunch) ──
+    // Plain values with "use the default" defaults: launchers without Headless ignore them.
+
+    /// rynth-headless.exe. Empty = &lt;launcher folder&gt;\Headless\rynth-headless.exe.
+    public string HeadlessExePath { get; set; } = string.Empty;
+
+    /// Plugin DLLs every Headless account loads. x64 builds (rynth-headless is a 64-bit
+    /// process), not the x86 ones in PluginDllPaths. Empty = the ones the installer ships in
+    /// &lt;launcher folder&gt;\Headless\plugins (HeadlessLaunch.DefaultPluginPaths: RynthAi).
+    public List<string> HeadlessPluginPaths { get; set; } = [];
+
+    /// The plugins' RynthSuite folder (the run config's suiteDir). Empty = rynth-headless's default,
+    /// %LOCALAPPDATA%\RynthCore\headless.
+    public string HeadlessSuiteDir { get; set; } = string.Empty;
+
+    /// Where rynth-headless writes per-character status files (statusDir). Empty = its default,
+    /// &lt;RynthCore&gt;\Logs\status (the game clients' and the StatusAgent's folder).
+    public string HeadlessStatusDir { get; set; } = string.Empty;
+
     public List<LaunchServerProfile> ServerProfiles { get; set; } = [];
     public List<LaunchAccountProfile> AccountProfiles { get; set; } = [];
 
@@ -79,4 +115,10 @@ internal sealed class AppSettings
     public double? WindowY { get; set; }
     public double? WindowWidth { get; set; }
     public double? WindowHeight { get; set; }
+
+    /// The Headless window's last size and place (HeadlessWindow; null = default, centred).
+    public double? HeadlessWindowX { get; set; }
+    public double? HeadlessWindowY { get; set; }
+    public double? HeadlessWindowWidth { get; set; }
+    public double? HeadlessWindowHeight { get; set; }
 }

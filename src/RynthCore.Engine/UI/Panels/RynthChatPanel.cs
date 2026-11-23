@@ -409,11 +409,17 @@ internal static class RynthChatPanel
         {
             ClearSelectionState();
             chatStack.Children.Clear();
-            foreach (var line in CurrentLines())
+            // The newest 500 shown lines, as AppendLine trims to: the history can be 10,000
+            // lines since 2026-10-11 (ChatHistory), far too many TextBlocks. ImGui's face shows all.
+            var lines = CurrentLines();
+            int from = lines.Length;
+            for (int shown = 0; from > 0 && shown < 500; )
+                if (ChatModel.LineVisible(lines[--from], activeTab, searchFilter)) shown++;
+            if (lines.Length > 0) lastShownId = lines[^1].Id;
+            for (int i = from; i < lines.Length; i++)
             {
-                lastShownId = line.Id;
-                if (!ChatModel.LineVisible(line, activeTab, searchFilter)) continue;
-                chatStack.Children.Add(MakeTextBlock(line));
+                if (!ChatModel.LineVisible(lines[i], activeTab, searchFilter)) continue;
+                chatStack.Children.Add(MakeTextBlock(lines[i]));
             }
             // A full rebuild (tab/filter/font change) re-pins to the newest line.
             if (autoScrollCheck.IsChecked == true)

@@ -43,7 +43,36 @@
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <GenerateRuntimeConfigurationFiles>false</GenerateRuntimeConfigurationFiles>
     <DebugType>portable</DebugType>
+    <!-- The web panel (WebPanel\WebPanelHost.cs) uses only the WebView2 Core wrapper: no WinRT projection. -->
+    <WebView2UseWinRT>false</WebView2UseWinRT>
+    <WebView2LoaderPreference>Dynamic</WebView2LoaderPreference>
   </PropertyGroup>
+
+  <!--
+    v94 web panel: WebView2 on the CoreCLR engine only. NativeAOT cannot host the Core wrapper's COM
+    interop, so that build drops the host and its Win32/WebView2 glue (WebPanelApi.cs answers Unavailable
+    there and PluginManager leaves the table slots zero).
+  -->
+  <ItemGroup Condition="'$(EngineHost)' == 'coreclr'">
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(EngineHost)' != 'coreclr'">
+    <Compile Remove="WebPanel\WebPanelHost.cs;WebPanel\WebPanelNative.cs;WebPanel\EngineWebPanelEnvironment.cs;WebPanel\IWebPanelEnvironment.cs" />
+  </ItemGroup>
+  <!-- The package references its WinForms and WPF controls unconditionally; the engine uses neither. Dropped
+       before reference resolution, so they are neither compiled against nor copied to the output. -->
+  <Target Name="DropWebView2UiAssemblies" BeforeTargets="ResolveAssemblyReferences" Condition="'$(EngineHost)' == 'coreclr'">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.WinForms' Or '%(Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+  <Target Name="DropWebView2UiCopies" AfterTargets="ResolveAssemblyReferences" Condition="'$(EngineHost)' == 'coreclr'">
+    <ItemGroup>
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.WinForms' Or '%(Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+      <!-- The Core wrapper's XML doc file is not needed at run time. -->
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="'%(Filename)%(Extension)' == 'Microsoft.Web.WebView2.Core.xml'" />
+    </ItemGroup>
+  </Target>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
     <StackTraceSupport>true</StackTraceSupport>
@@ -78,6 +107,8 @@
     <Compile Include="..\RynthCore.App\CharacterCacheStore.cs" Link="Shared\CharacterCacheStore.cs" />
     <Compile Include="..\RynthCore.App\SessionStateStore.cs" Link="Shared\SessionStateStore.cs" />
     <Compile Include="..\RynthCore.App\BuildVersion.cs" Link="Shared\BuildVersion.cs" />
+    <!-- The AC window's position rule, shared with the launcher (UI/AcWindowChrome.cs, 2026-11-15: position only, saved once it held 30 s). -->
+    <Compile Include="..\RynthCore.App\AcWindowPlacementRule.cs" Link="Shared\AcWindowPlacementRule.cs" />
     <!-- DXT1/3/5 for AC icons in script windows (UI/ScriptWindows/AcIconDecoder.cs); the StatusAgent's decoder (RynthCore's own, MIT). -->
     <Compile Include="..\RynthCore.StatusAgent\Dat\DxtUtil.cs" Link="Shared\DxtUtil.cs" />
     <!-- The byte-ring protocol shared with the Decal bridge plugin (docs/DECAL_BRIDGE_PLAN.md). -->
@@ -109,6 +140,13 @@
        inside the engine DLL, read by ImGuiFonts.Preload, so no deploy step ships it. -->
   <ItemGroup>
     <EmbeddedResource Include="Assets\Fonts\Phosphor.ttf" LogicalName="RynthCore.Engine.Assets.Fonts.Phosphor.ttf" />
+  </ItemGroup>
+
+  <!-- Barlow Semi Condensed, SemiBold and Bold (OFL 1.1, Assets\Fonts\Barlow.LICENSE,
+       THIRD-PARTY-NOTICES.md): the narrow label face plugin windows ask for (GetUiFont Narrow*). -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\Fonts\BarlowSemiCondensed-SemiBold.ttf" LogicalName="RynthCore.Engine.Assets.Fonts.BarlowSemiCondensed-SemiBold.ttf" />
+    <EmbeddedResource Include="Assets\Fonts\BarlowSemiCondensed-Bold.ttf" LogicalName="RynthCore.Engine.Assets.Fonts.BarlowSemiCondensed-Bold.ttf" />
   </ItemGroup>
 
   <ItemGroup>
@@ -165,8 +203,9 @@
   </Target>
 
   <ItemGroup>
-    <!-- Install-location resolver (installer-chosen RynthCore / RynthSuite folders). -->
-    <Compile Include="..\RynthCore.App\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <!-- Install-folder resolver (env, HKCU, HKLM, default C:\Games). Read only; same file in RynthSuite Plugins\Shared. -->
+    <Compile Include="..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <Compile Include="..\Shared\DumpInProgressRule.cs" Link="Shared\DumpInProgressRule.cs" />
   </ItemGroup>
 
 </Project>

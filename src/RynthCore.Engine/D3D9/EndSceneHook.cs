@@ -24,6 +24,8 @@ internal static class EndSceneHook
     internal static int FpsTargetFocused = 60;
     internal static int FpsTargetBackground = 30;
     private static readonly Stopwatch _fpsTimer = Stopwatch.StartNew();
+    // Video patch: the cap while AC's 3D scene isn't drawn (VideoPatch.FrameCapThisFrame).
+    private static readonly Stopwatch _videoPatchTimer = Stopwatch.StartNew();
     private static bool _fpsLimiterLoggedOnce;
     private static int _fpsDebugCounter;
     private static long _fpsCounterStart;
@@ -294,12 +296,21 @@ internal static class EndSceneHook
         }
     }
 
+    // AC's own EndScene (and whatever AC does until the next frame): the hang watchdog's
+    // step goes back to "outside the engine" first.
+    private static int CallOriginalEndScene(IntPtr pDevice)
+    {
+        MainThreadHangWatchdog.Step = null;
+        return _originalEndScene!(pDevice);
+    }
+
     private static int EndSceneDetour(IntPtr pDevice)
     {
         // Liveness beacon for MainThreadHangWatchdog — this detour runs on AC's
         // main/render thread every frame (even with the ImGui backend disabled),
         // so a stalled beat means the main thread is wedged. Must never throw.
         try { MainThreadHangWatchdog.MainThreadBeat(); } catch { }
+        MainThreadHangWatchdog.Step = "EndScene: engine frame";
         try
         {
             if (!_offscreenFilterDisabled && !DX9Backend.IsRenderingToBackBuffer(pDevice))
@@ -318,7 +329,7 @@ internal static class EndSceneHook
                 // fall back with Decal; without Decal nothing changes.
                 if (DecalD3D9.Enabled ||
                     (_skipCount < MaxOffscreenSkipsBeforeFallback && offscreenElapsedMs < OffscreenFallbackDelayMs))
-                    return _originalEndScene!(pDevice);
+                    return CallOriginalEndScene(pDevice);
 
                 _offscreenFilterDisabled = true;
                 RynthLog.D3D9($"EndSceneHook: Falling back to unfiltered EndScene after {_skipCount} skipped offscreen pass(es) over {offscreenElapsedMs}ms.");
@@ -341,6 +352,8 @@ internal static class EndSceneHook
                 try { PowerbarHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
                 // Per-frame retail health/stamina/mana bars visibility ("Hide retail vitals").
                 try { RetailVitalsHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
+                // Per-frame retail toolbar + shortcut bar visibility ("Hide retail toolbar").
+                try { RetailToolbarHooks.TickHide(); } catch { /* never let this bring down EndScene */ }
             }
 
             if (_renderCount == 1 && _offscreenFilterDisabled && _skipCount > 0)
@@ -394,7 +407,7 @@ internal static class EndSceneHook
                         // New hook confirmed live — safe to free the old
                         // trampoline now.
                         MinHook.MH_RemoveHook(oldAddr);
-                        return _originalEndScene!(pDevice);
+                        return CallOriginalEndScene(pDevice);
                     }
 
                     RynthLog.D3D9("EndSceneHook: Rehook failed — restoring original hook.");
@@ -417,7 +430,7 @@ internal static class EndSceneHook
                 }
 
                 if (_renderCount < WarmupFrames)
-                    return _originalEndScene!(pDevice);
+                    return CallOriginalEndScene(pDevice);
 
                 _uiActivated = true;
                 RynthLog.D3D9("EndSceneHook: Warmup complete - initializing ImGui.");
@@ -430,6 +443,10 @@ internal static class EndSceneHook
             // site no longer needs to gate it.
             EngineFrameController.OnEndScene(pDevice);
             _uiFrameCount++;
+
+            // AC's real drawing size, about once a second: the window code sizes the window for it.
+            if (_uiFrameCount % 60 == 1)
+                Graphics.AcGraphics.SampleBackBuffer(pDevice);
 
             if (_uiFrameCount == 60 && RynthCore.Engine.Plugins.EngineSettings.EnableImGuiBackend)
                 RynthLog.D3D9("EndSceneHook: 60 UI frames - ImGui is stable.");
@@ -446,6 +463,7 @@ internal static class EndSceneHook
             // The UI hides between characters: nothing is drawn at character select or
             // on the way out, and it's back the moment login completes (an engine
             // reload synthesises login for a player already in the world).
+            MainThreadHangWatchdog.Step = "EndScene: overlay blit and ImGui submit";
             try
             {
                 if (Compatibility.LoginLifecycleHooks.HasObservedLoginComplete)
@@ -457,7 +475,7 @@ internal static class EndSceneHook
                     RynthLog.D3D9($"EndSceneHook: OverlayTextureRenderer.Render error: {ovEx.GetType().Name}: {ovEx.Message}");
             }
 
-            // ImGui draw data (in-client panels, plugin overlay windows such as the ILT Hub)
+            // ImGui draw data (in-client panels, plugin overlay windows such as the Mini Remote)
             // is submitted LAST so it sits on top of the Avalonia layer. Built in OnEndScene;
             // guarded internally, so an ImGui draw failure can't skip the original EndScene.
             EngineFrameController.RenderDeferredImGui();
@@ -521,6 +539,23 @@ internal static class EndSceneHook
             }
         }
 
-        return _originalEndScene!(pDevice);
+        // ── Video patch frame cap ───────────────────────────────────
+        // While the video patch skips AC's 3D scene, the loop would just spin faster on
+        // an empty frame: cap it (default 15 fps) so the time is slept. Stacks with the
+        // governor above (the lower rate wins); 0 = no cap (off, focused in "unfocused",
+        // outside the world, or /rc video fps 0). Game logic still runs every frame.
+        try
+        {
+            int vpCap = VideoPatch.FrameCapThisFrame();
+            if (vpCap > 0)
+            {
+                double leftMs = 1000.0 / vpCap - _videoPatchTimer.Elapsed.TotalMilliseconds;
+                if (leftMs > 0) WaitFrame(Math.Min(leftMs, 1000.0 / VideoPatchPolicy.MinFrameCapFps));
+            }
+        }
+        catch { /* never let the cap take EndScene down */ }
+        _videoPatchTimer.Restart();
+
+        return CallOriginalEndScene(pDevice);
     }
 }

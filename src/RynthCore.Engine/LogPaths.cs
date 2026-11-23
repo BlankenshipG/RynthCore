@@ -10,6 +10,9 @@
 //                               engine, and plugins inside one acclient.exe
 //                               (they all share that client's PID). One file per
 //                               running client.
+//    RynthCore.<pid>.log.old    Its newest rotated copy (5 MB); older ones are
+//    RynthCore.<pid>.log.old.N  .old.1 (next newest) ... .old.7 (LogRotation.cs;
+//                               engine.json "LogKeepCopies", default 8 copies).
 //
 //  Why per-client: a daily multi-boxer runs N acclient.exe at once. With one
 //  shared file their lines interleave, the "scan hb #N for a gap" silent-death
@@ -28,8 +31,7 @@ namespace RynthCore.Engine;
 internal static class LogPaths
 {
     /// <summary>Unified log directory for all RynthCore components.</summary>
-    // Installer-chosen RynthCore folder (registry Software\Rynth\CoreDir; falls back to C:\Games\RynthCore).
-    internal static readonly string LogDirectory = RynthInstallPaths.CoreLogsDir;
+    internal static string LogDirectory => RynthCore.Install.RynthInstallPaths.CoreLogsDir; // C:\Games\RynthCore\Logs by default
 
     /// <summary>Shared launch/orchestration log (injector + launcher + per-engine session pointer).</summary>
     internal const string SharedLogFileName = "RynthCore.log";
@@ -46,7 +48,7 @@ internal static class LogPaths
     /// <summary>Full path to this client's per-PID session log (loader + engine + plugins).</summary>
     internal static string LogFilePath => Path.Combine(LogDirectory, LogFileName);
 
-    /// <summary>Rotated previous copy of this client's session log.</summary>
+    /// <summary>Newest rotated copy of this client's session log (older ones: .old.1, .old.2, ... - LogRotation).</summary>
     internal static string RotatedLogFilePath => Path.Combine(LogDirectory, LogFileName + ".old");
 
     /// <summary>Full path to the shared launch/orchestration log.</summary>
@@ -81,10 +83,11 @@ internal static class LogPaths
 
     /// <summary>
     /// Engine-startup rotation: if THIS client's per-PID log exceeds
-    /// <see cref="MaxLogBytes"/>, move it to RynthCore.&lt;pid&gt;.log.old. With per-PID
-    /// files this only ever touches the current client's own file, so there is no
-    /// cross-process rotation race (the bug the old shared-file design had). Rotation
-    /// still matters because Windows reuses PIDs across launches.
+    /// <see cref="MaxLogBytes"/>, move it to RynthCore.&lt;pid&gt;.log.old, after shifting the
+    /// older copies to .old.1 ... .old.&lt;N-1&gt; (<see cref="LogRotation"/>; N = engine.json
+    /// "LogKeepCopies", default 8). With per-PID files this only ever touches the current
+    /// client's own files, so there is no cross-process rotation race (the bug the old
+    /// shared-file design had). Rotation still matters because Windows reuses PIDs across launches.
     /// </summary>
     internal static void RotateAtStartup()
     {
@@ -100,28 +103,53 @@ internal static class LogPaths
 
             if (size < MaxLogBytes) return;
 
-            string rotated = RotatedLogFilePath;
-            try { if (File.Exists(rotated)) File.Delete(rotated); } catch { }
-
-            try { File.Move(active, rotated); }
-            catch
-            {
-                // A hot-reloaded engine generation in this same process may hold
-                // the handle. Best-effort truncate so the file doesn't grow without
-                // bound. Safe under per-PID: only ever our own client's file.
-                try { File.WriteAllText(active, string.Empty); } catch { }
-            }
+            EntryPoint.ReleaseLogFile();   // the engine's open handle would follow the file to .old
+            LogRotation.Rotate(active, LogSettings.KeepCopies);
         }
         catch
         {
         }
     }
 
+    /// <summary>The shared native crash log every client appends to (see <see cref="RotateNativeCrashLogAtStartup"/>).</summary>
+    internal const string NativeCrashLogName = "native-crash.log";
+
+    /// <summary>A native-crash.log larger than this is moved aside when a client starts.</summary>
+    internal const long NativeCrashLogRotateBytes = 1L * 1024 * 1024;
+
     /// <summary>
-    /// Startup housekeeping: delete per-client session logs (and their .old
+    /// Engine-startup rotation of the SHARED native-crash.log (one fixed name for every client,
+    /// so <see cref="RotateAtStartup"/>'s per-PID rule does not cover it). Over
+    /// <see cref="NativeCrashLogRotateBytes"/> it moves to native-crash.log.old (replacing the
+    /// previous one). Must run BEFORE the native logger opens the file. A client that already has
+    /// it open (they open it share-delete) keeps writing to the moved file, which the logger's
+    /// own byte budget keeps bounded; nothing is lost, it just continues in the .old file.
+    /// Best-effort; never throws. Returns true when it moved the file.
+    /// </summary>
+    internal static bool RotateNativeCrashLogAtStartup()
+    {
+        try
+        {
+            string active = Path.Combine(LogDirectory, NativeCrashLogName);
+            if (!File.Exists(active)) return false;
+            if (new FileInfo(active).Length < NativeCrashLogRotateBytes) return false;
+            string rotated = active + ".old";
+            try { if (File.Exists(rotated)) File.Delete(rotated); } catch { }
+            File.Move(active, rotated);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Startup housekeeping: delete per-client session logs (and their .old / .old.N
     /// rotations) older than <see cref="MaxLogAge"/>. Each client launch produces a
     /// new RynthCore.&lt;pid&gt;.log, so without this the directory grows without bound.
-    /// Never touches the shared RynthCore.log or the current client's own file.
+    /// Never touches the shared RynthCore.log, the current client's own files, or the files
+    /// of a client that is still running (<see cref="LogRotation.ShouldPrune"/>).
     /// Best-effort; never throws.
     /// </summary>
     internal static void PruneOldLogs()
@@ -131,15 +159,18 @@ internal static class LogPaths
             EnsureLogDirectory();
             string self = LogFileName;
             DateTime cutoff = DateTime.Now - MaxLogAge;
+            var live = new System.Collections.Generic.Dictionary<int, bool>();
+            bool IsLive(int pid)
+            {
+                if (!live.TryGetValue(pid, out bool alive)) live[pid] = alive = IsPidAlive(pid);
+                return alive;
+            }
             foreach (string path in Directory.GetFiles(LogDirectory, "RynthCore.*.log*"))
             {
                 string name = Path.GetFileName(path);
-                // Skip the shared log and our own current session file.
-                if (name.Equals(SharedLogFileName, StringComparison.OrdinalIgnoreCase)) continue;
-                if (name.StartsWith(self, StringComparison.OrdinalIgnoreCase)) continue;
                 try
                 {
-                    if (File.GetLastWriteTime(path) < cutoff)
+                    if (LogRotation.ShouldPrune(name, self, SharedLogFileName, File.GetLastWriteTime(path), cutoff, IsLive))
                         File.Delete(path);
                 }
                 catch { /* locked by a live client or already gone — skip */ }
@@ -191,6 +222,39 @@ internal static class LogPaths
     /// on hot-reload (initCount > 1), so the per-PID log grew without bound.
     /// </summary>
     internal static void RotateIfOversized() => RotateAtStartup();
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint dwDesiredAccess, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)] bool bInheritHandle, int dwProcessId);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    /// <summary>
+    /// Whether a process with this PID is running (Win32, like PluginLoader.IsPidAliveWin32:
+    /// Process.GetProcessById is avoided in acclient). Errs towards "alive": access denied means
+    /// the process exists, so its logs are kept. A PID reused by another program only delays a prune.
+    /// </summary>
+    private static bool IsPidAlive(int pid)
+    {
+        if (pid <= 0) return false;
+        if (pid == Environment.ProcessId) return true;
+        IntPtr h = OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, false, pid);
+        if (h == IntPtr.Zero)
+            return System.Runtime.InteropServices.Marshal.GetLastWin32Error() == 5;   // ERROR_ACCESS_DENIED: it exists
+        try
+        {
+            return !GetExitCodeProcess(h, out uint code) || code == 259 /* STILL_ACTIVE */;
+        }
+        finally
+        {
+            CloseHandle(h);
+        }
+    }
 
     /// <summary>
     /// Append a single best-effort line to the SHARED RynthCore.log so it acts as

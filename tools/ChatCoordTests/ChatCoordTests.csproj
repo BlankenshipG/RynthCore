@@ -2,7 +2,7 @@
 
   <!--
     Offline checks for the chat window's coordinate finder (src\RynthCore.Engine\UI\Data\
-    ChatCoords.cs, compiled in): which chat lines hold map coordinates, in which order and
+    ChatCoords.cs + a ChatSpan stand-in, compiled in): which chat lines hold map coordinates, in which order and
     format, and which ordinary lines must not turn into coordinates.
     Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
   -->

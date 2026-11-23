@@ -16,9 +16,16 @@
 //  Monster Detail panel (weaknesses, accuracy, damage, summons, damage taken,
 //  its rule). x removes the monster (confirmed). Gold = set by you, dim =
 //  automatic.
-//  Aelrynth only: a tier chip after Reset stats (DamageView.Tier) - which of the
-//  awakened worlds' / scaled dungeons' difficulty tiers the numbers are for, and
-//  a picker; "~" marks an HP estimated from real Dereth's. Hidden elsewhere.
+//  Under a monster's row, when the plugin sends them (the row's "mstats",
+//  UI/Data/DamageRowStats.cs, 2026-10-30): how often it evades and resists you
+//  and you it since login, the full numbers on hover; "XP/kill" first when the
+//  plugin counts XP ("xp"/"xk", 2026-11-08), then "corpse 2.1 s" when it times
+//  the death animation ("cd"/"cn"), then "Hits taken: shield 11 avg (front 95%),
+//  no shield 54 avg" when the plugin has learned its hits by shield and facing
+//  ("h/d/m" + sf..nu, 2026-11-08; kept across logins, not since login).
+//  Where the server plugin reports difficulty tiers: a tier chip after Reset stats
+//  (DamageView.Tier) - which tier the numbers are for, and a picker; "~" marks an
+//  HP estimated from tier 0's. Hidden elsewhere.
 //
 //  Data: UiSources.Damage and UiSources.MonsterRules (hub); every change goes
 //  through DamageCommands on the pump thread. Rows are drawn only while on
@@ -45,20 +52,26 @@ internal sealed class DamageFace : IImGuiPanel
         () => new DamageFace());
 
     // ── Palette (MonsterDamagePanel's, a little brighter) ───────────────
-    private static readonly uint Teal = C(0xFF26D9E6), Gold = C(0xFFFFD16A), Dim = C(0xFFC8D4E0),
-        White = C(0xFFF2F7FC), HeaderBg = C(0xFF121C26), PanelBg = C(0xF0081018), RowBg = C(0x40203040),
-        PickerBg = C(0xFF0A141E), PickSel = C(0xFF1A2E42), EntryBg = C(0xFF16283A), EntryBorder = C(0xFF34587A),
-        SearchBg = C(0xFF16222E), ToggleOn = C(0xFF33CC66), ToggleOff = C(0xFF4D4D4D), DeleteRed = C(0xFFFF8A8A),
-        FilterBg = C(0xFF203A52), TargetBg = C(0x5026D9E6), NearbyBg = C(0x3833CC66), NearbyBar = C(0xFF33CC66), ResetBg = C(0xFF5A2020), ResetBorder = C(0xFFFF8A8A), ClearBg = C(0xFF6E1E1E);
+    private static readonly uint Gold = C(0xFFFFD16A), HeaderBg = C(0xFF121C26), PanelBg = C(0xF0081018),
+        RowBg = C(0x40203040), PickerBg = C(0xFF0A141E), SearchBg = C(0xFF16222E), ToggleOn = C(0xFF33CC66),
+        ToggleOff = C(0xFF4D4D4D), DeleteRed = C(0xFFFF8A8A), FilterBg = C(0xFF203A52), NearbyBg = C(0x3833CC66),
+        NearbyBar = C(0xFF33CC66), ResetBg = C(0xFF5A2020), ResetBorder = C(0xFFFF8A8A), ClearBg = C(0xFF6E1E1E);
+    private static uint Teal => RynthTheme.Accent;
+    private static uint Dim => RynthTheme.MuteAlt;
+    private static uint White => RynthTheme.Text;
+    private static uint PickSel => RynthTheme.Selected;
+    private static uint EntryBg => RynthTheme.Button;
+    private static uint EntryBorder => RynthTheme.Border;
+    private static uint TargetBg => RynthTheme.WithAlpha(RynthTheme.Accent, 0x50);
     private static uint C(uint argb) => RynthTheme.Argb(argb);
 
     // Column widths (the Avalonia grid's) and their left edges.
     // Widths are the user's (dragged in the header, saved per PC), else these defaults.
-    private static readonly float[] DefaultColW = { 210, 72, 84, 92, 150, 130, 120, 56, 70, 96, 26 };
+    private static readonly float[] DefaultColW = { 210, 72, 84, 92, 150, 130, 120, 84, 56, 70, 96, 26 };
     // Saved width keys: the columns keep the keys they had before Priority was added (2026-10-03),
     // so a saved layout still fits them; Priority has its own.
     private static readonly string[] ColKeys =
-        { "col0", "colPrio", "col1", "col2", "col3", "col4", "col5", "col6", "col7", "col8", "col9" };
+        { "col0", "colPrio", "col1", "col2", "col3", "col4", "col5", "colPrefer", "col6", "col7", "col8", "col9" };
     private static readonly float[] ColW = LoadColW();
     private static float[] ColX = BuildColX();
 
@@ -70,9 +83,9 @@ internal sealed class DamageFace : IImGuiPanel
         return w;
     }
     private static readonly string[] Headers =
-        { "Monster", "Priority", "HP", "Weak to", "Weapon", "Offhand", "Pet", "Kills", "Sec/Kill", "Debuffs", "" };
-    private const int ColMonster = 0, ColPrio = 1, ColHp = 2, ColWeak = 3, ColWeapon = 4, ColOffhand = 5, ColPet = 6, ColKills = 7,
-        ColSec = 8, ColDebuffs = 9, ColDel = 10;
+        { "Monster", "Priority", "HP", "Weak to", "Weapon", "Offhand", "Pet", "Prefer", "Kills", "Sec/Kill", "Debuffs", "" };
+    private const int ColMonster = 0, ColPrio = 1, ColHp = 2, ColWeak = 3, ColWeapon = 4, ColOffhand = 5, ColPet = 6, ColPrefer = 7, ColKills = 8,
+        ColSec = 9, ColDebuffs = 10, ColDel = 11;
     private const float RowH = 22;
     private static float TableW => ColX[^1] + ColW[^1];
 
@@ -87,8 +100,13 @@ internal sealed class DamageFace : IImGuiPanel
     private sealed class RowText
     {
         public string Wcid = "", Tier = "", Crit = "", NonCrit = "", Casts = "", Kills = "";
+        /// <summary>The name as shown: "Rampager (2 kinds)" for a row of several wcids.</summary>
+        public string NameShown = "", NameTip = "";
         public string Weapon = "", Offhand = "", Pet = "", WeakTop = "", Sec = "", SecTip = "";
-        public bool CritSet, NonCritSet, WeaponGold, OffhandGold, PetGold;
+        public string Prefer = "Auto";
+        /// <summary>The line under the row (the plugin's evades and resists since login) and its tooltip; "" for none.</summary>
+        public string Stats = "", StatsTip = "";
+        public bool CritSet, NonCritSet, WeaponGold, OffhandGold, PetGold, PreferGold;
         public string[] TierLines = Array.Empty<string>();
         /// <summary>Priority shown (int.MinValue = rules not loaded), whether it's the monster's own
         /// (gold), the rule an edit copies when it has none (a name rule covering it), and the tip.</summary>
@@ -250,7 +268,8 @@ internal sealed class DamageFace : IImGuiPanel
                 if (_filterWid != 0 && r.Wid != _filterWid) continue;
                 if (_searchText.Length > 0
                     && r.Name.IndexOf(_searchText, StringComparison.OrdinalIgnoreCase) < 0
-                    && !r.Wcid.ToString(CultureInfo.InvariantCulture).Contains(_searchText, StringComparison.Ordinal))
+                    && !r.Wcid.ToString(CultureInfo.InvariantCulture).Contains(_searchText, StringComparison.Ordinal)
+                    && !Array.Exists(r.Wcids, w => w.ToString(CultureInfo.InvariantCulture).Contains(_searchText, StringComparison.Ordinal)))
                     continue;
             }
             _shown.Add(r);
@@ -271,6 +290,7 @@ internal sealed class DamageFace : IImGuiPanel
             ColWeapon => (a, b) => string.Compare(_text[a].Weapon, _text[b].Weapon, StringComparison.OrdinalIgnoreCase),
             ColOffhand => (a, b) => string.Compare(_text[a].Offhand, _text[b].Offhand, StringComparison.OrdinalIgnoreCase),
             ColPet => (a, b) => string.Compare(_text[a].Pet, _text[b].Pet, StringComparison.OrdinalIgnoreCase),
+            ColPrefer => (a, b) => string.Compare(_text[a].Prefer, _text[b].Prefer, StringComparison.OrdinalIgnoreCase),
             ColKills => (a, b) => a.Kills.CompareTo(b.Kills),
             ColSec => (a, b) => (a.SecKill > 0 ? a.SecKill : double.MaxValue).CompareTo(b.SecKill > 0 ? b.SecKill : double.MaxValue),
             _ => (a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase),
@@ -306,6 +326,20 @@ internal sealed class DamageFace : IImGuiPanel
         }
         BuildPrio(r.Name, t);
         t.Wcid = r.Wcid.ToString(inv);
+        const string DetailTip = "Details: weaknesses, accuracy, damage, summons, damage taken and spell settings (wcid ";
+        if (r.Wcids.Length > 1)
+        {
+            // Monsters of one name with several weenies (retail has five Rampagers): one row.
+            t.NameShown = r.Name + " (" + r.Wcids.Length.ToString(inv) + " kinds)";
+            t.NameTip = r.Wcids.Length.ToString(inv) + " kinds of " + r.Name + ": wcids " + string.Join(", ", r.Wcids) + ".\n"
+                + "Kills and fights are added up; a weapon, offhand, pet or HP set here applies to all of them.\n"
+                + DetailTip + t.Wcid + ", the one with the most kills).";
+        }
+        else
+        {
+            t.NameShown = r.Name;
+            t.NameTip = DetailTip + t.Wcid + ").";
+        }
         t.Tier = DamageSource.FormatTier(r.Tier);
         t.CritSet = r.CritN > 0;
         t.Crit = t.CritSet ? r.Crit.ToString("0", inv) : "—";
@@ -324,6 +358,9 @@ internal sealed class DamageFace : IImGuiPanel
             : ruleOff is >= 1 and <= 4 ? DamageCommands.OffhandModeNames[ruleOff]
             : ruleOff != 0 ? Trunc(WeaponName(unchecked((uint)ruleOff)), 16)
             : "Auto";
+        string pref = RuleFor(r.IsDefault ? "Default" : r.Name, out _)?.PreferredDamage ?? "";
+        t.PreferGold = pref.Length > 0 && !pref.Equals("Auto", StringComparison.OrdinalIgnoreCase);
+        t.Prefer = t.PreferGold ? pref : "Auto";
         t.PetGold = r.Pet.Length > 0;
         t.Pet = Trunc(t.PetGold ? r.PetLabel : "Auto", 16);
         int comma = r.Weak.IndexOf(',');
@@ -333,6 +370,11 @@ internal sealed class DamageFace : IImGuiPanel
         t.Sec = r.SecKill > 0 ? r.SecKill.ToString("0.0", inv) : "—";
         t.SecTip = (r.SecKill > 0 ? $"{r.SecKill:0.0} s from engaging to the kill (average of timed kills)." : "No timed kills yet.")
             + (r.HitRate >= 0 ? $"\nHits: {r.HitRate * 100:0}% of attacks and casts landed." : "");
+        if (r.Stats != null)
+        {
+            t.Stats = r.Stats.Line();
+            t.StatsTip = r.Stats.Tip();
+        }
         t.TierLines = new string[r.Tiers.Count];
         for (int i = 0; i < r.Tiers.Count; i++)
         {
@@ -403,6 +445,8 @@ internal sealed class DamageFace : IImGuiPanel
         ImGuiNET.ImGui.SetItemTooltip("Keep the monster you're fighting (teal) and the ones on this landblock (green) at the top.");
         x += nw + 6;
 
+        x = PreferChip(x, p.Y);
+
         if (Button("##reset", ResetLabel, new Vector2(x, p.Y), new Vector2(84, 22), White, ResetBg, ResetBorder))
             _resetOpen = true;
         ImGuiNET.ImGui.SetItemTooltip("Clear all learned damage statistics (keeps monster names + your manual settings).");
@@ -415,19 +459,48 @@ internal sealed class DamageFace : IImGuiPanel
         ImGuiNET.ImGui.Dummy(new Vector2(0, 0));
     }
 
-    // ── Aelrynth difficulty tier (2026-10-03) ────────────────────────────
-    // Awakened worlds and scaled dungeons hold the same monsters, +5% health, skills and damage a
-    // tier, and RynthAi keeps each tier's numbers apart. The chip says which tier the table shows
-    // and opens a picker; it is drawn only when the data source says so (Aelrynth, tier seen).
+    // ── Preferred damage (2026-10-16) ────────────────────────────────────
+    // The Default rule's PreferredDamage: the kind of damage RynthAi fights with when the character
+    // uses more than one (Auto = the first listed weapon's kind). A monster's own rule can differ
+    // (Rule section of its detail drawer); one left on Auto follows this.
+
+    /// <summary>The "Prefer" chip at <paramref name="x"/>; returns the x after it.</summary>
+    private float PreferChip(float x, float y)
+    {
+        string current = _rules?.DefaultRule()?.PreferredDamage ?? "Auto";
+        int cur = Math.Max(0, Array.FindIndex(DamageCommands.PreferredDamages, v => v.Equals(current, StringComparison.OrdinalIgnoreCase)));
+        string label = "Prefer: " + DamageCommands.PreferredDamages[cur] + " " + PhosphorIcons.CaretDown;
+        float w = ImGuiNET.ImGui.CalcTextSize(label).X + 16;
+        if (Button("##prefer", label, new Vector2(x, y), new Vector2(w, 22), cur > 0 ? Gold : White, FilterBg, cur > 0 ? Gold : EntryBorder))
+        {
+            _pickItems.Clear();
+            for (int i = 0; i < DamageCommands.PreferredDamages.Length; i++)
+                _pickItems.Add(((uint)i, DamageCommands.PreferredDamages[i]));
+            OpenPicker(new Vector2(x, y + 22), (uint)cur,
+                id => DamageCommands.EditRule("Default", r => r.PreferredDamage = DamageCommands.PreferredDamages[Math.Min((int)id, DamageCommands.PreferredDamages.Length - 1)]));
+        }
+        SafeImGui.SetItemTooltip(
+            "The kind of damage to fight with, for a character who uses more than one kind.\n" +
+            "Auto = the kind of the first weapon in the Items list.\n" +
+            "Melee / Missile / War Magic / Void Magic = only weapons of that kind are wielded;\n" +
+            "with none listed (or usable) it falls back to Auto.\n" +
+            "A monster with its own Prefer setting (its drawer) keeps it; a weapon you set for it still wins.");
+        return x + w + 6;
+    }
+
+    // ── Difficulty tier (2026-10-03; any server whose plugin reports tiers, 2026-10-21) ──
+    // Some servers scale the same monsters by a percent a tier, and RynthAi keeps each tier's
+    // numbers apart. The chip says which tier the table shows and opens a picker; it is drawn only
+    // when the data source says so (the server plugin reports a tier).
 
     private const uint FollowTier = uint.MaxValue;   // the picker's "where I am" entry
 
-    private static string TierName(int tier) => tier <= 0 ? "Tier 0 (real Dereth)" : "Tier " + tier.ToString(CultureInfo.InvariantCulture);
+    private static string TierName(int tier) => tier <= 0 ? "Tier 0 (unscaled)" : "Tier " + tier.ToString(CultureInfo.InvariantCulture);
 
     /// <summary>The tier chip at <paramref name="x"/>; returns the x after it (unchanged when hidden).</summary>
     private float TierChip(float x, float y)
     {
-        AwakenedTierView? t = _view?.Tier;
+        DifficultyTierView? t = _view?.Tier;
         if (t == null || !t.Show) return x;
         string label = TierName(t.View) + (t.View == t.Current ? " " + PhosphorIcons.MapPin : "") + " " + PhosphorIcons.CaretDown;
         float w = ImGuiNET.ImGui.CalcTextSize(label).X + 16;
@@ -442,9 +515,9 @@ internal sealed class DamageFace : IImGuiPanel
             OpenPicker(new Vector2(x, y + 22), t.Following ? FollowTier : (uint)t.View, id =>
                 DamageCommands.SetViewTier(id == FollowTier ? -1 : (int)id));
         }
-        ImGuiNET.ImGui.SetItemTooltip(
-            "Aelrynth's awakened worlds and scaled dungeons have the same monsters, with " +
-            $"{t.Percent.ToString("0.#", CultureInfo.InvariantCulture)}% more health, skills and damage per tier.\n" +
+        SafeImGui.SetItemTooltip(
+            "This server scales its monsters by difficulty tier: the same monsters, with " +
+            $"{t.Percent.ToString("0.#", CultureInfo.InvariantCulture)}% more health per tier.\n" +
             "HP, kills, casts to kill, seconds per kill and hit rate here are this tier's; damage per cast,\n" +
             "weaknesses and your settings are the same at every tier.\n" +
             (here ? "Showing the tier where you are (pin)." : $"You are in {TierName(t.Current)}; pick \"Where I am\" to follow it."));
@@ -504,7 +577,7 @@ internal sealed class DamageFace : IImGuiPanel
         if (all == null || count == 0)
         {
             ImGuiNET.ImGui.Dummy(new Vector2(0, 3));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), all == null
+            SafeImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), all == null
                 ? "  Monster rules not loaded yet." : "  No name rules yet: add one below.");
         }
         else
@@ -536,7 +609,7 @@ internal sealed class DamageFace : IImGuiPanel
         string name = r.Name;
         if (NameLink("##rn", name, new Vector2(p.X + 4, p.Y), nameW - 8, met ? White : Gold, ImGuiFonts.Get(UiFont.Ui11)))
             OpenRule(name);
-        ImGuiNET.ImGui.SetItemTooltip(met
+        SafeImGui.SetItemTooltip(met
             ? "This monster's own settings (wcid " + wcid.ToString(CultureInfo.InvariantCulture) + "). Click for its details."
             : "Click to edit this rule.");
         float x = p.X + nameW;
@@ -553,7 +626,7 @@ internal sealed class DamageFace : IImGuiPanel
         {
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, p.Y));
             ImGuiNET.ImGui.InvisibleButton("##rx", new Vector2(exprW, RowH));
-            ImGuiNET.ImGui.SetItemTooltip("Match expression: " + r.MatchExpression);
+            SafeImGui.SetItemTooltip("Match expression: " + r.MatchExpression);
         }
         x += exprW;
 
@@ -569,7 +642,7 @@ internal sealed class DamageFace : IImGuiPanel
             if (armed) { DamageCommands.ResetRule(name); _armedDelete = ""; }
             else _armedDelete = name;
         }
-        ImGuiNET.ImGui.SetItemTooltip(armed ? "Click again to delete " + name : "Delete this rule (click twice)");
+        SafeImGui.SetItemTooltip(armed ? "Click again to delete " + name : "Delete this rule (click twice)");
 
         ImGuiNET.ImGui.PopID();
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + RowH));
@@ -663,7 +736,7 @@ internal sealed class DamageFace : IImGuiPanel
                 SortShown();
             }
             if (ImGuiNET.ImGui.IsItemHovered()) ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-            ImGuiNET.ImGui.SetItemTooltip("Sort by " + Headers[c]);
+            SafeImGui.SetItemTooltip("Sort by " + Headers[c]);
             string label = Headers[c] + (_sortCol == c ? (_sortDesc ? SortDown : SortUp) : "");
             dl.AddText(bold, bold.FontSize, new Vector2(p.X + ColX[c] + 4, p.Y + (RowH - bold.FontSize) * 0.5f),
                 _sortCol == c ? Teal : White, label);
@@ -691,35 +764,39 @@ internal sealed class DamageFace : IImGuiPanel
             bool filtering = _filterWid != 0 || _searchText.Length > 0;
             bool anyData = _view.Rows.Exists(r => !r.IsDefault);
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), anyData && filtering
+            SafeImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), anyData && filtering
                 ? "  No monsters match the current filter."
                 : "  No monsters yet: fight some and they show up here.");
         }
     }
 
+    // The line under a monster's row: the plugin's evades and resists since login (DamageRowStats).
+    private const float StatsH = 16;
+
     private void DrawRow(DamageRow r, Vector2 clipMin, Vector2 clipMax)
     {
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
-        if (p.Y + RowH < clipMin.Y || p.Y > clipMax.Y)
+        RowText t = _text[r];
+        float h = RowH + (t.Stats.Length > 0 ? StatsH : 0);
+        if (p.Y + h < clipMin.Y || p.Y > clipMax.Y)
         {
-            ImGuiNET.ImGui.Dummy(new Vector2(TableW, RowH));   // off screen: keep the layout, skip the drawing
+            ImGuiNET.ImGui.Dummy(new Vector2(TableW, h));   // off screen: keep the layout, skip the drawing
             return;
         }
-        RowText t = _text[r];
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
-        dl.AddRectFilled(p, p + new Vector2(TableW, RowH), r.IsDefault ? HeaderBg : RowBg);
+        dl.AddRectFilled(p, p + new Vector2(TableW, h), r.IsDefault ? HeaderBg : RowBg);
         if (r.Targeted)
         {
             // The monster being fought (or selected): teal wash, a bar on the left, an outline.
-            dl.AddRectFilled(p, p + new Vector2(TableW, RowH), TargetBg);
-            dl.AddRectFilled(p, p + new Vector2(3, RowH), Teal);
-            dl.AddRect(p, p + new Vector2(TableW, RowH), Teal);
+            dl.AddRectFilled(p, p + new Vector2(TableW, h), TargetBg);
+            dl.AddRectFilled(p, p + new Vector2(3, h), Teal);
+            dl.AddRect(p, p + new Vector2(TableW, h), Teal);
         }
         else if (r.Nearby)
         {
             // On the player's landblock: a green wash and bar.
-            dl.AddRectFilled(p, p + new Vector2(TableW, RowH), NearbyBg);
-            dl.AddRectFilled(p, p + new Vector2(3, RowH), NearbyBar);
+            dl.AddRectFilled(p, p + new Vector2(TableW, h), NearbyBg);
+            dl.AddRectFilled(p, p + new Vector2(3, h), NearbyBar);
         }
         ImGuiNET.ImGui.PushID(r.IsDefault ? "default" : r.Key);
         float ty = p.Y + (RowH - ImGuiNET.ImGui.GetFontSize()) * 0.5f;
@@ -741,6 +818,7 @@ internal sealed class DamageFace : IImGuiPanel
             }
             ImGuiNET.ImGui.SetItemTooltip("Default weapon: used by every monster that has no weapon of its own.");
             DefaultOffhandAndPet(p);
+            PreferCell("Default", true, t, p);
             DebuffCell("Default", p, ty);
             ImGuiNET.ImGui.PopID();
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + RowH));
@@ -762,10 +840,10 @@ internal sealed class DamageFace : IImGuiPanel
             }
         }
         ImGuiNET.ImGui.SetItemTooltip("Follow the Default config (spells, weapon). Uncheck to customize this monster.");
-        if (NameLink("##name", r.Name, new Vector2(p.X + ColX[ColMonster] + 22, p.Y), ColW[ColMonster] - 24, custom ? Gold : White,
+        if (NameLink("##name", t.NameShown, new Vector2(p.X + ColX[ColMonster] + 22, p.Y), ColW[ColMonster] - 24, custom ? Gold : White,
                 ImGuiFonts.Get(UiFont.Ui11)))
             DamageDetailFace.Show(r.Wcid, r.Name);
-        ImGuiNET.ImGui.SetItemTooltip("Details: weaknesses, accuracy, damage, summons, damage taken and spell settings (wcid " + t.Wcid + ").");
+        SafeImGui.SetItemTooltip(t.NameTip);
 
         PrioCell(r.Key, r.Name, t.PrioCopyFrom, t, p);
         HpCell(r, p);
@@ -775,7 +853,7 @@ internal sealed class DamageFace : IImGuiPanel
             dl.AddText(new Vector2(p.X + ColX[ColWeak] + 4, ty), White, Fit(t.WeakTop, ColW[ColWeak] - 8));
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + ColX[ColWeak], p.Y));
             ImGuiNET.ImGui.InvisibleButton("##weak", new Vector2(ColW[ColWeak], RowH));
-            ImGuiNET.ImGui.SetItemTooltip(r.Weak + "\nDamage taken: 1.0 = full, 0.5 = half. From " + r.WeakSrc
+            SafeImGui.SetItemTooltip(r.Weak + "\nDamage taken: 1.0 = full, 0.5 = half. From " + r.WeakSrc
                 + ".\nAuto spells, weapons and summons use the first element this character has.");
         }
         else
@@ -814,11 +892,13 @@ internal sealed class DamageFace : IImGuiPanel
         }
         ImGuiNET.ImGui.SetItemTooltip("Summon for this monster. Auto = an essence of the element it takes most damage from (Weak to); or pick an element or a specific essence.");
 
+        PreferCell(r.Name, false, t, p);
+
         dl.AddText(new Vector2(p.X + ColX[ColKills] + 4, ty), White, t.Kills);
         dl.AddText(new Vector2(p.X + ColX[ColSec] + 4, ty), r.SecKill > 0 ? White : Dim, t.Sec);
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + ColX[ColSec], p.Y));
         ImGuiNET.ImGui.InvisibleButton("##sec", new Vector2(ColW[ColSec], RowH));
-        ImGuiNET.ImGui.SetItemTooltip(t.SecTip);
+        SafeImGui.SetItemTooltip(t.SecTip);
 
         DebuffCell(r.Name, p, ty);
 
@@ -828,10 +908,23 @@ internal sealed class DamageFace : IImGuiPanel
             _removeName = r.Name;
             _removeOpen = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip("Remove " + r.Name + " from this list (asks first).");
+        SafeImGui.SetItemTooltip("Remove " + r.Name + " from this list (asks first).");
+
+        if (t.Stats.Length > 0)
+        {
+            // Under the monster: its evades and resists both ways since login, the full numbers on hover.
+            ImFontPtr small = ImGuiFonts.Get(UiFont.Ui10);
+            var at = new Vector2(p.X + ColX[ColMonster] + 22, p.Y + RowH + (StatsH - small.FontSize) * 0.5f - 2);
+            dl.PushClipRect(new Vector2(p.X, p.Y + RowH), new Vector2(p.X + TableW, p.Y + h), true);
+            dl.AddText(small, small.FontSize, at, Dim, t.Stats);
+            dl.PopClipRect();
+            ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X + ColX[ColMonster] + 22, p.Y + RowH));
+            ImGuiNET.ImGui.InvisibleButton("##stats", new Vector2(Math.Max(1, TableW - ColX[ColMonster] - 26), StatsH));
+            SafeImGui.SetItemTooltip(t.StatsTip);
+        }
 
         ImGuiNET.ImGui.PopID();
-        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + RowH));
+        ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(p.X, p.Y + h));
         ImGuiNET.ImGui.Dummy(new Vector2(TableW, 0));
     }
 
@@ -840,6 +933,29 @@ internal sealed class DamageFace : IImGuiPanel
     private static readonly (uint Id, string Name)[] OffhandModeChoices =
         { (1, "Auto"), (2, "Shield"), (3, "Dual wield"), (4, "None") };
     private static readonly string[] PetElements = { "Fire", "Cold", "Lightning", "Acid", "Nether", "Slash", "Pierce", "Bludgeon" };
+
+    /// <summary>The Prefer cell: Auto, Melee, Missile, War Magic or Void Magic for a monster's rule (or the DEFAULT line's).</summary>
+    private void PreferCell(string name, bool isDefault, RowText t, Vector2 p)
+    {
+        if (CellPicker("##pref", t.Prefer, t.PreferGold, p, ColPrefer))
+        {
+            string[] choices = DamageCommands.PreferredDamages;
+            _pickItems.Clear();
+            for (int i = 0; i < choices.Length; i++) _pickItems.Add(((uint)i, choices[i]));
+            int cur = Math.Max(0, Array.FindIndex(choices, v => v.Equals(t.Prefer, StringComparison.OrdinalIgnoreCase)));
+            bool hasOwn = isDefault || (_rules?.FindRule(name) != null);
+            OpenPicker(new Vector2(p.X + ColX[ColPrefer], p.Y + RowH), (uint)cur, id =>
+            {
+                string pick = choices[Math.Min((int)id, choices.Length - 1)];
+                // Auto on a monster with no rule of its own is already what it does: don't make one.
+                if (!hasOwn && pick == "Auto") return;
+                DamageCommands.EditRule(name, r => r.PreferredDamage = pick);
+            });
+        }
+        ImGuiNET.ImGui.SetItemTooltip(isDefault
+            ? "Default preferred damage: the kind of damage used against every monster without its own.\nAuto = the kind of the first weapon in the Items list. Same as the Prefer chip above."
+            : "The kind of damage to fight this monster with (Melee, Missile, War Magic, Void Magic).\nAuto = the DEFAULT line's. A weapon picked in the Weapon column still wins.");
+    }
 
     private void DefaultOffhandAndPet(Vector2 p)
     {
@@ -944,7 +1060,7 @@ internal sealed class DamageFace : IImGuiPanel
             WriteUtf8(_customBuf, view.CustomDebuffs ?? "");
             _debuffOpen = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip("Debuffs to cast on " + name);
+        SafeImGui.SetItemTooltip("Debuffs to cast on " + name);
         if (view == null) return;
         string marks = DamageCommands.DebuffMarks(view);
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
@@ -953,7 +1069,7 @@ internal sealed class DamageFace : IImGuiPanel
         {
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(bp.X + 22, p.Y));
             ImGuiNET.ImGui.InvisibleButton("##dmarks", new Vector2(Math.Max(1, ColW[ColDebuffs] - 26), RowH));
-            ImGuiNET.ImGui.SetItemTooltip(DebuffTip(view));
+            SafeImGui.SetItemTooltip(DebuffTip(view));
         }
     }
 
@@ -961,6 +1077,7 @@ internal sealed class DamageFace : IImGuiPanel
     {
         var parts = new List<string>();
         foreach (var (field, label, _) in DamageCommands.DebuffDefs) if (v.GetToggle(field)) parts.Add(label);
+        foreach (var (field, _, tip) in DamageCommands.VoidDebuffDefs) if (v.GetToggle(field)) parts.Add(tip[..tip.IndexOf(':')]);
         if (!string.IsNullOrEmpty(v.ExVuln) && !v.ExVuln.Equals("None", StringComparison.OrdinalIgnoreCase)) parts.Add("Extra Vuln: " + v.ExVuln);
         if (!string.IsNullOrWhiteSpace(v.CustomDebuffs)) parts.Add("Yours: " + v.CustomDebuffs);
         return string.Join("\n", parts);
@@ -989,16 +1106,16 @@ internal sealed class DamageFace : IImGuiPanel
         Rule? view = RuleFor(name, out bool custom);
         bool isDefault = name.Equals("Default", StringComparison.OrdinalIgnoreCase);
         ImGuiNET.ImGui.PushFont(ImGuiFonts.Get(UiFont.UiBold11));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), "Debuffs · " + name);
+        SafeImGui.TextColored(RynthTheme.Vec(0xFF26D9E6), "Debuffs · " + name);
         ImGuiNET.ImGui.PopFont();
         if (view == null)
         {
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), "Monster rules not loaded yet.");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "Monster rules not loaded yet.");
             ImGuiNET.ImGui.EndPopup();
             return;
         }
         ImGuiNET.ImGui.PushTextWrapPos(0);
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(custom || isDefault ? 0xFFFFD16A : 0xFFC8D4E0),
+        SafeImGui.TextColored(RynthTheme.Vec(custom || isDefault ? 0xFFFFD16A : 0xFFC8D4E0),
             isDefault ? "Every monster set to Default uses these." : custom ? "This monster's own debuffs." : "Following Default: a change here gives it its own.");
         ImGuiNET.ImGui.PopTextWrapPos();
 
@@ -1011,10 +1128,26 @@ internal sealed class DamageFace : IImGuiPanel
                 string f = field;
                 DamageCommands.EditRule(name, rule => rule.SetToggle(f, v));
             }
-            ImGuiNET.ImGui.SetItemTooltip(tip);
+            SafeImGui.SetItemTooltip(tip);
         }
 
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), "Extra Vuln");
+        // The Void debuffs, two to a row.
+        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "Void Magic");
+        for (int i = 0; i < DamageCommands.VoidDebuffDefs.Length; i++)
+        {
+            var (field, label, tip) = DamageCommands.VoidDebuffDefs[i];
+            if (i % 2 == 1) ImGuiNET.ImGui.SameLine(140);
+            bool on = view.GetToggle(field);
+            if (ImGuiNET.ImGui.Checkbox(label + "##db_" + field, ref on))
+            {
+                bool v = on;
+                string f = field;
+                DamageCommands.EditRule(name, rule => rule.SetToggle(f, v));
+            }
+            SafeImGui.SetItemTooltip(tip);
+        }
+
+        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "Extra Vuln");
         ImGuiNET.ImGui.SameLine();
         string ex = string.IsNullOrEmpty(view.ExVuln) ? "None" : view.ExVuln;
         ImGuiNET.ImGui.SetNextItemWidth(ImGuiNET.ImGui.CalcTextSize("Lightning").X + 40);
@@ -1031,7 +1164,7 @@ internal sealed class DamageFace : IImGuiPanel
         ImGuiNET.ImGui.SetItemTooltip("A vulnerability of another element, on top of Vuln (which follows the attack's element).");
 
         ImGuiNET.ImGui.Dummy(new Vector2(0, 2));
-        ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFC8D4E0), "Your own (comma separated):");
+        ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.MuteAlt), "Your own (comma separated):");
         ImGuiNET.ImGui.SetNextItemWidth(-1);
         bool enter = ImGuiNET.ImGui.InputText("##db_custom", _customBuf, (uint)_customBuf.Length, ImGuiInputTextFlags.EnterReturnsTrue);
         if (enter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit())
@@ -1150,7 +1283,7 @@ internal sealed class DamageFace : IImGuiPanel
         bool commit = enter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit();
         ImGuiNET.ImGui.PopStyleVar();
         ImGuiNET.ImGui.PopStyleColor(2);
-        ImGuiNET.ImGui.SetItemTooltip(t.PrioTip + "\nType a number, Enter to save.");
+        SafeImGui.SetItemTooltip(t.PrioTip + "\nType a number, Enter to save.");
         if (!commit) return;
 
         if (int.TryParse(Utf8(e.Buffer).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int typed))
@@ -1191,7 +1324,7 @@ internal sealed class DamageFace : IImGuiPanel
         }
         ImGuiNET.ImGui.SetItemTooltip("Manual max-HP for this monster (off = auto)");
 
-        // An Aelrynth tier not appraised yet shows real Dereth's HP scaled by the tier, marked "~".
+        // A tier not appraised yet shows tier 0's HP scaled by the tier, marked "~".
         bool estimate = r.HpEst && !manual;
         int shownKey = estimate ? -r.Hp - 1 : r.Hp;   // re-written when the estimate becomes a real value
         if (!e.Active && e.Shown != shownKey)
@@ -1210,7 +1343,7 @@ internal sealed class DamageFace : IImGuiPanel
         bool enter = ImGuiNET.ImGui.InputText("##hp", e.Buffer, (uint)e.Buffer.Length, flags);
         e.Active = ImGuiNET.ImGui.IsItemActive();
         if (estimate)
-            ImGuiNET.ImGui.SetItemTooltip("Estimated: real Dereth's HP plus this tier's scaling. The first fight at this tier\n" +
+            ImGuiNET.ImGui.SetItemTooltip("Estimated: tier 0's HP plus this tier's scaling. The first fight at this tier\n" +
                                           "reads the real number from the game and replaces it.");
         bool commit = manual && (enter || ImGuiNET.ImGui.IsItemDeactivatedAfterEdit());
         ImGuiNET.ImGui.PopStyleVar();
@@ -1299,9 +1432,9 @@ internal sealed class DamageFace : IImGuiPanel
         if (ropen)
         {
             ImGuiNET.ImGui.PushTextWrapPos(0);
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), "Remove " + _removeName + "?");
+            SafeImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), "Remove " + _removeName + "?");
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC),
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Text),
                 "Its learned numbers and your settings for it (weapon, offhand, pet, HP) are deleted. It comes back if you meet it again.");
             ImGuiNET.ImGui.PopTextWrapPos();
             ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
@@ -1337,10 +1470,10 @@ internal sealed class DamageFace : IImGuiPanel
         if (open)
         {
             ImGuiNET.ImGui.PushTextWrapPos(0);
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC), "Reset ALL learned damage statistics?");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Text), "Reset ALL learned damage statistics?");
             ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
-            ImGuiNET.ImGui.TextColored(RynthTheme.Vec(0xFFF2F7FC),
-                "Monster names and your settings (manual HP, weapon/offhand picks, debuffs) are KEPT — only the learned damage, crit, casts-to-kill, kills and HP are cleared. This cannot be undone.");
+            ImGuiNET.ImGui.TextColored(RynthTheme.VecOf(RynthTheme.Text),
+                "Monster names and your settings (manual HP, weapon/offhand picks, debuffs) are KEPT — only the learned damage, crit, casts-to-kill, kills and HP are cleared, and the evades and resists under each monster start over. This cannot be undone.");
             ImGuiNET.ImGui.PopTextWrapPos();
             ImGuiNET.ImGui.Dummy(new Vector2(0, 6));
             float w = ImGuiNET.ImGui.GetContentRegionAvail().X;

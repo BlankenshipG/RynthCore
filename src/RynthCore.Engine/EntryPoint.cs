@@ -83,20 +83,75 @@ public static class EntryPoint
     /// </summary>
     /// <summary>
     /// The loader refused a hot-reload because this client is short of address
-    /// space (each reload keeps the old engine and plugins mapped). Says so in
-    /// chat. Loader thread.
+    /// space: too little free in all, or (CoreCLR engine, 2026-10-15) no free block
+    /// big enough. <paramref name="freeMb"/> is the figure that fell short (the loader
+    /// log says which). Says so in chat. Loader thread.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthCoreReloadRefused")]
     public static uint ReloadRefused(int freeMb)
     {
         try
         {
-            RynthLog.Warn($"Hot-reload refused by the loader: {freeMb} MB of address space free.");
+            RynthLog.Warn($"Hot-reload refused by the loader: short of address space ({freeMb} MB free in all, or in the largest free block; see the loader line).");
             Compatibility.AcMainThreadQueue.EnqueueWriteToChat(
-                $"[RynthCore] A new RynthCore build is ready but wasn't loaded: this client has only {freeMb} MB of memory address space left, and reloading could crash it. Restart the client to use the new build.", 2);
+                $"[RynthCore] A new RynthCore build is ready but wasn't loaded: this client is low on memory address space ({freeMb} MB usable), and reloading could crash it. Restart the client to use the new build.", 2);
         }
         catch { }
         return 0;
+    }
+
+    /// <summary>
+    /// The reload cap (ReloadCapNotice): the loader asks this before every hot reload, and
+    /// refuses the reload once this client has done that many. engine.json MaxHotReloads,
+    /// default 20; negative = no cap. Loader thread.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthCoreMaxHotReloads")]
+    public static int MaxHotReloads()
+    {
+        try { return EngineSettings.MaxHotReloads; }
+        catch { return ReloadCapNotice.DefaultMaxHotReloads; }
+    }
+
+    private static readonly ReloadCapNotice s_reloadCapNotice = new();
+
+    /// <summary>
+    /// The loader refused a hot reload because this client has done <paramref name="reloads"/>
+    /// of them (the cap is <paramref name="cap"/>). The client stays on this engine. Logs it,
+    /// and says so in chat once, and again when the player asked for the reload by hand.
+    /// Loader thread.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthCoreReloadCapped")]
+    public static uint ReloadCapped(int reloads, int cap)
+    {
+        try
+        {
+            bool byHand = ReloadCapNotice.IsRecentManualSignal(EngineLifecycle.LastSignalReloadMs, Environment.TickCount64);
+            RynthLog.Warn(ReloadCapNotice.LogText(reloads, cap, byHand));
+            bool chat;
+            lock (s_reloadCapNotice) chat = s_reloadCapNotice.ShouldChat(byHand);
+            if (chat)
+                Compatibility.AcMainThreadQueue.EnqueueWriteToChat(ReloadCapNotice.ChatText(reloads), 2);
+        }
+        catch { }
+        return 0;
+    }
+
+    /// <summary>
+    /// Loader asks before tearing the engine down (loader 2.2+): 1 = reload now, 0 = wait
+    /// (still in the world; poll again). Missing export = old engines, loader proceeds.
+    /// Only with engine.json HoldReloadInWorld on (opt-in, default off): then the loader waits while
+    /// the player is in the world, a manual ERl included, since a mid-session CoreCLR re-init can
+    /// still AV (2026-10-16.5). Off: 1. Loader thread; never throws.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthCoreMayHotReload")]
+    public static int MayHotReload()
+    {
+        try
+        {
+            if (!EngineSettings.HoldReloadInWorld) return 1;
+            return IsInWorldForAutoReloadDeferral() ? 0 : 1;
+        }
+        catch { return 1; } // fail open so a gate bug cannot wedge the loader forever
     }
 
     [UnmanagedCallersOnly(EntryPoint = "RynthCoreShutdown")]
@@ -105,6 +160,8 @@ public static class EntryPoint
         // Only the loader's hot reload calls this export (process exit and the engine's own
         // teardowns call EngineLifecycle.Shutdown directly), on its reload thread: wait here,
         // with the game running on this engine, while a plugin says a reload now would hurt.
+        // Also holds automatic reloads while in-world (ReloadInWorldGate) so old loaders that
+        // never call MayHotReload still avoid mid-session CoreCLR re-init crashes.
         try { DeferReloadWhilePluginsObject(); } catch { }
         try
         {
@@ -128,20 +185,103 @@ public static class EntryPoint
     private const long ManualReloadWindowMs = 10_000;
     internal static void NoteManualReload() => Interlocked.Exchange(ref _manualReloadAtMs, Environment.TickCount64);
 
+    /// <summary>True when ERl / the bar RL / /rc rl / the hotkey marked a hand reload within the window
+    /// (does not clear the mark).</summary>
+    private static bool IsRecentManualReload()
+    {
+        long manualAt = Volatile.Read(ref _manualReloadAtMs);
+        return manualAt != 0 && Environment.TickCount64 - manualAt < ManualReloadWindowMs;
+    }
+
+    /// <summary>
+    /// In the world after a successful login, and not yet logged out: with
+    /// engine.json HoldReloadInWorld on, an automatic reload waits. Character select /
+    /// disconnected / never logged in are safe to reload. (From SilentKelpie's PR 6.)
+    /// </summary>
+    private static bool IsInWorldForAutoReloadDeferral()
+    {
+        try
+        {
+            if (!Compatibility.LoginLifecycleHooks.HasObservedLoginComplete) return false;
+            if (Compatibility.LogoutLifecycleHooks.HasObservedLogout) return false;
+            int mode = Compatibility.UiFlowHooks.CurrentMode;
+            // Explicit non-world screens: safe for an automatic reload.
+            if (mode == Compatibility.UiFlowHooks.ModeCharacterManagement
+                || mode == Compatibility.UiFlowHooks.ModeDisconnected
+                || mode == Compatibility.UiFlowHooks.ModeIntro
+                || mode == Compatibility.UiFlowHooks.ModeCharGen
+                || mode == Compatibility.UiFlowHooks.ModeCredits
+                || mode == Compatibility.UiFlowHooks.ModeDataPatch
+                || mode == Compatibility.UiFlowHooks.ModeEpilogue)
+                return false;
+            // ModeGamePlay, or ModeNone before the first mode sample after login: hold.
+            return true;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// The opt-in in-world hold (engine.json HoldReloadInWorld, default off; ReloadInWorldGate). Only
+    /// called with the setting on. Waits, with the game running on this engine, while the player is in
+    /// the world and the reload is an automatic one, for at most HoldReloadInWorldMaxMinutes; a hand
+    /// reload that arrives meanwhile (ERl, RL, /rc rl, hotkey) or switching the setting off ends the
+    /// wait. Returns true when a hand reload ended it, so the caller skips the plugin deferral too.
+    /// Never throws; any failure fails open to "reload now".
+    /// </summary>
+    private static bool HoldReloadWhileInWorld()
+    {
+        try
+        {
+            var maxWait = TimeSpan.FromMinutes(ReloadInWorldGate.ClampMaxMinutes(EngineSettings.HoldReloadInWorldMaxMinutes));
+            ReloadInWorldGate.Outcome outcome = ReloadInWorldGate.Run(
+                // Re-read each poll: a hand reload or the setting turned off in the meantime ends the hold.
+                stillHold: () => ReloadInWorldGate.ShouldHold(IsRecentManualReload(), EngineSettings.HoldReloadInWorld, IsInWorldForAutoReloadDeferral()),
+                log: msg => RynthLog.Info(msg),
+                notify: why => Compatibility.AcMainThreadQueue.EnqueueWriteToChat(
+                    $"[RynthCore] A new RynthCore build is ready. It loads when you leave the world ({why}; at most {maxWait.TotalMinutes:0.#} minutes).", 1),
+                maxWait: maxWait,
+                waited: out TimeSpan waited);
+            if (outcome != ReloadInWorldGate.Outcome.Clear)
+                RynthLog.Info($"engine reload: in-world hold {outcome} after {waited.TotalSeconds:0.0} s.");
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Warn($"engine reload: in-world hold failed ({ex.GetType().Name}: {ex.Message}); reloading now.");
+        }
+        // A hand reload that came in during the wait set the mark again: it counts as by hand.
+        return IsRecentManualReload();
+    }
+
     /// <summary>
     /// Reload deferral (2026-10-05, see ReloadDeferral.cs): asks the plugins
     /// (RynthPluginReloadBlocker) and waits up to ReloadDeferral.DefaultCap while one objects,
     /// e.g. "engine reload waiting: RynthAi in combat (a monster engaged, ...)". Says so in chat
     /// once. Never throws; a query that fails counts as "nothing objects".
+    /// With engine.json HoldReloadInWorld on (default off), an automatic reload first waits until
+    /// the player leaves the world (HoldReloadWhileInWorld); a hand reload is never held.
     /// </summary>
     private static void DeferReloadWhilePluginsObject()
     {
         long manualAt = Interlocked.Exchange(ref _manualReloadAtMs, 0);
-        if (manualAt != 0 && Environment.TickCount64 - manualAt < ManualReloadWindowMs)
+        bool byHand = manualAt != 0 && Environment.TickCount64 - manualAt < ManualReloadWindowMs;
+
+        bool hold = false;
+        try { hold = EngineSettings.HoldReloadInWorld; } catch { }   // opt-in, default off: any failure = no hold
+        if (hold && ReloadInWorldGate.ShouldHold(byHand, hold, IsInWorldForAutoReloadDeferral()))
+        {
+            if (HoldReloadWhileInWorld())
+            {
+                Interlocked.Exchange(ref _manualReloadAtMs, 0);
+                byHand = true;
+            }
+        }
+
+        if (byHand)
         {
             RynthLog.Info("engine reload: asked for by hand (ERl), so it isn't deferred for the plugins.");
             return;
         }
+
         var deferral = new ReloadDeferral
         {
             Query = PluginManager.QueryReloadBlockers,
@@ -152,6 +292,28 @@ public static class EntryPoint
         ReloadDeferral.Outcome outcome = deferral.Run(out TimeSpan waited);
         if (outcome != ReloadDeferral.Outcome.Clear)
             RynthLog.Info($"engine reload: deferral {outcome} after {waited.TotalSeconds:0.0} s.");
+    }
+
+    /// <summary>
+    /// Player asked for an engine reload (ERl / /rc rl / hotkey). While in-world the loader
+    /// keeps holding; we still signal so it applies on logout, and say so in chat once.
+    /// </summary>
+    internal static void RequestManualReload(string source)
+    {
+        NoteManualReload();
+        if (EngineSettings.HoldReloadInWorld && IsInWorldForAutoReloadDeferral())
+        {
+            RynthLog.Info($"{source}: in-world — signaling reload; loader holds until logout / character select.");
+            try
+            {
+                Compatibility.AcMainThreadQueue.EnqueueWriteToChat(
+                    "[RynthCore] Engine reload will apply when you leave the world (logout / character select). Mid-session hot reload crashes the client.", 1);
+            }
+            catch { /* chat must not block the signal */ }
+        }
+        else
+            RynthLog.Info($"{source}: signaling reload.");
+        EngineLifecycle.SignalReload();
     }
 
     private static uint InitializeCore(IntPtr lpParam)
@@ -435,6 +597,19 @@ public static class EntryPoint
         return _imGuiNativeHandle;
     }
 
+    /// <summary>
+    /// Full path of <paramref name="dllName"/> in the engine's own folders (the ones
+    /// <see cref="PreloadNativeDll"/> searches), or null. Never Windows' search order.
+    /// </summary>
+    internal static string? FindNativeDll(string dllName)
+    {
+        string? engineDir = GetEngineDirectory();
+        if (string.IsNullOrEmpty(engineDir)) return null;
+        foreach (string path in GetNativeDllCandidates(engineDir, dllName))
+            if (File.Exists(path)) return path;
+        return null;
+    }
+
     private static string[] GetNativeDllCandidates(string engineDir, string dllName)
     {
         var candidates = new List<string>();
@@ -530,6 +705,52 @@ public static class EntryPoint
     /// (RynthAi/RynthChat/RynthVision) on the user's launcher selection.
     /// Filename match (not full-path) so users can keep the DLL anywhere.
     /// </summary>
+    private static bool _serverMenusRegistered;
+
+    /// <summary>
+    /// The engine's own server items for the Mini Remote's sections and the menus
+    /// (UI/Sections/SectionRegistry): its windows that belong to one server, added only when
+    /// the plugin behind each is installed. Plugins add their own through their manifests.
+    /// </summary>
+    private static void RegisterServerMenus(bool rynthAi, bool rynthIlt)
+    {
+        if (_serverMenusRegistered) return;
+        _serverMenusRegistered = true;
+
+        // Infinite Leaftide (IltInfo: host / world-name lists, RynthILT's own verdict, or the
+        // per-character "/rc ilt on"). Every ILT window is RynthILT's (since 2026-10-13), so the
+        // engine adds them only when RynthILT is installed.
+        const string ilt = IltInfo.ServerId;
+        if (rynthIlt && rynthAi)
+        {
+            // RynthILT's ILT tabs in RynthAi's Mini Remote (shown once the server reports each on).
+            // A RynthAi that doesn't publish sections gets these stand-ins; one that does lists them itself.
+            // Character and Charms are RynthOracle's Character tab and Banking is RynthInventory's
+            // Global Inventory since 2026.10.5.54, so only Gear and Games are left here.
+            foreach ((string label, string tab, string section) in new[]
+            {
+                ("Gear", "gear", "inventory"), ("Games", "games", "fellowship"),
+            })
+            {
+                UI.Sections.SectionRegistry.AddEngineItem(section, ilt, label, "/rc miniremote tab " + tab,
+                    $"The Mini Remote's {label} tab (RynthILT).", unlessPlugin: "RynthAi");
+            }
+        }
+        if (rynthIlt)
+        {
+            // The engine's ILT panels, fed by RynthILT.
+            // Guardian sits with Progression (Temple of Enlightenment): Session Stats is session stats only.
+            UI.Sections.SectionRegistry.AddEngineItem("skills", ilt, "Guardian", "/rc guardian toggle",
+                "Temple of Enlightenment guardians: riddle answers and Give (RynthILT).");
+            UI.Sections.SectionRegistry.AddEngineItem("skills", ilt, "Progression", "/rc progression",
+                "XP planner, augmentations and enlightenment (the Skills panel's Progression tab; RynthILT).");
+            UI.Sections.SectionRegistry.AddEngineItem("combat", ilt, "Bounties", "/rc bounties toggle",
+                "ACECustom bounties and your progress on each (RynthILT).");
+        }
+        UI.ServerMenus.PushToRynthAi = rynthAi;
+        UI.ServerMenus.PushToRynthIlt = rynthIlt;
+    }
+
     private static bool HasPluginDll(string dllFileName)
     {
         var paths = Plugins.EngineSettings.PluginPaths;
@@ -605,7 +826,12 @@ public static class EntryPoint
                 // a module-resolved stack sweep for the AV (0xC0000005) / fail-fast
                 // (0xC0000602) classes that bypass managed handlers, into a dedicated
                 // native-crash.log so the next crash self-reports instead of going dark.
-                SehTrampoline.InstallCrashLogger(System.IO.Path.Combine(LogPaths.LogDirectory, "native-crash.log"));
+                // The shared file has one fixed name, so no per-PID rotation covers it: move a big one
+                // aside on the first generation, before the native side opens it. (Later generations
+                // keep the handle the first one opened, so rotating then would only be ignored.)
+                if (_initCount <= 1 && LogPaths.RotateNativeCrashLogAtStartup())
+                    RynthLog.Compat("native-crash.log was over 1 MB at startup: moved to native-crash.log.old");
+                SehTrampoline.InstallCrashLogger(System.IO.Path.Combine(LogPaths.LogDirectory, LogPaths.NativeCrashLogName));
             }
 
             if (!ConfigureImGuiNativeLibrary(engineDir))
@@ -627,6 +853,12 @@ public static class EntryPoint
                 RynthLog.Info("InitWorker: ENGINE DISABLED via engine.json (EnableEngine=false). Skipping all Compatibility/* hook installs, all OverlayHost panels, AvaloniaOverlay, D3D9Bootstrapper. Heartbeat + ProcessExitHooks + MultiClientHooks + DatFileShareHooks (already running) remain.");
                 return;
             }
+
+            // The plugin files' antivirus scans (after an update every one is new) run on
+            // workers from here, during the hook steps, not one file at a time in
+            // LoadPlugins (Plugins/PluginFilePrefetch.cs).
+            if (Plugins.EngineSettings.EnablePlugins)
+                PluginFilePrefetch.Start(Plugins.EngineSettings.PluginPaths);
 
             // One-shot read-only string-anchor diagnostic. Runs only if the
             // user has dropped a candidate-string list at
@@ -751,8 +983,20 @@ public static class EntryPoint
             // RenderUI::RenderObjects: the world overlays (nameplates, Nav3D markers) draw at
             // the start of AC's 2D UI pass, after all 3D incl. foliage (2026-10-04).
             Step("UI-pass overlay hook", AcUiPassHook.Initialize);
+            // SmartBox::RenderNormalMode: the video patch (/rc video) skips AC's 3D scene on
+            // request; off until asked. Kill switch: engine.json DisabledUiHooks ["VideoPatch"].
+            Step("video patch hook", VideoPatch.Initialize);
+            // RenderDeviceD3D::SetFFAmbientColor32: a floor under AC's world ambient light that a
+            // plugin can set (API v91; RynthVision's dungeon light). No floor until one is set.
+            // Kill switch: engine.json DisabledUiHooks ["AmbientLight"].
+            Step("ambient light hook", AmbientLight.Initialize);
+            // CEnvCell::GetDrawnThisFrame: where AC keeps its draw stamps, so the nameplates can hide what is
+            // behind walls (2026-11-04, report R-20261105-020337-67aa). A read, not a hook; no match = cell lists only.
+            Step("cell sight (nameplates)", AcCellSight.Initialize);
             Step("vendor hooks", VendorHooks.Initialize);
             Step("chat callback hooks", ChatCallbackHooks.Initialize);
+            // Flight recorder (Net/FlightRecorder.cs): before the packet hooks that feed it.
+            Step("flight recorder", Net.FlightRecorder.Initialize);
             Step("raw packet hooks", RawPacketHooks.Initialize);
             Step("property-update hooks", PropertyUpdateHooks.Initialize);
             Step("auto-id service", AutoIdService.Start);
@@ -790,14 +1034,14 @@ public static class EntryPoint
                 RynthLog.Info("InitWorker: stand-down complete - this client runs as a Decal client; RynthCore stays idle.");
                 return;
             }
-            if (Plugins.EngineSettings.EnablePlugins)
-            {
-                RynthLog.Info("InitWorker DIAG — calling PluginManager.LoadPlugins.");
-                PluginManager.LoadPlugins(engineDir);
-                RynthLog.Info("InitWorker DIAG — PluginManager.LoadPlugins returned.");
-            }
-            else
-                RynthLog.Info("InitWorker: plugin loading disabled via engine.json (EnablePlugins=false).");
+            // Panel layout per character (UI/PanelLayout): before the EndScene hook, so the first
+            // frame already asks for the right layout (after a hot reload, the character's).
+            UI.PanelLayout.Initialize();
+
+            // The first font atlas bakes now, during the world load, instead of after the
+            // EndScene hook's warm-up (~2 s of every login; ImGuiFonts.StartInitialBake).
+            if (WillRunImGui())
+                ImGuiBackend.EngineFrameController.StartEarlyFontBake();
 
             // Defer D3D9 hooking until after character login. By that point
             // the game's device is fully initialized and stable, avoiding the
@@ -813,12 +1057,17 @@ public static class EntryPoint
             // viewport platform/renderer. Avalonia floating panels still
             // work because they ride a separate LayeredWindow (GDI), not
             // the D3D9 swap chain.
+            //
+            // Subscribed before the plugins load (2026-11-02): the EndScene hook, ImGui and the
+            // engine's panels don't need them, and a login during a slow load (15-20 s after an
+            // update) used to wait for all of it. The plugin pump still starts only once they
+            // are loaded (OpenPluginPumpGate), so InitPlugins sees the whole list.
             if (InitAborted()) return;
             LoginLifecycleHooks.LoginComplete += RunPostLoginBootstrap;
 
             // ── Fast-login race guard (first launch, initCount==1) ───────────
             // AC's SendLoginCompleteNotification can fire DURING the ~9 s
-            // hook-init / plugin-load window above — i.e. BEFORE the line above
+            // hook-init window above (before 2026-11-02 the plugin load too) — i.e. BEFORE the line above
             // subscribed RunPostLoginBootstrap. SignalLoginComplete raises the
             // event exactly once and does NOT replay for late subscribers, so a
             // fast login leaves RunPostLoginBootstrap never called: no EndScene
@@ -834,6 +1083,17 @@ public static class EntryPoint
                 RynthLog.Info("D3D9: LoginComplete already observed before the bootstrap handler subscribed (fast-login race) — starting bootstrapper directly.");
                 RunPostLoginBootstrap();
             }
+
+            if (InitAborted()) return;
+            if (Plugins.EngineSettings.EnablePlugins)
+            {
+                RynthLog.Info("InitWorker DIAG — calling PluginManager.LoadPlugins.");
+                PluginManager.LoadPlugins(engineDir);
+                RynthLog.Info("InitWorker DIAG — PluginManager.LoadPlugins returned.");
+            }
+            else
+                RynthLog.Info("InitWorker: plugin loading disabled via engine.json (EnablePlugins=false).");
+            OpenPluginPumpGate(PumpGatePluginsLoaded);
 
             RynthLog.Info($"InitWorker: post-init checkpoint, _initCount={_initCount}");
             if (InitAborted()) return;
@@ -1002,9 +1262,23 @@ public static class EntryPoint
                     ImGuiBackend.Panels.VisionFace.Register();
                 if (HasPluginDll("RynthCore.Plugin.RynthNav.dll"))
                     ImGuiBackend.Panels.RynthNavFace.Register();
+                if (HasPluginDll("RynthCore.Plugin.RynthNav.dll"))
+                    ImGuiBackend.Panels.WorldMapFace.Register();
+                // Characters is RynthNet's own window since 2026-10-21: its manifest declares it and the
+                // engine hosts it (UI/Sections/PluginWindows.cs, docs/PLUGIN_WINDOWS.md).
+                // The ILT section (Infinite Leaftide): its faces exist only with RynthILT installed
+                // (Bounties, Guardian), and the bar's ILT button shows them only on ILT with RynthILT
+                // loaded (IltInfo; IltStatusSource asks RynthILT once a second).
+                if (HasPluginDll("RynthCore.Plugin.RynthILT.dll"))
+                {
+                    ImGuiBackend.Panels.BountiesFace.Register();
+                    ImGuiBackend.Panels.GuardianFace.Register();
+                    UI.Data.UiSources.IltStatus.Subscribe();
+                }
                 if (HasPluginDll("RynthCore.Plugin.RynthChat.dll"))
                 {
                     ImGuiBackend.Panels.ChatFace.Register();
+                    ImGuiBackend.Panels.ChatWindowFace.RegisterAll();   // "Chat 2".."Chat 7", the extra chat windows
                     ImGuiBackend.Panels.ChatFiltersFace.Register();
                     ImGuiBackend.Panels.ChatDiscordFace.Register();
                 }
@@ -1022,10 +1296,14 @@ public static class EntryPoint
                     ImGuiBackend.Panels.MonstersFace.Register();
                     ImGuiBackend.Panels.NavFace.Register();
                     ImGuiBackend.Panels.ItemsFace.Register();
+                    ImGuiBackend.Panels.ItemToolFace.Register();   // chest looter + Quick give (RynthAi's Item Tool)
                     // Load the dashboard state file here, not on AC's thread. NOT through
                     // RynthAiPanel: see the dispatcher invariant above ChatModel.EnsureSettingsLoaded.
                     RynthAiDashboardState.EnsureLoaded();
                 }
+                // The colour theme (theme.txt), here rather than on AC's thread; every ImGui face reads it.
+                ImGuiBackend.RynthTheme.EnsureLoaded();
+                RegisterServerMenus(HasPluginDll("RynthCore.Plugin.RynthAi.dll"), HasPluginDll("RynthCore.Plugin.RynthILT.dll"));
                 if (trackerPresent)
                     TrackerSettings.EnsureLoaded();
                 // Hide the docked Avalonia bar before it is built if the ImGui bar stands in.
@@ -1035,6 +1313,7 @@ public static class EntryPoint
             if (avalonia && !dcompTest)
                 AvaloniaOverlay.Start();
             RynthLog.Info("RynthCore bootstrap initialized.");
+            Compatibility.MemoryUse.Mark("bootstrap initialized");
         }
         catch (Exception ex)
         {
@@ -1106,7 +1385,11 @@ public static class EntryPoint
         {
             try
             {
-                if (!EngineThreads.Sleep(DecalCoexistencePluginInitDelay))
+                // In short steps that watch the pump's stop flag: a teardown in these seconds
+                // (a reload right after login) then finds this thread gone at once rather than
+                // after the delay, and plugins are never initialised for a dying generation
+                // (StopTickPumpAndJoin, PluginShutdownGate).
+                if (!SleepUnlessPumpStopRequested(DecalCoexistencePluginInitDelay))
                     return;
 
                 // Reseed the qualities pointer from the live player object
@@ -1262,10 +1545,8 @@ public static class EntryPoint
                 $"D3D9: Decal coexistence — '{DecalDetection.DetectedModule}' loaded, " +
                 "skipping EndScene hook and ImGui init. " +
                 "In-game overlay bars are disabled; Avalonia floating panels still work.");
-            if (Plugins.EngineSettings.EnablePlugins)
-                InitPluginsForDecalCoexistence();
-            else
-                RynthLog.Info("DecalCoexistence: plugin pump disabled via engine.json (EnablePlugins=false).");
+            _pumpForDecal = true;
+            OpenPluginPumpGate(PumpGateLogin);
             return;
         }
 
@@ -1276,6 +1557,41 @@ public static class EntryPoint
         }
         RynthLog.Info("D3D9: Login complete — starting D3D9 bootstrapper.");
         D3D9Bootstrapper.Start();
+        OpenPluginPumpGate(PumpGateLogin);
+    }
+
+    // The plugin pump's two conditions (2026-11-02): login (RunPostLoginBootstrap) and the
+    // plugins loaded (InitWorker, after LoadPlugins, or at once without plugins). The
+    // bootstrap now runs as soon as login comes, which can be while the plugins still load;
+    // the pump waits for both, so InitPlugins never runs on a half-built list.
+    private const int PumpGateLogin = 1;
+    private const int PumpGatePluginsLoaded = 2;
+    private static int _pumpGate;
+    private static bool _pumpForDecal;   // written before the login bit is set
+
+    private static void OpenPluginPumpGate(int condition)
+    {
+        const int both = PumpGateLogin | PumpGatePluginsLoaded;
+        int before = Interlocked.Or(ref _pumpGate, condition);
+        if (before == both)
+            return;   // opened already
+        if ((before | condition) != both)
+        {
+            if (condition == PumpGateLogin && Plugins.EngineSettings.EnablePlugins)
+                RynthLog.Info("NormalPluginPump: login came while the plugins load; it starts once they are loaded (the EndScene hook and ImGui start now).");
+            return;
+        }
+        if (EngineLifecycle.IsShuttingDown)
+            return;
+
+        if (_pumpForDecal)
+        {
+            if (Plugins.EngineSettings.EnablePlugins)
+                InitPluginsForDecalCoexistence();
+            else
+                RynthLog.Info("DecalCoexistence: plugin pump disabled via engine.json (EnablePlugins=false).");
+            return;
+        }
 
         // 2026-05-16: the plugin lifecycle no longer ticks from the EndScene
         // path. The 2026-05-10 design ran InitPlugins/ProcessPendingActions/
@@ -1294,6 +1610,14 @@ public static class EntryPoint
         else
             RynthLog.Info("NormalPluginPump: disabled via engine.json (EnablePlugins=false).");
     }
+
+    /// <summary>
+    /// The D3D9 path will make an ImGui context after login: the EndScene hook and the ImGui
+    /// backend are on, cimgui is loaded and Decal isn't in the way. Init worker.
+    /// </summary>
+    private static bool WillRunImGui() =>
+        Plugins.EngineSettings.EnableD3D9Hook && Plugins.EngineSettings.EnableImGuiBackend
+        && _imGuiNativeHandle != IntPtr.Zero && !UseDecalCoexistencePath();
 
     private static int _decalInGameLogged;
 
@@ -1395,10 +1719,13 @@ public static class EntryPoint
     internal static bool StopTickPumpAndJoin(int timeoutMs = 2000)
     {
         Compatibility.GameTickHooks.HeadlessPrefetch = false;   // no more prefetch work once teardown starts
+        // Before the null check: a pump that starts after this (a login bootstrap racing the
+        // teardown) leaves its loop at once instead of ticking a generation being torn down.
+        Interlocked.Exchange(ref _tickPumpStopRequested, 1);
         if (_tickPumpThread == null)
             return true;
-
-        Interlocked.Exchange(ref _tickPumpStopRequested, 1);
+        if (_tickPumpThread == Thread.CurrentThread)
+            return Volatile.Read(ref _tickPumpExited) != 0;   // never wait for itself
 
         long deadline = Environment.TickCount64 + timeoutMs;
         while (Volatile.Read(ref _tickPumpExited) == 0 && Environment.TickCount64 < deadline)
@@ -1406,8 +1733,29 @@ public static class EntryPoint
 
         bool exited = Volatile.Read(ref _tickPumpExited) != 0;
         if (!exited)
-            RynthLog.Plugin($"DecalCoexistence: tick pump did NOT exit within {timeoutMs}ms.");
+            RynthLog.Plugin($"Plugin tick pump did NOT exit within {timeoutMs}ms{DescribePumpInside()}.");
         return exited;
+    }
+
+    private static string DescribePumpInside()
+    {
+        try { string? inside = Plugins.PluginManager.DescribePumpDispatch(); return inside != null ? " (" + inside + ")" : ""; }
+        catch { return ""; }
+    }
+
+    /// <summary>
+    /// For PluginManager.ShutdownAll: stops the plugin pump if it is still running, waits up
+    /// to <paramref name="timeoutMs"/> for its frame in flight, and says whether the plugins
+    /// may be shut down now (PluginShutdownGate). At once when the pump already stopped (every
+    /// EngineLifecycle.Shutdown stops it first) or never started.
+    /// </summary>
+    internal static Plugins.PluginShutdownGate.Verdict StopTickPumpForPluginShutdown(int timeoutMs)
+    {
+        Thread? pump = _tickPumpThread;
+        bool onPump = pump != null && pump == Thread.CurrentThread;
+        if (pump != null && !onPump && Volatile.Read(ref _tickPumpExited) == 0)
+            StopTickPumpAndJoin(timeoutMs);
+        return Plugins.PluginShutdownGate.Decide(pump != null, Volatile.Read(ref _tickPumpExited) != 0, onPump);
     }
 
     /// <summary>
@@ -1422,6 +1770,22 @@ public static class EntryPoint
     internal static void RequestTickPumpStop()
     {
         Interlocked.Exchange(ref _tickPumpStopRequested, 1);
+    }
+
+    /// <summary>
+    /// Sleeps <paramref name="total"/> in steps of at most 100 ms. False (stop now) as soon as
+    /// the pump's stop is requested or the engine's threads are stopped.
+    /// </summary>
+    private static bool SleepUnlessPumpStopRequested(TimeSpan total)
+    {
+        long end = Environment.TickCount64 + (long)total.TotalMilliseconds;
+        while (Volatile.Read(ref _tickPumpStopRequested) == 0)
+        {
+            long left = end - Environment.TickCount64;
+            if (left <= 0) return true;
+            if (!EngineThreads.Sleep((int)Math.Min(left, 100))) return false;
+        }
+        return false;
     }
 
     private static Thread? _initThread;
@@ -1655,8 +2019,71 @@ public static class EntryPoint
         }
     }
 
+    // The log stays open while the engine runs (2026-11-02). Opened and closed for every line, it made
+    // Windows Defender rescan the whole file (2-4 MB) on each close, dozens of times a second per client
+    // in a fight: two cores for five clients. Each line is still flushed to the OS at once. Delete sharing
+    // lets the next engine's startup rotation rename it; after shutdown (CloseLogFile) every line opens
+    // and closes the file again, so an unloaded engine never holds it. Under LogLock.
+    private static FileStream? _logStream;
+    private static bool _logStreamClosed;
+    // The open handle follows a renamed file: the startup rotation (LogPaths.RotateAtStartup) runs
+    // after the first lines are written, so it lets go first (ReleaseLogFile); and the path is checked
+    // every LogPathCheckMs, so a file moved or deleted by anything else is reopened at its path
+    // (2026-11-02: a reload's rotation left a client writing into its .log.old).
+    private const long LogPathCheckMs = 2000;
+    private static long _logPathCheckedAt;
+
+    /// <summary>Lets go of the open log (the next line opens it again). Before the log is renamed.</summary>
+    internal static void ReleaseLogFile()
+    {
+        lock (LogLock)
+        {
+            try { _logStream?.Dispose(); } catch { }
+            _logStream = null;
+        }
+    }
+
+    /// <summary>EngineLifecycle's last step: lines after it open and close the file each time.</summary>
+    internal static void CloseLogFile()
+    {
+        lock (LogLock)
+        {
+            _logStreamClosed = true;
+            try { _logStream?.Dispose(); } catch { }
+            _logStream = null;
+        }
+    }
+
     private static void AppendWithRetry(string line)
     {
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(line);
+        if (!_logStreamClosed)
+        {
+            try
+            {
+                long now = Environment.TickCount64;
+                if (_logStream != null && now - _logPathCheckedAt >= LogPathCheckMs)
+                {
+                    _logPathCheckedAt = now;
+                    if (!File.Exists(LogPaths.LogFilePath)) { try { _logStream.Dispose(); } catch { } _logStream = null; }
+                }
+                _logStream ??= new FileStream(
+                    LogPaths.LogFilePath,
+                    FileMode.Append,
+                    FileAccess.Write,
+                    FileShare.ReadWrite | FileShare.Delete);
+                _logStream.Seek(0, SeekOrigin.End);   // the loader and the injector append to it too
+                _logStream.Write(bytes, 0, bytes.Length);
+                _logStream.Flush();
+                return;
+            }
+            catch
+            {
+                try { _logStream?.Dispose(); } catch { }
+                _logStream = null;   // the open-per-line path below, and a fresh handle next line
+            }
+        }
+
         // Retry briefly to tolerate concurrent writers (loader DLL, injector
         // process). FileShare.ReadWrite on each open lets multiple writers
         // append; the small delays smooth over rare lock collisions.
@@ -1670,7 +2097,6 @@ public static class EntryPoint
                     FileMode.Append,
                     FileAccess.Write,
                     FileShare.ReadWrite);
-                byte[] bytes = System.Text.Encoding.UTF8.GetBytes(line);
                 fs.Write(bytes, 0, bytes.Length);
                 return;
             }

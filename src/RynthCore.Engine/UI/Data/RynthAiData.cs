@@ -309,6 +309,27 @@ internal static unsafe class RynthAiCommands
         if (_setSubsystemEnabled != null) _setSubsystemEnabled(id, on ? 1 : 0);
     });
 
+    /// <summary>
+    /// Flips subsystem <paramref name="id"/> (0 Combat, 1 Buff, 2 Nav, 3 Loot, 4 Meta) from RynthAi's
+    /// state right now (a hotkey: the dashboard may be closed, so its snapshot is read fresh here).
+    /// </summary>
+    public static void ToggleSubsystem(int id) => Run("toggle subsystem", () =>
+    {
+        UiSources.RynthAi.Poll();   // pump thread, like the hub's own polls
+        RynthAiSnapshot? raw = UiSources.RynthAi.Current?.Value.Raw;
+        if (raw == null) return;
+        bool on = id switch
+        {
+            0 => raw.CombatEnabled,
+            1 => raw.BuffingEnabled,
+            2 => raw.NavigationEnabled,
+            3 => raw.LootingEnabled,
+            _ => raw.MetaEnabled,
+        };
+        if (_setSubsystemEnabled == null) _setSubsystemEnabled = (delegate* unmanaged[Cdecl]<int, int, void>)Export("RynthPluginSetSubsystemEnabled");
+        if (_setSubsystemEnabled != null) _setSubsystemEnabled(id, on ? 0 : 1);
+    });
+
     /// <summary>kind: 0 nav, 1 loot, 2 meta, 3 profile.</summary>
     public static void SelectProfile(int kind, int index) => Run("select profile", () =>
     {
@@ -350,6 +371,7 @@ internal static unsafe class RynthAiCommands
         finally { Marshal.FreeHGlobal(p); }
         if (refreshPatrol) UiSources.Patrol.RequestRefresh();
         UiSources.Nav.RequestRefresh();   // the plugin applied it: the Nav panels show it next poll
+        UiSources.Settings.RequestRefresh();   // Breadcrumbs / Route overlay are on Settings > Navigation too
     });
 
     /// <summary>

@@ -22,7 +22,8 @@ namespace RynthCore.App.Avalonia;
 ///   - the RynthCore version;
 ///   - the enabled plugins the update feed ships (RynthSuite), with their versions; other plugins
 ///     only as a count, never by name (a private plugin's name could identify its author);
-///   - how many crash_*.dmp files the engine wrote since the last report (a count only);
+///   - how many crash dumps were written since the last report (a count only): the engine's
+///     Logs\dumps\crash_*.dmp and CoreCLR's Logs\dumps\clr_*.dmp;
 ///   - the Windows major version ("10" or "11").
 /// Never: character, account or server names, file paths, or anything else identifying.
 ///
@@ -34,7 +35,7 @@ internal sealed class UsageStats
     public const string DefaultEndpoint = "https://aelrynth.com/rynth/ping";
 
     /// <summary>Where the engine writes crash/hang minidumps (RynthCore.Engine CrashDump / LogPaths).</summary>
-    public const string DefaultDumpDirectory = @"C:\Games\RynthCore\Logs\dumps";
+    public static readonly string DefaultDumpDirectory = Path.Combine(RynthCore.Install.RynthInstallPaths.CoreLogsDir, "dumps"); // C:\Games\RynthCore\Logs\dumps by default
 
     public const int Schema = 1;
     private const int MaxCrashes = 1000;
@@ -52,12 +53,12 @@ internal sealed class UsageStats
     private CancellationTokenSource _cts = new();
     private int _sending;
 
-    public UsageStats(string endpoint = DefaultEndpoint, string? stateDir = null, string dumpDir = DefaultDumpDirectory)
+    public UsageStats(string endpoint = DefaultEndpoint, string? stateDir = null, string? dumpDir = null)
     {
         _endpoint = endpoint;
         _stateDir = stateDir ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore");
-        _dumpDir = dumpDir;
+        _dumpDir = dumpDir ?? DefaultDumpDirectory;
     }
 
     public string StatePath => Path.Combine(_stateDir, "usage-stats.json");
@@ -221,18 +222,30 @@ internal sealed class UsageStats
         return "other";
     }
 
-    /// <summary>crash_*.dmp files written after <paramref name="sinceUtc"/> (hang dumps are not crashes).</summary>
+    /// <summary>
+    /// Crash dump names counted: the engine's crash_*.dmp and the CoreCLR fatal-error dumps the
+    /// loader asks for in the same folder (clr_*.dmp, Loader.c ConfigureCrashDumps).
+    /// </summary>
+    private static readonly string[] CrashDumpPatterns = { "crash_*.dmp", "clr_*.dmp" };
+
+    /// <summary>
+    /// Crash dumps (crash_*.dmp, clr_*.dmp) written after <paramref name="sinceUtc"/>. Hang dumps
+    /// and the OUT OF MEMORY dumps are not crashes.
+    /// </summary>
     public static int CountCrashDumps(string dir, DateTime sinceUtc, DateTime utcNow)
     {
         try
         {
             if (!Directory.Exists(dir)) return 0;
             int n = 0;
-            foreach (string f in Directory.EnumerateFiles(dir, "crash_*.dmp"))
+            foreach (string pattern in CrashDumpPatterns)
             {
-                DateTime t = File.GetLastWriteTimeUtc(f);
-                if (t > sinceUtc && t <= utcNow.AddMinutes(5)) n++;
-                if (n >= MaxCrashes) break;
+                foreach (string f in Directory.EnumerateFiles(dir, pattern))
+                {
+                    DateTime t = File.GetLastWriteTimeUtc(f);
+                    if (t > sinceUtc && t <= utcNow.AddMinutes(5)) n++;
+                    if (n >= MaxCrashes) return n;
+                }
             }
             return n;
         }

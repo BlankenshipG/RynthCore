@@ -340,7 +340,7 @@ internal static class ClientActionGates
 
         long heldMs = now - _attackSetSince;
         _attackSetSince = 0;
-        if (ClearAttackFlag())
+        if (ClearAttackFlag($"watchdog: held {heldMs / 1000}s with no AttackDone"))
         {
             RynthLog.Compat($"ClientActionGates: attacking flag held {heldMs / 1000}s with no AttackDone — cleared. AC was refusing every item use/move ('while attacking').");
             NotifyChat("Item actions were locked (the client never got the end of an attack). Unlocked.");
@@ -395,7 +395,7 @@ internal static class ClientActionGates
         if (reason == null)
             return;
 
-        if (ClearPendingRequest())
+        if (ClearPendingRequest("watchdog: " + reason))
         {
             RynthLog.Compat(
                 $"ClientActionGates: cleared a stuck item request — {RequestTypeName(type)} (type {type}) on 0x{objectId:X8}" +
@@ -423,10 +423,12 @@ internal static class ClientActionGates
     /// Empty AC's pending-inventory-request slot, the same four stores
     /// RecordResponse makes when the server answers. Main thread only.
     /// </summary>
-    private static bool ClearPendingRequest()
+    private static bool ClearPendingRequest(string why)
     {
         if (!MainThreadGuard.IsOnMainThread() || !_requestReady)
             return false;
+        Net.FlightRecorder.Mark(Net.FlightMark.GateCleared,
+            unchecked((uint)Marshal.ReadInt32(new IntPtr(_reqTypeVa))), unchecked((uint)Marshal.ReadInt32(new IntPtr(_reqObjVa))), text: why);
         Marshal.WriteInt32(new IntPtr(_reqObjVa), 0);
         Marshal.WriteInt32(new IntPtr(_reqTypeVa), 0);
         Marshal.WriteInt32(new IntPtr(_reqTimeVa), 0);
@@ -436,10 +438,11 @@ internal static class ClientActionGates
     }
 
     /// <summary>Clear AC's attacking flag, as HandleAttackDoneEvent does. Main thread only.</summary>
-    private static bool ClearAttackFlag()
+    private static bool ClearAttackFlag(string why)
     {
         if (!MainThreadGuard.IsOnMainThread() || !_attackReady)
             return false;
+        Net.FlightRecorder.Mark(Net.FlightMark.GateCleared, 0, 0, text: why);
         Marshal.WriteInt32(new IntPtr(_attackVa), 0);
         Interlocked.Increment(ref _attackClears);
         return true;
@@ -468,12 +471,12 @@ internal static class ClientActionGates
         var done = new System.Collections.Generic.List<string>();
         if (TryReadPending(out uint type, out uint objectId, out double age) && type != 0)
         {
-            if (ClearPendingRequest())
+            if (ClearPendingRequest(why))
                 done.Add($"cleared the pending item request ({RequestTypeName(type)} on 0x{objectId:X8}{(age >= 0 ? $", {age:0}s old" : string.Empty)})");
         }
         if (TryReadAttacking(out bool attacking) && attacking)
         {
-            if (ClearAttackFlag())
+            if (ClearAttackFlag(why))
                 done.Add("cleared the attacking flag");
         }
         if (BusyCountHooks.RepairNegativeBusy(out int was))
@@ -555,14 +558,16 @@ internal static class ClientActionGates
 
         // 5. Combat system.
         IntPtr combat = CombatModeHooks.ReadCombatSystemPtr();
-        if (combat != IntPtr.Zero && ClientObjectHooks.IsReadableSpan(combat, 0x48))
+        if (combat != IntPtr.Zero && ClientObjectHooks.IsReadableSpan(combat, 0x50))
         {
             int mode = Marshal.ReadInt32(combat + 0x1C);
             string modeName = mode switch { 1 => "NonCombat", 2 => "Melee", 4 => "Missile", 8 => "Magic", _ => mode.ToString() };
             byte busyHeld = Marshal.ReadByte(combat + 0x3C);
             byte inAttack = Marshal.ReadByte(combat + 0x3D);
             byte autoRepeat = Marshal.ReadByte(combat + 0x44);
-            lines.Add($"  Combat: mode {modeName}; attack holds busy {busyHeld}; attack in progress {inAttack}; auto-repeat {autoRepeat}");
+            byte queued = Marshal.ReadByte(combat + 0x47);
+            lines.Add($"  Combat: mode {modeName}; attack holds busy {busyHeld}; attack in progress {inAttack}; auto-repeat {autoRepeat}; queued attack {queued}");
+            lines.Add($"    {ClientCombatHooks.DescribeRearms()}");
         }
 
         lines.Add($"  World transition (portal/death): {(PlayerLifecycleLog.InWorldTransition ? "yes" : "no")}; logged in: {(LoginLifecycleHooks.HasObservedLoginComplete ? "yes" : "no")}");

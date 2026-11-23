@@ -64,6 +64,7 @@ var navAtlas = new NavAtlasService(cfg.NavAtlasPath);
 LocalStatusServer? server = null;
 WebRtcVideoService? video = null;   // HD WebRTC video mode (opt-in); disposed in finally
 IconService? icons = null;          // item-icon decoder (GET /icon); disposed in finally
+string? serveTokenProblem = cfg.ServeHttp ? ServeGuard.TokenProblem(cfg.ServePrefix, cfg.ServeToken) : null;
 if (cfg.ServeHttp && string.IsNullOrWhiteSpace(cfg.ServeToken))
 {
     // Same rule as DrakBot's remote: no token, no server, loopback included. The server can show
@@ -72,8 +73,20 @@ if (cfg.ServeHttp && string.IsNullOrWhiteSpace(cfg.ServeToken))
     AgentLog.Warn($"Set \"ServeToken\" in {configPath} and restart the agent. Use the same token as your");
     AgentLog.Warn("DrakBot remote and one DrakRemote entry shows both.");
 }
+else if (serveTokenProblem != null)
+{
+    // A bind other PCs reach (LAN, Tailscale) needs a token that can't be guessed.
+    AgentLog.Warn($"ServeHttp is on but {serveTokenProblem}, so the status server stays off.");
+    AgentLog.Warn($"Put a longer \"ServeToken\" in {configPath} (a random 24+ characters) and restart the agent.");
+}
 else if (cfg.ServeHttp)
 {
+    if (!ServeGuard.IsLoopbackPrefix(cfg.ServePrefix))
+    {
+        // HttpListener here is plain HTTP: the token and the screens cross the network unencrypted.
+        AgentLog.Warn($"ServePrefix {cfg.ServePrefix} is reachable from other PCs over plain HTTP: use it only");
+        AgentLog.Warn("inside an encrypted network (Tailscale/WireGuard VPN), never forwarded to the internet.");
+    }
     string? commandDir = cfg.EnableRemoteControl ? Path.Combine(cfg.StatusDirectory, "commands") : null;
     VideoSocketService? videoSocket = null;
     if (cfg.EnableVideoStream)
@@ -129,6 +142,14 @@ const int DebounceMs = 50;
 int fallbackMs = Math.Max(1, cfg.IntervalSeconds) * 1000;
 using var dirty = new SemaphoreSlim(0, 1);
 FileSystemWatcher? watcher = opts.Once ? null : TryArmStatusWatcher(cfg.StatusDirectory, dirty);
+// The cycle's summary line: logged when the clients or their states change, else every SummaryEveryMs.
+string _lastSummaryShape = "";
+long _lastSummaryMs = 0;
+const long SummaryEveryMs = 10 * 60_000;
+// aggregate.json is a debugging copy: at most every 5 s (2026-11-02). The cycle runs on every status
+// write (several a second), and Windows Defender scans each rewrite of the file.
+long _lastAggregateWriteMs = long.MinValue / 2;
+const long AggregateEveryMs = 5_000;
 
 try
 {
@@ -188,15 +209,24 @@ async Task RunCycleAsync()
     // Serialize once; reuse the bytes for serve / file / POST.
     byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(payload, AgentJsonContext.Default.AggregatePayload);
 
-    AgentLog.Info(Summarize(clients));
+    // The summary only when who's there or their state changes, and every 10 minutes: logged every
+    // cycle (several a second; fps and plug numbers differ each time) it filled the disk (2026-10-12).
+    string shape = SummaryShape(clients);
+    if (shape != _lastSummaryShape || Environment.TickCount64 - _lastSummaryMs >= SummaryEveryMs)
+    {
+        _lastSummaryShape = shape;
+        _lastSummaryMs = Environment.TickCount64;
+        AgentLog.Info(Summarize(clients));
+    }
     if (opts.Verbose)
         AgentLog.Debug(System.Text.Encoding.UTF8.GetString(bytes));
 
     server?.UpdateLatest(bytes);
     server?.UpdateRaiseClients(clients);
 
-    if (cfg.WriteAggregateFile)
+    if (cfg.WriteAggregateFile && Environment.TickCount64 - _lastAggregateWriteMs >= AggregateEveryMs)
     {
+        _lastAggregateWriteMs = Environment.TickCount64;
         try
         {
             Directory.CreateDirectory(cfg.StatusDirectory);
@@ -238,6 +268,9 @@ static FileSystemWatcher? TryArmStatusWatcher(string statusDir, SemaphoreSlim si
         return null;
     }
 }
+
+static string SummaryShape(List<ClientStatus> clients) =>
+    string.Join("|", clients.Select(c => $"{c.Pid}:{c.Character}:{c.State}"));
 
 static string Summarize(List<ClientStatus> clients)
 {

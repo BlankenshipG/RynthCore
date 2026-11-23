@@ -9,8 +9,7 @@ namespace RynthCore.Injector;
 internal static class Program
 {
     // Unified log path — must stay in sync with RynthCore.Engine.LogPaths.
-    // Installer-chosen RynthCore folder (falls back to C:\Games\RynthCore).
-    private static readonly string UnifiedLogDirectory = RynthInstallPaths.CoreLogsDir;
+    private static readonly string UnifiedLogDirectory = RynthCore.Install.RynthInstallPaths.CoreLogsDir; // C:\Games\RynthCore\Logs by default
     private const string UnifiedLogFileName = "RynthCore.log";
 
     private static int Main(string[] args)
@@ -57,9 +56,8 @@ internal static class Program
     /// <summary>
     /// --decal-bridge register [--dir &lt;folder&gt;] | check | status | unregister
     ///                | register-machine [--dir &lt;folder&gt;] | unregister-machine
-    /// register: where a Decal client started now reads Decal's filter list (per-user copy for
-    /// a non-elevated client, the machine-wide list otherwise; that needs an elevated prompt),
-    /// then the check. check: the launcher's "Check Decal bridge", read-only.
+    /// register: into Decal's machine-wide filter list (needs an administrator prompt; never
+    /// creates a per-user copy), then the check. check: the launcher's "Check Decal bridge", read-only.
     /// The launcher does the same when an account is set to "Decal + RynthCore".
     /// See docs/DECAL_BRIDGE_PLAN.md.
     /// </summary>

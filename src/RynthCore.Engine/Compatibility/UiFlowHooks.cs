@@ -278,6 +278,10 @@ internal static unsafe class UiFlowHooks
         try { RadarHooks.ResetCachedInstance(); } catch { }
         try { PowerbarHooks.ResetCachedInstance(); } catch { }
         try { RetailVitalsHooks.ResetCachedInstance(); } catch { }
+        try { RetailToolbarHooks.ResetCachedInstance(); } catch { }
+        try { AcShortcuts.Reset(); } catch { }
+        try { AcKeymapLive.Reset(); } catch { }
+        try { AcPanels.Reset(); } catch { }
         try { UiElementHooks.OnScreenLeaving(); } catch { }
     }
 

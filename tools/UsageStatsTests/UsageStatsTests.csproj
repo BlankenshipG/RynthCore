@@ -23,4 +23,8 @@
     <Compile Include="..\..\src\RynthCore.App.Avalonia\UsageStats.cs" Link="App\UsageStats.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\..\src\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+  </ItemGroup>
+
 </Project>

@@ -5,7 +5,10 @@
     compiled in): which registry view a Decal client reads its filter list from (per-user
     VirtualStore copy vs machine-wide HKLM) for non-elevated / elevated / UAC-off /
     manifest / run-as-administrator clients, and every check line, against a fake registry.
-    Never touches the real registry.
+    Plus DecalBridgeRegistration (register / unregister / Repair Decal, RegistrationTests.cs)
+    against a scratch registry under HKCU\Software\RynthCoreTests\<run> and a temp folder,
+    deleted after each scenario. The real Decal keys and VirtualStore copies are only read
+    (before and after, to prove they did not change).
     Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
   -->
   <PropertyGroup>

@@ -6,7 +6,7 @@ using System.Linq;
 namespace RynthCore.App.Avalonia;
 
 /// <summary>What the update card on the launcher's front page is showing.</summary>
-public enum UpdateCardKind { NotConfigured, NotChecked, Checking, Error, UpToDate, CoreUpdate, PluginUpdates, Downloading }
+public enum UpdateCardKind { NotConfigured, NotChecked, Checking, Error, UpToDate, CoreUpdate, PluginUpdates, Downloading, Held }
 
 /// <summary>Everything the card needs to know, gathered by the window (no UI types, so tests can build it).</summary>
 public sealed record UpdateCardInput
@@ -32,6 +32,8 @@ public sealed record UpdateCardInput
     public int ClientsRunning { get; init; }
     /// <summary>The download in progress, if any.</summary>
     public DownloadProgress? Download { get; init; }
+    /// <summary>After Roll back: the version the player went back from, while updates are held (else "").</summary>
+    public string HeldFromVersion { get; init; } = "";
     public bool CanCancel { get; init; }
 }
 
@@ -53,7 +55,7 @@ public sealed record UpdateCard(
 /// <summary>
 /// The front page's update card as a pure function of <see cref="UpdateCardInput"/>: up to date,
 /// RynthCore update (installs once every game client is closed), plugin updates, downloading
-/// (bar, MB, speed, time left, step), errors, and a line about new plugins.
+/// (bar, MB, speed, time left, step), errors, a line about new plugins, and the hold after a Roll back.
 /// </summary>
 public static class UpdateCardModel
 {
@@ -104,6 +106,18 @@ public static class UpdateCardModel
 
         string checkedLine = i.LastChecked is { } lc ? $"Last checked {FormatWhen(lc)}." : "";
         IReadOnlyList<string> whatsNew = WhatsNew(i.Changes, i.Notes);
+
+        if (i.HeldFromVersion.Length > 0)
+        {
+            // Roll back: the launcher doesn't push the release the player left straight back.
+            var detail = new List<string> { $"You went back from {i.HeldFromVersion}. Updates are on hold until a newer release comes out." };
+            if (i.CoreUpdateAvailable)
+                detail.Add($"{UpdateCoreButton} goes forward to {i.AvailableVersion} now.");
+            if (checkedLine.Length > 0) detail.Add(checkedLine);
+            return new UpdateCard(UpdateCardKind.Held, $"RynthCore {installed} - rolled back", string.Join(" ", detail),
+                Array.Empty<string>(), true, i.CoreUpdateAvailable ? UpdateCoreButton : null, false, null, false, newLine,
+                $"RynthCore {installed} - rolled back from {i.HeldFromVersion}; updates on hold.");
+        }
 
         if (i.CoreUpdateAvailable)
         {

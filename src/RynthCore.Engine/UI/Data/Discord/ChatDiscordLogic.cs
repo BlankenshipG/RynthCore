@@ -4,7 +4,7 @@
 //  tools/ChatDiscordTests can run them: what a chat line is (speech on a
 //  channel, or plain text), whether a route wants it and under which label,
 //  how it is written for Discord, and whether it is scrollback from before
-//  the relay started.
+//  the relay started (DiscordBacklogGate, by RynthChat's line seq).
 // ============================================================================
 
 using System;
@@ -69,14 +69,6 @@ internal static class ChatDiscordLogic
             parts.Speech != null && parts.Speaker.Length > 0 ? parts.Speaker : null,
             parts.Message, s.IncludeTimestamp, s.TagCharacter && me.Length > 0 ? me : null);
 
-    /// <summary>
-    /// True for a line printed before the relay started (the scrollback a fresh engine, or a hot
-    /// reload, reads in its first poll): those were sent already or are history, not news. Stamps
-    /// only have whole seconds, so the line's second counts as "after".
-    /// </summary>
-    public static bool IsBacklog(DateTime lineTime, DateTime activeSince)
-        => lineTime < activeSince.AddTicks(-(activeSince.Ticks % TimeSpan.TicksPerSecond));
-
     /// <summary>Key for the per-route repeat filter (the same line twice within a few seconds).</summary>
     public static string DedupKey(in DiscordLineParts parts, string label) => $"{label}|{parts.Speaker}|{parts.Message}";
 
@@ -87,5 +79,56 @@ internal static class ChatDiscordLogic
         foreach (var kv in recent)
             if (now - kv.Value > windowMs) (stale ??= new List<string>()).Add(kv.Key);
         if (stale != null) foreach (string k in stale) recent.Remove(k);
+    }
+}
+
+/// <summary>
+/// Keeps scrollback out of Discord, by RynthChat's line numbers (seq), not by clock time.
+/// ChatSource reads RynthChat's scrollback by seq; the first read after the relay comes on
+/// for this character (engine start, hot reload, switching it on, logging in a character that
+/// has it on) or after RynthChat's numbering restarts is the baseline: up to 500 lines that were
+/// already sent, or are history, so none of it is posted. After that a line is posted only if
+/// its seq is newer than any seen. Pump thread only.
+/// </summary>
+internal sealed class DiscordBacklogGate
+{
+    private bool _live;
+    private ulong _newestSeq;
+
+    /// <summary>True once a baseline read has been taken while on.</summary>
+    public bool Live => _live;
+
+    /// <summary>The relay is off for this character: the next read while on is a baseline again.</summary>
+    public void Off() => _live = false;
+
+    /// <summary>RynthChat's scrollback numbering restarted (its plugin was reloaded): re-baseline.</summary>
+    public void SourceReset()
+    {
+        _live = false;
+        _newestSeq = 0;
+    }
+
+    /// <summary>
+    /// One scrollback read (possibly empty) with the seq of each line in it. Returns which lines
+    /// to post: none while off or for the baseline read, else those newer than any seen.
+    /// </summary>
+    public bool[] Admit(bool on, IReadOnlyList<ulong> seqs)
+    {
+        var post = new bool[seqs.Count];
+        if (!on)
+        {
+            _live = false;
+            return post;
+        }
+        bool baseline = !_live;
+        _live = true;
+        for (int i = 0; i < seqs.Count; i++)
+        {
+            ulong seq = seqs[i];
+            bool newer = seq > _newestSeq;
+            if (newer) _newestSeq = seq;
+            post[i] = newer && !baseline;
+        }
+        return post;
     }
 }

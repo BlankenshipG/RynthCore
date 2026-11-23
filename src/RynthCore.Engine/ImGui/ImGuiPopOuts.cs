@@ -22,7 +22,10 @@
 //  nothing out there the margin is 0 and the picture is just the panel. The
 //  window grows by the margin and moves so the panel stays put (LayeredWindow
 //  .Present). Before this, the window was the panel and a tooltip below the
-//  one-button-high popped-out bar was cut off at its edge.
+//  one-button-high popped-out bar was cut off at its edge. A tooltip in the
+//  margin lets clicks through; a menu, or a window of the face's own drawn
+//  past the panel (RynthAi's dashboard drawers, 2026-10-24), takes them where
+//  it is drawn (transparent pixels still let them through).
 //
 //  Threads: everything here runs on AC's main thread, which both renders
 //  (EndScene) and dispatches the game and pop-out WndProcs. No locks.
@@ -77,6 +80,7 @@ internal static unsafe class ImGuiPopOuts
         public readonly List<InputMessage> Input = new(32);
         public readonly bool[] Buttons = new bool[3];
         public long LastFrameTicks;
+        public int ThemeApplied;                      // RynthTheme.Version this context's style was coloured at
         public int HotFrames = HotFramesAfterInput;
         public bool WantTextInput, DropTextFocus;
         public bool Hovered;
@@ -104,6 +108,23 @@ internal static unsafe class ImGuiPopOuts
 
     /// <summary>True while a pop-out's ImGui frame is being built (inside a face's Draw). AC thread.</summary>
     public static bool InPopOutFrame => _current != null;
+
+    private static int _mainFrame;
+
+    /// <summary>
+    /// The main context's ImGui frame number, the same inside a pop-out's frame (whose own
+    /// context counts its frames from 0): for frame-numbered state shared across contexts
+    /// (a script window's local values and its replay budget, ScriptWindowReplay). AC thread.
+    /// </summary>
+    public static int FrameNumber =>
+        _current != null || ImGuiNET.ImGui.GetCurrentContext() == IntPtr.Zero ? _mainFrame : ImGuiNET.ImGui.GetFrameCount();
+
+    /// <summary>
+    /// Records the main context's frame number for <see cref="FrameNumber"/>. Call right after
+    /// the main context's NewFrame, with it current (EngineFrameController.BuildImGuiFrame):
+    /// the main context is not current when the pop-outs render. AC thread.
+    /// </summary>
+    public static void NoteMainFrame() => _mainFrame = ImGuiNET.ImGui.GetFrameCount();
 
     /// <summary>
     /// Where a popped-out face puts its window (its top-left in the pop-out's ImGui
@@ -148,7 +169,7 @@ internal static unsafe class ImGuiPopOuts
     /// current (its font atlas is shared). AC thread.
     /// </summary>
     public static void Open(string title, int left, int top, int width, int height, int captionHeight, int captionRightInset, float uiScale,
-        Action<float, Vector2>? draw = null, Action<int, int>? onMoved = null, bool sizeToContent = false)
+        Action<float, Vector2>? draw = null, Action<int, int>? onMoved = null, bool sizeToContent = false, bool resizable = true)
     {
         if (Pops.ContainsKey(title)) return;
         IntPtr main = ImGuiNET.ImGui.GetCurrentContext();
@@ -173,7 +194,7 @@ internal static unsafe class ImGuiPopOuts
             Title = title, Context = ctx,
             Left = left, Top = top, Width = Math.Max(80, width), Height = Math.Max(40, height),
             CaptionHeight = captionHeight, CaptionRightInset = captionRightInset,
-            Draw = draw, OnMoved = onMoved, SizeToContent = sizeToContent, ResizeGrip = !sizeToContent,
+            Draw = draw, OnMoved = onMoved, SizeToContent = sizeToContent, ResizeGrip = resizable && !sizeToContent,
         };
         Pops[title] = pop;
         Order.Add(pop);
@@ -188,8 +209,11 @@ internal static unsafe class ImGuiPopOuts
         try
         {
             // A saved spot off the screen (a monitor since unplugged, a bad save) comes back on it.
-            if (LayeredWindow.ClampToWorkArea(ref pop.Left, ref pop.Top, pop.Width, pop.Height))
-                RynthLog.UI($"ImGuiPopOuts: {pop.Title}: saved spot was off the screen; moved to ({pop.Left},{pop.Top}).");
+            // One mostly on it stays where the player left it (2026-11-01).
+            int savedLeft = pop.Left, savedTop = pop.Top;
+            if (!LayeredWindow.MostlyOnScreen(pop.Left, pop.Top, pop.Width, pop.Height)
+                && LayeredWindow.ClampToWorkArea(ref pop.Left, ref pop.Top, pop.Width, pop.Height))
+                RynthLog.UI($"ImGuiPopOuts: {pop.Title}: saved spot ({savedLeft},{savedTop}) {pop.Width}x{pop.Height} was off the screen; moved to ({pop.Left},{pop.Top}).");
             var window = new LayeredWindow(pop.Width, pop.Height, pop.Left, pop.Top, Win32Backend.GameHwnd)
             {
                 CaptionHeight = pop.CaptionHeight,
@@ -418,6 +442,10 @@ internal static unsafe class ImGuiPopOuts
             return;
         }
 
+        // No ImGui call before a pop-out's own context is current: the main context is NOT current
+        // here (EngineFrameController restores the previous one, normally none, after each frame), and
+        // igGetFrameCount with no context is an access violation that ends the client (11-10). The main
+        // frame number comes from NoteMainFrame instead.
         IntPtr previous = ImGuiNET.ImGui.GetCurrentContext();
         long now = Stopwatch.GetTimestamp();
         try
@@ -428,7 +456,10 @@ internal static unsafe class ImGuiPopOuts
                 if (pop.Window == null || pop.Window.Hwnd == IntPtr.Zero) continue;
                 long interval = pop.HotFrames > 0 || pop.Hovered || pop.WantTextInput ? 0 : pop.IdleInterval;
                 if (pop.HotFrames <= 0 && now - pop.LastFrameTicks < Math.Max(interval, FrameInterval)) continue;
+                // UiCost: the window's own frame, render and present; its panel is timed by the host.
+                long cPop = UiCost.Start(), costMark = UiCost.Mark;
                 RenderOne(device, pop, uiScale, now);
+                UiCost.StopPopOutWindow(pop.Title, cPop, costMark);
             }
         }
         finally
@@ -484,6 +515,7 @@ internal static unsafe class ImGuiPopOuts
 
             _current = pop;
             ImGuiTextFocus.BeginFrame();
+            RynthTheme.RefreshStyle(ref pop.ThemeApplied);   // this context's base style follows a theme change
             ImGuiNET.ImGui.NewFrame();
             started = true;
             if (pop.DropTextFocus)
@@ -505,7 +537,8 @@ internal static unsafe class ImGuiPopOuts
             // a menu). Only a menu there takes clicks; a tooltip lets them through.
             ImDrawDataPtr drawData = ImGuiNET.ImGui.GetDrawData();
             UpdateMargins(pop, drawData.NativePtr, w, h);
-            window.MarginsClickThrough = !ImGuiNET.ImGui.IsPopupOpen("", ImGuiPopupFlags.AnyPopupId | ImGuiPopupFlags.AnyPopupLevel);
+            window.MarginsClickThrough = !ImGuiNET.ImGui.IsPopupOpen("", ImGuiPopupFlags.AnyPopupId | ImGuiPopupFlags.AnyPopupLevel)
+                && !WindowPastPanel(drawData.NativePtr, pop.OriginX, pop.OriginY, pop.OriginX + w, pop.OriginY + h, pop.DisplayW, pop.DisplayH);
             int sx = pop.OriginX - pop.MarginL, sy = pop.OriginY - pop.MarginT;
             int sw = w + pop.MarginL + pop.MarginR, sh = h + pop.MarginT + pop.MarginB;
             if (drawData.NativePtr != null)
@@ -529,7 +562,10 @@ internal static unsafe class ImGuiPopOuts
                     // Shown, or its picture changed size (the bar grows to its content):
                     // none of it may hang off the screen.
                     if ((!pop.Visible || w != pop.ShownWidth || h != pop.ShownHeight) && window.EnsureOnScreen())
+                    {
+                        RynthLog.UI($"ImGuiPopOuts: {pop.Title}: {w}x{h} was mostly off the screen; pulled onto it at ({window.ScreenLeft},{window.ScreenTop}).");
                         NotifyMoved(pop, window, window.ScreenLeft, window.ScreenTop);
+                    }
                     pop.ShownWidth = w;
                     pop.ShownHeight = h;
                     if (!pop.Visible)
@@ -628,43 +664,78 @@ internal static unsafe class ImGuiPopOuts
         if (dd == null) return false;
         ImDrawList** lists = (ImDrawList**)dd->CmdLists.Data;
         for (int n = 0; n < dd->CmdListsCount; n++)
+            ListOverflow(lists[n], px0, py0, px1, py1, displayW, displayH, ref x0, ref y0, ref x1, ref y1);
+        return px0 - x0 > OverflowSlack || py0 - y0 > OverflowSlack || x1 - px1 > OverflowSlack || y1 - py1 > OverflowSlack;
+    }
+
+    /// <summary>
+    /// A window other than a tooltip draws past the panel: a face's own window (a dashboard's
+    /// drawers). Popups count too, but IsPopupOpen already says so. ImGui names a tooltip
+    /// window "##Tooltip_NN" and its draw list after its window.
+    /// </summary>
+    private static bool WindowPastPanel(ImDrawData* dd, float px0, float py0, float px1, float py1, float displayW, float displayH)
+    {
+        if (dd == null) return false;
+        ImDrawList** lists = (ImDrawList**)dd->CmdLists.Data;
+        for (int n = 0; n < dd->CmdListsCount; n++)
         {
             ImDrawList* list = lists[n];
-            if (list == null) continue;
-            int vtxCount = list->VtxBuffer.Size, idxCount = list->IdxBuffer.Size;
-            ImDrawVert* vtx = (ImDrawVert*)list->VtxBuffer.Data;
-            ushort* idx = (ushort*)list->IdxBuffer.Data;
-            ImDrawCmd* cmds = (ImDrawCmd*)list->CmdBuffer.Data;
-            for (int c = 0; c < list->CmdBuffer.Size; c++)
-            {
-                ImDrawCmd* cmd = &cmds[c];
-                if (cmd->UserCallback != IntPtr.Zero || cmd->ElemCount == 0) continue;
-                float cx0 = Math.Max(cmd->ClipRect.X, 0f), cy0 = Math.Max(cmd->ClipRect.Y, 0f);
-                float cx1 = Math.Min(cmd->ClipRect.Z, displayW), cy1 = Math.Min(cmd->ClipRect.W, displayH);
-                if (cx1 <= cx0 || cy1 <= cy0) continue;
-                if (cx0 >= px0 && cy0 >= py0 && cx1 <= px1 && cy1 <= py1) continue;   // can't draw outside the panel
-
-                float vx0 = float.MaxValue, vy0 = float.MaxValue, vx1 = float.MinValue, vy1 = float.MinValue;
-                long start = cmd->IdxOffset, end = Math.Min((long)idxCount, start + cmd->ElemCount);
-                long vbase = cmd->VtxOffset;
-                for (long i = start; i < end; i++)
-                {
-                    long v = vbase + idx[i];
-                    if (v >= vtxCount) continue;
-                    Vector2 pos = vtx[v].pos;
-                    if (pos.X < vx0) vx0 = pos.X;
-                    if (pos.Y < vy0) vy0 = pos.Y;
-                    if (pos.X > vx1) vx1 = pos.X;
-                    if (pos.Y > vy1) vy1 = pos.Y;
-                }
-                vx0 = Math.Max(vx0, cx0); vy0 = Math.Max(vy0, cy0);
-                vx1 = Math.Min(vx1, cx1); vy1 = Math.Min(vy1, cy1);
-                if (vx1 <= vx0 || vy1 <= vy0) continue;
-                x0 = Math.Min(x0, vx0); y0 = Math.Min(y0, vy0);
-                x1 = Math.Max(x1, vx1); y1 = Math.Max(y1, vy1);
-            }
+            if (list == null || IsTooltipList(list)) continue;
+            float x0 = px0, y0 = py0, x1 = px1, y1 = py1;
+            ListOverflow(list, px0, py0, px1, py1, displayW, displayH, ref x0, ref y0, ref x1, ref y1);
+            if (px0 - x0 > OverflowSlack || py0 - y0 > OverflowSlack || x1 - px1 > OverflowSlack || y1 - py1 > OverflowSlack)
+                return true;
         }
-        return px0 - x0 > OverflowSlack || py0 - y0 > OverflowSlack || x1 - px1 > OverflowSlack || y1 - py1 > OverflowSlack;
+        return false;
+    }
+
+    private static bool IsTooltipList(ImDrawList* list)
+    {
+        byte* name = list->_OwnerName;
+        if (name == null) return false;
+        ReadOnlySpan<byte> prefix = "##Tooltip"u8;
+        for (int i = 0; i < prefix.Length; i++)
+            if (name[i] != prefix[i]) return false;
+        return true;
+    }
+
+    /// <summary>Widens the bounds by what one draw list shows outside the panel (see <see cref="OverflowBounds"/>).</summary>
+    private static void ListOverflow(ImDrawList* list, float px0, float py0, float px1, float py1, float displayW, float displayH,
+        ref float x0, ref float y0, ref float x1, ref float y1)
+    {
+        if (list == null) return;
+        int vtxCount = list->VtxBuffer.Size, idxCount = list->IdxBuffer.Size;
+        ImDrawVert* vtx = (ImDrawVert*)list->VtxBuffer.Data;
+        ushort* idx = (ushort*)list->IdxBuffer.Data;
+        ImDrawCmd* cmds = (ImDrawCmd*)list->CmdBuffer.Data;
+        for (int c = 0; c < list->CmdBuffer.Size; c++)
+        {
+            ImDrawCmd* cmd = &cmds[c];
+            if (cmd->UserCallback != IntPtr.Zero || cmd->ElemCount == 0) continue;
+            float cx0 = Math.Max(cmd->ClipRect.X, 0f), cy0 = Math.Max(cmd->ClipRect.Y, 0f);
+            float cx1 = Math.Min(cmd->ClipRect.Z, displayW), cy1 = Math.Min(cmd->ClipRect.W, displayH);
+            if (cx1 <= cx0 || cy1 <= cy0) continue;
+            if (cx0 >= px0 && cy0 >= py0 && cx1 <= px1 && cy1 <= py1) continue;   // can't draw outside the panel
+
+            float vx0 = float.MaxValue, vy0 = float.MaxValue, vx1 = float.MinValue, vy1 = float.MinValue;
+            long start = cmd->IdxOffset, end = Math.Min((long)idxCount, start + cmd->ElemCount);
+            long vbase = cmd->VtxOffset;
+            for (long i = start; i < end; i++)
+            {
+                long v = vbase + idx[i];
+                if (v >= vtxCount) continue;
+                Vector2 pos = vtx[v].pos;
+                if (pos.X < vx0) vx0 = pos.X;
+                if (pos.Y < vy0) vy0 = pos.Y;
+                if (pos.X > vx1) vx1 = pos.X;
+                if (pos.Y > vy1) vy1 = pos.Y;
+            }
+            vx0 = Math.Max(vx0, cx0); vy0 = Math.Max(vy0, cy0);
+            vx1 = Math.Min(vx1, cx1); vy1 = Math.Min(vy1, cy1);
+            if (vx1 <= vx0 || vy1 <= vy0) continue;
+            x0 = Math.Min(x0, vx0); y0 = Math.Min(y0, vy0);
+            x1 = Math.Max(x1, vx1); y1 = Math.Max(y1, vy1);
+        }
     }
 
     /// <summary>Folds the picture's placement into the draw-data hash.</summary>
@@ -676,7 +747,10 @@ internal static unsafe class ImGuiPopOuts
     public static string? RequestSnapshot(string title)
     {
         if (!Pops.TryGetValue(title, out PopOut? pop)) return null;
-        string path = System.IO.Path.Combine(@"C:\Games\RynthCore\Logs", $"popout_{title.Replace(' ', '_')}.bmp");
+        // A script window's key ("script:RynthLua/loot-inbox/Loot") isn't a file name as it is.
+        var name = new System.Text.StringBuilder(title.Length);
+        foreach (char c in title) name.Append(c == ' ' || Array.IndexOf(System.IO.Path.GetInvalidFileNameChars(), c) >= 0 ? '_' : c);
+        string path = System.IO.Path.Combine(LogPaths.LogDirectory, $"popout_{name}.bmp");
         pop.Surface.SnapshotPath = path;
         pop.HotFrames = Math.Max(pop.HotFrames, 2);
         return path;

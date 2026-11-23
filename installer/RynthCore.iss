@@ -62,6 +62,30 @@ Name: "custom"; Description: "Custom"; Flags: iscustom
 Name: "core";          Description: "RynthCore launcher, engine and Loot Editor"; Types: full core custom; Flags: fixed
 Name: "rynthai";       Description: "RynthSuite: RynthAi plugin (installed and registered with the launcher)"; Types: full
 Name: "monstereditor"; Description: "RynthSuite: Monster Editor"; Types: full
+; RynthSuite companion plugins: on in a Full install, each registered with the launcher like RynthAi.
+Name: "suite";                 Description: "RynthSuite: Companion plugins"; Types: full
+Name: "suite\rynthoracle";     Description: "RynthOracle - quests, quest timers, markers, character, fellowship"; Types: full
+Name: "suite\rynthilt";        Description: "RynthILT - Infinite Leaftide features (hub, progression, banking, bounties)"; Types: full
+Name: "suite\rynthinventory";  Description: "RynthInventory - inventory, item counts and global manage"; Types: full
+Name: "suite\rynthsort";       Description: "RynthSort - inventory sorting"; Types: full
+; Server plugins (RynthServers): RynthCore loads only the one for the server you connect to.
+Name: "suite\rynthachard"; Description: "RynthAChard - server plugin for AChard (loads only on that server)"; Types: full
+Name: "suite\rynthaelrynth"; Description: "RynthAelrynth - server plugin for Aelrynth (loads only on that server)"; Types: full
+Name: "suite\rynthcoldeve"; Description: "RynthColdeve - server plugin for Coldeve (loads only on that server)"; Types: full
+Name: "suite\rynthconquest"; Description: "RynthConquest - server plugin for Conquest (loads only on that server)"; Types: full
+Name: "suite\rynthderptide"; Description: "RynthDerptide - server plugin for Derptide (loads only on that server)"; Types: full
+Name: "suite\rynthdreamweave"; Description: "RynthDreamWeave - server plugin for DreamWeave (loads only on that server)"; Types: full
+Name: "suite\ryntheversong"; Description: "RynthEversong - server plugin for Eversong (loads only on that server)"; Types: full
+Name: "suite\rynthfrostace"; Description: "RynthFrostACE - server plugin for FrostACE (loads only on that server)"; Types: full
+Name: "suite\rynthfrostcull"; Description: "RynthFrostcull - server plugin for Frostcull (loads only on that server)"; Types: full
+Name: "suite\rynthleafdawn"; Description: "RynthLeafDawn - server plugin for LeafDawn (loads only on that server)"; Types: full
+Name: "suite\rynthleafdawning"; Description: "RynthLeafdawning - server plugin for Leafdawning (loads only on that server)"; Types: full
+Name: "suite\rynthlevistras"; Description: "RynthLevistras - server plugin for Levistras (loads only on that server)"; Types: full
+Name: "suite\rynthportalstorm"; Description: "RynthPortalStorm - server plugin for PortalStorm (loads only on that server)"; Types: full
+Name: "suite\rynthreefcull"; Description: "RynthReefcull - server plugin for Reefcull (loads only on that server)"; Types: full
+Name: "suite\rynthsundering"; Description: "RynthSundering - server plugin for Sundering (loads only on that server)"; Types: full
+Name: "suite\rynththistlecrown"; Description: "RynthThistlecrown - server plugin for Thistlecrown (loads only on that server)"; Types: full
+Name: "suite\rynththreads"; Description: "RynthThreads - server plugin for DreamWeave's Threads (loads only on that server)"; Types: full
 ; Experimental plugins: unchecked by default in every install type (ticking one switches to Custom).
 Name: "experimental";              Description: "RynthSuite: Experimental plugins (work in progress)"
 Name: "experimental\rynthchat";    Description: "RynthChat - replacement chat window (classifies and owns game chat)"
@@ -98,41 +122,77 @@ Type: files;          Name: "{app}\Runtime\RynthCore.Injector.exe"
 Type: filesandordirs; Name: "{app}\Runtime\Plugins"
 
 [Files]
+; overwritereadonly (every line): a file left read-only on the player's PC is replaced without a
+; question (a /SILENT update can't answer one); the build clears ReadOnly on everything staged, and
+; Setup doesn't give installed files any attributes, so nothing lands read-only.
 ; RynthCore: launcher, Runtime\ (engine, loader, native deps), Tools\LootEditor, release.txt
-Source: "staging\core\*"; DestDir: "{app}"; Components: core; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "staging\core\*"; DestDir: "{app}"; Components: core; Flags: ignoreversion recursesubdirs createallsubdirs overwritereadonly
 
 ; RynthSuite: the RynthAi plugin lives next to its data folders in the chosen Suite folder.
-Source: "staging\suite\RynthAi\RynthCore.Plugin.RynthAi.dll"; DestDir: "{code:GetSuiteDir}\RynthAi"; Components: rynthai; Flags: ignoreversion
+Source: "staging\suite\RynthAi\RynthCore.Plugin.RynthAi.dll"; DestDir: "{code:GetSuiteDir}\RynthAi"; Components: rynthai; Flags: ignoreversion overwritereadonly
 ; Monster Editor: RynthAi's dashboard launches it from <RynthAi>\MonsterEditor\.
-Source: "staging\suite\RynthAi\MonsterEditor\*"; DestDir: "{code:GetSuiteDir}\RynthAi\MonsterEditor"; Components: monstereditor; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "staging\suite\RynthAi\MonsterEditor\*"; DestDir: "{code:GetSuiteDir}\RynthAi\MonsterEditor"; Components: monstereditor; Flags: ignoreversion recursesubdirs createallsubdirs overwritereadonly
+
+; Companion plugins: each in its own <RynthSuite>\<Name>\ folder, like the experimental ones below.
+Source: "staging\suite\RynthOracle\RynthCore.Plugin.RynthOracle.dll";       DestDir: "{code:GetSuiteDir}\RynthOracle";    Components: suite\rynthoracle;    Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthILT\RynthCore.Plugin.RynthILT.dll";             DestDir: "{code:GetSuiteDir}\RynthILT";       Components: suite\rynthilt;       Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthInventory\RynthCore.Plugin.RynthInventory.dll"; DestDir: "{code:GetSuiteDir}\RynthInventory"; Components: suite\rynthinventory; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthSort\RynthCore.Plugin.RynthSort.dll";           DestDir: "{code:GetSuiteDir}\RynthSort";      Components: suite\rynthsort;      Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthAChard\RynthCore.Plugin.RynthAChard.dll"; DestDir: "{code:GetSuiteDir}\RynthAChard"; Components: suite\rynthachard; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthAelrynth\RynthCore.Plugin.RynthAelrynth.dll"; DestDir: "{code:GetSuiteDir}\RynthAelrynth"; Components: suite\rynthaelrynth; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthColdeve\RynthCore.Plugin.RynthColdeve.dll"; DestDir: "{code:GetSuiteDir}\RynthColdeve"; Components: suite\rynthcoldeve; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthConquest\RynthCore.Plugin.RynthConquest.dll"; DestDir: "{code:GetSuiteDir}\RynthConquest"; Components: suite\rynthconquest; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthDerptide\RynthCore.Plugin.RynthDerptide.dll"; DestDir: "{code:GetSuiteDir}\RynthDerptide"; Components: suite\rynthderptide; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthDreamWeave\RynthCore.Plugin.RynthDreamWeave.dll"; DestDir: "{code:GetSuiteDir}\RynthDreamWeave"; Components: suite\rynthdreamweave; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthEversong\RynthCore.Plugin.RynthEversong.dll"; DestDir: "{code:GetSuiteDir}\RynthEversong"; Components: suite\ryntheversong; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthFrostACE\RynthCore.Plugin.RynthFrostACE.dll"; DestDir: "{code:GetSuiteDir}\RynthFrostACE"; Components: suite\rynthfrostace; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthFrostcull\RynthCore.Plugin.RynthFrostcull.dll"; DestDir: "{code:GetSuiteDir}\RynthFrostcull"; Components: suite\rynthfrostcull; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthLeafDawn\RynthCore.Plugin.RynthLeafDawn.dll"; DestDir: "{code:GetSuiteDir}\RynthLeafDawn"; Components: suite\rynthleafdawn; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthLeafdawning\RynthCore.Plugin.RynthLeafdawning.dll"; DestDir: "{code:GetSuiteDir}\RynthLeafdawning"; Components: suite\rynthleafdawning; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthLevistras\RynthCore.Plugin.RynthLevistras.dll"; DestDir: "{code:GetSuiteDir}\RynthLevistras"; Components: suite\rynthlevistras; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthPortalStorm\RynthCore.Plugin.RynthPortalStorm.dll"; DestDir: "{code:GetSuiteDir}\RynthPortalStorm"; Components: suite\rynthportalstorm; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthReefcull\RynthCore.Plugin.RynthReefcull.dll"; DestDir: "{code:GetSuiteDir}\RynthReefcull"; Components: suite\rynthreefcull; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthSundering\RynthCore.Plugin.RynthSundering.dll"; DestDir: "{code:GetSuiteDir}\RynthSundering"; Components: suite\rynthsundering; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthThistlecrown\RynthCore.Plugin.RynthThistlecrown.dll"; DestDir: "{code:GetSuiteDir}\RynthThistlecrown"; Components: suite\rynththistlecrown; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthThreads\RynthCore.Plugin.RynthThreads.dll"; DestDir: "{code:GetSuiteDir}\RynthThreads"; Components: suite\rynththreads; Flags: ignoreversion overwritereadonly
 
 ; Experimental plugins: each in its own <RynthSuite>\<Name>\ folder (the layout the launcher already uses).
-Source: "staging\suite\RynthChat\RynthCore.Plugin.RynthChat.dll";       DestDir: "{code:GetSuiteDir}\RynthChat";    Components: experimental\rynthchat;    Flags: ignoreversion
-Source: "staging\suite\RynthJuice\RynthCore.Plugin.RynthJuice.dll";     DestDir: "{code:GetSuiteDir}\RynthJuice";   Components: experimental\rynthjuice;   Flags: ignoreversion
-Source: "staging\suite\RynthNav\RynthCore.Plugin.RynthNav.dll";         DestDir: "{code:GetSuiteDir}\RynthNav";     Components: experimental\rynthnav;     Flags: ignoreversion
-Source: "staging\suite\RynthTracker\RynthCore.Plugin.RynthTracker.dll"; DestDir: "{code:GetSuiteDir}\RynthTracker"; Components: experimental\rynthtracker; Flags: ignoreversion
-Source: "staging\suite\RynthVision\RynthCore.Plugin.RynthVision.dll";   DestDir: "{code:GetSuiteDir}\RynthVision";  Components: experimental\rynthvision;  Flags: ignoreversion
-Source: "staging\suite\UbRythai\RynthCore.Plugin.UbRythai.dll";         DestDir: "{code:GetSuiteDir}\UbRythai";     Components: experimental\ubrythai;     Flags: ignoreversion
+Source: "staging\suite\RynthChat\RynthCore.Plugin.RynthChat.dll";       DestDir: "{code:GetSuiteDir}\RynthChat";    Components: experimental\rynthchat;    Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthJuice\RynthCore.Plugin.RynthJuice.dll";     DestDir: "{code:GetSuiteDir}\RynthJuice";   Components: experimental\rynthjuice;   Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthNav\RynthCore.Plugin.RynthNav.dll";         DestDir: "{code:GetSuiteDir}\RynthNav";     Components: experimental\rynthnav;     Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthTracker\RynthCore.Plugin.RynthTracker.dll"; DestDir: "{code:GetSuiteDir}\RynthTracker"; Components: experimental\rynthtracker; Flags: ignoreversion overwritereadonly
+Source: "staging\suite\RynthVision\RynthCore.Plugin.RynthVision.dll";   DestDir: "{code:GetSuiteDir}\RynthVision";  Components: experimental\rynthvision;  Flags: ignoreversion overwritereadonly
+Source: "staging\suite\UbRythai\RynthCore.Plugin.UbRythai.dll";         DestDir: "{code:GetSuiteDir}\UbRythai";     Components: experimental\ubrythai;     Flags: ignoreversion overwritereadonly
 ; RynthNav reads <RynthCore>\NavData. Starter portal list only; a newer one from RynthNav.PortalGraph is kept.
 Source: "staging\navdata\portals.tsv"; DestDir: "{app}\NavData"; Components: experimental\rynthnav; Flags: onlyifdoesntexist uninsneveruninstall
 
-; RynthAi data directories (created once; never removed on uninstall — they hold user profiles)
+; RynthAi data directories (created once; never removed on uninstall - they hold user profiles)
+;
+; Permissions: users-modify (upstream 2026-10-13). The game client never runs elevated, and RynthAi saves
+; metas, navs, loot and settings profiles in these folders. An "install for all users" (elevated)
+; Setup creates them as an administrator; on a PC whose C:\ permissions aren't Windows' defaults,
+; such folders are read-only for everyone else and RynthAi's saves failed. users-modify gives the
+; Users group Modify, inherited by everything inside, every time Setup runs. A non-elevated Setup
+; can only change folders its user owns; where it can't, Setup logs "Failed to set permissions"
+; and carries on, and the launcher's Recovery Actions > Fix folder permissions does it instead.
 [Dirs]
-Name: "{code:GetSuiteDir}\RynthAi";                             Components: rynthai; Flags: uninsneveruninstall
-Name: "{code:GetSuiteDir}\RynthAi\NavProfiles";                 Components: rynthai; Flags: uninsneveruninstall
-Name: "{code:GetSuiteDir}\RynthAi\LootProfiles";                Components: rynthai; Flags: uninsneveruninstall
-Name: "{code:GetSuiteDir}\RynthAi\MetaFiles";                   Components: rynthai; Flags: uninsneveruninstall
-Name: "{code:GetSuiteDir}\RynthAi\MetaProfiles";                Components: rynthai; Flags: uninsneveruninstall
-Name: "{code:GetSuiteDir}\RynthAi\SettingsProfiles";            Components: rynthai; Flags: uninsneveruninstall
-Name: "{code:GetSuiteDir}\RynthAi\SettingsProfiles\ACEmulator"; Components: rynthai; Flags: uninsneveruninstall
-Name: "{code:GetSuiteDir}\RynthAi\MonsterProfiles";             Components: rynthai; Flags: uninsneveruninstall
-Name: "{code:GetSuiteDir}\RynthAi\LuaScripts";                  Components: rynthai; Flags: uninsneveruninstall
-Name: "{code:GetSuiteDir}\RynthAi\Logs";                        Components: rynthai; Flags: uninsneveruninstall
-Name: "{code:GetSuiteDir}\RynthAi\pvars";                       Components: rynthai; Flags: uninsneveruninstall
-Name: "{code:GetSuiteDir}\RynthAi\ItemGiver";                   Components: rynthai; Flags: uninsneveruninstall
-Name: "{code:GetSuiteDir}\RynthAi\AutoVendor";                  Components: rynthai; Flags: uninsneveruninstall
+Name: "{app}";                                                  Permissions: users-modify
+Name: "{code:GetSuiteDir}";                                     Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "{code:GetSuiteDir}\RynthAi";                             Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "{code:GetSuiteDir}\RynthAi\NavProfiles";                 Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "{code:GetSuiteDir}\RynthAi\LootProfiles";                Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "{code:GetSuiteDir}\RynthAi\MetaFiles";                   Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "{code:GetSuiteDir}\RynthAi\MetaProfiles";                Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "{code:GetSuiteDir}\RynthAi\SettingsProfiles";            Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "{code:GetSuiteDir}\RynthAi\SettingsProfiles\ACEmulator"; Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "{code:GetSuiteDir}\RynthAi\MonsterProfiles";             Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "{code:GetSuiteDir}\RynthAi\LuaScripts";                  Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "{code:GetSuiteDir}\RynthAi\Logs";                        Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "{code:GetSuiteDir}\RynthAi\pvars";                       Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "{code:GetSuiteDir}\RynthAi\ItemGiver";                   Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
+Name: "{code:GetSuiteDir}\RynthAi\AutoVendor";                  Components: rynthai; Permissions: users-modify; Flags: uninsneveruninstall
 ; RynthNav tiles baked by RynthNav.Baker (default --out) go here; kept on uninstall.
-Name: "{app}\NavData";                                          Components: experimental\rynthnav; Flags: uninsneveruninstall
+Name: "{app}\NavData";                                          Components: experimental\rynthnav; Permissions: users-modify; Flags: uninsneveruninstall
 
 ; Install locations for the engine / launcher / plugins (see RynthInstallPaths.cs), plus a one-shot
 ; hand-off the launcher consumes on next start to add the plugin to its Plugins list.
@@ -163,20 +223,31 @@ Filename: "{app}\RynthCore.exe"; WorkingDir: "{app}"; Flags: nowait runasorigina
 
 [UninstallRun]
 ; Decal + RynthCore (experimental): remove the Decal bridge's registration, only
-; what the launcher added (see docs/DECAL_BRIDGE_PLAN.md). Builds made with Decal installed ship
-; the bridge ({app}\DecalBridge, staged by Build-Installer.ps1); this always runs; with nothing
-; registered it changes nothing. Runs before the files are removed. It removes both entries
-; the installer writes (see RegisterDecalBridge in [Code]): the per-user one, and the
-; machine-wide one - directly when the uninstaller is elevated, otherwise after Windows'
-; administrator prompt, which appears only when a machine-wide entry exists.
+; what RynthCore added (see docs/DECAL_BRIDGE_PLAN.md). Every release ships the bridge
+; ({app}\DecalBridge, staged by Build-Installer.ps1), so this always runs; with nothing
+; registered it changes nothing. Runs before the files are removed. It removes:
+;   - our entry from any per-user (VirtualStore) copy of Decal's filter list;
+;   - a per-user copy an earlier RynthCore created (decal-bridge-registration.json says so),
+;     whatever is in it now: our entries and the HKLM filters it mirrored (HKLM keeps the
+;     originals). It is exported first to %APPDATA%\RynthCore\decal-backup-<date>.reg. If the
+;     copy holds entries that are neither ours nor in HKLM, they belong to someone else: the
+;     copy stays and the uninstall log (launcher.log) says why;
+;   - this install's machine-wide entry - directly when the uninstaller is elevated, otherwise
+;     after Windows' administrator prompt, which appears only when that entry exists.
 Filename: "{app}\RynthCore.exe"; Parameters: "--decal-bridge-unregister"; Flags: runhidden waituntilterminated; RunOnceId: "RynthCoreDecalBridgeUnregister"
 
 [Code]
 const
   DefaultSuiteDir = 'C:\Games\RynthSuite';
-  { Microsoft's permalink to the latest .NET 10 Desktop Runtime (x86 to match RynthCore's x86 binaries). }
-  DotNetDesktopUrl  = 'https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x86.exe';
-  DotNetDesktopFile = 'windowsdesktop-runtime-10-win-x86.exe';
+  { One pinned .NET 10 Desktop Runtime build (x86 to match RynthCore's x86 binaries), checked against its
+    SHA-256 before it runs: a download swapped on the way (or at a mirror) is refused, not run elevated.
+    A moving "latest" link can't be pinned. To move to a newer build, take the url from
+    https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json (windowsdesktop,
+    win-x86 .exe), check the download against the SHA-512 listed there, and put its SHA-256 here.
+    Any 10.x already installed is kept (IsDotNet10DesktopX86Installed); Microsoft Update patches it later. }
+  DotNetDesktopUrl    = 'https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.12/windowsdesktop-runtime-10.0.12-win-x86.exe';
+  DotNetDesktopSha256 = '57c1d40967b73785b9ef95de5f0878e9264423228971a71eb362c03ae01937f5';
+  DotNetDesktopFile   = 'windowsdesktop-runtime-10.0.12-win-x86.exe';
   DotNetManualUrl   = 'https://dotnet.microsoft.com/download/dotnet/10.0';
 
 var
@@ -269,12 +340,54 @@ begin
   Result := WizardIsComponentSelected('experimental\' + Lowercase(ExperimentalPluginName(Index)));
 end;
 
+// Number of entries in SuitePluginName; keep in sync with the [Components]/[Files] suite rows.
+const
+  SuitePluginCount = 21;
+
+// Companion plugin names; component "suite\<lowercase name>" installs <Suite>\<Name>\RynthCore.Plugin.<Name>.dll.
+function SuitePluginName(Index: Integer): string;
+begin
+  case Index of
+    0: Result := 'RynthOracle';
+    1: Result := 'RynthILT';
+    2: Result := 'RynthInventory';
+    3: Result := 'RynthSort';
+    4: Result := 'RynthAChard';
+    5: Result := 'RynthAelrynth';
+    6: Result := 'RynthColdeve';
+    7: Result := 'RynthConquest';
+    8: Result := 'RynthDerptide';
+    9: Result := 'RynthDreamWeave';
+    10: Result := 'RynthEversong';
+    11: Result := 'RynthFrostACE';
+    12: Result := 'RynthFrostcull';
+    13: Result := 'RynthLeafDawn';
+    14: Result := 'RynthLeafdawning';
+    15: Result := 'RynthLevistras';
+    16: Result := 'RynthPortalStorm';
+    17: Result := 'RynthReefcull';
+    18: Result := 'RynthSundering';
+    19: Result := 'RynthThistlecrown';
+    20: Result := 'RynthThreads';
+  else
+    Result := '';
+  end;
+end;
+
+function SuitePluginSelected(Index: Integer): Boolean;
+begin
+  Result := WizardIsComponentSelected('suite\' + Lowercase(SuitePluginName(Index)));
+end;
+
 { True when anything is going into the RynthSuite folder (controls the Suite folder page / memo line). }
 function AnySuiteComponentSelected: Boolean;
 var
   I: Integer;
 begin
   Result := WizardIsComponentSelected('rynthai') or WizardIsComponentSelected('monstereditor');
+  for I := 0 to SuitePluginCount - 1 do
+    if SuitePluginSelected(I) then
+      Result := True;
   for I := 0 to ExperimentalCount - 1 do
     if ExperimentalSelected(I) then
       Result := True;
@@ -289,6 +402,14 @@ begin
   Result := '';
   if WizardIsComponentSelected('rynthai') then
     Result := GetSuiteDir('') + '\RynthAi\RynthCore.Plugin.RynthAi.dll';
+  for I := 0 to SuitePluginCount - 1 do
+    if SuitePluginSelected(I) then
+    begin
+      Name := SuitePluginName(I);
+      if Result <> '' then
+        Result := Result + ';';
+      Result := Result + GetSuiteDir('') + '\' + Name + '\RynthCore.Plugin.' + Name + '.dll';
+    end;
   for I := 0 to ExperimentalCount - 1 do
     if ExperimentalSelected(I) then
     begin
@@ -372,7 +493,7 @@ begin
     if UsePage then
     begin
       DotNetDownloadPage.Clear;
-      DotNetDownloadPage.Add(DotNetDesktopUrl, DotNetDesktopFile, '');
+      DotNetDownloadPage.Add(DotNetDesktopUrl, DotNetDesktopFile, DotNetDesktopSha256);
       DotNetDownloadPage.Show;
       try
         DotNetDownloadPage.Download;
@@ -381,7 +502,7 @@ begin
       end;
     end
     else
-      DownloadTemporaryFile(DotNetDesktopUrl, DotNetDesktopFile, '', @OnDotNetDownloadProgress);
+      DownloadTemporaryFile(DotNetDesktopUrl, DotNetDesktopFile, DotNetDesktopSha256, @OnDotNetDownloadProgress);
   except
     Result := 'the download failed (' + GetExceptionMessage + ')';
     Exit;
@@ -421,7 +542,7 @@ begin
   SuiteDirPage := CreateInputDirPage(wpSelectComponents,
     'Select RynthSuite Location',
     'Where should the RynthSuite plugins and their data be installed?',
-    'RynthAi, the Monster Editor and any experimental plugins you picked will be installed into the RynthSuite folder below, and your ' +
+    'RynthAi, the Monster Editor, the companion plugins and any experimental plugins you picked will be installed into the RynthSuite folder below, and your ' +
     'profiles (nav, loot, meta, settings) are kept there. To continue, click Next. ' +
     'If you would like to select a different folder, click Browse.',
     False, 'RynthSuite');
@@ -499,33 +620,40 @@ begin
 end;
 
 (* -------------------------------------------------------------------------------------
-  Decal + RynthCore (experimental): register the RynthCore Decal bridge on every install
-  AND every update (the launcher's updater runs this installer with /SILENT), in BOTH
-  places a Decal client can read its filter list from:
+  Decal + RynthCore (experimental), strictly opt-in (since 2026-10-10): on install and on
+  every update (the launcher's updater runs this installer with /SILENT), the RynthCore
+  Decal bridge is registered ONLY when the installing user has a Decal + RynthCore account
+  (%APPDATA%\RynthCore\decal-accounts.json, which the launcher deletes when no account uses
+  the mode). Otherwise nothing Decal-related is touched; the launcher cleans up after
+  itself when no account uses the mode any more.
 
-    1. Machine-wide: HKLM\SOFTWARE\WOW6432Node\Decal\NetworkFilters\{5B3E0D57-...}
-       (32-bit view). An elevated AC (RynthCore or AC run as administrator), or any AC when
-       UAC or its registry virtualization is off, reads ONLY this key - the per-user entry
-       is invisible to it (a player's Decal + RynthCore client never loaded the bridge,
-       2026-10-03). A non-elevated AC without a per-user copy reads it too.
-    2. Per-user: this user's VirtualStore copy of that key, ONLY if the copy already exists.
-       A non-elevated AC is virtualized and, once a copy exists, reads nothing but the copy.
-       A missing copy is never created: it would hide every HKLM filter added later from
-       this user's non-elevated clients.
+  Where it goes:
+    1. Machine-wide, always: HKLM\SOFTWARE\WOW6432Node\Decal\NetworkFilters\{5B3E0D57-...}
+       (32-bit view), Decal's own list. Every client reads it unless a per-user copy hides it.
+    2. Per-user: NEVER a new per-user (VirtualStore) copy of that key. acclient.exe is a
+       legacy 32-bit program; when HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\
+       WOW6432Node\Decal\NetworkFilters exists, a non-elevated AC reads nothing but that copy,
+       so every filter installed for all users afterwards is hidden from Decal (a player's
+       new plugins and UtilityBelt's newer service vanished, 2026-10). Launchers before
+       2026-10-10 created such a copy; --decal-bridge-install-user now removes a copy an
+       earlier RynthCore created (backed up first to %APPDATA%\RynthCore\decal-backup-<date>.reg;
+       kept when it holds someone else's entries), and only adds our entry to a copy that
+       exists anyway (Decal can make one itself). The launcher's Recovery Actions > Repair
+       Decal removes any such copy after a backup.
 
-  Both entries are harmless while no account uses Decal + RynthCore: every Decal client
-  loads the bridge, which stays idle (no hooks, no threads) unless the RynthCore loader is
-  in the same client. Uninstall removes both ([UninstallRun] --decal-bridge-unregister).
+  The machine-wide entry is harmless: Decal clients load the bridge, which stays idle (no
+  hooks, no threads) unless the RynthCore loader is in the same client. Uninstall removes
+  what RynthCore added ([UninstallRun] --decal-bridge-unregister, see above).
 
   Rights. This installer runs with the lowest privileges (PrivilegesRequired=lowest; the
-  updater starts it without elevation). Writing HKLM needs administrator rights, so:
+  updater starts it without elevation). Writing HKLM needs administrator rights, so, for a
+  user with a Decal + RynthCore account and only when the machine-wide entry is missing or
+  points at another folder:
     - Setup already elevated (installed "for all users", or started by an elevated
       launcher): written directly, no prompt.
-    - Not elevated: Windows' administrator prompt is shown ONCE - only when Decal is
-      installed, the machine-wide entry is missing or points at another folder, and this
-      user has a Decal + RynthCore account (decal-accounts.json). Saying no is harmless:
-      the launcher checks before every Decal + RynthCore launch and repairs it (writing it
-      directly when it runs elevated, the case that needs it).
+    - Not elevated: Windows' administrator prompt is shown once. Saying no is harmless for
+      Decal: the launcher asks again before the next Decal + RynthCore launch (interactive
+      launches only), and Decal + RynthCore can't be used until it is registered.
   The commands are RynthCore.exe's own (Program.cs): --decal-bridge-register-machine and
   --decal-bridge-install-user, so the installer and the launcher write identical entries.
   ------------------------------------------------------------------------------------- *)
@@ -565,6 +693,11 @@ var
   Code: Integer;
 begin
   if not DecalInstalled then Exit;
+  if not UsesDecalBridge then
+  begin
+    Log('Decal bridge: no Decal + RynthCore account for this user - nothing registered (opt-in only).');
+    Exit;
+  end;
   if not FileExists(BridgeDir + '\RynthCore.DecalBridge.dll') then Exit;
   Exe := ExpandConstant('{app}\RynthCore.exe');
   Params := '--decal-bridge-register-machine "' + BridgeDir + '"';
@@ -577,18 +710,24 @@ begin
       else
         Log('Decal bridge: machine-wide registration exit code ' + IntToStr(Code));
     end
-    else if UsesDecalBridge then
+    else
     begin
       if not ShellExec('runas', Exe, Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then
         Log('Decal bridge: elevated machine-wide registration not done (declined or failed): ' + SysErrorMessage(Code))
       else
         Log('Decal bridge: elevated machine-wide registration exit code ' + IntToStr(Code));
-    end
-    else
-      Log('Decal bridge: machine-wide entry missing; not elevated and no Decal + RynthCore account - left to the launcher.');
+    end;
+  end;
+  if not MachineBridgeEntryCurrent then
+  begin
+    { No per-user fallback: Decal + RynthCore waits for the machine-wide entry (the launcher
+      asks again before the next interactive Decal + RynthCore launch). }
+    Log('Decal bridge: not registered machine-wide - per-user step skipped.');
+    Exit;
   end;
   { Per-user half, as the user who started Setup (the same user unless Setup was elevated
-    with other credentials). }
+    with other credentials): removes an earlier RynthCore's per-user copy (backed up first),
+    adds our entry to a per-user copy that exists anyway. Never creates one. }
   if not ExecAsOriginalUser(Exe, '--decal-bridge-install-user "' + BridgeDir + '"', ExpandConstant('{app}'),
                             SW_HIDE, ewWaitUntilTerminated, Code) then
     Log('Decal bridge: per-user step did not start: ' + SysErrorMessage(Code));

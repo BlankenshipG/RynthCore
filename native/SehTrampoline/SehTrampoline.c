@@ -27,7 +27,16 @@
 #include <windows.h>
 
 /* File version of this native module (bump with every behavioural change). */
-#define RC_SEH_TRAMPOLINE_VERSION 3   /* v3: CoreCLR-hosted engine AVs logged immediately */
+#define RC_SEH_TRAMPOLINE_VERSION 9   /* v9: RC_DumpProcess, the hang dump written from rundll32 (out of
+                                         the client's process);
+                                         v8: noise repeats only at powers of two, capped relogs per address,
+                                         a total byte budget for native-crash.log (CrashLogFilter.h);
+                                         v7: stack sweeps bounded by this thread's stack (TEB), never
+                                         reading at or past StackBase;
+                                         v6: AwfulWaffle's crash logger (per-address dedupe, pid/date,
+                                         flush ring, RC_FlushCrashLog, module cache) merged with v3-v5;
+                                         v5: crash log handle opened once at install; no CreateFileW
+                                         while an exception is being dispatched */
 
 /* Crash-logger state that the SEH_* wrappers and DllMain also touch (defined below). */
 static __declspec(thread) int t_sehDepth;       /* >0 while inside an SEH_* wrapper call   */
@@ -265,464 +274,601 @@ SEH_ThiscallIntUintPtr(void* fn, void* this_ptr, unsigned int arg1, void* arg2,
     return 1;
 }
 
-/* ── Process-wide native crash logger (fatal-only, v2) ────────────────────
- * Goal: native-crash.log holds FATAL crashes only. v1 logged every first-chance AV
- * (including ones AC or our own SEH_* wrappers handle) plus its own stack-sweep faults,
- * so its 24-entry cap filled with noise before a real crash could be recorded.
+/* -- Process-wide native crash logger (VEH + last-chance filter) -----------
+ * Logs the faulting 32-bit context + a module-resolved stack sweep to a
+ * dedicated file BEFORE the process dies, for the exceptions that bypass the
+ * engine's managed handlers: 0xC0000005 (AV / corrupted state; CoreCLR will not
+ * let a managed catch handle one raised in AC code under a managed detour, it
+ * fail-fasts instead), 0xC0000602 (fail-fast), 0xC0000409 (stack buffer
+ * overrun), 0xC00000FD (stack overflow) and 0xC0000374 (heap corruption).
+ * The vectored handler is registered FIRST, so it sees an AV before CoreCLR
+ * turns it into anything: the entry names the real faulting address and module.
  *
- * All paths are PURE NATIVE (no managed callback / reverse-P/Invoke — that could itself
- * trigger a NativeAOT fail-fast on an AC-owned thread) and observe-only: they always
- * return EXCEPTION_CONTINUE_SEARCH or chain, so AC's SEH and the runtime proceed exactly
- * as before. Only kernel32 APIs + hand-rolled, bounds-checked formatting (no CRT stdio).
+ * Which entries are written is CrashLogFilter.h's rule (once per address, a repeat
+ * again at a power-of-two count or after 30 s; .NET Framework and CoreCLR noise not
+ * charged to the limit; a last-chance entry always). Each entry carries the process id,
+ * thread id, date and time.
  *
- *  1. Unhandled-exception filter (SetUnhandledExceptionFilter, chained to the previous
- *     filter): an exception nobody handled is written immediately as FATAL.
- *  2. First-chance VEH, immediate: AVs whose faulting address is inside a NativeAOT
- *     module (engine / plugins). The runtime fail-fasts on those via
- *     RaiseFailFastException, which bypasses every handler including the filter in (1),
- *     so first chance is the only chance to record them. 0xC0000602 / 0xC0000409 too.
- *  2b. (v3) Same for the CoreCLR-hosted engine (RynthCore.Shim): non-null AVs in JIT'd
- *     code (private executable memory, no module), coreclr.dll / clrjit.dll, or the
- *     framework's precompiled System.* / Microsoft.* images. CoreCLR treats a non-null
- *     AV in managed code as uncatchable and fail-fasts with HandleFatalError (the WER
- *     signature coreclr.dll+0x2c1c6e c0000005 is that fail-fast site, not the bug), so
- *     the deferred ring below was never flushed and native-crash.log stayed empty. AVs
- *     with a data address under 64K are skipped there: CoreCLR turns those into a
- *     catchable NullReferenceException.
- *  3. First-chance VEH, deferred: every other AV (acclient.exe, drivers, DINPUT8, …) is
- *     formatted into an in-memory ring and written ONLY if the process then dies — via
- *     the filter in (1), or at ExitProcess (DllMain detach) when it happened within the
- *     last CL_EXIT_FLUSH_WINDOW_MS (AC's own crash handling ends with ExitProcess).
- *     AVs that AC handles and survives never reach the file.
- *
- * Skipped entirely: AVs raised inside our own SEH_* wrappers (t_sehDepth > 0 — our
- * __except catches them) and any fault raised while the logger itself is running on
- * that thread (t_inLogger — v1 logged its own sweep faults as SehTrampoline.dll+0x13E8).
- *
- * The stack sweep is bounded to [Esp, NtCurrentTeb()->NtTib.StackBase); v1 read 4096
- * slots past ESP unconditionally and ran off the top of the stack.
- * x86 (32-bit) context fields only — matches the WOW64 target.
+ * This is PURE NATIVE: no managed callback / reverse-P/Invoke transition, so
+ * unlike the removed managed CrashLogger VEH it cannot itself re-trigger a
+ * fail-fast on an AC-owned thread. It only OBSERVES: both handlers return
+ * EXCEPTION_CONTINUE_SEARCH (the last-chance one first calls the filter it
+ * replaced) so AC's own SEH / the runtime still proceed exactly as before. Uses
+ * only kernel32 APIs + hand-rolled formatting (no CRT stdio / user32) so the
+ * build link line stays unchanged. All buffers are static and used under one
+ * spin lock (with its owner's thread id, so a fault inside the logger on the same
+ * thread is passed on, never waited on): a stack overflow leaves the faulting
+ * thread about one page of stack. x86 (32-bit) context fields only.
  */
-#define CL_SLOT_BYTES           8192   /* one formatted record                        */
-#define CL_RING_SLOTS           8      /* deferred first-chance records kept in memory */
-#define CL_MAX_IMMEDIATE        16     /* NativeAOT-module / fail-fast records per run */
-#define CL_MAX_FATAL            8      /* unhandled-exception records per run          */
-#define CL_MAX_SWEEP_SLOTS      4096   /* stack slots scanned (also capped by StackBase) */
-#define CL_MAX_SWEEP_LINES      96     /* code pointers emitted per record             */
-#define CL_EXIT_FLUSH_WINDOW_MS 30000  /* deferred AVs this recent are flushed at exit */
+#include "CrashLogFilter.h"
 
-#define CL_SLOT_EMPTY   0
-#define CL_SLOT_WRITING 1
-#define CL_SLOT_PENDING 2   /* deferred first-chance AV, not in the file (yet)   */
-#define CL_SLOT_DONE    3   /* written to the file, or discarded                 */
+/*
+ * Exception time does as little as it can: the address dedupe runs first (most
+ * exceptions are repeats and stop there), module names come from a cache built
+ * outside exception time (install, then RC_RefreshCrashLoggerModules from the engine's
+ * heartbeat), and the log file is opened once at install, so writing an entry is
+ * formatting plus WriteFile. Only an address the cache does not cover (a module loaded
+ * since the last refresh) falls back to GetModuleHandleExW, for the faulting address
+ * and eip only.
+ *
+ * NEVER call CreateFileW (or anything else the engine detours with a managed hook:
+ * CreateFileA, MessageBoxA/W, ExitProcess, TerminateProcess, RtlExitUserProcess,
+ * NtTerminateProcess) from the handlers, the flush or DllMain. DatFileShareHooks detours
+ * kernel32!CreateFileW with a MANAGED delegate; our VEH runs first, on the faulting thread,
+ * and for a fault in managed code that thread is still in cooperative GC mode, so entering
+ * the detour is a reverse P/Invoke from cooperative mode: CoreCLR's
+ * ReversePInvokeBadTransition -> HandleFatalError (event 1023, exit 0x80131506). Seven
+ * client deaths 2026-09-29..10-12 were that (fixed in v5). The file is opened once, from
+ * RC_InstallCrashLogger, a normal P/Invoke in preemptive mode.
+ *
+ * v6 (merge of AwfulWaffle's logger with v3-v5): AVs inside our own SEH_* wrappers
+ * (t_sehDepth > 0, which our __except catches) are not written one by one, only kept in
+ * the flush ring; the Client::UseTime guard (v4) writes its caught AV through this
+ * writer; process exit (DllMain) flushes ring records from the last 30 s, as v2-v5 did.
+ */
+#define CL_EXIT_FLUSH_WINDOW_MS 30000u  /* ring records this recent are flushed at exit */
+#define CL_MAX_GAMETICK         16      /* game-tick guard records per process */
+
+#define CL_MOD_MAX 384
 
 typedef struct {
-    volatile LONG state;
-    DWORD         tid;
-    DWORD         tick;
-    unsigned int  exAddr;
-    int           len;
-    char          text[CL_SLOT_BYTES];
-} CL_SLOT;
+    unsigned int base, end;      /* [base, end) */
+    unsigned char cls;           /* clf_class */
+    char leaf[48];               /* ASCII leaf name, truncated */
+} cl_mod;
+
+typedef struct {
+    cl_mod mods[CL_MOD_MAX];
+    int count;
+} cl_mod_table;
 
 static wchar_t       g_crashLogPath[MAX_PATH];
-static PVOID         g_vehHandle       = NULL;
-static CL_SLOT       g_ring[CL_RING_SLOTS];
-static volatile LONG g_ringNext        = 0;
-static volatile LONG g_immediateCount  = 0;
-static volatile LONG g_fatalCount      = 0;
+static HANDLE        g_logHandle  = INVALID_HANDLE_VALUE;
+static PVOID         g_vehHandle  = NULL;
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter = NULL;
-static __declspec(thread) int t_inLogger;   /* logger running on this thread       */
-static __declspec(thread) int t_inUef;      /* filter running (guards chain cycles) */
+static volatile LONG g_logOwner   = 0;     /* thread id holding the logger, 0 = free */
+static clf_state     g_filter;             /* under g_logOwner */
+static clf_ring      g_ring;               /* under g_logOwner: recent first-chance records */
+static clf_rec       g_flushRecs[CLF_RING];/* under g_logOwner */
+static char          g_buf[4096];          /* under g_logOwner */
+static wchar_t       g_wpath[MAX_PATH];    /* under g_logOwner */
+static char          g_fallbackLeaf[48];   /* under g_logOwner */
+static cl_mod_table  g_modTables[2];       /* double buffer: refresh builds the inactive one */
+static volatile LONG g_modActive = -1;     /* index of the published table, -1 = none */
+static volatile LONG g_modRefreshing = 0;
+static volatile LONG g_gameTickRecords = 0;
+static __declspec(thread) int t_inUef;      /* last-chance filter running (guards chain cycles) */
 
-/* ── Bounds-checked text writer ── */
-typedef struct { char* p; char* end; } CL_W;
+typedef BOOL  (WINAPI *PFN_EnumMods)(HANDLE, HMODULE*, DWORD, LPDWORD);
+typedef BOOL  (WINAPI *PFN_ModInfo)(HANDLE, HMODULE, void*, DWORD);
+typedef DWORD (WINAPI *PFN_BaseName)(HANDLE, HMODULE, LPWSTR, DWORD);
+typedef struct { LPVOID lpBaseOfDll; DWORD SizeOfImage; LPVOID EntryPoint; } cl_modinfo;
 
-static void cl_str(CL_W* w, const char* s)
+static int cl_lock(void)
 {
-    while (*s && w->p < w->end) { *w->p++ = *s++; }
+    LONG me = (LONG)GetCurrentThreadId();
+    int i;
+    if (g_logOwner == me) return 0;        /* faulted inside the logger: pass it on */
+    for (i = 0; i < 20000; i++) {
+        if (InterlockedCompareExchange(&g_logOwner, me, 0) == 0) return 1;
+        YieldProcessor();
+        if ((i & 0xFF) == 0xFF) SwitchToThread();
+    }
+    return 0;                              /* owner stuck (suspended?): skip this entry */
 }
 
-static void cl_hex(CL_W* w, unsigned int v)
+static void cl_unlock(void) { InterlockedExchange(&g_logOwner, 0); }
+
+static char* cl_str(char* p, const char* s) { while (*s) { *p++ = *s++; } return p; }
+
+static char* cl_hex(char* p, unsigned int v)
 {
     const char* H = "0123456789ABCDEF";
     int i;
-    cl_str(w, "0x");
-    for (i = 28; i >= 0 && w->p < w->end; i -= 4) { *w->p++ = H[(v >> i) & 0xF]; }
+    *p++ = '0'; *p++ = 'x';
+    for (i = 28; i >= 0; i -= 4) { *p++ = H[(v >> i) & 0xF]; }
+    return p;
 }
 
-static void cl_u(CL_W* w, unsigned int v)
+static char* cl_u(char* p, unsigned int v)
 {
     char tmp[12]; int n = 0;
-    if (v == 0) { cl_str(w, "0"); return; }
+    if (v == 0) { *p++ = '0'; return p; }
     while (v) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
-    while (n && w->p < w->end) { *w->p++ = tmp[--n]; }
+    while (n) { *p++ = tmp[--n]; }
+    return p;
 }
 
-/* Leaf file name of a loaded module, as narrow ASCII (lower-cased when lower != 0). */
-static int cl_module_leaf(HMODULE hm, char* out, int cap, int lower)
+static char* cl_u2(char* p, unsigned int v) { if (v < 10) { *p++ = '0'; } return cl_u(p, v); }
+
+/*
+ * Rebuild the module cache (NOT at exception time: it takes the loader lock). Builds the
+ * table no reader is using and publishes it with one interlocked store; refreshes are
+ * serialized and seconds apart, so a reader never sees its table rebuilt under it.
+ */
+__declspec(dllexport) void __cdecl
+RC_RefreshCrashLoggerModules(void)
 {
-    wchar_t wpath[MAX_PATH];
-    DWORD n = GetModuleFileNameW(hm, wpath, MAX_PATH);
-    DWORD i, leaf = 0;
-    int k = 0;
-    for (i = 0; i < n; i++) { if (wpath[i] == L'\\' || wpath[i] == L'/') { leaf = i + 1; } }
-    for (i = leaf; i < n && k < cap - 1; i++) {
-        char ch = (char)wpath[i];
-        if (lower && ch >= 'A' && ch <= 'Z') { ch = (char)(ch - 'A' + 'a'); }
-        out[k++] = ch;
+    static PFN_EnumMods pEnum;
+    static PFN_ModInfo pInfo;
+    static PFN_BaseName pName;
+    HMODULE mods[CL_MOD_MAX];
+    DWORD needed = 0, n, i;
+    HANDLE self = GetCurrentProcess();
+    LONG active, next;
+    cl_mod_table* t;
+    if (InterlockedCompareExchange(&g_modRefreshing, 1, 0) != 0) return;
+    if (!pEnum) {
+        HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+        pEnum = (PFN_EnumMods)GetProcAddress(k32, "K32EnumProcessModules");
+        pInfo = (PFN_ModInfo)GetProcAddress(k32, "K32GetModuleInformation");
+        pName = (PFN_BaseName)GetProcAddress(k32, "K32GetModuleBaseNameW");
     }
-    out[k] = 0;
-    return k;
+    if (!pEnum || !pInfo || !pName || !pEnum(self, mods, sizeof(mods), &needed)) {
+        InterlockedExchange(&g_modRefreshing, 0);
+        return;
+    }
+    n = needed / sizeof(HMODULE);
+    if (n > CL_MOD_MAX) n = CL_MOD_MAX;
+    active = g_modActive;
+    next = active == 0 ? 1 : 0;
+    t = &g_modTables[next];
+    t->count = 0;
+    for (i = 0; i < n; i++) {
+        cl_modinfo mi;
+        wchar_t name[64];
+        DWORD len, k;
+        cl_mod* m;
+        if (!pInfo(self, mods[i], &mi, sizeof(mi))) continue;
+        len = pName(self, mods[i], name, 63);
+        name[len < 63 ? len : 63] = 0;
+        m = &t->mods[t->count++];
+        m->base = (unsigned int)(UINT_PTR)mi.lpBaseOfDll;
+        m->end = m->base + mi.SizeOfImage;
+        m->cls = (unsigned char)clf_module_class(name);
+        for (k = 0; k < sizeof(m->leaf) - 1 && name[k]; k++)
+            m->leaf[k] = name[k] < 128 ? (char)name[k] : '?';
+        m->leaf[k] = 0;
+    }
+    InterlockedExchange(&g_modActive, next);
+    InterlockedExchange(&g_modRefreshing, 0);
 }
 
-/* Append "module.dll+0xRVA", or "0xADDR" if the address is in no module. */
-static void cl_sym(CL_W* w, unsigned int addr)
+/* Cached module containing addr, or NULL. No API calls. */
+static const cl_mod* cl_mod_cached(unsigned int addr)
 {
-    HMODULE hm = NULL;
-    /* GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS(0x4) | UNCHANGED_REFCOUNT(0x2) */
-    if (GetModuleHandleExW(0x4 | 0x2, (LPCWSTR)(UINT_PTR)addr, &hm) && hm) {
-        char leaf[MAX_PATH];
-        cl_module_leaf(hm, leaf, MAX_PATH, 0);
-        cl_str(w, leaf);
-        cl_str(w, "+");
-        cl_hex(w, addr - (unsigned int)(UINT_PTR)hm);
-    } else {
-        cl_hex(w, addr);
-    }
-}
-
-static int cl_starts_with(const char* s, const char* prefix)
-{
-    while (*prefix) { if (*s++ != *prefix++) { return 0; } }
-    return 1;
-}
-
-/* ── NativeAOT module detection (cached per module base) ── */
-#define CL_MOD_CACHE 16
-static volatile UINT_PTR g_modBase[CL_MOD_CACHE];
-static volatile LONG     g_modManaged[CL_MOD_CACHE];
-static volatile LONG     g_modNext = 0;
-
-/* True when addr lies in a NativeAOT image (engine / plugin). NativeAOT images export
- * DotNetRuntimeDebugHeader; RynthCore.* names are a fallback (minus our native DLLs). */
-static int cl_is_nativeaot_address(unsigned int addr)
-{
-    HMODULE hm = NULL;
-    int i, managed;
-    if (!GetModuleHandleExW(0x4 | 0x2, (LPCWSTR)(UINT_PTR)addr, &hm) || !hm) { return 0; }
-
-    for (i = 0; i < CL_MOD_CACHE; i++) {
-        if (g_modBase[i] == (UINT_PTR)hm) { return (int)g_modManaged[i]; }
-    }
-
-    managed = GetProcAddress(hm, "DotNetRuntimeDebugHeader") != NULL;
-    if (!managed) {
-        char leaf[MAX_PATH];
-        cl_module_leaf(hm, leaf, MAX_PATH, 1);
-        managed = cl_starts_with(leaf, "rynthcore.")
-               && !cl_starts_with(leaf, "rynthcore.sehtrampoline")
-               && !cl_starts_with(leaf, "rynthcore.cimgui");
-    }
-
-    /* Benign race: base is cleared first and published last, so a concurrent reader
-     * either misses the entry (and recomputes) or sees a matching flag. */
-    i = (int)((unsigned int)InterlockedIncrement(&g_modNext) % CL_MOD_CACHE);
-    g_modBase[i] = 0;
-    g_modManaged[i] = managed;
-    g_modBase[i] = (UINT_PTR)hm;
-    return managed;
-}
-
-/* True when addr is code of the CoreCLR-hosted engine: JIT'd code (committed private
- * executable memory outside any module), the runtime itself (coreclr.dll, clrjit.dll),
- * or a precompiled framework image (System.* / Microsoft.*, e.g. Marshal.ReadIntPtr in
- * System.Private.CoreLib.dll). Not cached: the JIT path has no module base to key on,
- * and VirtualQuery is cheap next to formatting a record. */
-static int cl_is_coreclr_address(unsigned int addr)
-{
-    HMODULE hm = NULL;
-    if (!GetModuleHandleExW(0x4 | 0x2, (LPCWSTR)(UINT_PTR)addr, &hm) || !hm) {
-        MEMORY_BASIC_INFORMATION mbi;
-        if (VirtualQuery((LPCVOID)(UINT_PTR)addr, &mbi, sizeof(mbi)) == 0) { return 0; }
-        return mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE
-            && (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE
-                               | PAGE_EXECUTE_WRITECOPY)) != 0;
-    }
-    {
-        char leaf[MAX_PATH];
-        cl_module_leaf(hm, leaf, MAX_PATH, 1);
-        return cl_starts_with(leaf, "coreclr.dll")
-            || cl_starts_with(leaf, "clrjit.dll")
-            || cl_starts_with(leaf, "system.")
-            || cl_starts_with(leaf, "microsoft.");
-    }
-}
-
-/* ── Record formatting ── */
-
-/* Formats one crash record (header, registers, bounded stack sweep) into buf.
- * Returns the byte count. Reads of stack memory are guarded by __try. */
-static int cl_format(char* buf, int cap, PEXCEPTION_POINTERS ep, const char* banner)
-{
-    CL_W w;
-    CONTEXT* c = ep->ContextRecord;
-    DWORD code = ep->ExceptionRecord->ExceptionCode;
-    unsigned int exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
-
-    w.p = buf;
-    w.end = buf + cap - 64;   /* reserve room for the END line */
-
-    cl_str(&w, "\r\n==== NATIVE CRASH LOGGER: ");
-    cl_str(&w, banner);
-    cl_str(&w, " ====\r\n  code=");
-    cl_hex(&w, code);
-    cl_str(&w, " exAddr=");
-    cl_sym(&w, exAddr);
-    cl_str(&w, " tid=");
-    cl_u(&w, GetCurrentThreadId());
-    {
-        SYSTEMTIME st; GetLocalTime(&st);
-        cl_str(&w, " time=");
-        cl_u(&w, st.wHour);   cl_str(&w, ":");
-        if (st.wMinute < 10) { cl_str(&w, "0"); } cl_u(&w, st.wMinute); cl_str(&w, ":");
-        if (st.wSecond < 10) { cl_str(&w, "0"); } cl_u(&w, st.wSecond);
-    }
-    if ((code == 0xC0000005 || code == 0xC0000409) && ep->ExceptionRecord->NumberParameters >= 2) {
-        unsigned int acc      = (unsigned int)ep->ExceptionRecord->ExceptionInformation[0];
-        unsigned int dataAddr = (unsigned int)ep->ExceptionRecord->ExceptionInformation[1];
-        cl_str(&w, " access=");
-        cl_str(&w, acc == 1 ? "WRITE" : (acc == 8 ? "EXEC" : "READ"));
-        cl_str(&w, " dataAddr=");
-        cl_hex(&w, dataAddr);   /* the [null+X] value, e.g. 0xC for the parser race */
-    }
-    cl_str(&w, "\r\n  eip="); cl_sym(&w, c->Eip);
-    cl_str(&w, " esp=");      cl_hex(&w, c->Esp);
-    cl_str(&w, " ebp=");      cl_hex(&w, c->Ebp);
-    cl_str(&w, "\r\n  eax="); cl_hex(&w, c->Eax);
-    cl_str(&w, " ebx=");      cl_hex(&w, c->Ebx);
-    cl_str(&w, " ecx=");      cl_hex(&w, c->Ecx);
-    cl_str(&w, " edx=");      cl_hex(&w, c->Edx);
-    cl_str(&w, " esi=");      cl_hex(&w, c->Esi);
-    cl_str(&w, " edi=");      cl_hex(&w, c->Edi);
-    cl_str(&w, "\r\n  stack code pointers (esp -> StackBase):\r\n");
-
-    {
-        /* The handler runs on the faulting thread, so this TEB's stack bounds apply to
-         * the faulting ESP. Never read at or past StackBase (top of the stack). */
-        NT_TIB*  tib   = (NT_TIB*)NtCurrentTeb();
-        UINT_PTR base  = (UINT_PTR)tib->StackBase;
-        UINT_PTR limit = (UINT_PTR)tib->StackLimit;
-        UINT_PTR esp   = (UINT_PTR)c->Esp;
-
-        if (esp < limit || esp >= base) {
-            cl_str(&w, "    <esp outside this thread's stack; sweep skipped>\r\n");
-        } else {
-            unsigned int slots = (unsigned int)((base - esp) / sizeof(unsigned int));
-            if (slots > CL_MAX_SWEEP_SLOTS) { slots = CL_MAX_SWEEP_SLOTS; }
-            __try {
-                const unsigned int* sp = (const unsigned int*)esp;
-                unsigned int i;
-                int emitted = 0;
-                /* 320 bytes of headroom = one full "+0xOFF  module+0xRVA" line. */
-                for (i = 0; i < slots && emitted < CL_MAX_SWEEP_LINES && (w.end - w.p) > 320; i++) {
-                    unsigned int v = sp[i];
-                    if (v > 0x00401000u && v < 0x7FFF0000u) {
-                        HMODULE hm = NULL;
-                        if (GetModuleHandleExW(0x4 | 0x2, (LPCWSTR)(UINT_PTR)v, &hm) && hm) {
-                            cl_str(&w, "    +");
-                            cl_hex(&w, i * 4u);
-                            cl_str(&w, "  ");
-                            cl_sym(&w, v);
-                            cl_str(&w, "\r\n");
-                            emitted++;
-                        }
-                    }
-                }
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) {
-                cl_str(&w, "    <stack sweep faulted>\r\n");
-            }
-        }
-    }
-
-    w.end = buf + cap;
-    cl_str(&w, "==== END NATIVE CRASH ====\r\n");
-    return (int)(w.p - buf);
-}
-
-/* ── Output ── */
-
-static void cl_append_file(const char* data, int len)
-{
-    HANDLE h;
-    DWORD wr;
-    if (len <= 0 || g_crashLogPath[0] == 0) { return; }
-    h = CreateFileW(g_crashLogPath, FILE_APPEND_DATA,
-        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) { return; }
-    SetFilePointer(h, 0, NULL, FILE_END);
-    WriteFile(h, data, (DWORD)len, &wr, NULL);
-    CloseHandle(h);
-}
-
-/* Claims a ring slot for writing. Rotates through the ring, overwriting the oldest
- * PENDING/DONE record; never steals a slot another thread is mid-write on. */
-static CL_SLOT* cl_claim_slot(void)
-{
-    int tries;
-    for (tries = 0; tries < CL_RING_SLOTS * 2; tries++) {
-        CL_SLOT* s = &g_ring[(unsigned int)InterlockedIncrement(&g_ringNext) % CL_RING_SLOTS];
-        LONG st = s->state;
-        if (st != CL_SLOT_WRITING &&
-            InterlockedCompareExchange(&s->state, CL_SLOT_WRITING, st) == st) {
-            return s;
-        }
-    }
+    LONG a = g_modActive;
+    const cl_mod_table* t;
+    int i;
+    if (a < 0) return NULL;
+    t = &g_modTables[a];
+    for (i = 0; i < t->count; i++)
+        if (addr >= t->mods[i].base && addr < t->mods[i].end) return &t->mods[i];
     return NULL;
 }
 
-/* Writes PENDING deferred records to the file. Skips the record matching skipTid/skipAddr
- * (the same fault the caller is about to log) and, when maxAgeMs != 0, records older
- * than maxAgeMs (handled AVs from long before the exit). */
-static void cl_flush_pending(DWORD skipTid, unsigned int skipAddr, DWORD maxAgeMs)
+/*
+ * Module of addr: the cache, then (allowFallback) the loader. Under the lock. Returns
+ * the leaf and sets *base and *cls, or NULL (no module: JIT code or garbage).
+ */
+static const char* cl_module(unsigned int addr, int allowFallback, unsigned int* base, clf_class* cls)
 {
-    DWORD now = GetTickCount();
-    int i;
-    for (i = 0; i < CL_RING_SLOTS; i++) {
-        CL_SLOT* s = &g_ring[i];
-        if (InterlockedCompareExchange(&s->state, CL_SLOT_WRITING, CL_SLOT_PENDING) != CL_SLOT_PENDING) {
-            continue;
+    const cl_mod* m = cl_mod_cached(addr);
+    HMODULE hm = NULL;
+    DWORD n, i, leaf = 0, k;
+    if (m) { *base = m->base; *cls = (clf_class)m->cls; return m->leaf; }
+    if (!allowFallback) return NULL;
+    /* GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS(0x4) | UNCHANGED_REFCOUNT(0x2) */
+    if (!GetModuleHandleExW(0x4 | 0x2, (LPCWSTR)(UINT_PTR)addr, &hm) || !hm) return NULL;
+    n = GetModuleFileNameW(hm, g_wpath, MAX_PATH);
+    if (n >= MAX_PATH) n = MAX_PATH - 1;
+    g_wpath[n] = 0;
+    for (i = 0; i < n; i++) { if (g_wpath[i] == L'\\' || g_wpath[i] == L'/') leaf = i + 1; }
+    *base = (unsigned int)(UINT_PTR)hm;
+    *cls = clf_module_class(g_wpath + leaf);
+    for (k = 0; k < sizeof(g_fallbackLeaf) - 1 && g_wpath[leaf + k]; k++)
+        g_fallbackLeaf[k] = g_wpath[leaf + k] < 128 ? (char)g_wpath[leaf + k] : '?';
+    g_fallbackLeaf[k] = 0;
+    return g_fallbackLeaf;
+}
+
+/* Append "module.dll+0xRVA", or "0xADDR" if the address is in no module. */
+static char* cl_sym(char* p, unsigned int addr, int allowFallback)
+{
+    unsigned int base;
+    clf_class cls;
+    const char* leaf = cl_module(addr, allowFallback, &base, &cls);
+    if (leaf) {
+        p = cl_str(p, leaf);
+        p = cl_str(p, "+");
+        p = cl_hex(p, addr - base);
+    } else {
+        p = cl_hex(p, addr);
+    }
+    return p;
+}
+
+/*
+ * How many 32-bit words a stack read starting at esp may take on THIS thread (at most
+ * maxWords): up to the thread's stack base, never at or past it. 0 when esp is not on this
+ * thread's stack ([StackLimit, StackBase) from the TEB; no API call). The handlers run on
+ * the faulting thread, so the context's esp is on this stack. v7: before, the sweeps read a
+ * fixed count and relied on the fault past the stack top to stop them; a 2026-10-15 dump
+ * showed the sweep reading 0x12BF0000 (the stack base) inside CoreCLR's fatal path.
+ */
+static unsigned int cl_stack_words(unsigned int esp, unsigned int maxWords)
+{
+    NT_TIB* tib = (NT_TIB*)NtCurrentTeb();
+    unsigned int base = (unsigned int)(UINT_PTR)tib->StackBase;
+    unsigned int limit = (unsigned int)(UINT_PTR)tib->StackLimit;
+    unsigned int words;
+    if (esp < limit || esp >= base) return 0;
+    words = (base - esp) / 4;            /* the last word read ends at or below base */
+    return words < maxWords ? words : maxWords;
+}
+
+/* Class of the nearest cached-module code pointer on the stack (AC if none found). */
+static clf_class cl_first_frame_class(unsigned int esp)
+{
+    clf_class result = CLF_CLASS_AC;
+    unsigned int words = cl_stack_words(esp, 512);
+    __try {
+        unsigned int* sp = (unsigned int*)(UINT_PTR)esp;
+        unsigned int i;
+        for (i = 0; i < words; i++) {
+            unsigned int v = sp[i];
+            const cl_mod* m;
+            if (v <= 0x00401000u || v >= 0x7FFF0000u) continue;
+            m = cl_mod_cached(v);
+            if (m) { result = (clf_class)m->cls; break; }
         }
-        if ((skipTid != 0 && s->tid == skipTid && s->exAddr == skipAddr) ||
-            (maxAgeMs != 0 && now - s->tick > maxAgeMs)) {
-            InterlockedExchange(&s->state, CL_SLOT_DONE);
-            continue;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { result = CLF_CLASS_AC; }
+    return result;
+}
+
+static void cl_write(const char* p, DWORD n)
+{
+    DWORD wr;
+    if (g_logHandle != INVALID_HANDLE_VALUE && WriteFile(g_logHandle, p, n, &wr, NULL))
+        g_filter.logBytes += wr;     /* under g_logOwner, like every writer */
+}
+
+/* The byte budget (CrashLogFilter.h). Under the lock, before an entry. Returns 1 when the
+ * entry may be written. The first refusal of an ordinary entry writes one marker line. */
+static int cl_budget(int fatal)
+{
+    clf_bytes b = clf_bytes_gate(&g_filter, fatal);
+    if (b == CLF_BYTES_MARK) {
+        const char* m = "\r\n==== NATIVE CRASH LOGGER: log size budget reached, further ordinary entries are dropped "
+                        "(fatal entries still get a reserve; restart the client or trim the file to resume) ====\r\n";
+        cl_write(m, (DWORD)lstrlenA(m));
+    }
+    return b == CLF_BYTES_OK;
+}
+
+/* Append " pid=N tid=N date=YYYY-MM-DD time=HH:MM:SS" (local time). */
+static char* cl_stamp(char* p)
+{
+    SYSTEMTIME st;
+    p = cl_str(p, " pid=");
+    p = cl_u(p, GetCurrentProcessId());
+    p = cl_str(p, " tid=");
+    p = cl_u(p, GetCurrentThreadId());
+    GetLocalTime(&st);
+    p = cl_str(p, " date=");
+    p = cl_u(p, st.wYear);   p = cl_str(p, "-");
+    p = cl_u2(p, st.wMonth); p = cl_str(p, "-");
+    p = cl_u2(p, st.wDay);
+    p = cl_str(p, " time=");
+    p = cl_u2(p, st.wHour);   p = cl_str(p, ":");
+    p = cl_u2(p, st.wMinute); p = cl_str(p, ":");
+    p = cl_u2(p, st.wSecond);
+    return p;
+}
+
+static void cl_write_entry(PEXCEPTION_POINTERS ep, const char* kind, unsigned int hits, int fatal)
+{
+    char* p = g_buf;
+    CONTEXT* c = ep->ContextRecord;
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    unsigned int exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
+    unsigned int words;
+    if (g_logHandle == INVALID_HANDLE_VALUE) return;
+    if (!cl_budget(fatal)) return;
+
+    p = cl_str(p, "\r\n==== NATIVE CRASH LOGGER (");
+    p = cl_str(p, kind);
+    p = cl_str(p, ") ====\r\n  code=");
+    p = cl_hex(p, code);
+    p = cl_str(p, " exAddr=");
+    p = cl_sym(p, exAddr, 1);
+    if (hits > 1) { p = cl_str(p, " repeat="); p = cl_u(p, hits); }
+    p = cl_stamp(p);
+    if ((code == 0xC0000005 || code == 0xC0000409) && ep->ExceptionRecord->NumberParameters >= 2) {
+        unsigned int acc      = (unsigned int)ep->ExceptionRecord->ExceptionInformation[0];
+        unsigned int dataAddr = (unsigned int)ep->ExceptionRecord->ExceptionInformation[1];
+        p = cl_str(p, " access=");
+        p = cl_str(p, acc == 1 ? "WRITE" : (acc == 8 ? "EXEC" : "READ"));
+        p = cl_str(p, " dataAddr=");
+        p = cl_hex(p, dataAddr);   /* the [null+X] value, e.g. 0xC for the parser race */
+    }
+    p = cl_str(p, "\r\n  logged=");
+    p = cl_u(p, g_filter.counted);
+    p = cl_str(p, "/");
+    p = cl_u(p, CLF_MAX_COUNTED);
+    p = cl_str(p, " noiseRepeats=");
+    p = cl_u(p, g_filter.noiseRepeats);
+    p = cl_str(p, " otherRepeats=");
+    p = cl_u(p, g_filter.otherRepeats);
+    p = cl_str(p, " overCap=");
+    p = cl_u(p, g_filter.overCap);
+    p = cl_str(p, " relogCapped=");
+    p = cl_u(p, g_filter.relogCapped);
+    p = cl_str(p, " logBytes=");
+    p = cl_u(p, g_filter.logBytes);
+    p = cl_str(p, "\r\n  eip="); p = cl_sym(p, c->Eip, 1);
+    p = cl_str(p, " esp=");      p = cl_hex(p, c->Esp);
+    p = cl_str(p, " ebp=");      p = cl_hex(p, c->Ebp);
+    p = cl_str(p, "\r\n  eax="); p = cl_hex(p, c->Eax);
+    p = cl_str(p, " ebx=");      p = cl_hex(p, c->Ebx);
+    p = cl_str(p, " ecx=");      p = cl_hex(p, c->Ecx);
+    p = cl_str(p, " edx=");      p = cl_hex(p, c->Edx);
+    p = cl_str(p, " esi=");      p = cl_hex(p, c->Esi);
+    p = cl_str(p, " edi=");      p = cl_hex(p, c->Edi);
+    p = cl_str(p, "\r\n  stack code pointers (esp -> up):\r\n");
+    cl_write(g_buf, (DWORD)(p - g_buf));
+
+    words = cl_stack_words(c->Esp, 4096);
+    if (words == 0) {
+        const char* m = "    <esp is not on this thread's stack; no sweep>\r\n";
+        cl_write(m, (DWORD)lstrlenA(m));
+    }
+    __try {
+        unsigned int* sp = (unsigned int*)(UINT_PTR)c->Esp;
+        unsigned int i;
+        int emitted = 0;
+        for (i = 0; i < words && emitted < 96; i++) {
+            unsigned int v = sp[i];
+            if (v > 0x00401000u && v < 0x7FFF0000u && cl_mod_cached(v)) {
+                char* q = g_buf;
+                q = cl_str(q, "    +");
+                q = cl_hex(q, (unsigned int)(i * 4));
+                q = cl_str(q, "  ");
+                q = cl_sym(q, v, 0);
+                q = cl_str(q, "\r\n");
+                cl_write(g_buf, (DWORD)(q - g_buf));
+                emitted++;
+            }
         }
-        cl_append_file(s->text, s->len);
-        InterlockedExchange(&s->state, CL_SLOT_DONE);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        const char* m = "    <stack sweep faulted>\r\n";
+        cl_write(m, (DWORD)lstrlenA(m));
+    }
+
+    {
+        const char* e = "==== END NATIVE CRASH ====\r\n";
+        cl_write(e, (DWORD)lstrlenA(e));
     }
 }
 
-/* ── Handlers ── */
+/*
+ * Under the lock: write the recent first-chance records that were not written one by one
+ * (clf_ring_take), oldest first, so the log ends with the newest, usually the fatal hit.
+ * Module names from the cache only: no loader call on a dying process.
+ */
+static void cl_flush_locked(const char* reason, unsigned int code, unsigned int maxAgeMs)
+{
+    unsigned int older = 0;
+    int n = clf_ring_take(&g_ring, g_flushRecs, &older), i;
+    char* p;
+    if (maxAgeMs != 0) {
+        /* v6: process exit (DllMain) keeps only the recent records, as v2-v5 did; a
+         * contained AV from long before a normal exit is not crash evidence. */
+        unsigned int now = GetTickCount();
+        int k = 0;
+        for (i = 0; i < n; i++)
+            if (now - g_flushRecs[i].tickMs <= maxAgeMs) g_flushRecs[k++] = g_flushRecs[i];
+        n = k;
+    }
+    if (n == 0 || g_logHandle == INVALID_HANDLE_VALUE) return;
+    if (!cl_budget(maxAgeMs == 0)) return;   /* last chance / crash exit are fatal: they get the reserve */
+    p = g_buf;
+    p = cl_str(p, "\r\n==== NATIVE CRASH LOGGER (flush: ");
+    p = cl_str(p, reason);
+    p = cl_str(p, ") ====\r\n  code=");
+    p = cl_hex(p, code);
+    p = cl_stamp(p);
+    p = cl_str(p, "\r\n  recent first-chance records not written one by one, oldest first (");
+    p = cl_u(p, (unsigned int)n);
+    p = cl_str(p, " held");
+    if (older) { p = cl_str(p, ", "); p = cl_u(p, older); p = cl_str(p, " older ones no longer held"); }
+    p = cl_str(p, "):\r\n");
+    cl_write(g_buf, (DWORD)(p - g_buf));
+    for (i = 0; i < n; i++) {
+        const clf_rec* x = &g_flushRecs[i];
+        p = g_buf;
+        p = cl_str(p, "    exAddr=");
+        p = cl_sym(p, x->addr, 0);
+        p = cl_str(p, " code=");
+        p = cl_hex(p, x->code);
+        p = cl_str(p, " eip=");
+        p = cl_sym(p, x->eip, 0);
+        p = cl_str(p, " tid=");
+        p = cl_u(p, x->tid);
+        p = cl_str(p, " tick=");
+        p = cl_u(p, x->tickMs);
+        p = cl_str(p, " repeat=");
+        p = cl_u(p, x->hits);
+        p = cl_str(p, "\r\n");
+        cl_write(g_buf, (DWORD)(p - g_buf));
+    }
+    {
+        const char* e = "==== END NATIVE CRASH ====\r\n";
+        cl_write(e, (DWORD)lstrlenA(e));
+    }
+}
 
 static LONG CALLBACK CrashVeh(PEXCEPTION_POINTERS ep)
 {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
-    unsigned int exAddr;
-    int immediate;
-    int coreclr = 0;
-    CL_SLOT* s;
-
-    if (code != 0xC0000005 && code != 0xC0000602 && code != 0xC0000409) {
+    if (!clf_is_logged_code(code)) {
+        return EXCEPTION_CONTINUE_SEARCH;      /* cheap exit, no lock, for C++/CLR throws */
+    }
+    if (!cl_lock()) { return EXCEPTION_CONTINUE_SEARCH; }
+    if (code == CLF_CODE_ACCESS_VIOLATION && t_sehDepth > 0) {
+        /* v6 (v2's rule): an SEH_* wrapper's __except catches this AV (the game-tick guard
+         * writes its own record), so it is not written one by one. Kept in the flush ring
+         * only, in case a handler further up turns the process exit into a crash. */
+        clf_ring_push(&g_ring, (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress, code,
+            ep->ContextRecord->Eip, GetCurrentThreadId(), GetTickCount(), 1, 0);
+        cl_unlock();
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    if (t_inLogger) {
-        return EXCEPTION_CONTINUE_SEARCH;   /* our own fault — the logger's __try handles it */
-    }
-    if (code == 0xC0000005 && t_sehDepth > 0) {
-        return EXCEPTION_CONTINUE_SEARCH;   /* an SEH_* wrapper's __except will catch it */
-    }
-
-    t_inLogger = 1;
-    exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
-    immediate = (code != 0xC0000005) || cl_is_nativeaot_address(exAddr);
-    if (!immediate) {
-        /* v3: CoreCLR-hosted engine. A data address under 64K is a null-ref that CoreCLR
-         * hands to managed code as NullReferenceException, so it stays deferred. */
-        unsigned int dataAddr = ep->ExceptionRecord->NumberParameters >= 2
-            ? (unsigned int)ep->ExceptionRecord->ExceptionInformation[1] : 0;
-        coreclr = dataAddr >= 0x10000 && cl_is_coreclr_address(exAddr);
-        immediate = coreclr;
-    }
-
-    if (!immediate || InterlockedIncrement(&g_immediateCount) <= CL_MAX_IMMEDIATE) {
-        s = cl_claim_slot();
-        if (s) {
-            s->tid    = GetCurrentThreadId();
-            s->tick   = GetTickCount();
-            s->exAddr = exAddr;
-            s->len    = cl_format(s->text, CL_SLOT_BYTES, ep,
-                code != 0xC0000005
-                    ? "FAIL-FAST / STACK CHECK (always fatal)"
-                    : (coreclr
-                        ? "AV IN CORECLR-HOSTED CODE (JIT / runtime; fail-fast, non-null address)"
-                    : immediate
-                        ? "AV IN NATIVEAOT CODE (runtime fail-fasts unless it is a null-ref)"
-                        : "FIRST-CHANCE AV (deferred; written because the process died or exited soon after)"));
-            if (immediate) {
-                cl_append_file(s->text, s->len);
-                InterlockedExchange(&s->state, CL_SLOT_DONE);
-            } else {
-                InterlockedExchange(&s->state, CL_SLOT_PENDING);
+    {
+        unsigned int exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
+        unsigned int now = GetTickCount();
+        unsigned int hits = 1;
+        int written = 0;
+        clf_slot* slot = clf_find(&g_filter, exAddr);
+        if (slot) {
+            /* A repeat: decided without touching any module. */
+            if (clf_repeat(&g_filter, slot, code, now, &hits) == CLF_LOG_REPEAT) {
+                cl_write_entry(ep, slot->cls != CLF_CLASS_AC ? "first-chance, repeat, noise" : "first-chance, repeat", hits, 0);
+                written = 1;
             }
+        } else {
+            unsigned int base;
+            clf_class faultCls = CLF_CLASS_AC;
+            const char* leaf = cl_module(exAddr, 1, &base, &faultCls);
+            clf_class cls = clf_classify(code, leaf ? faultCls : CLF_CLASS_AC, leaf == NULL,
+                leaf == NULL && code == CLF_CODE_ACCESS_VIOLATION ? cl_first_frame_class(ep->ContextRecord->Esp) : CLF_CLASS_AC);
+            clf_decision d = clf_new(&g_filter, code, exAddr, cls, now);
+            if (d == CLF_LOG_COUNTED)
+                cl_write_entry(ep, "first-chance", 1, 0);
+            else if (d == CLF_LOG_NOISE)
+                cl_write_entry(ep, cls == CLF_CLASS_NETFX
+                    ? "first-chance, .NET Framework noise, not counted"
+                    : "first-chance, managed (CoreCLR) noise, not counted", 1, 0);
+            written = d == CLF_LOG_COUNTED || d == CLF_LOG_NOISE;
         }
+        /* Kept for a flush (memory only): the fatal hit is often one not written here. */
+        clf_ring_push(&g_ring, exAddr, code, ep->ContextRecord->Eip, GetCurrentThreadId(), now, hits, written);
     }
-
-    t_inLogger = 0;
+    cl_unlock();
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-/* Unhandled-exception filter: nobody caught this exception, so it is fatal. */
-static LONG WINAPI CrashUef(PEXCEPTION_POINTERS ep)
+/* Last chance: nothing handled it. Logged, then the filter this one replaced decides. */
+static LONG WINAPI CrashLastChance(PEXCEPTION_POINTERS ep)
 {
     LONG verdict = EXCEPTION_CONTINUE_SEARCH;
-
     /* A replaced-then-reasserted filter chain can loop back here; bail out of the cycle. */
-    if (t_inUef) {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
+    if (t_inUef) { return EXCEPTION_CONTINUE_SEARCH; }
     t_inUef = 1;
-
-    if (!t_inLogger && InterlockedIncrement(&g_fatalCount) <= CL_MAX_FATAL) {
-        unsigned int exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
-        CL_SLOT* s;
-        t_inLogger = 1;
-        /* Earlier first-chance AVs (other threads, earlier faults) are context for this
-         * crash; the first-chance record of THIS fault is skipped as a duplicate. Flushed
-         * before claiming a slot so the claim can't overwrite one of them. */
-        cl_flush_pending(GetCurrentThreadId(), exAddr, 0);
-        s = cl_claim_slot();
-        if (s) {
-            s->len = cl_format(s->text, CL_SLOT_BYTES, ep, "UNHANDLED EXCEPTION (fatal)");
-            cl_append_file(s->text, s->len);
-            InterlockedExchange(&s->state, CL_SLOT_DONE);
-        }
-        t_inLogger = 0;
+    if (cl_lock()) {
+        cl_flush_locked("last chance", ep->ExceptionRecord->ExceptionCode, 0);
+        if (clf_last_chance(&g_filter) == CLF_LOG_LAST_CHANCE)
+            cl_write_entry(ep, "LAST-CHANCE, unhandled", 1, 1);
+        cl_unlock();
     }
-
-    if (g_prevFilter) {
+    if (g_prevFilter && g_prevFilter != CrashLastChance) {
         verdict = g_prevFilter(ep);
     }
     t_inUef = 0;
     return verdict;
 }
 
-/* DllMain (process exit): write deferred AVs from the last CL_EXIT_FLUSH_WINDOW_MS. */
-static void CrashLoggerFlushOnExit(void)
+/*
+ * A crash exit is under way (the engine's TerminateProcess / NtTerminateProcess /
+ * ExitProcess / RtlExitUserProcess detours, for a crash code): write the recent
+ * first-chance records not written one by one. Each record is written once, so the
+ * second of two nested exit paths writes nothing. exitCode 0 is the engine's priming
+ * call and does nothing.
+ */
+__declspec(dllexport) void __cdecl
+RC_FlushCrashLog(unsigned int exitCode)
 {
-    if (g_crashLogPath[0] == 0) { return; }
-    cl_flush_pending(0, 0, CL_EXIT_FLUSH_WINDOW_MS);
+    if (exitCode == 0) return;
+    if (!cl_lock()) return;
+    cl_flush_locked("crash exit", exitCode, 0);
+    cl_unlock();
 }
 
-/* Installs the VEH once and (re-)asserts the unhandled-exception filter.
- * logPath = wide path to the dedicated crash log. Safe to call more than once:
- * a later call re-installs the filter if AC or a runtime replaced it. */
+/* DllMain, process exit (v2-v5 behaviour): ring records from the last 30 s that were not
+ * written one by one. AC's own crash handling ends with ExitProcess, sometimes with a code
+ * the engine does not count as a crash. Cache-only module names; no loader call. */
+static void CrashLoggerFlushOnExit(void)
+{
+    if (g_logHandle == INVALID_HANDLE_VALUE) { return; }
+    if (!cl_lock()) { return; }
+    cl_flush_locked("process exit", 0, CL_EXIT_FLUSH_WINDOW_MS);
+    cl_unlock();
+}
+
+/*
+ * Install the VEH once and (re-)assert the last-chance filter. logPath = wide path to the
+ * dedicated crash log, opened HERE (a normal P/Invoke, preemptive mode; never from a
+ * handler, see the CreateFileW note above) for the life of the process (append, shared
+ * for reading, writing and deleting). Safe to call more than once (every engine
+ * generation does): a later call re-installs the filter if AC or a runtime replaced it,
+ * and a different path switches files. Also (re)builds the module cache.
+ */
 __declspec(dllexport) void __cdecl
 RC_InstallCrashLogger(const wchar_t* logPath)
 {
     LPTOP_LEVEL_EXCEPTION_FILTER prev;
-    if (logPath) {
-        int i = 0;
-        for (; logPath[i] && i < MAX_PATH - 1; i++) { g_crashLogPath[i] = logPath[i]; }
-        g_crashLogPath[i] = 0;
+    if (logPath && logPath[0]) {
+        int i = 0, same = 1;
+        for (; logPath[i] && i < MAX_PATH - 1; i++) {
+            if (g_crashLogPath[i] != logPath[i]) { same = 0; }
+        }
+        if (g_crashLogPath[i] != 0) { same = 0; }
+        if ((!same || g_logHandle == INVALID_HANDLE_VALUE) && cl_lock()) {
+            HANDLE h;
+            for (i = 0; logPath[i] && i < MAX_PATH - 1; i++) { g_crashLogPath[i] = logPath[i]; }
+            g_crashLogPath[i] = 0;
+            h = CreateFileW(g_crashLogPath, FILE_APPEND_DATA,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h != INVALID_HANDLE_VALUE) {
+                HANDLE old = g_logHandle;
+                DWORD size = GetFileSize(h, NULL);   /* the budget counts what is already there */
+                g_filter.logBytes = size == INVALID_FILE_SIZE ? 0u : (unsigned int)size;
+                g_filter.capMarked = 0;
+                g_logHandle = h;
+                if (old != INVALID_HANDLE_VALUE) { CloseHandle(old); }
+            }
+            cl_unlock();
+        }
     }
+    RC_RefreshCrashLoggerModules();
     if (!g_vehHandle) {
         g_vehHandle = AddVectoredExceptionHandler(1, CrashVeh);
     }
-    prev = SetUnhandledExceptionFilter(CrashUef);
-    if (prev != CrashUef) {
+    prev = SetUnhandledExceptionFilter(CrashLastChance);
+    if (prev != CrashLastChance) {
         g_prevFilter = prev;
     }
 }
@@ -780,3 +926,131 @@ __declspec(dllexport) unsigned int __cdecl RC_TagParserSkipCount(void)
 {
     return (unsigned int)g_tagParserSkips;
 }
+
+/* ── Game-tick guard (v4) ─────────────────────────────────────────────────
+ * Client::UseTime (0x00411FA0) is detoured by a MANAGED hook. An AV inside AC's tick
+ * (e.g. chatclient.dll+0x1050 copying a ~2 MB chat-server message from a null buffer,
+ * 2026-10-11, two clients in the same second) unwinds into that managed frame, which
+ * CoreCLR treats as an unhandled exception and fail-fasts; AC's own handlers further
+ * up never run. This wrapper catches the AV in native code first.
+ *
+ * The filter runs on the faulting thread before unwinding, so it records the faulting
+ * address, the data address and the module name, and writes a full record (registers +
+ * stack sweep) to the crash log through the logger's writer (v6), capped at
+ * CL_MAX_GAMETICK records per process. No CreateFileW here either (see the logger). */
+typedef struct {
+    unsigned int exAddr;
+    unsigned int dataAddr;
+    char*        module;
+    int          moduleCap;
+} GT_FAULT;
+
+/* int __thiscall fn(this) — no stack args; EAX is returned whole, as AC's caller tests AL. */
+static int __cdecl _helper_thiscall_int_noarg(void* fn_ptr, void* this_ptr)
+{
+    int result = 0;
+    __asm {
+        mov  ecx, this_ptr
+        call fn_ptr
+        mov  result, eax
+    }
+    return result;
+}
+
+static int gt_filter(PEXCEPTION_POINTERS ep, GT_FAULT* f)
+{
+    if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    f->exAddr = (unsigned int)(UINT_PTR)ep->ExceptionRecord->ExceptionAddress;
+    f->dataAddr = ep->ExceptionRecord->NumberParameters >= 2
+        ? (unsigned int)ep->ExceptionRecord->ExceptionInformation[1] : 0;
+    if (f->module && f->moduleCap > 0) { f->module[0] = 0; }
+    if (cl_lock()) {
+        unsigned int base = 0;
+        clf_class cls;
+        const char* leaf = cl_module(f->exAddr, 1, &base, &cls);
+        if (leaf && f->module && f->moduleCap > 0) {
+            int k = 0;
+            for (; leaf[k] && k < f->moduleCap - 1; k++) { f->module[k] = leaf[k]; }
+            f->module[k] = 0;
+        }
+        if (InterlockedIncrement(&g_gameTickRecords) <= CL_MAX_GAMETICK) {
+            cl_write_entry(ep, "AV CAUGHT IN GAME TICK (Client::UseTime guard; tick dropped, client kept running)", 1, 0);
+        }
+        cl_unlock();
+        if (leaf && f->module && f->module[0]) {
+            f->exAddr -= base;   /* module-relative when resolved */
+        }
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+/* Calls int __thiscall fn(this) under SEH. Returns 1 when the call completed, 0 when an
+ * AV was caught; on 0, *out_exAddr is module-relative if module[0] != 0, else absolute. */
+__declspec(dllexport) int __cdecl
+SEH_GameTickThiscall(void* fn, void* this_ptr, int* out_result,
+                     unsigned int* out_exAddr, unsigned int* out_dataAddr,
+                     char* module, int moduleCap)
+{
+    GT_FAULT f;
+    f.exAddr = 0; f.dataAddr = 0; f.module = module; f.moduleCap = moduleCap;
+    *out_result = 0; *out_exAddr = 0; *out_dataAddr = 0;
+    if (module && moduleCap > 0) { module[0] = 0; }
+    RC_SEH_ENTER();
+    __try {
+        *out_result = _helper_thiscall_int_noarg(fn, this_ptr);
+    }
+    __except(gt_filter(GetExceptionInformation(), &f)) {
+        RC_SEH_LEAVE();
+        *out_exAddr = f.exAddr;
+        *out_dataAddr = f.dataAddr;
+        return 0;
+    }
+    RC_SEH_LEAVE();
+    return 1;
+}
+
+/* ── Out-of-process minidump (rundll32 entry) ─────────────────────────────
+ * The engine's hang watchdog runs
+ *     %windir%\SysWOW64\rundll32.exe "<this dll>",RC_DumpProcess <pid> <dump path>
+ * so the dump of a hung client is written from another process: MiniDumpWriteDump on the
+ * client itself suspends every other thread and then needs the process heap, which a
+ * suspended thread may hold (2026-10-31: a client deadlocked for good that way). dbghelp comes
+ * from the system folder, not AC's own 2003 copy. The process exit code says how it went:
+ * 0 written, 1 bad arguments, 2 OpenProcess, 3 CreateFile, 4 dbghelp, 5 MiniDumpWriteDump
+ * (the file is deleted). Nothing runs in the client's process. */
+#include "DumpArgs.h"
+
+typedef BOOL (WINAPI *Fn_MiniDumpWriteDump)(HANDLE, DWORD, HANDLE, DWORD, void*, void*, void*);
+
+static UINT DumpProcessCore(const wchar_t* cmd)
+{
+    unsigned long pid = 0;
+    wchar_t path[MAX_PATH];
+    if (!ParseDumpArgs(cmd, &pid, path, MAX_PATH)) return 1;
+
+    HANDLE proc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_DUP_HANDLE, FALSE, pid);
+    if (!proc) return 2;
+    HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) { CloseHandle(proc); return 3; }
+    HMODULE dbghelp = LoadLibraryExW(L"dbghelp.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    Fn_MiniDumpWriteDump write = dbghelp ? (Fn_MiniDumpWriteDump)GetProcAddress(dbghelp, "MiniDumpWriteDump") : NULL;
+    UINT rc = 4;
+    if (write) {
+        /* MiniDumpNormal (every thread's stack) | WithHandleData | WithUnloadedModules | WithThreadInfo */
+        rc = write(proc, pid, file, 0x00000000 | 0x00000004 | 0x00000020 | 0x00001000, NULL, NULL, NULL) ? 0 : 5;
+    }
+    CloseHandle(file);
+    CloseHandle(proc);
+    if (rc != 0) DeleteFileW(path);
+    return rc;
+}
+
+__declspec(dllexport) void CALLBACK RC_DumpProcessW(HWND hwnd, HINSTANCE inst, LPWSTR cmdLine, int show)
+{
+    (void)hwnd; (void)inst; (void)show;
+    ExitProcess(DumpProcessCore(cmdLine));
+}
+/* rundll32 looks the entry up by its plain name (it tries RC_DumpProcessW first). */
+#pragma comment(linker, "/EXPORT:RC_DumpProcessW=_RC_DumpProcessW@16")

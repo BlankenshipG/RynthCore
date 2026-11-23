@@ -39,6 +39,37 @@ internal static unsafe class DX9Backend
         return _vtxScratch;
     }
 
+    // Rebased-index scratch (DrawSubmitPlan): one command's indices less its smallest one, reused for
+    // every command (DrawIndexedPrimitiveUP copies them before it returns). Freed in Shutdown.
+    private static ushort* _idxScratch;
+    private static int _idxScratchCapacity;
+
+    private static ushort* EnsureIndexScratch(int needed)
+    {
+        if (needed > _idxScratchCapacity)
+        {
+            int cap = _idxScratchCapacity == 0 ? 16384 : _idxScratchCapacity;
+            while (cap < needed) cap *= 2;
+            if (_idxScratch != null) NativeMemory.Free(_idxScratch);
+            _idxScratch = (ushort*)NativeMemory.Alloc((nuint)cap, sizeof(ushort));
+            _idxScratchCapacity = cap;
+        }
+        return _idxScratch;
+    }
+
+    // ── UiCost counters ──
+    private static SubmitStats _lastSubmit;
+    /// <summary>The last RenderDrawData / RenderDrawList call's counters (read right after the call). Render thread.</summary>
+    public static SubmitStats LastSubmit => _lastSubmit;
+
+    private static int _fontUploads, _texUploads;
+    /// <summary>Textures made since the last call: the font atlas, and the others (icons, map tiles, pictures). Render thread.</summary>
+    public static void TakeUploads(out int font, out int tex)
+    {
+        font = _fontUploads; tex = _texUploads;
+        _fontUploads = _texUploads = 0;
+    }
+
     // ── Diagnostics (/rc imgui diag): what the last RenderDrawData did ──
     private static int _diagLists, _diagVtx, _diagCmds, _diagDraws, _diagSkipped, _diagFailed, _diagLastHr;
     private static long _diagFrames;
@@ -50,6 +81,7 @@ internal static unsafe class DX9Backend
     private const uint D3DPT_TRIANGLELIST = 4;
     private const uint D3DFMT_INDEX16 = 101;
     private const uint D3DFMT_A8R8G8B8 = 21;
+    private const uint D3DFMT_DXT1 = 0x31545844;       // the FourCC 'DXT1'
     private const uint D3DPOOL_MANAGED = 1;
     private const uint D3DUSAGE_DYNAMIC = 0x200;
     private const uint D3DPOOL_DEFAULT = 0;
@@ -138,7 +170,10 @@ internal static unsafe class DX9Backend
     private const uint D3DRS_WRAP0 = 128;
 
     // D3DTEXTUREFILTERTYPE
-    private const uint D3DTEXF_LINEAR = 2;
+    private const uint D3DTEXF_LINEAR = 2, D3DTEXF_POINT = 1;
+    // Draw-list callbacks this renderer understands besides ResetRenderState (see IconSampling): the sampler
+    // for the draw commands that follow, until the next one or the end of the list.
+
 
     // FVF: xyz (3 floats) + diffuse (uint) + 1 tex coord (2 floats)
     private const uint D3DFVF_XYZ = 0x002;
@@ -409,6 +444,12 @@ internal static unsafe class DX9Backend
             _vtxScratch = null;
             _vtxScratchCapacity = 0;
         }
+        if (_idxScratch != null)
+        {
+            NativeMemory.Free(_idxScratch);
+            _idxScratch = null;
+            _idxScratchCapacity = 0;
+        }
         _initialized = false;
         _coreInitialized = false;
     }
@@ -443,6 +484,55 @@ internal static unsafe class DX9Backend
         if (hr < 0) return IntPtr.Zero;
 
         return creationParameters.hFocusWindow;
+    }
+
+    // IDirect3DSurface9::GetDesc (IUnknown 3 + IDirect3DResource9 8 + GetContainer = slot 12).
+    private const int SurfaceGetDescSlot = 12;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct D3DSURFACE_DESC
+    {
+        public int Format, Type;
+        public uint Usage;
+        public int Pool, MultiSampleType;
+        public uint MultiSampleQuality, Width, Height;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int SurfaceGetDescD(IntPtr surface, D3DSURFACE_DESC* desc);
+
+    /// <summary>The size AC's back buffer is (what it really draws at), or false. AC's main thread
+    /// (EndScene). Used by the window code so the window follows AC's own resolution.</summary>
+    public static bool TryGetBackBufferSize(IntPtr pDevice, out int width, out int height)
+    {
+        width = height = 0;
+        if (pDevice == IntPtr.Zero) return false;
+        IntPtr backBuffer = IntPtr.Zero;
+        try
+        {
+            if (_getBackBuffer == null)
+            {
+                IntPtr vtable = Marshal.ReadIntPtr(pDevice);
+                _getBackBuffer = Get<GetBackBufferD>(vtable, DeviceVTableIndex.GetBackBuffer);
+            }
+            if (_getBackBuffer(pDevice, 0, 0, D3DBACKBUFFER_TYPE_MONO, out backBuffer) < 0 || backBuffer == IntPtr.Zero)
+                return false;
+            var getDesc = Get<SurfaceGetDescD>(Marshal.ReadIntPtr(backBuffer), SurfaceGetDescSlot);
+            D3DSURFACE_DESC desc = default;
+            if (getDesc(backBuffer, &desc) < 0) return false;
+            width = (int)desc.Width;
+            height = (int)desc.Height;
+            return width > 0 && height > 0;
+        }
+        catch (Exception ex)
+        {
+            LogOnce(nameof(TryGetBackBufferSize), ex);
+            return false;
+        }
+        finally
+        {
+            ReleaseComObject(backBuffer);
+        }
     }
 
     public static bool IsRenderingToBackBuffer(IntPtr pDevice)
@@ -499,8 +589,20 @@ internal static unsafe class DX9Backend
         if (!_initialized) return;
         ImDrawData* dd = drawData.NativePtr;
         if (dd == null) return;
-        RenderLists((ImDrawList**)dd->CmdLists.Data, dd->CmdListsCount, dd->TotalVtxCount, dd->DisplayPos, dd->DisplaySize,
-            pDevice, midFrame: false);
+        ImDrawList** lists = (ImDrawList**)dd->CmdLists.Data;
+        int count = dd->CmdListsCount;
+        // Windows drawn under AC's UI (UnderUiLayer, a plugin window's "layer": "underUi") were presented
+        // at AC's UI pass: left out here, the rest keep their order.
+        if (UnderUiLayer.HasWindowLists && count > 0 && count <= 512)
+        {
+            ImDrawList** kept = stackalloc ImDrawList*[count];
+            int n = 0;
+            for (int i = 0; i < count; i++)
+                if (!UnderUiLayer.IsWindowList(lists[i])) kept[n++] = lists[i];
+            RenderLists(kept, n, dd->TotalVtxCount, dd->DisplayPos, dd->DisplaySize, pDevice, midFrame: false);
+            return;
+        }
+        RenderLists(lists, count, dd->TotalVtxCount, dd->DisplayPos, dd->DisplaySize, pDevice, midFrame: false);
     }
 
     /// <summary>
@@ -520,6 +622,7 @@ internal static unsafe class DX9Backend
     private static void RenderLists(ImDrawList** cmdLists, int cmdListsCount, int totalVtx, Vector2 displayPos, Vector2 displaySize,
         IntPtr pDevice, bool midFrame)
     {
+        _lastSubmit.Clear();
         if (cmdListsCount == 0) return;
         if (displaySize.X <= 0 || displaySize.Y <= 0) return;
         if (cmdLists == null) return;
@@ -625,6 +728,12 @@ internal static unsafe class DX9Backend
             SetupRenderStateNative(pDevice, displayPos, displaySize);
 
             const int ResetRenderStateSentinel = -8; // ImDrawCallback_ResetRenderState
+            // The texture and scissor rect last set here: an unchanged one isn't set again.
+            IntPtr boundTex = IntPtr.Zero;
+            bool texBound = false;
+            RECT boundScissor = default;
+            bool scissorBound = false;
+            ref SubmitStats st = ref _lastSubmit;
 
             for (int n = 0; n < cmdListsCount; n++)
             {
@@ -634,6 +743,7 @@ internal static unsafe class DX9Backend
                 int vtxCount = list->VtxBuffer.Size;
                 int cmdCount = list->CmdBuffer.Size;
                 if (vtxCount == 0 || cmdCount == 0) continue;
+                st.Lists++;
 
                 ImDrawVert* srcVtx = (ImDrawVert*)list->VtxBuffer.Data;
                 ushort* idxBase = (ushort*)list->IdxBuffer.Data;
@@ -661,8 +771,15 @@ internal static unsafe class DX9Backend
 
                     if (cmd->UserCallback != IntPtr.Zero)
                     {
-                        if ((int)cmd->UserCallback == ResetRenderStateSentinel)
+                        int cb = (int)cmd->UserCallback;
+                        if (cb == ResetRenderStateSentinel)
                             SetupRenderStateNative(pDevice, displayPos, displaySize);
+                        else if (cb == IconSampling.PointSentinel || cb == IconSampling.LinearSentinel)
+                        {
+                            uint f = cb == IconSampling.PointSentinel ? D3DTEXF_POINT : D3DTEXF_LINEAR;
+                            _setSamplerState!(pDevice, 0, D3DSAMP_MINFILTER, f);
+                            _setSamplerState!(pDevice, 0, D3DSAMP_MAGFILTER, f);
+                        }
                         // Other callbacks are not supported (no managed callbacks
                         // from inside the render path); they carry no geometry.
                         continue;
@@ -685,20 +802,52 @@ internal static unsafe class DX9Backend
                     if (sr.Top < 0) sr.Top = 0;
                     if (sr.Right > (int)displaySize.X) sr.Right = (int)displaySize.X;
                     if (sr.Bottom > (int)displaySize.Y) sr.Bottom = (int)displaySize.Y;
-                    if (sr.Right <= sr.Left || sr.Bottom <= sr.Top) { _diagSkipped++; continue; }
-                    _setScissorRect!(pDevice, &sr);
-                    _setTexture!(pDevice, 0, cmd->TextureId);
+                    if (sr.Right <= sr.Left || sr.Bottom <= sr.Top) { _diagSkipped++; st.Skipped++; continue; }
 
-                    // DrawIndexedPrimitiveUP has no base-vertex argument, so the
-                    // command's VtxOffset is applied by offsetting the vertex pointer.
+                    // DrawIndexedPrimitiveUP copies NumVertices vertices on every call, so a
+                    // command gets only the vertices its indices reach (DrawSubmitPlan), not the
+                    // whole list (that was V x C vertices a frame: the Loot Editor's 200-330 ms
+                    // submit). It has no base-vertex argument: the command's VtxOffset and its
+                    // smallest index move the vertex pointer, and the indices are rebased to it.
                     uint vtxOffset = cmd->VtxOffset;
-                    if (vtxOffset >= (uint)vtxCount) { _diagSkipped++; continue; }
+                    ushort* cmdIdx = idxBase + cmd->IdxOffset;
+                    if (vtxOffset >= (uint)vtxCount
+                        || cmd->IdxOffset + elemCount > (uint)list->IdxBuffer.Size
+                        || !DrawSubmitPlan.Plan(cmdIdx, (int)elemCount, vtxCount, (int)vtxOffset, out int first, out int numVerts))
+                    {
+                        _diagSkipped++; st.Skipped++; continue;
+                    }
+                    ushort* drawIdx = cmdIdx;
+                    if (first > 0)
+                    {
+                        drawIdx = EnsureIndexScratch((int)elemCount);
+                        DrawSubmitPlan.Rebase(cmdIdx, drawIdx, (int)elemCount, first);
+                    }
+
+                    if (!scissorBound || sr.Left != boundScissor.Left || sr.Top != boundScissor.Top
+                        || sr.Right != boundScissor.Right || sr.Bottom != boundScissor.Bottom)
+                    {
+                        _setScissorRect!(pDevice, &sr);
+                        boundScissor = sr;
+                        scissorBound = true;
+                    }
+                    if (!texBound || cmd->TextureId != boundTex)
+                    {
+                        _setTexture!(pDevice, 0, cmd->TextureId);
+                        if (texBound) st.TexSwitches++;
+                        boundTex = cmd->TextureId;
+                        texBound = true;
+                    }
+
                     int hr = _drawIndexedPrimUP!(pDevice,
-                        D3DPT_TRIANGLELIST, 0, (uint)vtxCount - vtxOffset,
+                        D3DPT_TRIANGLELIST, 0, (uint)numVerts,
                         elemCount / 3,
-                        (IntPtr)(idxBase + cmd->IdxOffset), D3DFMT_INDEX16,
-                        (IntPtr)(vtxBuf + vtxOffset), (uint)sizeof(CustomVertex));
+                        (IntPtr)drawIdx, D3DFMT_INDEX16,
+                        (IntPtr)(vtxBuf + vtxOffset + first), (uint)sizeof(CustomVertex));
                     _diagDraws++;
+                    st.Draws++;
+                    st.VtxCopied += numVerts;
+                    st.VtxWholeList += vtxCount - vtxOffset;
                     if (hr < 0) { _diagFailed++; _diagLastHr = hr; }
                 }
             }
@@ -916,30 +1065,55 @@ internal static unsafe class DX9Backend
             return false;
         }
 
-        // Copy with RGBA → BGRA swizzle (ImGui gives RGBA, D3D9 A8R8G8B8 is BGRA in memory)
-        byte* src = (byte*)pixels;
         byte* dst = (byte*)locked.pBits;
-
-        for (int y = 0; y < height; y++)
+        if (ImGuiFonts.TakeBgraPixels(width, height, out IntPtr bgra))
         {
-            byte* srcRow = src + y * width * 4;
-            byte* dstRow = dst + y * locked.Pitch;
-
-            for (int x = 0; x < width; x++)
+            // The bake worker made the BGRA rows (ImGuiFonts.BakeWorker): only a row copy here.
+            try
             {
-                int si = x * 4;
-                int di = x * 4;
-                dstRow[di + 0] = srcRow[si + 2]; // B ← R
-                dstRow[di + 1] = srcRow[si + 1]; // G ← G
-                dstRow[di + 2] = srcRow[si + 0]; // R ← B
-                dstRow[di + 3] = srcRow[si + 3]; // A ← A
+                long row = (long)width * 4;
+                for (int y = 0; y < height; y++)
+                    Buffer.MemoryCopy((byte*)bgra + y * row, dst + (long)y * locked.Pitch, row, row);
+            }
+            finally { ImGuiFonts.FreeBgraPixels(bgra); }
+        }
+        else
+        {
+            // Copy with RGBA → BGRA swizzle (ImGui gives RGBA, D3D9 A8R8G8B8 is BGRA in memory)
+            byte* src = (byte*)pixels;
+
+            for (int y = 0; y < height; y++)
+            {
+                byte* srcRow = src + y * width * 4;
+                byte* dstRow = dst + y * locked.Pitch;
+
+                for (int x = 0; x < width; x++)
+                {
+                    int si = x * 4;
+                    int di = x * 4;
+                    dstRow[di + 0] = srcRow[si + 2]; // B ← R
+                    dstRow[di + 1] = srcRow[si + 1]; // G ← G
+                    dstRow[di + 2] = srcRow[si + 0]; // R ← B
+                    dstRow[di + 3] = srcRow[si + 3]; // A ← A
+                }
             }
         }
 
         unlockRect(_fontTexture, 0);
+        _fontUploads++;   // UiCost: a font atlas upload this frame
 
         // Store texture ID for ImGui
         io.Fonts.SetTexID(_fontTexture);
+
+        // The glyphs are baked and uploaded: the atlas's input data is no longer read. ImGui
+        // copies the whole TTF into the atlas for every font it adds (main font, Segoe UI
+        // Symbol and Phosphor per size, ~3.8 MB each), so with the panel text sizes in use
+        // that was ~400 MB kept for the life of the atlas (2026-10-15, [Mem] lines). Every
+        // re-bake builds a fresh atlas from ImGuiFonts' own copies, and the pixels and TexReady
+        // stay, so nothing needs it back.
+        Compatibility.MemoryUse.Mark("font atlas uploaded");
+        io.Fonts.ClearInputData();
+        Compatibility.MemoryUse.Mark("font input data freed");
         return true;
     }
 
@@ -980,6 +1154,40 @@ internal static unsafe class DX9Backend
             }
         }
         unlockRect(tex, 0);
+        _texUploads++;   // UiCost
+        return tex;
+    }
+
+    /// <summary>
+    /// A managed-pool DXT1 texture (4x4 blocks of 8 bytes: two RGB565 colours and sixteen 2-bit indices, a sixth
+    /// of A8R8G8B8's size) holding <paramref name="blocks"/> as they are: <paramref name="width"/> x
+    /// <paramref name="height"/> a multiple of 4, (w/4) * (h/4) * 8 bytes, top row of blocks first (the World
+    /// Map's tiles). Zero on failure or when the device can't make DXT1. AC's render thread.
+    /// </summary>
+    public static IntPtr CreateTextureDxt1(IntPtr pDevice, int width, int height, ReadOnlySpan<byte> blocks)
+    {
+        int rowBytes = width / 4 * 8, rows = height / 4;
+        if (_createTexture == null || pDevice == IntPtr.Zero || width <= 0 || height <= 0 || width % 4 != 0 || height % 4 != 0
+            || blocks.Length < rowBytes * rows)
+            return IntPtr.Zero;
+        int hr = _createTexture(pDevice, (uint)width, (uint)height, 1, 0,
+            D3DFMT_DXT1, D3DPOOL_MANAGED, out IntPtr tex, IntPtr.Zero);
+        if (hr < 0 || tex == IntPtr.Zero)
+            return IntPtr.Zero;
+
+        var lockRect = GetTexMethod<TexLockRectD>(tex, TextureVTableIndex.LockRect);
+        var unlockRect = GetTexMethod<TexUnlockRectD>(tex, TextureVTableIndex.UnlockRect);
+        D3DLOCKED_RECT locked;
+        if (lockRect(tex, 0, &locked, IntPtr.Zero, 0) < 0 || locked.pBits == IntPtr.Zero)
+        {
+            ReleaseComObject(tex);
+            return IntPtr.Zero;
+        }
+        byte* dst = (byte*)locked.pBits;
+        for (int y = 0; y < rows; y++)       // the pitch of a compressed surface is the bytes of one row of blocks
+            blocks.Slice(y * rowBytes, rowBytes).CopyTo(new Span<byte>(dst + y * locked.Pitch, rowBytes));
+        unlockRect(tex, 0);
+        _texUploads++;   // UiCost
         return tex;
     }
 

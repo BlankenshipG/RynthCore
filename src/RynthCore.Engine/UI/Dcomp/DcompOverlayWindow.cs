@@ -1,6 +1,6 @@
 // DComp overlay — bar + free-floating panel windows.
 //
-// Bar: ⠿ RC | AI | Status | Log | Radar | RL
+// Bar: ⠿ RC | AI | Status | Log | RL  (Radar moved under RynthNav, 2026-10-16)
 // Each panel is an independent DcompFloatingPanel (movable + resizable).
 // RynthAi footer buttons (Settings, Items, Monsters, Nav, Meta) call
 // AvaloniaOverlay.ActivateBarButton() which is redirected here via
@@ -129,14 +129,14 @@ internal sealed class DcompOverlayWindow : Window
 
     private Control BuildBar()
     {
+        // Radar moved under RynthNav (2026-10-16); still openable via PanelDefs + ActivateBarButton.
         var aiBtn     = RegisterBarButton("AI");
         var statusBtn = RegisterBarButton("Status");
         var logBtn    = RegisterBarButton("Log");
-        var radarBtn  = RegisterBarButton("Radar");
 
         var reloadBtn = MakeButton("RL");
         reloadBtn.Foreground = Brushes.Khaki;
-        reloadBtn.Click += (_, _) => EngineLifecycle.SignalReload();
+        reloadBtn.Click += (_, _) => EntryPoint.RequestManualReload("Dcomp RL");
 
         var barStack = new StackPanel
         {
@@ -166,7 +166,6 @@ internal sealed class DcompOverlayWindow : Window
                 aiBtn,
                 statusBtn,
                 logBtn,
-                radarBtn,
                 reloadBtn,
             },
         };

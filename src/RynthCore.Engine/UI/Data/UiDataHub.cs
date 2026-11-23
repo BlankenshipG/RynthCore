@@ -124,6 +124,12 @@ internal static class UiDataHub
             if (Stopwatch.GetTimestamp() > commandDeadline) break;
         }
 
+        // Another client saved the shared chat settings: pick them up whether or not this client's
+        // chat window is open (a client with it closed kept stale rules and wrote them back over
+        // everyone's at its next save). Throttled inside (a timestamp check every 2 s).
+        try { ChatModel.PollSettingsFile(); }
+        catch (Exception ex) { RynthLog.UI($"UiDataHub: chat settings poll threw {ex.GetType().Name}: {ex.Message}"); }
+
         string? slowest = null;
         long slowestTicks = 0;
         foreach (UiSource source in sources)

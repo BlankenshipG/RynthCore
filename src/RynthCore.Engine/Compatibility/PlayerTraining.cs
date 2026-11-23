@@ -121,7 +121,7 @@ internal static unsafe class PlayerTraining
             RynthLog.Compat($"PlayerTraining: {kind} {stype} not sent - not in the world");
             return false;
         }
-        if (defer || !MainThreadGuard.IsOnMainThread())
+        if (defer || AcMainThreadQueue.MustQueue(teardown: false))
             return AcMainThreadQueue.EnqueueTrain((uint)kind, stype, xp);
 
         byte rv = kind switch

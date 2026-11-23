@@ -2,6 +2,9 @@
 //  RynthCore.Engine - UI/Data/Discord/ChatDiscordSettings.cs
 //  RynthChat's Discord relay settings, shared by every client and character
 //  (%AppData%\RynthCore\rynthchat_discord.json, beside rynthchat_settings.json).
+//  The routes and options are shared; the switch is per character
+//  (Characters): a character not on the list relays nothing, and the list
+//  starts empty. Saves merge each client's switch into the file's list.
 //
 //  Threads: the Discord panel (AC's render thread) edits fields in place, each
 //  a single reference or 32-bit value, so the pump's reads never tear. Arrays
@@ -10,10 +13,6 @@
 //
 //  Secrets (webhook URL, bot token) are stored only as DPAPI blobs
 //  (DiscordSecrets); the JSON never holds them in plain text.
-//
-//  The first load with no file imports RynthAi 0.5.33's discord.json (the
-//  relay lived in RynthAi for one release); its blobs use the same DPAPI
-//  entropy, so saved webhooks keep working.
 // ============================================================================
 
 using System;
@@ -132,23 +131,57 @@ internal sealed class DiscordRoute
     }
 }
 
+/// <summary>A character the relay is switched on for (server + name, any case).</summary>
+internal sealed class DiscordCharacter
+{
+    public string Server = string.Empty;
+    public string Name = string.Empty;
+
+    /// <summary>The character, or null without a name (not logged in yet).</summary>
+    public static DiscordCharacter? Of(string? server, string? name)
+    {
+        string n = (name ?? string.Empty).Trim().TrimStart('+').Trim();
+        if (n.Length == 0) return null;
+        return new DiscordCharacter { Server = (server ?? string.Empty).Trim(), Name = n };
+    }
+
+    public bool Same(DiscordCharacter? other)
+        => other != null
+           && string.Equals(Name, other.Name, StringComparison.OrdinalIgnoreCase)
+           && string.Equals(Server, other.Server, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>"Bob (Aelrynth)", or "Bob" when the server isn't known.</summary>
+    public override string ToString() => Server.Length > 0 ? $"{Name} ({Server})" : Name;
+}
+
+/// <summary>Turns the relay on or off for one character; applied to the file's list when saving.</summary>
+internal sealed record DiscordCharacterOp(DiscordCharacter Character, bool On);
+
 internal sealed class ChatDiscordSettings
 {
-    public const int CurrentVersion = 1;
+    /// <summary>2: the relay is switched on per character (<see cref="Characters"/>), not for everyone.</summary>
+    public const int CurrentVersion = 2;
 
     public int Version = CurrentVersion;
 
-    /// <summary>Master switch; off means nothing is queued or sent (and the chat feed isn't kept open for it).</summary>
-    public bool Enabled;
+    /// <summary>
+    /// The characters the relay is on for; every other character relays nothing. Each client
+    /// switches only its own character, and a save merges that change into the file's list
+    /// (ChatDiscordStore.MergeForSave), so clients don't undo each other. Replaced, never
+    /// changed in place. Empty (the default): off for everyone.
+    /// </summary>
+    public DiscordCharacter[] Characters = Array.Empty<DiscordCharacter>();
 
-    /// <summary>Destinations. Replaced (copy-on-write) when one is added or removed.</summary>
+    /// <summary>Destinations, shared by every character. Replaced (copy-on-write) when one is added or removed.</summary>
     public DiscordRoute[] Routes = Array.Empty<DiscordRoute>();
 
-    /// <summary>
-    /// Comma-separated character names allowed to relay; blank = every character. With several
-    /// clients in the same allegiance or fellowship, set this so only one of them posts each line.
-    /// </summary>
-    public string OnlyCharacters = string.Empty;
+    /// <summary>True when the relay is switched on for <paramref name="character"/>.</summary>
+    public bool IsOnFor(DiscordCharacter? character)
+    {
+        if (character == null) return false;
+        foreach (var c in Characters) if (c.Same(character)) return true;
+        return false;
+    }
 
     /// <summary>Leave out lines you typed yourself ("You say", "You tell").</summary>
     public bool SkipOwn;
@@ -193,14 +226,11 @@ internal static class ChatDiscordStore
     public static string DefaultPath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore", "rynthchat_discord.json");
 
-    /// <summary>RynthAi 0.5.33's settings, imported once when <see cref="DefaultPath"/> doesn't exist yet.</summary>
-    public static string LegacyRynthAiPath => Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "discord.json");
-
     /// <summary>
-    /// Reads the settings (or imports RynthAi's, or the defaults). <paramref name="note"/> says what
+    /// Reads the settings (or the defaults: off, no routes). <paramref name="note"/> says what
     /// happened, for the log. Never throws.
     /// </summary>
-    public static ChatDiscordSettings Load(string path, string? legacyPath, out string note)
+    public static ChatDiscordSettings Load(string path, out string note)
     {
         note = string.Empty;
         ChatDiscordSettings? s = null;
@@ -208,11 +238,6 @@ internal static class ChatDiscordStore
         {
             if (File.Exists(path))
                 s = JsonSerializer.Deserialize(File.ReadAllText(path), ChatDiscordJsonContext.Default.ChatDiscordSettings);
-            else if (legacyPath != null && File.Exists(legacyPath))
-            {
-                s = ImportRynthAi(File.ReadAllText(legacyPath));
-                if (s != null) note = $"imported {s.Routes.Length} route(s) from RynthAi's discord.json";
-            }
         }
         catch (Exception ex)
         {
@@ -255,7 +280,7 @@ internal static class ChatDiscordStore
         s.Version = ChatDiscordSettings.CurrentVersion;
         s.Routes = (s.Routes ?? Array.Empty<DiscordRoute>()).Where(r => r != null).ToArray();
         foreach (var r in s.Routes) NormalizeRoute(r);
-        s.OnlyCharacters ??= string.Empty;
+        s.Characters = NormalizeCharacters(s.Characters);
         s.BatchMs = Math.Clamp(s.BatchMs, ChatDiscordSettings.BatchMinMs, ChatDiscordSettings.BatchMaxMs);
         s.MinIntervalMs = Math.Clamp(s.MinIntervalMs, ChatDiscordSettings.IntervalMinMs, ChatDiscordSettings.IntervalMaxMs);
         s.MaxQueue = Math.Clamp(s.MaxQueue, ChatDiscordSettings.QueueMin, ChatDiscordSettings.QueueMax);
@@ -279,46 +304,59 @@ internal static class ChatDiscordStore
         r.MinIntervalMs = Math.Clamp(r.MinIntervalMs, ChatDiscordSettings.IntervalMinMs, ChatDiscordSettings.IntervalMaxMs);
     }
 
-    /// <summary>
-    /// RynthAi 0.5.33's discord.json: the same routes, with "Channels" for the speech channels and
-    /// "IncludeOther" for lines that aren't speech (the Other tab here). Null when unreadable.
-    /// </summary>
-    internal static ChatDiscordSettings? ImportRynthAi(string json)
+    /// <summary>Drops nameless and repeated entries (same server + name, any case).</summary>
+    internal static DiscordCharacter[] NormalizeCharacters(DiscordCharacter[]? list)
     {
-        var old = JsonSerializer.Deserialize(json, ChatDiscordJsonContext.Default.RynthAiDiscordDto);
-        if (old == null) return null;
-        var s = new ChatDiscordSettings
+        var result = new List<DiscordCharacter>();
+        foreach (var c in list ?? Array.Empty<DiscordCharacter>())
         {
-            Enabled = old.Enabled,
-            OnlyCharacters = old.OnlyCharacters ?? string.Empty,
-            SkipOwn = old.SkipOwn,
-            IncludeTimestamp = old.IncludeTimestamp,
-            TagCharacter = old.TagCharacter,
-            BatchMs = old.BatchMs,
-            MinIntervalMs = old.MinIntervalMs,
-            MaxQueue = old.MaxQueue,
-            MaxLog = old.MaxLog,
-        };
-        var routes = new List<DiscordRoute>();
-        foreach (var r in old.Routes ?? Array.Empty<RynthAiDiscordRouteDto>())
-        {
-            if (r == null) continue;
-            routes.Add(new DiscordRoute
-            {
-                Name = r.Name ?? "Discord",
-                Enabled = r.Enabled,
-                Mode = r.Mode ?? DiscordRoute.ModeWebhook,
-                WebhookProtected = r.WebhookProtected ?? string.Empty,
-                BotTokenProtected = r.BotTokenProtected ?? string.Empty,
-                ChannelId = r.ChannelId ?? string.Empty,
-                DisplayName = r.DisplayName ?? string.Empty,
-                Speech = r.Channels?.ToArray(),
-                Tabs = r.IncludeOther ? new[] { "Other" } : Array.Empty<string>(),
-                Keywords = r.Keywords ?? string.Empty,
-            });
+            DiscordCharacter? n = c == null ? null : DiscordCharacter.Of(c.Server, c.Name);
+            if (n != null && !result.Exists(x => x.Same(n))) result.Add(n);
         }
-        s.Routes = routes.ToArray();
-        return s;
+        return result.ToArray();
+    }
+
+    /// <summary><paramref name="list"/> with each switch in <paramref name="ops"/> applied, in order.</summary>
+    public static DiscordCharacter[] ApplyCharacterOps(DiscordCharacter[]? list, IEnumerable<DiscordCharacterOp> ops)
+    {
+        var result = new List<DiscordCharacter>(NormalizeCharacters(list));
+        foreach (var op in ops)
+        {
+            result.RemoveAll(c => c.Same(op.Character));
+            if (op.On) result.Add(op.Character);
+        }
+        return result.ToArray();
+    }
+
+    /// <summary>The character list in a settings file, or null when it can't be read.</summary>
+    public static DiscordCharacter[]? ReadCharacters(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            var s = JsonSerializer.Deserialize(json, ChatDiscordJsonContext.Default.ChatDiscordSettings);
+            return s == null ? null : NormalizeCharacters(s.Characters);
+        }
+        catch (Exception) { return null; }
+    }
+
+    /// <summary>
+    /// What a client writes when it saves: its own settings (<paramref name="ours"/>, from
+    /// <see cref="Serialize"/>), except the character list, which is the one in the file now
+    /// (<paramref name="disk"/>, re-read just before) with this client's switches applied. So one
+    /// client saving can't switch another client's character on or off. When the file is missing
+    /// or unreadable, our own list is the base. <paramref name="merged"/> is the list written.
+    /// </summary>
+    public static string MergeForSave(string ours, string? disk, IReadOnlyList<DiscordCharacterOp> ops, out DiscordCharacter[] merged)
+    {
+        var mine = JsonSerializer.Deserialize(ours, ChatDiscordJsonContext.Default.ChatDiscordSettings)
+                   ?? throw new InvalidOperationException("settings JSON is empty");
+        DiscordCharacter[] baseList = ReadCharacters(disk) ?? NormalizeCharacters(mine.Characters);
+        merged = ApplyCharacterOps(baseList, ops);
+        mine.Characters = merged;
+        mine.Version = ChatDiscordSettings.CurrentVersion;
+        // Not Serialize(): mine has no runtime speech masks; its speech lists are already right.
+        return JsonSerializer.Serialize(mine, ChatDiscordJsonContext.Default.ChatDiscordSettings);
     }
 
     private static void KeepUnreadable(string path)
@@ -332,39 +370,8 @@ internal static class ChatDiscordStore
     }
 }
 
-// ── RynthAi 0.5.33 import shapes (read only) ─────────────────────────────
-
-internal sealed class RynthAiDiscordRouteDto
-{
-    public string? Name;
-    public bool Enabled = true;
-    public string? Mode;
-    public string? WebhookProtected;
-    public string? BotTokenProtected;
-    public string? ChannelId;
-    public string? DisplayName;
-    public List<string>? Channels;
-    public bool IncludeOther;
-    public string? Keywords;
-}
-
-internal sealed class RynthAiDiscordDto
-{
-    public bool Enabled;
-    public RynthAiDiscordRouteDto[]? Routes;
-    public string? OnlyCharacters;
-    public bool SkipOwn;
-    public bool IncludeTimestamp = true;
-    public bool TagCharacter;
-    public int BatchMs = 1500;
-    public int MinIntervalMs = 2000;
-    public int MaxQueue = 200;
-    public int MaxLog = 200;
-}
-
 // JsonSerializerContext must be at namespace scope (not nested) for source generation.
 [JsonSerializable(typeof(ChatDiscordSettings))]
-[JsonSerializable(typeof(RynthAiDiscordDto))]
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     IncludeFields = true,

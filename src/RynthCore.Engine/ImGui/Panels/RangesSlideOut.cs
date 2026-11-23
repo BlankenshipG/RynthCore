@@ -46,12 +46,18 @@ using Rule = RynthCore.Engine.UI.Panels.MonstersPanel.Rule;
 
 namespace RynthCore.Engine.ImGuiBackend.Panels;
 
-internal sealed class RangesSlideOut : DashboardDrawer
+internal sealed class RangesSlideOut : RynthAiDrawer
 {
     // ── Palette (the dashboard's, ARGB) ────────────────────────────────
-    private static readonly uint Teal = C(0xFF26D9E6), TealSoft = C(0xFF264C59), Amber = C(0xFFE8B333),
-        Gold = C(0xFFFFD16A), Mute = C(0xFFB8C8D8), White = C(0xFFF2F7FC), BarBg = C(0xFF141F29),
-        BtnFill = C(0xFF16283A), BtnBord = C(0xFF34587A);
+    private static readonly uint Gold = C(0xFFFFD16A);
+    private static uint Teal => RynthTheme.Accent;
+    private static uint TealSoft => RynthTheme.AccentFill;
+    private static uint Amber => RynthTheme.Highlight;
+    private static uint Mute => RynthTheme.TextMuted;
+    private static uint White => RynthTheme.Text;
+    private static uint BarBg => RynthTheme.Field;
+    private static uint BtnFill => RynthTheme.Button;
+    private static uint BtnBord => RynthTheme.Border;
     private static uint C(uint argb) => RynthTheme.Argb(argb);
 
     // ── Rows: (Settings row label, short label here) ────────────────────
@@ -129,9 +135,8 @@ internal sealed class RangesSlideOut : DashboardDrawer
     public override bool SavedOpen => RynthAiDashboardState.RangesOpen;
     public override void SaveOpen(bool open) => RynthAiDashboardState.SetRangesOpen(open);
 
-    public override string TabTooltip(bool right) => right
-        ? "Ranges: monster range, nav point reach and more, and the selected monster.\nClick to slide them out (to the right: there's no room on the left)."
-        : "Ranges: monster range, nav point reach and more, and the selected monster.\nClick to slide them out.";
+    public override string TabTooltip(bool right) =>
+        "Ranges: monster range, nav point reach and more, and the selected monster.\nClick to slide them out.";
 
     public override float Width(float k) => 250 * k;
     public override float Height(float k) => PanelHeight(k);
@@ -153,10 +158,18 @@ internal sealed class RangesSlideOut : DashboardDrawer
 
     public override void DrawPanel(Vector2 origin, float panelW, float panelH, float k)
     {
-        var dl = ImGuiNET.ImGui.GetWindowDrawList();
         // Title row: ruler + RANGES (yards) | close.
         float y = PanelFrame(origin, panelW, panelH, k, PhosphorIcons.Ruler, "RANGES", "yards", "Hide the ranges");
-        float x = origin.X + Pad * k, w = panelW - 2 * Pad * k;
+        DrawBody(origin.X + Pad * k, y, panelW - 2 * Pad * k, k);
+    }
+
+    /// <summary>The body's height under the title row (pixels): RynthAi's own dashboard window draws the frame (SettingsDrawerBodies).</summary>
+    public static float BodyHeight(float k) => (3 * LineH + 6 + 3 + Math.Max(1, Rows.Length) * (RowH + RowGap)) * k;
+
+    /// <summary>The selected monster and the range rows at (<paramref name="x"/>, <paramref name="y"/>), <paramref name="w"/> wide.</summary>
+    public void DrawBody(float x, float y, float w, float k)
+    {
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
         ImFontPtr f10 = ImGuiFonts.Get(UiFont.Dash10);
 
         MonsterBlock(dl, x, y, w, k);
@@ -203,7 +216,7 @@ internal sealed class RangesSlideOut : DashboardDrawer
         dl.AddText(new Vector2(x, y + (h - fs) * 0.5f), White, r.Label);
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, y));
         ImGuiNET.ImGui.InvisibleButton("##label", new Vector2(Math.Max(1, labelW - 2 * k), h));
-        ImGuiNET.ImGui.SetItemTooltip(r.Tip);
+        SafeImGui.SetItemTooltip(r.Tip);
 
         // Box at the right.
         float boxW = 46 * k;
@@ -221,7 +234,7 @@ internal sealed class RangesSlideOut : DashboardDrawer
             }
             else WriteValue(r, value);   // bad input reverts
         }
-        ImGuiNET.ImGui.SetItemTooltip(r.Tip);
+        SafeImGui.SetItemTooltip(r.Tip);
 
         // Slider between them: drag (or click) to pick, saved when let go.
         float sx = x + labelW, sw = boxX - 6 * k - sx;
@@ -245,7 +258,7 @@ internal sealed class RangesSlideOut : DashboardDrawer
                 r.Dragging = false;
                 if (r.DragValue != value) Changed(r, r.DragValue);
             }
-            ImGuiNET.ImGui.SetItemTooltip(r.Tip);
+            SafeImGui.SetItemTooltip(r.Tip);
 
             float cy = y + h * 0.5f;
             float frac = s.Max > s.Min ? (float)((shownValue - s.Min) / (s.Max - s.Min)) : 0f;
@@ -316,13 +329,13 @@ internal sealed class RangesSlideOut : DashboardDrawer
         if (FaceKit.IconButton("##mon_edit", PhosphorIcons.PencilSimple, new Vector2(bx, y), bsize, monster ? Teal : Mute, BtnFill,
                 enabled: monster, border: BtnBord, font: UiFont.Dash10))
             DamageDetailFace.Show(_selWcid, _selName);
-        ImGuiNET.ImGui.SetItemTooltip(monster ? _editTip : NoEditTip);
+        SafeImGui.SetItemTooltip(monster ? _editTip : NoEditTip);
         if (FaceKit.IconButton("##mon_damage", PhosphorIcons.Skull, new Vector2(bx + bsize.X + 2 * k, y), bsize, monster ? Teal : Mute, BtnFill,
                 enabled: monster, border: BtnBord, font: UiFont.Dash10))
         {
             if (!ImGuiPanelHost.IsOpen(DamageFace.Title)) PanelRouter.ToggleMonsters();
         }
-        ImGuiNET.ImGui.SetItemTooltip(monster ? _damageTip : NoDamageTip);
+        SafeImGui.SetItemTooltip(monster ? _damageTip : NoDamageTip);
 
         // Name line.
         string name; uint nameColor;
@@ -357,7 +370,7 @@ internal sealed class RangesSlideOut : DashboardDrawer
         {
             ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, fy));
             ImGuiNET.ImGui.InvisibleButton("##mon_facts", new Vector2(w, 2 * lh));
-            ImGuiNET.ImGui.SetItemTooltip(_factsTip);
+            SafeImGui.SetItemTooltip(_factsTip);
         }
     }
 

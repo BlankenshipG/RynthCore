@@ -10,13 +10,14 @@
 //  UI thread. Setters run on the pump too (DamageCommands), so they no longer
 //  race the plugin tick.
 //
-//  Aelrynth difficulty tiers (2026-10-03): RynthAi keeps a monster's HP, kills,
-//  casts to kill, seconds per kill and hit rate per tier of Aelrynth's awakened
-//  worlds and scaled copies (same monsters, +5% a tier). The rows describe the
-//  tier RynthAi is showing; RynthPluginGetAwakenedTierJson says which, and the
-//  panel's picker sets it (RynthPluginSetDamageViewTier). Shown only on
-//  Aelrynth (ServerInfo.IsAelrynth) and once RynthAi has seen the server's tier;
-//  an older RynthAi without the export shows nothing of it.
+//  Difficulty tiers (2026-10-03; generic since 2026-10-21): on a server whose
+//  plugin reports tiers (the same monsters scaled by a percent a tier), RynthAi
+//  keeps a monster's HP, kills, casts to kill, seconds per kill and hit rate per
+//  tier. The rows describe the tier RynthAi is showing;
+//  RynthPluginGetAwakenedTierJson (the export's old name) says which and whether
+//  to show tiers at all, and the panel's picker sets it
+//  (RynthPluginSetDamageViewTier). An older RynthAi without the export shows
+//  nothing of it.
 // ============================================================================
 
 using System;
@@ -36,10 +37,14 @@ internal sealed class DamageRow
 {
     public uint Wcid; public string Name = ""; public uint Wid; public string Weapon = "";
     public string Elem = ""; public int Tier; public int Hp; public bool HpManual;
-    /// <summary>Hp is an estimate: real Dereth's +5% per Aelrynth difficulty tier (that tier not appraised yet).</summary>
+    /// <summary>Hp is an estimate: tier 0's plus the tier's scaling (that tier not appraised yet).</summary>
     public bool HpEst;
     public double Crit; public int CritN; public double NonCrit; public int NonCritN;
     public double Casts; public int Kills; public string Key = "";
+    /// <summary>Every wcid of a row of several kinds (monsters of one name, e.g. retail's five
+    /// Rampagers), ascending; empty for one kind. Wcid is the one edits and details go to; the
+    /// plugin applies an edit to all of them.</summary>
+    public uint[] Wcids = Array.Empty<uint>();
     /// <summary>Per-monster (wcid) weapon state, the same on every row of a wcid.</summary>
     public uint AssignedWid; public string AssignedWeapon = "";
     public uint BestWid; public string BestWeapon = "";
@@ -56,6 +61,9 @@ internal sealed class DamageRow
     public List<DamageTierStat> Tiers = new();
     /// <summary>The synthetic top "Default" line (wcid 0).</summary>
     public bool IsDefault;
+    /// <summary>Evades, resists, attacks and spells both ways since login (the row's optional "mstats",
+    /// DamageRowStats.cs); null when the plugin sends none.</summary>
+    public DamageRowStats? Stats;
 }
 
 internal sealed class DamageTierStat
@@ -75,14 +83,14 @@ internal sealed class DamageView
     /// <summary>("" = Auto, "E:&lt;element&gt;", "I:&lt;essence id&gt;", label).</summary>
     public List<(string Key, string Name)> PetChoices = new();
     public bool Bound;
-    /// <summary>The Aelrynth difficulty tier the rows describe; Show false = say nothing of tiers.</summary>
-    public AwakenedTierView Tier = AwakenedTierView.Hidden;
+    /// <summary>The difficulty tier the rows describe; Show false = say nothing of tiers.</summary>
+    public DifficultyTierView Tier = DifficultyTierView.Hidden;
 }
 
-/// <summary>RynthPluginGetAwakenedTierJson, gated on ServerInfo.IsAelrynth.</summary>
-internal sealed class AwakenedTierView
+/// <summary>RynthPluginGetAwakenedTierJson: RynthAi shows tiers only when the server plugin reports them.</summary>
+internal sealed class DifficultyTierView
 {
-    public static readonly AwakenedTierView Hidden = new();
+    public static readonly DifficultyTierView Hidden = new();
 
     public bool Show;
     /// <summary>The tier where the player stands; the tier the rows describe; whether that follows Current.</summary>
@@ -92,7 +100,7 @@ internal sealed class AwakenedTierView
     /// <summary>Tiers with something learned, plus 0 and the current one, ascending.</summary>
     public List<int> Tiers = new();
 
-    public static AwakenedTierView Parse(string? json)
+    public static DifficultyTierView Parse(string? json)
     {
         if (string.IsNullOrEmpty(json)) return Hidden;
         try
@@ -100,7 +108,7 @@ internal sealed class AwakenedTierView
             using var doc = JsonDocument.Parse(json);
             JsonElement r = doc.RootElement;
             if (!r.TryGetProperty("show", out var sh) || sh.ValueKind != JsonValueKind.True) return Hidden;
-            var t = new AwakenedTierView { Show = true };
+            var t = new DifficultyTierView { Show = true };
             if (r.TryGetProperty("current", out var c)) t.Current = c.GetInt32();
             if (r.TryGetProperty("view", out var v)) t.View = v.GetInt32();
             if (r.TryGetProperty("following", out var f)) t.Following = f.ValueKind == JsonValueKind.True;
@@ -158,8 +166,7 @@ internal sealed unsafe class DamageSource : UiSource<DamageView>
 {
     private delegate* unmanaged[Cdecl]<IntPtr> _getRows, _getWeapons, _getPets, _getTier;
     private string? _rowsJson, _weaponsJson, _petsJson, _tierJson;
-    private AwakenedTierView _tier = AwakenedTierView.Hidden;
-    private bool _tierAelrynth;
+    private DifficultyTierView _tier = DifficultyTierView.Hidden;
     private List<DamageRow> _rows = new();
     private List<(uint Id, string Name)> _items = new();
     private List<(string Key, string Name)> _pets = new();
@@ -193,14 +200,12 @@ internal sealed unsafe class DamageSource : UiSource<DamageView>
             changed = true;
         }
 
-        // The difficulty tier, only on Aelrynth: anywhere else the panel says nothing of tiers.
-        bool aelrynth = ServerInfo.IsAelrynth;
-        string? tierJson = aelrynth && _getTier != null ? Read(_getTier) : null;
-        if (aelrynth != _tierAelrynth || tierJson != _tierJson)
+        // The difficulty tier: RynthAi's {"show":false} where the server plugin reports none.
+        string? tierJson = _getTier != null ? Read(_getTier) : null;
+        if (tierJson != _tierJson)
         {
-            _tierAelrynth = aelrynth;
             _tierJson = tierJson;
-            _tier = aelrynth ? AwakenedTierView.Parse(tierJson) : AwakenedTierView.Hidden;
+            _tier = DifficultyTierView.Parse(tierJson);
             changed = true;
         }
 
@@ -226,8 +231,7 @@ internal sealed unsafe class DamageSource : UiSource<DamageView>
     {
         _getRows = _getWeapons = _getPets = _getTier = null;
         _rowsJson = _weaponsJson = _petsJson = _tierJson = null;
-        _tier = AwakenedTierView.Hidden;
-        _tierAelrynth = false;
+        _tier = DifficultyTierView.Hidden;
         ClearSnapshot();
     }
 
@@ -288,6 +292,12 @@ internal sealed unsafe class DamageSource : UiSource<DamageView>
                 if (e.TryGetProperty("assignedOffName", out var aon)) row.AssignedOffName = aon.GetString() ?? "";
                 if (e.TryGetProperty("isDefault", out var idf)) row.IsDefault = idf.GetBoolean();
                 if (e.TryGetProperty("hpEst", out var he)) row.HpEst = he.ValueKind == JsonValueKind.True;
+                if (e.TryGetProperty("wcids", out var wa) && wa.ValueKind == JsonValueKind.Array)
+                {
+                    var kinds = new List<uint>();
+                    foreach (var w in wa.EnumerateArray()) if (w.TryGetInt64(out long wl)) kinds.Add((uint)wl);
+                    if (kinds.Count > 1) row.Wcids = kinds.ToArray();
+                }
                 if (e.TryGetProperty("pet", out var pc)) row.Pet = pc.GetString() ?? "";
                 if (e.TryGetProperty("petLabel", out var pl)) row.PetLabel = pl.GetString() ?? "Auto";
                 if (e.TryGetProperty("weak", out var wk)) row.Weak = wk.GetString() ?? "";
@@ -296,6 +306,7 @@ internal sealed unsafe class DamageSource : UiSource<DamageView>
                 if (e.TryGetProperty("hitRate", out var hr)) row.HitRate = hr.GetDouble();
                 if (e.TryGetProperty("targeted", out var tg)) row.Targeted = tg.GetBoolean();
                 if (e.TryGetProperty("nearby", out var nb)) row.Nearby = nb.GetBoolean();
+                row.Stats = DamageRowStats.Parse(e);
                 if (e.TryGetProperty("tiers", out var tarr) && tarr.ValueKind == JsonValueKind.Array)
                     foreach (JsonElement te in tarr.EnumerateArray())
                         row.Tiers.Add(new DamageTierStat
@@ -567,7 +578,7 @@ internal static unsafe class DamageCommands
         UiSources.Damage.RefreshPetsSoon();
     });
 
-    /// <summary>The Aelrynth difficulty tier the panel shows: -1 follows the one where the player stands.</summary>
+    /// <summary>The difficulty tier the panel shows: -1 follows the one where the player stands.</summary>
     public static void SetViewTier(int tier) => Run("view tier", () =>
     {
         if (_setViewTier == null) _setViewTier = (delegate* unmanaged[Cdecl]<int, void>)Export("RynthPluginSetDamageViewTier");
@@ -666,25 +677,27 @@ internal static unsafe class DamageCommands
         MonstersPanel.Rule? from = string.IsNullOrEmpty(copyFrom) ? null
             : rules.Rules.Find(r => !IsDefault(r) && r.Name.Equals(copyFrom, StringComparison.OrdinalIgnoreCase));
         MonstersPanel.Rule clone = CopyOfDefault(from ?? s, name);
-        if (from != null) { clone.OffhandId = from.OffhandId; clone.PetDamage = from.PetDamage; }   // a name rule's own choices, kept
+        if (from != null) { clone.OffhandId = from.OffhandId; clone.PetDamage = from.PetDamage; clone.AttackPower = from.AttackPower; clone.Kite = from.Kite; clone.PreferredDamage = from.PreferredDamage; }   // a name rule's own choices, kept
         rules.Rules.Insert(defIdx >= 0 ? defIdx + 1 : 0, clone);
         return clone;
     }
 
     /// <summary>
-    /// A new rule named <paramref name="name"/> with Default's settings. Off hand and pet are
-    /// left on "follow Default" (0 / PAuto) rather than copied, so a later change on the
-    /// DEFAULT line still reaches it.
+    /// A new rule named <paramref name="name"/> with Default's settings. Off hand, pet, attack
+    /// power, kite and preferred damage are left on "follow Default" (0 / PAuto / Default /
+    /// Default / Auto) rather than copied, so a later change on the DEFAULT line still reaches it.
     /// </summary>
     private static MonstersPanel.Rule CopyOfDefault(MonstersPanel.Rule s, string name) => new()
     {
         Name = name, Category = s.Category,
         MatchExpression = "",   // an exact-name rule matches by name, not by a (possibly false) expression
         Priority = s.Priority, DamageType = s.DamageType, WeaponId = s.WeaponId, OffhandId = 0,
-        ExVuln = s.ExVuln, PetDamage = "PAuto",
+        ExVuln = s.ExVuln, PetDamage = "PAuto", AttackPower = "Default", Kite = "Default", PreferredDamage = "Auto",
         Fester = s.Fester, Broadside = s.Broadside, GravityWell = s.GravityWell,
         Imperil = s.Imperil, Yield = s.Yield, Vuln = s.Vuln,
-        UseArc = s.UseArc, UseBolt = s.UseBolt, UseRing = s.UseRing, UseStreak = s.UseStreak, UseBlast = s.UseBlast,
+        Corrosion = s.Corrosion, Corruption = s.Corruption, DestructiveCurse = s.DestructiveCurse,
+        WeakeningCurse = s.WeakeningCurse, FesteringCurse = s.FesteringCurse,
+        UseArc = s.UseArc, UseBolt = s.UseBolt, UseRing = s.UseRing, UseStreak = s.UseStreak, UseBlast = s.UseBlast, UseWall = s.UseWall,
         CustomDebuffs = s.CustomDebuffs,
     };
 
@@ -740,10 +753,23 @@ internal static unsafe class DamageCommands
         ("GravityWell", "Gravity",  "Gravity Well (Vulnerability Other)"),
     };
 
-    /// <summary>The Damage panel's one-letter debuff marks, in DebuffDefs order.</summary>
+    /// <summary>The Void debuffs, cast with Void Magic (a character without it skips them). Drawn
+    /// as their own group: the faces lay DebuffDefs out in one row.</summary>
+    public static readonly (string Field, string Label, string Tip)[] VoidDebuffDefs =
+    {
+        ("Corrosion",        "Corrosion",   "Corrosion: Nether damage over about 15 seconds.\nA Void projectile; the damage starts when it hits."),
+        ("Corruption",       "Corruption",  "Corruption: Nether damage over about 30 seconds.\nA Void blast (a spread of projectiles); the damage starts when it hits."),
+        ("DestructiveCurse", "Destructive", "Destructive Curse: Nether damage over about 30 seconds."),
+        ("WeakeningCurse",   "Weakening",   "Weakening Curse: the monster does less damage (15 seconds)."),
+        ("FesteringCurse",   "Festering",   "Festering Curse: the monster is healed less (30 seconds)."),
+    };
+
+    /// <summary>The Damage panel's one-letter debuff marks, in DebuffDefs then VoidDebuffDefs order.</summary>
     public static readonly (string Field, char Letter)[] DebuffLetters =
     {
         ("Imperil", 'I'), ("Vuln", 'V'), ("Fester", 'F'), ("Yield", 'Y'), ("Broadside", 'B'), ("GravityWell", 'G'),
+        // Void: C Corrosion, R coRRuption, D Destructive Curse, W Weakening Curse, H Festering Curse (less healing).
+        ("Corrosion", 'C'), ("Corruption", 'R'), ("DestructiveCurse", 'D'), ("WeakeningCurse", 'W'), ("FesteringCurse", 'H'),
     };
 
     /// <summary>"IVF" for the debuffs a rule has on; X = an extra vuln, + = typed-in ones.</summary>
@@ -765,6 +791,9 @@ internal static unsafe class DamageCommands
         ("UseBlast",  "Blast",  "Blast spells (Flame Blast, Frost Blast...): a spread of projectiles, from level III.\n" +
                                 "Used instead of Bolt when both are on (Arc and Streak come first). A character who knows\n" +
                                 "no blast of the element casts its Bolt."),
+        ("UseWall",   "Wall",   "Wall spells (Slithering Flames, Os' Wall...): a line of projectiles straight ahead.\n" +
+                                "Cast only when Wall Range is on and Min Wall Targets monsters stand in the wall's path to\n" +
+                                "the target; RynthAi turns to face the target first. Otherwise the monster's other shape, or a bolt."),
     };
 
     public static readonly string[] ExVulnTypes =
@@ -774,8 +803,19 @@ internal static unsafe class DamageCommands
     public static readonly string[] DamageTypes =
         { "Auto", "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether" };
 
+    /// <summary>Rule.PreferredDamage choices: the kind of damage to fight with when the character uses more than one.</summary>
+    public static readonly string[] PreferredDamages = { "Auto", "Melee", "Missile", "War Magic", "Void Magic" };
+
     /// <summary>Rule.OffhandId as RynthAi reads it: 0 = follow the DEFAULT line, 1-4 a mode, anything else an item id.</summary>
     public static readonly string[] OffhandModeNames = { "Default", "Auto", "Shield", "Dual wield", "None" };
+
+    /// <summary>Rule.AttackPower choices, spelled as RynthAi reads them (AttackPowerModes).</summary>
+    public static readonly string[] AttackPowerModes =
+        { "Default", "High", "Reckless", "Variable", "Reckless + Variable" };
+
+    /// <summary>Rule.Kite choices, spelled as RynthAi reads them (KiteModes).</summary>
+    public static readonly string[] KiteModes =
+        { "Default", "Off", "PullAway" };
 
     /// <summary>Rule.PetDamage choices; "PAuto" is shown as Auto.</summary>
     public static readonly string[] PetDamageTypes =
@@ -786,13 +826,13 @@ internal static unsafe class DamageCommands
     {
         bool on = !rule.GetToggle(field);
         rule.SetToggle(field, on);
-        bool shape = field is "UseArc" or "UseBolt" or "UseRing" or "UseStreak" or "UseBlast";
+        bool shape = field is "UseArc" or "UseBolt" or "UseRing" or "UseStreak" or "UseBlast" or "UseWall";
         if (shape && !on && !HasAnyShape(rule))
             rule.UseBolt = true;
     }
 
     /// <summary>At least one spell shape is on (RynthAi refuses to attack with magic otherwise).</summary>
-    public static bool HasAnyShape(MonstersPanel.Rule r) => r.UseArc || r.UseBolt || r.UseRing || r.UseStreak || r.UseBlast;
+    public static bool HasAnyShape(MonstersPanel.Rule r) => r.UseArc || r.UseBolt || r.UseRing || r.UseStreak || r.UseBlast || r.UseWall;
 
     /// <summary>The shape RynthAi casts when no ring is due (RynthAi CombatManager.PickBaseShape): Arc, Streak, Blast, then Bolt.</summary>
     public static string BaseShapeName(MonstersPanel.Rule r)
@@ -800,7 +840,7 @@ internal static unsafe class DamageCommands
         if (r.UseArc) return "Arc";
         if (r.UseStreak) return "Streak";
         if (r.UseBlast) return "Blast";
-        if (r.UseBolt || r.UseRing) return "Bolt";
+        if (r.UseBolt || r.UseRing || r.UseWall) return "Bolt";
         return "";
     }
 }

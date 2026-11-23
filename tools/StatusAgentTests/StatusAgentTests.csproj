@@ -32,6 +32,12 @@
     <Compile Include="..\..\src\RynthCore.StatusAgent\NavAtlasService.cs" Link="Agent\NavAtlasService.cs" />
     <Compile Include="..\..\src\RynthCore.StatusAgent\Dat\DatDatabase.cs" Link="Agent\Dat\DatDatabase.cs" />
     <Compile Include="..\..\src\RynthCore.StatusAgent\StatusFileCache.cs" Link="Agent\StatusFileCache.cs" />
+    <Compile Include="..\..\src\RynthCore.StatusAgent\ServeGuard.cs" Link="Agent\ServeGuard.cs" />
+    <Compile Include="..\..\src\RynthCore.StatusAgent\ClientLiveness.cs" Link="Agent\ClientLiveness.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
   </ItemGroup>
 
 </Project>

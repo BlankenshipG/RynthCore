@@ -63,17 +63,32 @@ internal sealed unsafe class ItemsSource : UiSource<ItemsSnapshot>
 internal static unsafe class ItemsCommands
 {
     private static delegate* unmanaged[Cdecl]<IntPtr, void> _set;
-    private static delegate* unmanaged[Cdecl]<void> _addWeapon, _addShield, _addConsumable;
+    private static delegate* unmanaged[Cdecl]<void> _addWeapon, _addShield, _addConsumable, _clean;
+    private static delegate* unmanaged[Cdecl]<uint, void> _addWeaponById;
 
     /// <summary>ItemRule.Action value the plugin uses for off-hand shields.</summary>
     public const string ShieldAction = "Shield";
 
     static ItemsCommands()
     {
-        PluginManager.PluginsUnloaded += () => { _set = null; _addWeapon = null; _addShield = null; _addConsumable = null; };
+        PluginManager.PluginsUnloaded += () => { _set = null; _addWeapon = null; _addShield = null; _addConsumable = null; _clean = null; _addWeaponById = null; };
     }
 
     public static readonly string[] Elements = { "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether" };
+
+    /// <summary>
+    /// Universal damage (2026-10-19): prismatic ammo deals every damage type, so RynthAi treats a
+    /// missile weapon or ammo set to it as whatever the target is weakest to (MissileAmmo.Universal).
+    /// </summary>
+    public const string Prismatic = "Prismatic";
+
+    /// <summary>The elements plus <see cref="Prismatic"/>: what a missile weapon or ammo can be set to.</summary>
+    public static readonly string[] MissileElements = { "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether", Prismatic };
+
+    /// <summary>The element choices for a weapon of <paramref name="kind"/> (RynthAi's WeaponEntry.Kind): Prismatic only for missile weapons and ammo.</summary>
+    public static string[] ElementsFor(string? kind) =>
+        string.Equals(kind, "Missile", StringComparison.OrdinalIgnoreCase) || string.Equals(kind, "Ammo", StringComparison.OrdinalIgnoreCase)
+            ? MissileElements : Elements;
     public static readonly string[] ConsumableTypes = { "General", "Lockpick", "HealthKit", "HealthPotion", "ManaPotion", "StaminaPotion", "ManaStone", "Stamina", "Pet" };
 
     private static IntPtr Export(string name) => PluginExportBinder.Resolve("RynthAi", name);
@@ -98,6 +113,20 @@ internal static unsafe class ItemsCommands
     });
 
     /// <summary>
+    /// Adds item <paramref name="id"/> (a weapon, wand or shield) to RynthAi's weapons: the ones the
+    /// Damage panel offers and combat may use. The Inventory panel's right-click (2026-10-25).
+    /// RynthAi says in chat what it did; one without the export (before 2026-10-25) is logged.
+    /// </summary>
+    public static void AddWeapon(uint id) => UiDataHub.Post("Items add weapon by id", () =>
+    {
+        if (_addWeaponById == null) _addWeaponById = (delegate* unmanaged[Cdecl]<uint, void>)Export("RynthPluginAddWeaponById");
+        if (_addWeaponById != null) _addWeaponById(id);
+        else RynthLog.UI("ItemsCommands: Add to Damage panel weapons unavailable - this RynthAi has no RynthPluginAddWeaponById.");
+        UiSources.Items.RequestRefresh();
+        UiSources.Damage.RequestRefresh();
+    });
+
+    /// <summary>
     /// Adds the item selected in the inventory as an off-hand shield. RynthAi older than
     /// 0.6.20 has no such export: the click is logged and dropped.
     /// </summary>
@@ -114,6 +143,18 @@ internal static unsafe class ItemsCommands
     {
         if (_addConsumable == null) _addConsumable = (delegate* unmanaged[Cdecl]<void>)Export("RynthPluginAddSelectedConsumable");
         if (_addConsumable != null) _addConsumable();
+        UiSources.Items.RequestRefresh();
+    });
+
+    /// <summary>
+    /// Removes weapons and consumables no longer in the inventory; RynthAi reports what it did
+    /// in chat. RynthAi older than 0.5.43 has no such export: the click is logged and dropped.
+    /// </summary>
+    public static void CleanMissing() => UiDataHub.Post("Items clean", () =>
+    {
+        if (_clean == null) _clean = (delegate* unmanaged[Cdecl]<void>)Export("RynthPluginCleanItems");
+        if (_clean != null) _clean();
+        else RynthLog.UI("ItemsCommands: Remove Missing unavailable - RynthAi 0.5.43 or newer is required.");
         UiSources.Items.RequestRefresh();
     });
 

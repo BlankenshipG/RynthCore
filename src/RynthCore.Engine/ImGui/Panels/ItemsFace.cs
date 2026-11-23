@@ -2,7 +2,12 @@
 //  RynthCore.Engine - ImGui/Panels/ItemsFace.cs
 //  ImGui face of the Items panel (UI/Panels/ItemsPanel.cs): weapons (name,
 //  element, Del), consumables (name, type, Del), each with "Add Selected",
-//  and mana stone tapping (on/off, keep count, min max-mana to tap).
+//  and mana stone tapping (on/off, keep count, min max-mana to tap). A listed
+//  weapon the character no longer carries (RynthAi's missingIds) shows in amber
+//  with a warning icon and "(missing)", and says what to do in its tooltip.
+//  A shield row (Action "Shield") from a RynthAi that sends noBuff shows a
+//  "No buff" toggle in place of its element column: on = RynthAi never buffs
+//  that shield. Weapon rows are unchanged.
 //
 //  Edits change a private copy and save the whole payload (ItemsCommands,
 //  pump thread). A newer snapshot replaces the copy; snapshots from before
@@ -52,33 +57,83 @@ internal sealed class ItemsFace : IImGuiPanel
         ImGuiNET.ImGui.BeginChild("##items_body", new Vector2(w, Math.Max(60, Remaining(origin, size))));
         float bw = ImGuiNET.ImGui.GetContentRegionAvail().X;
 
+        // Above the lists, which can run long: drops entries for items sold, dropped, used up or traded.
+        AddSelected("##clean_missing", PhosphorIcons.Eraser + " Remove Missing", "(weapons and consumables no longer in your inventory)", ItemsCommands.CleanMissing,
+            "Removes listed weapons and consumables that are no longer in your inventory.\n" +
+            "An entry whose item is gone but with an unlisted item of the same name in your pack\n" +
+            "(a new stack of kits, a replacement weapon) is pointed at that item instead.\n" +
+            "Does nothing while your inventory is still loading. Also: /ra items clean.");
+        // The other way: everything in the pack that belongs here and isn't listed yet (answers in chat).
+        AddSelected("##fill_from_pack", PhosphorIcons.Plus + " Add From Pack", "(weapons, healing kits, lockpicks, pet essences not listed yet)",
+            () => RynthAiCommands.ApplyRemoteCommand("sendchat", "/ra items fill"),
+            "Adds every weapon, healing kit, lockpick and pet essence in your pack that isn't listed yet.\nRynthAi says in chat what it added. Also: /ra items fill.");
+
         // Weapons
         Section("Weapons", bw);
         if (_data.Weapons.Count == 0) Empty("No weapons configured", bw);
         else
         {
             TableHeader("Element", bw);
-            for (int i = 0; i < _data.Weapons.Count; i++)
+            // Grouped by kind (the order only matters inside a group); with a single group the
+            // sub-headings would say nothing, so they are left out.
+            var groups = new List<(string Name, List<int> Idx)>();
+            foreach (string kind in KindOrder)
             {
-                ItemsPanel.WeaponEntry wpn = _data.Weapons[i];
-                ImGuiNET.ImGui.PushID("w" + i);
-                int r = Row(wpn.Name, wpn.Element, i, bw);
-                ImGuiNET.ImGui.PopID();
-                if (r == 1)
+                var idx = new List<int>();
+                for (int i = 0; i < _data.Weapons.Count; i++)
+                    if (KindGroup(_data.Weapons[i].Kind) == kind) idx.Add(i);
+                if (idx.Count > 0) groups.Add((kind, idx));
+            }
+            bool removed = false;
+            int shown = 0;
+            foreach (var (groupName, idx) in groups)
+            {
+                if (groups.Count > 1) KindHeading(groupName, idx.Count, bw);
+                for (int k = 0; k < idx.Count; k++)
                 {
-                    Vector2 at = ImGuiNET.ImGui.GetIO().MousePos;
-                    _picker.Open(at, ItemsCommands.Elements, Array.IndexOf(ItemsCommands.Elements, wpn.Element), e =>
+                    int i = idx[k];
+                    ItemsPanel.WeaponEntry wpn = _data.Weapons[i];
+                    ImGuiNET.ImGui.PushID("w" + i);
+                    int r = Row(wpn.Name, wpn.Element, shown++, bw, _data.MissingIds.Contains(wpn.Id),
+                                DamageTypeColors.For(wpn.Element, Text), k > 0, k < idx.Count - 1,
+                                wpn.ShowsNoBuff ? wpn.NoBuff : null);
+                    ImGuiNET.ImGui.PopID();
+                    if (r == 5)
                     {
-                        wpn.Element = ItemsCommands.Elements[e];
+                        wpn.NoBuff = !(wpn.NoBuff ?? false);
                         Save();
-                    }, 160);
+                        continue;
+                    }
+                    // Up / down inside its group: the order is RynthAi's preference (the buff wand, the
+                    // first weapon of a kind), and it couldn't be changed but by removing and re-adding.
+                    if (r == 3 || r == 4)
+                    {
+                        int j = idx[r == 3 ? k - 1 : k + 1];
+                        (_data.Weapons[i], _data.Weapons[j]) = (_data.Weapons[j], _data.Weapons[i]);
+                        Save();
+                        removed = true;   // the indexes moved: draw the rest next frame
+                        break;
+                    }
+                    if (r == 1)
+                    {
+                        Vector2 at = ImGuiNET.ImGui.GetIO().MousePos;
+                        // Missile weapons and ammo can also be Prismatic: universal damage, the target's weakest element.
+                        string[] choices = ItemsCommands.ElementsFor(wpn.Kind);
+                        _picker.Open(at, choices, Array.IndexOf(choices, wpn.Element), e =>
+                        {
+                            wpn.Element = choices[e];
+                            Save();
+                        }, 160);
+                    }
+                    else if (r == 2)
+                    {
+                        _data.Weapons.RemoveAt(i);
+                        Save();
+                        removed = true;
+                        break;
+                    }
                 }
-                else if (r == 2)
-                {
-                    _data.Weapons.RemoveAt(i);
-                    Save();
-                    break;
-                }
+                if (removed) break;
             }
         }
         AddSelected("##add_weapon", PhosphorIcons.Plus + " Add Selected Weapon", "(select a weapon in inventory first)", ItemsCommands.AddSelectedWeapon);
@@ -94,8 +149,15 @@ internal sealed class ItemsFace : IImGuiPanel
             {
                 ItemsPanel.ConsumableEntry c = _data.Consumables[i];
                 ImGuiNET.ImGui.PushID("c" + i);
-                int r = Row(c.Name, c.Type, i, bw);
+                int r = Row(c.Name, c.Type, i, bw, missing: false, tint: Text, canUp: i > 0, canDown: i < _data.Consumables.Count - 1);
                 ImGuiNET.ImGui.PopID();
+                if (r == 3 || r == 4)
+                {
+                    int j = r == 3 ? i - 1 : i + 1;
+                    (_data.Consumables[i], _data.Consumables[j]) = (_data.Consumables[j], _data.Consumables[i]);
+                    Save();
+                    break;
+                }
                 if (r == 1)
                 {
                     Vector2 at = ImGuiNET.ImGui.GetIO().MousePos;
@@ -135,6 +197,22 @@ internal sealed class ItemsFace : IImGuiPanel
         int keep = Spinner("##keep", _data.ManaStoneKeepCount, 1, 999, new Vector2(x, p.Y));
         if (keep != _data.ManaStoneKeepCount) { _data.ManaStoneKeepCount = keep; Save(); }
         NextLine(new Vector2(p.X - 4, p.Y - 4), 30);
+        if (_data.ManaTapMacroOff is bool macroOff)
+        {
+            // Stones refill worn gear and drain tap loot with the macro stopped too.
+            p = ImGuiNET.ImGui.GetCursorScreenPos() + new Vector2(4, 0);
+            float my = p.Y + (22 - ImGuiNET.ImGui.GetFontSize()) * 0.5f;
+            dl.AddText(new Vector2(p.X, my), Text, "With macro off");
+            float mx = p.X + ImGuiNET.ImGui.CalcTextSize("With macro off").X + 6;
+            if (Button("##tapmacrooff", macroOff ? "ON" : "OFF", new Vector2(mx, p.Y), new Vector2(50, 22), macroOff ? OnText : Mute, macroOff ? OnBg : BtnFill))
+            {
+                _data.ManaTapMacroOff = !macroOff;
+                Save();
+            }
+            if (ImGuiNET.ImGui.IsItemHovered())
+                ImGuiNET.ImGui.SetTooltip("Mana stones refill your worn gear, and drain loot taken for tapping,\nwhile the macro is off too. OFF: only while the macro runs.");
+            NextLine(new Vector2(p.X - 4, p.Y), 28);
+        }
         if (_data.EnableManaTapping)
         {
             p = ImGuiNET.ImGui.GetCursorScreenPos() + new Vector2(4, 0);
@@ -180,6 +258,26 @@ internal sealed class ItemsFace : IImGuiPanel
         ImGuiNET.ImGui.Dummy(new Vector2(w, h));
     }
 
+    // The weapon groups, in the order shown. "Other" holds items RynthAi doesn't know right now (not carried).
+    private static readonly string[] KindOrder = { "Melee", "Missile", "War Magic", "Void Magic", "Shield", "Ammo", "Other" };
+
+    private static string KindGroup(string kind)
+    {
+        foreach (string k in KindOrder)
+            if (k.Equals(kind, StringComparison.OrdinalIgnoreCase)) return k;
+        return "Other";
+    }
+
+    private static void KindHeading(string title, int count, float w)
+    {
+        Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
+        ImFontPtr f = ImGuiFonts.Get(UiFont.UiBold11);
+        var dl = ImGuiNET.ImGui.GetWindowDrawList();
+        dl.AddRectFilled(p, p + new Vector2(w, 20), PanelBg);
+        dl.AddText(f, f.FontSize, p + new Vector2(8, (20 - f.FontSize) * 0.5f), Teal, title + "  (" + count + ")");
+        ImGuiNET.ImGui.Dummy(new Vector2(w, 20));
+    }
+
     private static void TableHeader(string column, float w)
     {
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
@@ -200,29 +298,77 @@ internal sealed class ItemsFace : IImGuiPanel
         ImGuiNET.ImGui.Dummy(new Vector2(w, 22));
     }
 
-    /// <summary>Name | [value picker] | Del. Returns 1 when the picker was clicked, 2 for Del, else 0.</summary>
-    private static int Row(string name, string value, int index, float w)
+    private const string MissingSuffix = " (missing)";
+    // The up / down buttons' width in a row (two 20 px buttons and their gaps).
+    private const float MoveW = 46;
+
+    private const string NoBuffTip = "Never buff this shield - for a shield that already carries its buffs.\n"
+        + "RynthAi then aims no armor spells at it, and its spells running low never start a rebuff.";
+
+    /// <summary>
+    /// Name | up | down | [value picker] | Del. Returns 1 when the picker was clicked, 2 for Del,
+    /// 3 for up, 4 for down, 5 for the "No buff" toggle, else 0. Up / down are drawn dim and do
+    /// nothing at the ends. <paramref name="missing"/>: the item isn't carried any more (amber, a
+    /// warning icon, "(missing)" and a tooltip saying what to do). <paramref name="noBuff"/>
+    /// non-null (a shield row, RynthAi sending noBuff): the value column is the "No buff" toggle
+    /// instead of the picker (a shield has no element; its column only said "Shield").
+    /// Otherwise the name and value are drawn in <paramref name="tint"/> (a weapon's damage-type
+    /// colour, as UB-ILT's Items tab).
+    /// </summary>
+    /// <param name="tint">The value button's text colour (a weapon's damage type colour, else Text).</param>
+    private static int Row(string name, string value, int index, float w, bool missing, uint tint, bool canUp = false, bool canDown = false,
+        bool? noBuff = null)
     {
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos();
         var dl = ImGuiNET.ImGui.GetWindowDrawList();
         dl.AddRectFilled(p, p + new Vector2(w, 24), index % 2 == 0 ? RowAlt : PanelBg);
-        float nameW = w - 146;
+        float nameW = w - 146 - MoveW;
+        float ty = p.Y + (24 - ImGuiNET.ImGui.GetFontSize()) * 0.5f;
         dl.PushClipRect(p, p + new Vector2(nameW, 24), true);
-        dl.AddText(new Vector2(p.X + 6, p.Y + (24 - ImGuiNET.ImGui.GetFontSize()) * 0.5f), Text, name);
+        if (missing)
+        {
+            float x = p.X + 6;
+            dl.AddText(new Vector2(x, ty), Amber, PhosphorIcons.Warning);
+            x += ImGuiNET.ImGui.CalcTextSize(PhosphorIcons.Warning).X + 4;
+            dl.AddText(new Vector2(x, ty), Amber, name);
+            x += ImGuiNET.ImGui.CalcTextSize(name).X;
+            dl.AddText(new Vector2(x, ty), Amber, MissingSuffix);
+        }
+        else
+        {
+            dl.AddText(new Vector2(p.X + 6, ty), tint, name);
+        }
         dl.PopClipRect();
+        if (missing && ImGuiNET.ImGui.IsWindowHovered() && ImGuiNET.ImGui.IsMouseHoveringRect(p, p + new Vector2(nameW, 24)))
+            SafeImGui.SetTooltip("Not in your pack any more - select the item in your inventory and click\n"
+                + "Add Selected Weapon again, or remove this entry.");
         int result = 0;
-        if (Button("##pick", value, new Vector2(p.X + nameW + 2, p.Y + 2), new Vector2(96, 20), Text, BtnFill)) result = 1;
-        if (IconButton("##del", PhosphorIcons.Trash, new Vector2(p.X + nameW + 102, p.Y + 2), new Vector2(42, 20), Red, BtnFill)) result = 2;
+        float bx = p.X + nameW + 2;
+        if (IconButton("##up", PhosphorIcons.CaretUp, new Vector2(bx, p.Y + 2), new Vector2(20, 20), canUp ? Teal : Mute, BtnFill) && canUp) result = 3;
+        ImGuiNET.ImGui.SetItemTooltip("Move up");
+        if (IconButton("##down", PhosphorIcons.CaretDown, new Vector2(bx + 22, p.Y + 2), new Vector2(20, 20), canDown ? Teal : Mute, BtnFill) && canDown) result = 4;
+        ImGuiNET.ImGui.SetItemTooltip("Move down");
+        bx += MoveW;
+        if (noBuff is bool nb)
+        {
+            // The tapping toggle's look: lit while the shield is left out of buffing.
+            if (Button("##nobuff", (nb ? PhosphorIcons.CheckSquare : PhosphorIcons.Square) + " No buff", new Vector2(bx, p.Y + 2), new Vector2(96, 20),
+                    nb ? OnText : Mute, nb ? OnBg : BtnFill)) result = 5;
+            ImGuiNET.ImGui.SetItemTooltip(NoBuffTip);
+        }
+        else if (Button("##pick", value, new Vector2(bx, p.Y + 2), new Vector2(96, 20), tint, BtnFill)) result = 1;
+        if (IconButton("##del", PhosphorIcons.Trash, new Vector2(bx + 100, p.Y + 2), new Vector2(42, 20), Red, BtnFill)) result = 2;
         ImGuiNET.ImGui.SetItemTooltip("Remove");
         NextLine(p, 24);
         return result;
     }
 
-    private static void AddSelected(string id, string label, string hint, Action onClick)
+    private static void AddSelected(string id, string label, string hint, Action onClick, string? tooltip = null)
     {
         Vector2 p = ImGuiNET.ImGui.GetCursorScreenPos() + new Vector2(4, 4);
         float bw = ButtonWidth(label) + 4;
         if (Button(id, label, p, new Vector2(bw, 24), Teal, BtnFill)) onClick();
+        if (tooltip != null) SafeImGui.SetItemTooltip(tooltip);
         ImFontPtr f9 = ImGuiFonts.Get(UiFont.Ui9);
         ImGuiNET.ImGui.GetWindowDrawList().AddText(f9, f9.FontSize, new Vector2(p.X + bw + 8, p.Y + (24 - f9.FontSize) * 0.5f), Mute, hint);
         NextLine(new Vector2(p.X - 4, p.Y - 4), 32);

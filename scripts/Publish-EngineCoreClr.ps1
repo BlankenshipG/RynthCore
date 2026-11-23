@@ -80,13 +80,31 @@ if (-not $EngineOnly) {
     }
 
     $seh = "$repo\native\SehTrampoline\bin\RynthCore.SehTrampoline.dll"
+    $sehC = "$repo\native\SehTrampoline\SehTrampoline.c"
+    # bin\ is gitignored, so a checkout keeps whatever DLL was last built there. Until
+    # 2026-10-12 this shipped a June v1 build over every newer source (v4 was merged):
+    # its crash logger turned managed NullReferenceExceptions into fatal CLR errors and
+    # the Client::UseTime guard stayed off. Same staleness rule as Deploy-RynthCore.ps1.
+    if ((Test-Path $seh) -and (Test-Path $sehC) -and
+        (Get-Item $sehC).LastWriteTime -gt (Get-Item $seh).LastWriteTime) {
+        throw "RynthCore.SehTrampoline.dll is STALE (SehTrampoline.c is newer). Rebuild with native\SehTrampoline\Build-SehTrampoline.ps1 -NoDeploy, then re-run."
+    }
     if (-not (Test-Path $seh)) { $seh = "C:\Games\RynthCore\Runtime\RynthCore.SehTrampoline.dll" }
     $sehDest = Join-Path (Resolve-Path $Target).Path "RynthCore.SehTrampoline.dll"
     $sameSeh = (Test-Path $sehDest) -and ((Resolve-Path $seh).Path -eq $sehDest -or
         (Get-FileHash $seh).Hash -eq (Get-FileHash $sehDest).Hash)
     if (-not $sameSeh) {
+        # Same move-aside as the loader and shim: a locked copy would otherwise keep every
+        # new launch on the old trampoline until all clients close.
         try { Copy-Item $seh $sehDest -Force -ErrorAction Stop }
-        catch { Write-Warning "RynthCore.SehTrampoline.dll changed but is in use by a running client; it gets the new one when it restarts." }
+        catch {
+            try {
+                Rename-Item $sehDest ("RynthCore.SehTrampoline.dll.old-{0:yyyyMMddHHmmss}" -f (Get-Date)) -ErrorAction Stop
+                Copy-Item $seh $sehDest -Force -ErrorAction Stop
+                Write-Host "RynthCore.SehTrampoline.dll was in use: moved the old one aside; new launches get the new one."
+            }
+            catch { Write-Warning "RynthCore.SehTrampoline.dll changed but is in use by a running client; it gets the new one when it restarts." }
+        }
     }
 
     # App-local runtime: the win-x86 runtime pack the SDK restores (same version the engine was built against).
@@ -99,9 +117,56 @@ if (-not $EngineOnly) {
         New-Item -ItemType Directory -Force -Path $dotnet | Out-Null
         Copy-Item "$rt\native\*" $dotnet -Force
         Copy-Item "$rt\lib\net10.0\*.dll" $dotnet -Force
-        # Diagnostics-only natives the host never loads.
-        Remove-Item "$dotnet\createdump.exe", "$dotnet\mscordaccore_*.dll", "$dotnet\msquic.dll" -Force -ErrorAction SilentlyContinue
+        # msquic is never loaded. createdump.exe and the DAC (mscordaccore_*) stay: the loader
+        # turns on CoreCLR's crash dumps (Logs\dumps\clr_<pid>_<time>.dmp), which run
+        # createdump.exe from this folder, and a debugger reads the dump with the DAC.
+        Remove-Item "$dotnet\msquic.dll" -Force -ErrorAction SilentlyContinue
         Write-Host "App-local runtime $ver -> $dotnet"
+    }
+    elseif (-not (Test-Path "$dotnet\createdump.exe")) {
+        # Runtimes laid out before 2026-10-11 had createdump.exe and the DAC deleted, so a
+        # CoreCLR fatal error (0x80131506) left no dump. Put them back from the runtime pack
+        # whose coreclr.dll is this one (same file version), never from another version.
+        $have = (Get-Item "$dotnet\coreclr.dll").VersionInfo.FileVersion
+        $pack = Join-Path $env:USERPROFILE ".nuget\packages\microsoft.netcore.app.runtime.win-x86"
+        $match = Get-ChildItem $pack -Directory -ErrorAction SilentlyContinue | Where-Object Name -like "10.*" |
+            ForEach-Object { "$($_.FullName)\runtimes\win-x86\native" } |
+            Where-Object { (Test-Path "$_\createdump.exe") -and (Get-Item "$_\coreclr.dll").VersionInfo.FileVersion -eq $have } |
+            Select-Object -First 1
+        if ($match) {
+            Copy-Item "$match\createdump.exe" $dotnet -Force
+            Get-ChildItem $match -Filter "mscordaccore_*.dll" | Copy-Item -Destination $dotnet -Force
+            Write-Host "Put createdump.exe and the DAC back into $dotnet (CoreCLR crash dumps)."
+        }
+        else { Write-Warning "createdump.exe is missing from $dotnet and no runtime pack matches coreclr $have; a CoreCLR crash will leave no dump." }
+    }
+
+    # Patched CoreCLR (2026-10-23, runtime-patches\coreclr-10.0.12-x86\README.md): the hot-reload
+    # statics crash, dotnet/runtime #135441. Its coreclr.dll, DAC and DBI go over the runtime pack's;
+    # the official CoreLib and JIT stay. Refused for a runtime of another version: a coreclr has to
+    # match its CoreLib. In use by a running client: moved aside, as the loader and shim are.
+    $patch = Join-Path $repo "runtime-patches\coreclr-10.0.12-x86"
+    if (Test-Path "$patch\coreclr.dll") {
+        $lib = (Get-Item "$dotnet\System.Private.CoreLib.dll").VersionInfo
+        $pv = (Get-Item "$patch\coreclr.dll").VersionInfo
+        if ($lib.FileMajorPart -ne $pv.FileMajorPart -or $lib.FileMinorPart -ne $pv.FileMinorPart -or $lib.FileBuildPart -ne $pv.FileBuildPart) {
+            throw "runtime-patches\coreclr-10.0.12-x86 was built for runtime $($pv.FileMajorPart).$($pv.FileMinorPart).$($pv.FileBuildPart), but $dotnet has CoreLib $($lib.FileMajorPart).$($lib.FileMinorPart).$($lib.FileBuildPart): rebuild the patch for it or remove the folder (see its README)."
+        }
+        $dacName = "mscordaccore_x86_x86_{0}.{1}.{2}.{3}.dll" -f $pv.FileMajorPart, $pv.FileMinorPart, $pv.FileBuildPart, $pv.FilePrivatePart
+        $copied = 0
+        foreach ($pair in @(@('coreclr.dll', 'coreclr.dll'), @('mscordaccore.dll', 'mscordaccore.dll'), @('mscordbi.dll', 'mscordbi.dll'), @('mscordaccore.dll', $dacName))) {
+            $src = Join-Path $patch $pair[0]
+            $dest = Join-Path $dotnet $pair[1]
+            if ((Test-Path $dest) -and (Get-FileHash $dest).Hash -eq (Get-FileHash $src).Hash) { continue }
+            try { Copy-Item $src $dest -Force -ErrorAction Stop }
+            catch {
+                Rename-Item $dest ("{0}.old-{1:yyyyMMddHHmmss}" -f $pair[1], (Get-Date)) -ErrorAction Stop
+                Copy-Item $src $dest -Force -ErrorAction Stop
+                Write-Host "$($pair[1]) was in use: moved the old one aside; new launches get the patched one."
+            }
+            $copied++
+        }
+        if ($copied -gt 0) { Write-Host "Patched CoreCLR $($pv.FileVersion) -> $dotnet ($copied file(s); runtime-patches\coreclr-10.0.12-x86)" }
     }
 }
 

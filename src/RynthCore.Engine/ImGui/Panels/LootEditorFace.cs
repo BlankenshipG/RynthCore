@@ -158,6 +158,11 @@ internal sealed class LootEditorFace : IImGuiPanel
         public readonly byte[] Bytes = new byte[512];
         public string? Shown;
         public bool Active;
+        // A text condition (TextPattern): the mode shown, the words in the box, and the pattern they were
+        // read from (re-read only when the pattern changes, so a mode the player picked stays).
+        public LootTextMode? Mode;
+        public string Words = "";
+        public string? ParsedFrom;
     }
     private readonly Dictionary<(int Cond, int Line), FieldBuffer> _fields = new();
     private readonly FieldBuffer _nameField = new(), _keepField = new();
@@ -362,7 +367,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         {
             var n = new string[list.Count];
             var id = new int[list.Count];
-            for (int i = 0; i < list.Count; i++) { n[i] = list[i].Name + "  (" + list[i].Id.ToString(CultureInfo.InvariantCulture) + ")"; id[i] = list[i].Id; }
+            for (int i = 0; i < list.Count; i++) { n[i] = list[i].Name; id[i] = list[i].Id; /* names only (2026-11-07) */ }
             return (n, id);
         }
     }
@@ -393,7 +398,7 @@ internal sealed class LootEditorFace : IImGuiPanel
                 if (i >= 0 && i < s.Files.Count) RequestOpen(s.Files[i].Path);
             }, Math.Max(260, pickW));
         }
-        ImGuiNET.ImGui.SetItemTooltip(s.Path.Length == 0 ? "Pick a loot profile" : s.Path);
+        SafeImGui.SetItemTooltip(s.Path.Length == 0 ? "Pick a loot profile" : s.Path);
         PhosphorIcons.DrawCentered(ImGuiNET.ImGui.GetWindowDrawList(), ImGuiFonts.Get(UiFont.Ui11), PhosphorIcons.CaretDown,
             new Vector2(p.X + pickW - 18, p.Y), new Vector2(16, h), Mute);
 
@@ -410,12 +415,12 @@ internal sealed class LootEditorFace : IImGuiPanel
         if (Button("##save", PhosphorIcons.FloppyDisk + " Save", new Vector2(x, p.Y), new Vector2(saveW, h),
                 canSave ? Green : Mute, canSave ? StartBg : BtnFill, canSave))
             Save(force: false);
-        ImGuiNET.ImGui.SetItemTooltip(_saveTip);
+        SafeImGui.SetItemTooltip(_saveTip);
         x += saveW + 4;
 
         if (IconButton("##external", PhosphorIcons.ArrowSquareOut, new Vector2(x, p.Y), new Vector2(icon, h), Text, BtnFill))
             LaunchExternal(s.Path.Length > 0 ? s.Path : s.InUsePath);
-        ImGuiNET.ImGui.SetItemTooltip(s.Dirty
+        SafeImGui.SetItemTooltip(s.Dirty
             ? "Open external editor (it reads the file on disk: save first to take your edits)"
             : "Open external editor");
         NextLine(p, h + 4);
@@ -455,7 +460,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         var b = new Vector2(x + ts.X + 12, y + h - 1);
         dl.AddRect(a, b, color, 8);
         dl.AddText(new Vector2(x + 6, y + (h - ts.Y) * 0.5f), color, text);
-        if (ImGuiNET.ImGui.IsMouseHoveringRect(a, b) && tooltip.Length > 0) ImGuiNET.ImGui.SetTooltip(tooltip);
+        if (ImGuiNET.ImGui.IsMouseHoveringRect(a, b) && tooltip.Length > 0) SafeImGui.SetTooltip(tooltip);
         return b.X + 6;
     }
 
@@ -650,7 +655,7 @@ internal sealed class LootEditorFace : IImGuiPanel
             LootEditCommands.Simple("set_enabled", index, r.Enabled ? "false" : "true", expect: r.Name);
             changed = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(r.Enabled ? "Enabled: click to disable" : "Disabled: click to enable");
+        SafeImGui.SetItemTooltip(r.Enabled ? "Enabled: click to disable" : "Disabled: click to enable");
         x += 20;
 
         // Action badge
@@ -675,7 +680,7 @@ internal sealed class LootEditorFace : IImGuiPanel
             Expect(Await.ScrollFocus);
             changed = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(reorder ? "Move up" : Filtering ? "Clear the search and filter to reorder" : "Move up");
+        SafeImGui.SetItemTooltip(reorder ? "Move up" : Filtering ? "Clear the search and filter to reorder" : "Move up");
         bx += 18;
         if (IconButton("##dn", PhosphorIcons.ArrowDown, new Vector2(bx, p.Y + 2), new Vector2(16, 16), Mute, BtnFill,
                 reorder && index < s.Rules.Count - 1, font: UiFont.Ui11))
@@ -684,7 +689,7 @@ internal sealed class LootEditorFace : IImGuiPanel
             Expect(Await.ScrollFocus);
             changed = true;
         }
-        ImGuiNET.ImGui.SetItemTooltip(reorder ? "Move down" : Filtering ? "Clear the search and filter to reorder" : "Move down");
+        SafeImGui.SetItemTooltip(reorder ? "Move down" : Filtering ? "Clear the search and filter to reorder" : "Move down");
         bx += 18;
         if (IconButton("##dup", PhosphorIcons.Copy, new Vector2(bx, p.Y + 2), new Vector2(16, 16), Mute, BtnFill, !ro, font: UiFont.Ui11))
         {
@@ -704,13 +709,23 @@ internal sealed class LootEditorFace : IImGuiPanel
         // Name | conditions; click to edit.
         float textW = Math.Max(1, right - 4 - x);
         ImGuiNET.ImGui.SetCursorScreenPos(new Vector2(x, p.Y));
-        if (ImGuiNET.ImGui.InvisibleButton("##edit", new Vector2(textW, RowH))) OpenRule(index);
+        // Click: the same checklist as Add rule (2026-11-07); the popup's "Raw editor" is the rule view.
+        if (ImGuiNET.ImGui.InvisibleButton("##edit", new Vector2(textW, RowH)))
+        {
+            if (_state != null && !_state.ReadOnly && !_state.Dirty && !string.Equals(_state.Format, "json", StringComparison.OrdinalIgnoreCase))
+            {
+                _lootAdd.EmptyRule = null;
+                _lootAdd.RawEditor = OpenRule;
+                _lootAdd.OpenEdit(index, r.Name);
+            }
+            else OpenRule(index);
+        }
         bool hot = ImGuiNET.ImGui.IsItemHovered();
         if (hot)
         {
             ImGuiNET.ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
             dl.AddRect(new Vector2(x - 2, p.Y), new Vector2(x + textW, p.Y + RowH), BtnBord, 2);
-            ImGuiNET.ImGui.SetTooltip((r.Name.Length == 0 ? "(no name)" : r.Name) + "\n" + r.Summary);
+            SafeImGui.SetTooltip((r.Name.Length == 0 ? "(no name)" : r.Name) + "\n" + r.Summary);
         }
         ImGuiNET.ImGui.PopID();
 
@@ -729,6 +744,13 @@ internal sealed class LootEditorFace : IImGuiPanel
         return changed;
     }
 
+    /// <summary>An empty rule at the end, opened to edit by hand (Add rule before the checklist).</summary>
+    private void AddEmptyRule()
+    {
+        LootEditCommands.Simple("add", -1);
+        Expect(Await.OpenFocus);
+    }
+
     private void Expect(Await kind)
     {
         _await = kind;
@@ -743,24 +765,49 @@ internal sealed class LootEditorFace : IImGuiPanel
         string addLabel = PhosphorIcons.Plus + " Add rule";
         float addW = ButtonWidth(addLabel) + 6;
         bool canAdd = !s.ReadOnly && s.Path.Length > 0;
+        // The same attribute checklist as the Inventory panel's filter (2026-11-07): tick what the items
+        // must have, pick the action; "Start empty" in the popup is the old empty rule to edit by hand.
+        bool canChecklist = canAdd && !s.Dirty;
         if (Button("##add", addLabel, p, new Vector2(addW, h), canAdd ? Green : Mute, canAdd ? StartBg : BtnFill, canAdd))
         {
-            LootEditCommands.Simple("add", -1);
-            Expect(Await.OpenFocus);
+            if (canChecklist)
+            {
+                _lootAdd.EmptyRule = AddEmptyRule;
+                _lootAdd.Open(0, string.Empty, toOpenProfile: true, LootAddMode.AddRule, blank: true);
+            }
+            else AddEmptyRule();   // unsaved edits: the checklist saves, so add the empty rule as before
         }
-        ImGuiNET.ImGui.SetItemTooltip("Add a rule at the end and edit it");
+        ImGuiNET.ImGui.SetItemTooltip(canChecklist
+            ? "A new rule from the attribute checklist (the same as Filter inventory): tick what the items must have, pick the action"
+            : "Add an empty rule at the end and edit it (save your edits first to use the checklist)");
         string itemLabel = PhosphorIcons.Plus + " Add selected item";
         float itemW = ButtonWidth(itemLabel) + 6;
         bool canItem = s.Path.Length > 0 && !s.Dirty && (!s.ReadOnly || s.Format == "json");
         if (Button("##add_item", itemLabel, new Vector2(p.X + addW + 6, p.Y), new Vector2(itemW, h), canItem ? Teal : Mute, BtnFill, canItem))
             _lootAdd.Open(0, string.Empty, toOpenProfile: true);
-        ImGuiNET.ImGui.SetItemTooltip(canItem
+        SafeImGui.SetItemTooltip(canItem
             ? "A rule for the item selected in the game (click it first): preview, then add it here"
             : s.Dirty ? "Save or discard your edits first" : "This profile is read-only here");
         addW += itemW + 6;
+        // RynthAi answers in its own "Why this loot rule?" window (an older RynthAi ignores it).
+        string whyLabel = PhosphorIcons.Info + " " + LootWhyLabel;
+        float whyW = ButtonWidth(whyLabel) + 6;
+        if (Button("##loot_why", whyLabel, new Vector2(p.X + addW + 6, p.Y), new Vector2(whyW, h), Text, BtnFill))
+            AskLootWhy();
+        SafeImGui.SetItemTooltip(LootWhyTip);
+        addW += whyW + 6;
         MessageText(new Vector2(p.X + addW + 8, p.Y), p.X + w - grip - 4, h);
         NextLine(p, h);
     }
+
+    /// <summary>The "Why this loot rule?" buttons (here and the Classic Loot tab).</summary>
+    internal const string LootWhyLabel = "Why this loot rule?";
+    internal const string LootWhyTip =
+        "Which rule of the loot profile in use takes the item selected in the game, and why the rules above it\n" +
+        "didn't (the first condition each failed, and the value it read). RynthAi shows it in a small window.\nAlso: /ra loot why";
+
+    /// <summary>RynthAi's "lootwhy" remote command: /ra loot why window, for the selected item. Any thread.</summary>
+    internal static void AskLootWhy() => RynthAiCommands.ApplyRemoteCommand("lootwhy", "show");
 
     private void MessageText(Vector2 at, float right, float h)
     {
@@ -769,7 +816,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         dl.PushClipRect(at, new Vector2(Math.Max(at.X + 1, right), at.Y + h), true);
         dl.AddText(new Vector2(at.X, at.Y + (h - ImGuiNET.ImGui.GetFontSize()) * 0.5f), _msgOk ? Green : Red, _msg);
         dl.PopClipRect();
-        if (ImGuiNET.ImGui.IsMouseHoveringRect(at, new Vector2(right, at.Y + h))) ImGuiNET.ImGui.SetTooltip(_msg);
+        if (ImGuiNET.ImGui.IsMouseHoveringRect(at, new Vector2(right, at.Y + h))) SafeImGui.SetTooltip(_msg);
     }
 
     // =====================================================================
@@ -804,6 +851,26 @@ internal sealed class LootEditorFace : IImGuiPanel
         _fields.Clear();
         _nameField.Shown = null;
         _keepField.Shown = null;
+    }
+
+    /// <summary>The checklist edits saved rules of a .utl profile: nothing unapplied here, nothing unsaved.</summary>
+    private bool CanChecklist(LootEditStateDto s, bool dirty) =>
+        !s.ReadOnly && !dirty && !s.Dirty && _editIndex >= 0 && !string.Equals(s.Format, "json", StringComparison.OrdinalIgnoreCase);
+
+    private string ChecklistWhyNot(LootEditStateDto s, bool dirty) =>
+        s.ReadOnly ? "This profile is read-only here"
+        : string.Equals(s.Format, "json", StringComparison.OrdinalIgnoreCase) ? "Native-format rules are edited here, by hand"
+        : dirty ? "Apply or Revert this rule's changes first (the checklist saves the file)"
+        : s.Dirty ? "Save the profile first (the checklist saves the file)"
+        : "Pick a rule";
+
+    private void OpenChecklist()
+    {
+        if (_state == null || _editIndex < 0) return;
+        string name = _expect ?? _edit?.Name ?? string.Empty;
+        _lootAdd.EmptyRule = null;
+        _lootAdd.RawEditor = null;   // already in the rule view
+        _lootAdd.OpenEdit(_editIndex, name);
     }
 
     private void Apply()
@@ -851,6 +918,16 @@ internal sealed class LootEditorFace : IImGuiPanel
         if (Button("##apply", applyL, new Vector2(rx, p.Y), new Vector2(applyW, h), dirty ? Green : Mute, dirty ? StartBg : BtnFill, dirty && !ro))
             Apply();
         ImGuiNET.ImGui.SetItemTooltip("Put these changes in the profile (then Save writes the file)");
+        // The same checklist as Add rule and Filter inventory (2026-11-07).
+        string checkL = PhosphorIcons.ListChecks + " Edit with checklist";
+        float checkW = ButtonWidth(checkL) + 6;
+        rx -= checkW + 8;
+        bool canCheck = CanChecklist(s, dirty);
+        if (Button("##checklist", checkL, new Vector2(rx, p.Y), new Vector2(checkW, h), canCheck ? Teal : Mute, BtnFill, canCheck))
+            OpenChecklist();
+        ImGuiNET.ImGui.SetItemTooltip(canCheck
+            ? "Edit this rule's conditions with the attribute checklist (as Add rule and Filter inventory); what it can't show is kept as written"
+            : ChecklistWhyNot(s, dirty));
         NextLine(p, h + 4);
         Separator(w);
 
@@ -951,9 +1028,17 @@ internal sealed class LootEditorFace : IImGuiPanel
 
         ImGuiNET.ImGui.Dummy(new Vector2(0, 4));
         p = ImGuiNET.ImGui.GetCursorScreenPos();
+        // Add condition: the checklist (2026-11-07), as Add rule; "Raw condition" picks a node type by hand.
         string addL = PhosphorIcons.Plus + " Add condition";
-        if (Button("##add_cond", addL, p, new Vector2(ButtonWidth(addL) + 6, h), ro ? Mute : Teal, BtnFill, !ro && _nodeItems.Length > 0))
-            _picker.Open(new Vector2(p.X, p.Y + h), _nodeItems, -1, i =>
+        bool canCheck = CanChecklist(_state!, EditDirty);
+        float addW = ButtonWidth(addL) + 6;
+        if (Button("##add_cond", addL, p, new Vector2(addW, h), canCheck ? Teal : Mute, BtnFill, canCheck))
+            OpenChecklist();
+        ImGuiNET.ImGui.SetItemTooltip(canCheck ? "Tick more of the checklist's attributes for this rule" : ChecklistWhyNot(_state!, EditDirty));
+        string rawL = PhosphorIcons.PencilSimple + " Raw condition";
+        Vector2 rp = new(p.X + addW + 6, p.Y);
+        if (Button("##add_raw", rawL, rp, new Vector2(ButtonWidth(rawL) + 6, h), ro ? Mute : Text, BtnFill, !ro && _nodeItems.Length > 0))
+            _picker.Open(new Vector2(rp.X, rp.Y + h), _nodeItems, -1, i =>
             {
                 if (_edit == null) return;
                 // Before any DisabledRule node, so the rule's file layout stays VTank's.
@@ -1017,7 +1102,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         {
             if (!_rawShown.Remove(i)) _rawShown.Add(i);
         }
-        ImGuiNET.ImGui.SetItemTooltip(rawToggle ? "Show the raw data lines (any key id, any value)" : "This condition is edited as raw lines");
+        SafeImGui.SetItemTooltip(rawToggle ? "Show the raw data lines (any key id, any value)" : "This condition is edited as raw lines");
         tx += 18;
         int result = 0;
         int prev = PrevVisible(r, i), next = NextVisible(r, i);
@@ -1105,19 +1190,18 @@ internal sealed class LootEditorFace : IImGuiPanel
                 string hint = node.Labels.Count > 0 ? node.Labels[0].ToLowerInvariant() : "value";
                 if (Field("##val", FieldFor(i, 0), c.Lines[0], new Vector2(p.X + kw + 2, p.Y), w - kw - 2, hint, ro, out string v, h))
                     c.Lines[0] = v;
-                ImGuiNET.ImGui.SetItemTooltip(node.Labels.Count > 0 ? node.Labels[0] : "Value");
+                SafeImGui.SetItemTooltip(node.Labels.Count > 0 ? node.Labels[0] : "Value");
                 break;
             }
             case "keypattern":
             {
-                float kw = w * 0.34f;
+                float kw = w * 0.30f;
                 IdPicker("##key", c, 1, KeyTable(node.KeyTable), "key", p, kw - 2, h, ro);
-                if (Field("##pat", FieldFor(i, 0), c.Lines[0], new Vector2(p.X + kw + 2, p.Y), w - kw - 2, "pattern (regex)", ro, out string v, h))
-                    c.Lines[0] = v;
+                TextPattern("##pat", c, i, new Vector2(p.X + kw + 2, p.Y), w - kw - 2, h, ro);
                 break;
             }
             case "text":
-                if (Field("##text", FieldFor(i, 0), c.Lines[0], p, w, "pattern (regex)", ro, out string t, h)) c.Lines[0] = t;
+                TextPattern("##text", c, i, p, w, h, ro);
                 break;
             default:   // "value"
                 if (Field("##value", FieldFor(i, 0), c.Lines[0], p, w, node.Labels.Count > 0 ? node.Labels[0].ToLowerInvariant() : "value", ro, out string n, h))
@@ -1153,7 +1237,7 @@ internal sealed class LootEditorFace : IImGuiPanel
                 ClearFields();
             }, Math.Max(220, w));
         }
-        ImGuiNET.ImGui.SetItemTooltip(sel >= 0 ? table.Names[sel] : "Not in the list: use the raw lines button to type any id");
+        SafeImGui.SetItemTooltip(sel >= 0 ? table.Names[sel] : "Not in the list: use the raw lines button to type any id");
     }
 
     /// <summary>The value names for this condition's long key, or null (no table, or a RynthAi that sends none).</summary>
@@ -1172,7 +1256,7 @@ internal sealed class LootEditorFace : IImGuiPanel
         if (c.Lines.Count == 0) return;
         string raw = c.Lines[0].Trim();
         int sel = TryWhole(raw, out int value) ? Array.IndexOf(table.Ids, value) : -1;
-        string shown = sel >= 0 ? table.Items[sel] : "value " + raw;
+        string shown = sel >= 0 ? table.Items[sel] : raw;
         if (PickerButton("##valpick", shown, p, w, h, ro))
         {
             LootEditConditionDto target = c;
@@ -1185,7 +1269,63 @@ internal sealed class LootEditorFace : IImGuiPanel
         }
         string tip = sel >= 0 ? table.Items[sel] : "Not in the list: pick \"" + OtherNumber + "\" to type any number";
         if (table.Flags) tip += "\nFlags: other combinations are typed as a number";
-        ImGuiNET.ImGui.SetItemTooltip(tip);
+        SafeImGui.SetItemTooltip(tip);
+    }
+
+    /// <summary>
+    /// A text condition's pattern as a mode and plain words (2026-11-01: "people hate regex"): [contains v]
+    /// [words]. The editor writes the regex (UI.LootPatternText) into the condition, so the profile stays a
+    /// plain VTank .utl; "regex" shows the pattern itself. A mode the player picks stays while the pattern
+    /// still reads back as it.
+    /// </summary>
+    private void TextPattern(string id, LootEditConditionDto c, int cond, Vector2 p, float w, float h, bool ro)
+    {
+        FieldBuffer buf = FieldFor(cond, 0);
+        string pattern = c.Lines[0];
+        if (!ReferenceEquals(buf.ParsedFrom, pattern))
+        {
+            var (mode, words) = LootPatternText.Parse(pattern);
+            LootTextMode keep = buf.Mode ?? mode;
+            if (keep == LootTextMode.Regex) { buf.Mode = LootTextMode.Regex; buf.Words = pattern; }
+            else if (pattern.Length == 0) { buf.Mode = keep; buf.Words = ""; }
+            else { buf.Mode = mode; buf.Words = mode == LootTextMode.Regex ? pattern : words; }
+            buf.ParsedFrom = pattern;
+        }
+        LootTextMode shown = buf.Mode ?? LootTextMode.Contains;
+
+        float mw = Math.Min(120, Math.Max(80, w * 0.36f));
+        if (PickerButton(id + "_mode", LootPatternText.Label(shown), p, mw - 2, h, ro))
+        {
+            FieldBuffer target = buf;
+            LootEditConditionDto dto = c;
+            _picker.Open(new Vector2(p.X, p.Y + h), LootPatternText.Labels, (int)shown, k =>
+            {
+                LootTextMode next = LootPatternText.Modes[k];
+                LootTextMode was = target.Mode ?? LootTextMode.Contains;
+                if (next == was || dto.Lines.Count == 0) return;
+                // Into regex: the pattern as it is. Out of regex: its words when it has a plain shape.
+                string words = next == LootTextMode.Regex ? dto.Lines[0]
+                    : was == LootTextMode.Regex ? (LootPatternText.Parse(dto.Lines[0]) is var (m2, w2) && m2 != LootTextMode.Regex ? w2 : "")
+                    : target.Words;
+                dto.Lines[0] = LootPatternText.Build(next, words);
+                target.Mode = next;
+                target.Words = words;
+                target.ParsedFrom = dto.Lines[0];
+                target.Shown = null;   // the box shows the new words
+            }, Math.Max(150, mw));
+        }
+        SafeImGui.SetItemTooltip("How the text is matched (case doesn't matter). Pick \"regex\" to type a pattern yourself.");
+
+        if (Field(id, buf, buf.Words, new Vector2(p.X + mw, p.Y), w - mw, LootPatternText.Hint(shown), ro, out string typed, h))
+        {
+            buf.Words = typed;
+            c.Lines[0] = LootPatternText.Build(shown, typed);
+            buf.ParsedFrom = c.Lines[0];
+        }
+        if (shown != LootTextMode.Regex)
+            SafeImGui.SetItemTooltip(c.Lines[0].Length > 0
+                ? "Written to the profile as: " + c.Lines[0] + (shown is LootTextMode.Contains or LootTextMode.NotContains ? "\nSeveral words: separate them with commas (either of them)." : "")
+                : (shown is LootTextMode.Contains or LootTextMode.NotContains ? "Type a word. Several: separate them with commas (either of them)." : "Type the text."));
     }
 
     /// <summary>A whole number: "45", "45.0" (a buffed-long value written as a double).</summary>

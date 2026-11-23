@@ -27,6 +27,8 @@ namespace RynthCore.Engine.UI.Data;
 internal sealed class LootEditStateDto
 {
     public long Revision { get; set; }
+    /// <summary>On Infinite Leaftide (added 2026-11-07): the vocabulary must say the same, else it is asked again.</summary>
+    public bool Ilt { get; set; } = true;
     public string Path { get; set; } = string.Empty;
     public string FileName { get; set; } = string.Empty;
     public string Format { get; set; } = string.Empty;
@@ -45,6 +47,8 @@ internal sealed class LootEditStateDto
     public List<LootEditRowDto> Rules { get; set; } = new();
     /// <summary>"Add to loot profile" popup's rule (added 2026-10); null from an older RynthAi.</summary>
     public LootEditItemDraftDto? ItemDraft { get; set; }
+    /// <summary>The Inventory panel's "Filter like this" result (added 2026-10-24); null from an older RynthAi.</summary>
+    public LootEditItemFindDto? ItemFind { get; set; }
 }
 
 internal sealed class LootEditFileDto
@@ -141,7 +145,118 @@ internal sealed class LootEditItemRequestDto
     public bool ToOpenProfile { get; set; }
     /// <summary>Also require the item's T11 attributes (added 2026-10-07; an older RynthAi ignores it).</summary>
     public bool IncludeT11 { get; set; }
+    /// <summary>The attribute checklist's choices (added 2026-10-18); null: every row at its default.</summary>
+    public List<LootEditItemChoiceDto>? Choices { get; set; }
     public int Seq { get; set; }
+    /// <summary>A filter, not a rule to add (added 2026-10-24): item_preview without a loot profile; item_find filters.</summary>
+    public bool Find { get; set; }
+    /// <summary>item_find: <see cref="LootFindScopes"/>.</summary>
+    public string Scope { get; set; } = string.Empty;
+    /// <summary>item_find / find_refresh, scope inventory: the panel's items to judge.</summary>
+    public List<uint>? Candidates { get; set; }
+    /// <summary>No item (added 2026-10-24): the checklist lists every attribute (the panel's own filter).</summary>
+    public bool Blank { get; set; }
+    /// <summary>Blank: edit this rule of the open profile instead of adding one (added 2026-11-07); -1 adds.</summary>
+    public int EditIndex { get; set; } = -1;
+    public string EditName { get; set; } = string.Empty;
+    /// <summary>Spells and cantrips added from the standard lists (added 2026-10-24).</summary>
+    public List<LootEditItemExtraDto>? Extras { get; set; }
+}
+
+/// <summary>A spell picked from the standard lists (LootEditWire's LootEditItemExtra).</summary>
+internal sealed class LootEditItemExtraDto
+{
+    public const string Spell = "spell", Cantrip = "cantrip";
+    public string Kind { get; set; } = Spell;
+    /// <summary>The family ("Strength") or the cantrip without its tier ("Coordination").</summary>
+    public string Name { get; set; } = string.Empty;
+    /// <summary>Spell: level 1-8. Cantrip: tier index (0 Minor ... 4 Paragon).</summary>
+    public int Level { get; set; }
+    public int Op { get; set; } = -1;
+}
+
+/// <summary>Where "Filter like this" looks (LootEditWire's LootFindScopes).</summary>
+internal static class LootFindScopes
+{
+    public const string Inventory = "inventory";
+    public const string Global = "global";
+}
+
+/// <summary>"Filter like this": the rule and, for the panel's items, which match (LootEditWire's LootEditItemFind).</summary>
+internal sealed class LootEditItemFindDto
+{
+    public int Seq { get; set; }
+    public bool Ok { get; set; }
+    public string Error { get; set; } = string.Empty;
+    public string Scope { get; set; } = string.Empty;
+    public uint ItemId { get; set; }
+    public string ItemName { get; set; } = string.Empty;
+    /// <summary>"like Gold Ring".</summary>
+    public string Label { get; set; } = string.Empty;
+    /// <summary>The conditions in words.</summary>
+    public List<string> Lines { get; set; } = new();
+    /// <summary>Scope inventory: the candidates the rule takes.</summary>
+    public List<uint> Ids { get; set; } = new();
+    /// <summary>Scope inventory: candidates it can't judge until they are identified.</summary>
+    public List<uint> Unknown { get; set; } = new();
+    public int Checked { get; set; }
+    /// <summary>Scope global: the "/ginv like" argument.</summary>
+    public string Spec { get; set; } = string.Empty;
+    public bool NeedsIdentify { get; set; }
+}
+
+/// <summary>One checklist row as the player set it (LootEditWire's LootEditItemChoice).</summary>
+internal sealed class LootEditItemChoiceDto
+{
+    public string Id { get; set; } = string.Empty;
+    public bool On { get; set; }
+    /// <summary>A comparison code (LootAttrOps); -1 = the row's default.</summary>
+    public int Op { get; set; } = -1;
+    /// <summary>The typed value; empty = the item's own.</summary>
+    public string Value { get; set; } = string.Empty;
+}
+
+/// <summary>One row of the popup's attribute checklist (LootEditWire's LootEditItemAttribute).</summary>
+internal sealed class LootEditItemAttributeDto
+{
+    public string Id { get; set; } = string.Empty;
+    public string Group { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    public string ItemValue { get; set; } = string.Empty;
+    public string Value { get; set; } = string.Empty;
+    public int Op { get; set; }
+    public List<int> Ops { get; set; } = new();
+    public bool Editable { get; set; }
+    public bool On { get; set; }
+    public string Tip { get; set; } = string.Empty;
+    /// <summary>The values a named row can take (added 2026-10-24): a list, the picked Id sent as the Value.</summary>
+    public List<LootEditNameDto>? Choices { get; set; }
+    /// <summary>The Choices are flags: "has any" / "has all" pick several (added 2026-11-07).</summary>
+    public bool Flags { get; set; }
+}
+
+/// <summary>The checklist's comparison codes (LootSdk LootItemAttributeOp) and how the popup labels them.</summary>
+internal static class LootAttrOps
+{
+    public const int AtLeast = 0, Exactly = 1, AtMost = 2, Not = 3, HasAny = 4, Any = 5, HasAll = 6, SpellExact = 10, SpellOrBetter = 11, SpellAnyTier = 12;
+
+    /// <summary>The ops that pick several flags at once (the value is their sum).</summary>
+    public static bool PicksSeveral(int op) => op is HasAny or HasAll;
+
+    public static string Label(int op) => op switch
+    {
+        AtLeast => "at least",
+        Exactly => "is",
+        AtMost => "at most",
+        Not => "is not",
+        HasAny => "has any",
+        Any => "any",
+        HasAll => "has all",
+        SpellExact => "exact",
+        SpellOrBetter => "or better",
+        SpellAnyTier => "any tier",
+        _ => "?",
+    };
 }
 
 /// <summary>The rule an item makes and what an add did (LootEditWire's LootEditItemDraft).</summary>
@@ -172,12 +287,24 @@ internal sealed class LootEditItemDraftDto
     public int RuleCount { get; set; }
     public string OrderNote { get; set; } = string.Empty;
     public List<string> Notes { get; set; } = new();
+    /// <summary>RynthAi has the attribute checklist (added 2026-10-18; false from an older one: the T11 box shows instead).</summary>
+    public bool AttributesSupported { get; set; }
+    /// <summary>The item's checklist rows in display order (added 2026-10-18).</summary>
+    public List<LootEditItemAttributeDto> Attributes { get; set; } = new();
     public bool Added { get; set; }
     public string Message { get; set; } = string.Empty;
+    /// <summary>A filter's draft (added 2026-10-24).</summary>
+    public bool Find { get; set; }
+    /// <summary>A new rule from the blank checklist (added 2026-11-07; false from an older RynthAi).</summary>
+    public bool Blank { get; set; }
+    /// <summary>The rule this draft edits, -1 when it adds one (added 2026-11-07).</summary>
+    public int EditIndex { get; set; } = -1;
 }
 
 internal sealed class LootEditVocabDto
 {
+    /// <summary>Built for Infinite Leaftide: the ACECustom keys are offered (added 2026-11-07; true from an older RynthAi).</summary>
+    public bool Ilt { get; set; } = true;
     public List<LootEditNameDto> Actions { get; set; } = new();
     public List<LootEditNodeTypeDto> NodeTypes { get; set; } = new();
     public List<LootEditNameDto> ObjectClasses { get; set; } = new();
@@ -187,6 +314,18 @@ internal sealed class LootEditVocabDto
     public List<LootEditNameDto> Skills { get; set; } = new();
     /// <summary>Names for long keys' values (added 2026-10); empty from an older RynthAi (the value stays a text box).</summary>
     public List<LootEditValueTableDto> LongValueTables { get; set; } = new();
+    /// <summary>The standard spell lists (added 2026-10-24); empty from an older RynthAi.</summary>
+    public List<LootEditSpellFamilyDto> SpellFamilies { get; set; } = new();
+    public List<string> Cantrips { get; set; } = new();
+    public List<string> CantripTiers { get; set; } = new();
+}
+
+internal sealed class LootEditSpellFamilyDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string School { get; set; } = string.Empty;
+    public int MinLevel { get; set; } = 1;
+    public int MaxLevel { get; set; } = 8;
 }
 
 internal sealed class LootEditNameDto
@@ -247,6 +386,7 @@ internal sealed unsafe class LootEditSource : UiSource<LootEditView>
     private LootEditRuleDto? _rule;
     private int _ruleIndex = -1, _ruleRevision;
     private int _wantRule = -1;
+    private long _vocabRetryAt;
 
     public LootEditSource() : base("LootEdit", periodMs: 1000) { }
 
@@ -273,10 +413,16 @@ internal sealed unsafe class LootEditSource : UiSource<LootEditView>
         }
 
         bool changed = false;
-        if (_vocab == null)
+        // The spell lists arrive once RynthAi has read its spell table: ask again until they do.
+        if (_vocab == null || (_vocab.SpellFamilies.Count == 0 && Environment.TickCount64 >= _vocabRetryAt))
         {
-            _vocab = Parse(_getVocab(), LootEditJsonContext.Default.LootEditVocabDto);
-            changed |= _vocab != null;
+            _vocabRetryAt = Environment.TickCount64 + 10_000;
+            LootEditVocabDto? v = Parse(_getVocab(), LootEditJsonContext.Default.LootEditVocabDto);
+            if (v != null && (_vocab == null || v.SpellFamilies.Count > 0))
+            {
+                _vocab = v;
+                changed = true;
+            }
         }
 
         int revision = _revision();
@@ -290,6 +436,12 @@ internal sealed unsafe class LootEditSource : UiSource<LootEditView>
                 // The list call may have opened the profile (first look): the state's own revision is current.
                 _lastRevision = unchecked((int)state.Revision);
                 changed = true;
+                // Moved to or from Leaftide: the pickers' keys change with it.
+                if (_vocab != null && _vocab.Ilt != state.Ilt)
+                {
+                    LootEditVocabDto? v = Parse(_getVocab(), LootEditJsonContext.Default.LootEditVocabDto);
+                    if (v != null) _vocab = v;
+                }
             }
         }
 

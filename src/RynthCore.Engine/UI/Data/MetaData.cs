@@ -19,34 +19,10 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using RynthCore.Engine.Plugins;
 
 namespace RynthCore.Engine.UI.Data;
-
-internal sealed class MetaRuleDto
-{
-    public string State { get; set; } = "Default";
-    public int Condition { get; set; }
-    public string ConditionData { get; set; } = string.Empty;
-    public int Action { get; set; }
-    public string ActionData { get; set; } = string.Empty;
-    public List<MetaRuleDto> Children { get; set; } = new();
-    public List<MetaRuleDto> ActionChildren { get; set; } = new();
-    public bool Enabled { get; set; } = true;
-    public long LastFiredMs { get; set; } = 99999;
-
-    public MetaRuleDto Clone()
-    {
-        var r = new MetaRuleDto
-        {
-            State = State, Condition = Condition, ConditionData = ConditionData,
-            Action = Action, ActionData = ActionData, Enabled = Enabled, LastFiredMs = LastFiredMs,
-        };
-        foreach (MetaRuleDto c in Children) r.Children.Add(c.Clone());
-        foreach (MetaRuleDto a in ActionChildren) r.ActionChildren.Add(a.Clone());
-        return r;
-    }
-}
 
 internal sealed class MetaFile
 {
@@ -138,8 +114,13 @@ internal sealed class MetaPayload
     public string SourceText { get; set; } = string.Empty;
     /// <summary>Null from a plugin that doesn't report apply results yet (it reports to chat).</summary>
     public MetaApplyResult? ApplyResult { get; set; }
+    /// <summary>The last write of the meta file, or the edit that wasn't applied (RynthAi's MetaSaver,
+    /// 2026-11-01); null from a RynthAi without it. The "Saved" indicator follows this.</summary>
+    public MetaSaveResult? SaveResult { get; set; }
     /// <summary>The Meta Manager; null from a RynthAi without it.</summary>
     public SchedulePayload? Schedule { get; set; }
+    /// <summary>Seconds in state and the Watchdog; null from a RynthAi without it.</summary>
+    public MetaStateSnapshot? Snapshot { get; set; }
 
     /// <summary>Deep copy of the rules; the rest is shared (faces never change it).</summary>
     public MetaPayload Clone()
@@ -202,37 +183,77 @@ internal sealed unsafe class MetaSource : UiSource<MetaPayload>
 internal static unsafe class MetaCommands
 {
     private static delegate* unmanaged[Cdecl]<IntPtr, void> _sendMetaCommand;
+    private static int _undelivered;
 
     static MetaCommands()
     {
         PluginManager.PluginsUnloaded += () => _sendMetaCommand = null;
     }
 
+    /// <summary>Commands that never reached RynthAi (not loaded, no export, the hub refused the post).
+    /// The Meta panel compares it before and after an edit: it went up = "Not saved: not sent".</summary>
+    public static int Undelivered => Volatile.Read(ref _undelivered);
+
     /// <summary><paramref name="cmd"/> (and its Rule) must not be changed after this call.</summary>
     public static void Send(MetaCmd cmd)
     {
-        UiDataHub.Post("Meta " + cmd.Op, () =>
+        bool posted = UiDataHub.Post("Meta " + cmd.Op, () =>
         {
             if (_sendMetaCommand == null)
                 _sendMetaCommand = (delegate* unmanaged[Cdecl]<IntPtr, void>)PluginExportBinder.Resolve("RynthAi", "RynthPluginSendMetaCommand");
-            if (_sendMetaCommand == null) return;
+            if (_sendMetaCommand == null)
+            {
+                // Used to return without a word: the panel showed "Saved" for an edit RynthAi never got.
+                int n = Interlocked.Increment(ref _undelivered);
+                if (n <= 5 || n % 50 == 0)
+                    RynthLog.UI($"Meta: '{cmd.Op}' NOT sent: RynthAi isn't loaded or has no RynthPluginSendMetaCommand ({n} not sent so far).");
+                return;
+            }
             string json = JsonSerializer.Serialize(cmd, MetaJsonContext.Default.MetaCmd);
             IntPtr ansi = Marshal.StringToHGlobalAnsi(json);
             try { _sendMetaCommand(ansi); }
             finally { Marshal.FreeHGlobal(ansi); }
+            if (IsRuleEdit(cmd.Op))
+                RynthLog.UI($"Meta: sent {cmd.Op}{(cmd.Index >= 0 ? " " + (cmd.Index + 1) : "")}{(cmd.Path.Length > 0 ? " " + cmd.Path : "")} to RynthAi.");
             UiSources.Meta.RequestRefreshAfterPluginTick();
         });
+        if (!posted) Interlocked.Increment(ref _undelivered);   // the hub logged why
     }
+
+    /// <summary>The commands that change the meta's rules or file (RynthAi writes the file after each).</summary>
+    public static bool IsRuleEdit(string op) => op is "add_rule" or "update_rule" or "delete_rule" or "move_up" or "move_down"
+        or "duplicate_rule" or "set_rule_enabled" or "set_source" or "save_file";
 
     public static void Simple(string op, int index = -1, string value = "", string path = "")
         => Send(new MetaCmd { Op = op, Index = index, Value = value, Path = path });
+
+    /// <summary>
+    /// Copies <paramref name="file"/> to <paramref name="backup"/> (overwriting it) on the pump thread,
+    /// queued like a command, so it runs before any command sent after it reaches the plugin: the
+    /// copy is the file as it was before that save. Nothing happens when the file doesn't exist.
+    /// </summary>
+    public static void Backup(string file, string backup)
+    {
+        UiDataHub.Post("Meta backup", () =>
+        {
+            try
+            {
+                if (!System.IO.File.Exists(file)) return;
+                System.IO.File.Copy(file, backup, overwrite: true);
+                RynthLog.UI($"Meta: backed up {System.IO.Path.GetFileName(file)} to {System.IO.Path.GetFileName(backup)} before the first save");
+            }
+            catch (Exception ex)
+            {
+                RynthLog.UI($"Meta: backup of {file} failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        });
+    }
 }
 
 /// <summary>Names, hints and .af keywords shared by the Meta faces (mirror RynthSuite's MetaSchema).</summary>
 internal static class MetaVocabulary
 {
-    /// <summary>RynthAi's meta folder under the installed RynthSuite folder (installer-chosen).</summary>
-    public static string MetaFolder => System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "MetaFiles");
+    public static readonly string MetaFolder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "MetaFiles");
 
     public static readonly string[] ConditionNames =
     {
@@ -247,6 +268,7 @@ internal static class MetaVocabulary
         "Chat Message Capture", "Navroute Empty",
         "Main Health <=", "Main Health % >=", "Main Mana <=", "Main Mana % >=",
         "Main Stam <=", "Vitae % >=",
+        "No Kills Within Minutes",   // RynthAi only (2026-10-06)
     };
 
     public static readonly string[] ConditionHints =
@@ -261,6 +283,7 @@ internal static class MetaVocabulary
         "Percentage (e.g. 250)", "Distance (e.g. 10)", "Expression",
         "Regex pattern", "",
         "", "", "", "", "", "Vitae % (e.g. 5)",
+        "Minutes without a kill (e.g. 5 or 2.5)",
     };
 
     public static readonly string[] ActionNames =
@@ -295,6 +318,7 @@ internal static class MetaVocabulary
         "ChatCapture", "NavEmpty",
         "MainHealthLE", "MainHealthPHE", "MainManaLE", "MainManaPHE",
         "MainStamLE", "VitaePHE",
+        "NoKillsInMins",
     };
 
     public static readonly string[] ActionKeywords =
@@ -382,19 +406,53 @@ internal static class MetaVocabulary
         return states.ToArray();
     }
 
-    /// <summary>Embedded Nav's route picker: nav files, then "[emb] key" for embedded routes.</summary>
-    public static string[] RoutePicks(MetaPayload d)
+    /// <summary>Embedded Nav Route's "Patrol": RynthAi's dungeon patrol (/ra dunnav-patrol) when the
+    /// meta and NavProfiles have no route by that name (RynthAi MetaManager.IsPatrolRoute).</summary>
+    public const string PatrolRoute = "Patrol";
+
+    /// <summary>A route of the meta or NavProfiles called <paramref name="name"/> (any case).</summary>
+    public static bool HasRoute(MetaPayload d, string name)
     {
-        var routes = new List<string>();
-        foreach (string n in d.NavFiles) if (n != "None") routes.Add(n);
-        foreach (string k in d.EmbeddedNavKeys) if (!routes.Contains(k)) routes.Add($"[emb] {k}");
-        return routes.ToArray();
+        foreach (string n in d.NavFiles) if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) return true;
+        foreach (string k in d.EmbeddedNavKeys) if (string.Equals(k, name, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
-    /// <summary>Nav names for source completion (nav files and embedded keys, no duplicates).</summary>
+    /// <summary>
+    /// Embedded Nav Route's picker: Patrol (the dungeon patrol) first, nav files, then the meta's own
+    /// routes. Labels are what the list shows ("[emb] key" for embedded routes); values are what the
+    /// rule stores, the name RynthAi looks up (2026-10-11: the label was stored, so an embedded route
+    /// picked here was "Route missing").
+    /// </summary>
+    public static (string[] Labels, string[] Values) RoutePicks(MetaPayload d)
+    {
+        var labels = new List<string>();
+        var values = new List<string>();
+        if (!HasRoute(d, PatrolRoute))
+        {
+            labels.Add(PatrolRoute + "  (dungeon patrol, no nav file)");
+            values.Add(PatrolRoute);
+        }
+        foreach (string n in d.NavFiles)
+        {
+            if (n == "None") continue;
+            labels.Add(n);
+            values.Add(n);
+        }
+        foreach (string k in d.EmbeddedNavKeys)
+        {
+            if (values.Contains(k)) continue;
+            labels.Add($"[emb] {k}");
+            values.Add(k);
+        }
+        return (labels.ToArray(), values.ToArray());
+    }
+
+    /// <summary>Nav names for source completion (Patrol, nav files and embedded keys, no duplicates).</summary>
     public static IReadOnlyList<string> CompletionNavs(MetaPayload d)
     {
-        var combined = new List<string>(d.NavFiles.Count + d.EmbeddedNavKeys.Count);
+        var combined = new List<string>(d.NavFiles.Count + d.EmbeddedNavKeys.Count + 1);
+        if (!HasRoute(d, PatrolRoute)) combined.Add(PatrolRoute);
         combined.AddRange(d.NavFiles);
         foreach (string n in d.EmbeddedNavKeys) if (!combined.Contains(n)) combined.Add(n);
         return combined;

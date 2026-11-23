@@ -21,7 +21,12 @@
 //                                              "miniremote") into the engine's current ImGui
 //                                              window on AC's render thread, inside a
 //                                              width x height child; reports the size it wants.
-//                                              1 = drawn, 0 = not ready / unknown surface.
+//                                              1 = drawn, 0 = not ready / unknown surface,
+//                                              -2 = failed (it caught its own exception): its
+//                                              surfaces go off for the session, as for a throw
+//                                              (engines before 2026-10-21 read -2 as 0). Leave
+//                                              ImGui's stacks as found; the engine puts back
+//                                              what a plugin window leaves open, and logs it.
 //    void        RynthPluginOnServerMessage(uint opcode, byte* data, int length)
 //                                            — v78, reassembled server messages the plugin
 //                                              asked for with SetServerMessageInterestFn
@@ -806,7 +811,8 @@ internal struct RynthCoreAPI
     /// which v77 callbacks can arrive. bit0 RynthPluginOnScreenChanged from the UseNewMode hook,
     /// bit1 ... from the +0x8C mode poll instead (one tick late), bit2 RynthPluginOnClientCleanup,
     /// bit3 RynthPluginOnTooltipShow, bit4 RynthPluginOnTooltipHide, bit5 RynthPluginOnDragStart,
-    /// bit6 RynthPluginOnItemDropped, bit7 Client::Cleanup has started. Any thread.
+    /// bit6 RynthPluginOnItemDropped, bit7 Client::Cleanup has started, bit8 (2026-10-30, not a hook)
+    /// the Damage panel draws a RynthPluginGetMonsterDamageJson row's "mstats". Any thread.
     /// Requires API v77+.</summary>
     public IntPtr GetUiHookFlagsFn;
 
@@ -856,14 +862,319 @@ internal struct RynthCoreAPI
     /// Requires API v79+.</summary>
     public IntPtr TrainSkillFn;
 
-    /// <summary>v80: <c>int GetMergeStackResult(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs)</c>:
+    /// <summary>v80: <c>int GetContainerOrder(uint containerId, int slotKind, uint* ids, int maxIds)</c>:
+    /// the items in one of the player's containers in their real slot order, as the server keeps it
+    /// (Net/InventoryOrder: the login message, a pack's contents list and every item move), where
+    /// GetContainerContents is in object-id order. slotKind 0 = the ordinary items (slot 0 first);
+    /// 1 = the side packs and foci in the main pack (the pack column, top first). Writes at most
+    /// maxIds ids (ids may be null with maxIds 0 to ask the count) and returns how many there are,
+    /// or -1 when no full list for that container has been seen (a side pack the server hasn't
+    /// listed yet): then the order is unknown, never guessed. Any thread. Requires API v80+.</summary>
+    public IntPtr GetContainerOrderFn;
+
+    /// <summary>v80: <c>int PutItemInContainer(uint itemId, uint containerId, int placement)</c>: move an
+    /// item into a container at a slot (the 0x19 PutItemInContainer game action, the packet only:
+    /// CM_Inventory::Event_PutItemInContainer), as a drop on a cell of the pack grid does. Within one
+    /// container it reorders: placement is the index the item should end at, counted without it.
+    /// MoveItemInternal ignores its slot argument (first empty slot); this doesn't. The server decides
+    /// (full pack, busy) and answers as for any move. Queued to AC's main thread when called off it.
+    /// Returns 1 sent or queued, 0 refused before sending (bad ids, negative placement), -1 the
+    /// sender isn't bound on this client. Requires API v80+.</summary>
+    public IntPtr PutItemInContainerFn;
+
+    /// <summary>v81: <c>int GetMergeStackResult(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs)</c>:
     /// outcome of the latest MergeStackInternal(source, target) request: 0 none, 1 queued,
     /// 2 sent (amount = units sent), 3 skipped because the target was already full,
     /// 4 failed (invalid ids / AC rejected / threw), 5 dropped (main-thread queue full).
     /// ageMs = how long ago the outcome was recorded. Either out pointer may be null.
-    /// The thunk is cdecl. Any thread. Requires API v80+ (it was v77 on QOL-items before
-    /// upstream's v77-v79 landed; plugins built against that SDK must be rebuilt).</summary>
+    /// The thunk is cdecl. Any thread. Requires API v81+ (it was v77 on QOL-items and v80 on sk
+    /// before upstream's v77-v80 landed; plugins built against those SDKs must be rebuilt).</summary>
     public IntPtr GetMergeStackResultFn;
+    /// <summary>v82: <c>int SalvageDirect(uint toolId, uint* itemIds, int count)</c>: salvage without the
+    /// salvage panel. Sends the 0x027D CreateTinkeringTool game action (what the panel's Salvage button
+    /// sends) through AC's own sender, CM_Inventory::Event_CreateTinkeringTool, with the UST and up to
+    /// 100 item ids (salvage bags in the list are merged). The panel never opens. The server checks the
+    /// UST is the player's, salvages what it can, answers with the items' removal, new salvage bags and a
+    /// "You obtain ..." chat line, and skips the rest silently. Queued to AC's main thread when called off
+    /// it (the list is copied). Returns the count sent or queued, 0 refused before sending (no tool, no
+    /// items, more than 100, a zero id, the tool in the list, queue full), -1 the sender isn't bound on
+    /// this client. Requires API v82+.</summary>
+    public IntPtr SalvageDirectFn;
+
+    /// <summary>v83: <c>int GetObjectServerAge(uint objectId)</c>: milliseconds since the server last
+    /// sent a message about the object (create, position, motion, vector, state, parent, pickup,
+    /// effects, object description, update object), capped at int.MaxValue; -1 when it sent none
+    /// since the engine started watching (or the id was deleted). A creature with nothing from the
+    /// server for a long time while it is attacked is a "ghost": the client draws it, the server no
+    /// longer has it for this player. Any thread. Requires API v83+.</summary>
+    public IntPtr GetObjectServerAgeFn;
+
+    /// <summary>v83: <c>int RemoveClientObject(uint objectId)</c>: removes a ghost creature from the
+    /// client the way a server DeleteObject would (AC's ACCObjectMaint::DeleteObject; plugins get
+    /// OnDeleteObject). Refused for the player, players, anything that isn't a creature, and objects
+    /// the server sent a message about in the last 5 s. If the object is real after all, the
+    /// server's next CreateObject for it brings it back. Queued to AC's main thread when called off
+    /// it (checked again there). Returns 1 removed, 2 queued, 0 refused, -1 the client's
+    /// DeleteObject isn't bound yet (no delete seen since the hook went in). Requires API v83+.</summary>
+    public IntPtr RemoveClientObjectFn;
+
+    /// <summary>v84: <c>int GetObjectProperties(uint objectId, byte* buffer, int bufferSize)</c>: every
+    /// property the engine knows for the object (int, int64, bool, float, string, data id, instance id
+    /// and the spell book), merged from the client's CreateObject copy, its qualities tables (read on
+    /// AC's main thread), the last identify and the server's property updates, as one record
+    /// (Compatibility/ObjectPropertyRecord.cs; the SDK's ObjectProperties.TryParse reads it). Returns the
+    /// record's size in bytes; it was copied only when that is &lt;= bufferSize (call again with a buffer
+    /// that big). 0 when the engine knows nothing about the object, -1 a zero id or a negative size.
+    /// Off AC's main thread a walk of the object's qualities tables is requested for the next tick
+    /// (flag QualitiesPending): ask again a moment later for the full set. Any thread. Requires API v84+.</summary>
+    public IntPtr GetObjectPropertiesFn;
+
+    /// <summary>v85: <c>int ArmConfirmation(uint type, int minPercent, int timeoutMs)</c>: answer
+    /// the next server yes/no prompt (ConfirmationRequest 0x0274) of this type within timeoutMs,
+    /// without the client opening its dialog: Yes when the server's "N percent" is at least
+    /// minPercent (or minPercent is 0), else No. One-shot. timeoutMs &lt;= 0 disarms.
+    /// 1 armed/disarmed, 0 sender or game-event hook unavailable, -3 bad arguments
+    /// (type 0, minPercent outside 0-100, timeout over 120 s). Any thread. Requires API v85+.
+    /// v97: minPercent | 0x100 (ConfirmationArmPolicy.ArmFlagLeaveBelow, minimum 1-100) arms a second,
+    /// sticky slot: a prompt below the minimum (or without a percent) is left to the client instead of
+    /// answered No, and the arm stays armed for later prompts until it times out or is disarmed (the
+    /// flag with timeoutMs &lt;= 0). The one-shot slot goes first; its arm and disarm never touch the
+    /// sticky one. Older engines return -3 for the flag.</summary>
+    public IntPtr ArmConfirmationFn;
+
+    /// <summary>v85: <c>int GetLastConfirmation(uint* type, uint* contextId, int* percent, int* outcome, int* ageMs)</c>:
+    /// the last prompt the server sent: returns its sequence number (0 = none yet); percent -1
+    /// when the text has none; outcome 1 shown to the player, 2 answered Yes, 3 answered No,
+    /// 4 the send failed (shown), 5 (v97) answered Yes by the sticky arm. Any out pointer may be null.
+    /// Any thread. Requires API v85+.</summary>
+    public IntPtr GetLastConfirmationFn;
+
+    /// <summary>v86: <c>int GetServerStateJson(byte* buffer, int capacity)</c>: which server this is,
+    /// for every plugin: each server the engine knows (built in, or declared by a loaded plugin)
+    /// with its verdict, this character's override, why, and the plugin that owns its settings;
+    /// plus the active server and the Diagnostics pick (UI/Sections/ServerStateJson.cs has the
+    /// schema). Copies NUL-terminated UTF-8 JSON when it fits and returns its byte length either
+    /// way (length &gt;= capacity: call again with a bigger buffer). Any thread. Requires API v86+.</summary>
+    public IntPtr GetServerStateJsonFn;
+    /// <summary>v87: <c>int GetWieldedItems(uint* ids, uint* locations, int max)</c>: what the player
+    /// wields and where (EquipMask), from the server's WieldObject / InventoryPutObjInContainer /
+    /// InventoryPutObjectIn3D messages, started from the client's records where they agree
+    /// (Compatibility/EquipmentTracker.cs). Returns the count written (at most max), or -1 while
+    /// there is no player or nothing to start from. Any thread. Requires API v87+.</summary>
+    public IntPtr GetWieldedItemsFn;
+
+    // ── v89: plugin windows (docs/PLUGIN_WINDOWS.md): the engine provides ImGui, plugins draw ──
+
+    /// <summary>v89: <c>uint GetUiColor(int token)</c>: the player's colour theme as ImGui's packed
+    /// colour (ABGR) for a <see cref="UiColorToken"/>, so a plugin's own windows look like the
+    /// engine's; 0 for an unknown token. Any thread (read every frame: it follows a theme change at
+    /// once). Requires API v89+.</summary>
+    public IntPtr GetUiColorFn;
+    /// <summary>v89: <c>void* GetUiFont(int font)</c>: an <c>ImFont*</c> in the shared atlas for a
+    /// <see cref="UiFontToken"/>, at the current panel's text size; null for an unknown font or off
+    /// AC's render thread. Push it around the plugin's own text. Requires API v89+.</summary>
+    public IntPtr GetUiFontFn;
+    /// <summary>v89: <c>int SetPanelOpen(const char* key, int mode)</c>: a panel by its key (a plugin
+    /// window's title, or an engine panel's): mode 1 open, 0 close, 2 toggle, -1 just ask. Returns
+    /// 1 open / 0 closed (after the change, which lands on the next frame), -1 no such panel. Any
+    /// thread. Requires API v89+.</summary>
+    public IntPtr SetPanelOpenFn;
+
+    // ── v90: plugin windows that draw their own frame ("chrome": "none"; docs/PLUGIN_WINDOWS.md) ──
+
+    /// <summary>v90: <c>void PanelDragWithLastItem(void)</c>: while ImGui's last item is held and
+    /// dragged, the panel being drawn follows the mouse (a frameless window's own title row; popped
+    /// out, its OS window). AC's render thread, inside a window's RynthPluginRenderEmbed; anywhere
+    /// else it does nothing. Requires API v90+.</summary>
+    public IntPtr PanelDragWithLastItemFn;
+    /// <summary>v90: <c>int SetPanelPopOut(const char* key, int mode)</c>: an open panel into its own
+    /// window or back: mode 1 pop out, 0 dock, 2 toggle, -1 just ask. Returns 1 popped out / 0 docked
+    /// (after the change, which lands on the next frame), -1 no such panel or not open. Any thread.
+    /// Requires API v90+.</summary>
+    public IntPtr SetPanelPopOutFn;
+    /// <summary>v90: <c>int PanelTextSize(const char* key, int delta)</c>: steps a panel's text size
+    /// by <c>delta</c> (0 = just ask; Ctrl+wheel and the size menu of a frameless window) and returns
+    /// it as a percentage of normal (100, 110, ... 250), -1 for no such panel. The fonts re-bake a
+    /// moment later. Any thread. Requires API v90+.</summary>
+    public IntPtr PanelTextSizeFn;
+    /// <summary>v90: <c>float RenderSettingsDrawer(const char* key, float width, float room, int flags)</c>:
+    /// the body of a dashboard drawer that shows Settings rows, which are still RynthCore's (the
+    /// Settings panel hasn't moved to RynthAi): "ranges" (the selected monster and the key ranges),
+    /// "patrol" (the Dungeon Patrol settings, hazards and routes), "pinned" (My settings; flags 1 =
+    /// open its list of settings to pin). Drawn at the cursor of the window being drawn, <c>width</c>
+    /// pixels wide and at most <c>room</c> tall (0 = its own height). Returns the height it wants
+    /// (pixels), -1 for another key. AC's render thread, inside a docked window's
+    /// RynthPluginRenderEmbed. Requires API v90+. 2026-10-27 (engines with v91): also "nameplates"
+    /// and "combattext", the Vision window's tabs that set RynthCore's nameplates and combat text,
+    /// for RynthVision's own Vision window (it takes over the engine's); those draw popped out too.</summary>
+    public IntPtr RenderSettingsDrawerFn;
+    /// <summary>v90: <c>int GetShortcuts(uint* objectIds, uint* spellIds, int max)</c>: the player's
+    /// 18 shortcut slots (AC's own, the retail toolbar's), object id 0 = empty. Returns 18, or 0 out
+    /// of the world. Any thread. Requires API v90+.</summary>
+    public IntPtr GetShortcutsFn;
+    /// <summary>v90: <c>int ShortcutAction(int op, int slot, uint objectId)</c>: op 0 use the slot
+    /// (as its key does), 1 put the object in it, 2 empty it; slot 0-17. Done on AC's game thread
+    /// through the retail toolbar's own functions (saved to the server). 1 queued, 0 refused. Any
+    /// thread. Requires API v90+.</summary>
+    public IntPtr ShortcutActionFn;
+    /// <summary>v90: <c>int GetActionKeys(const char* action, char* buffer, int length)</c>: AC's keys
+    /// for a keymap action ("UseQuickSlot_1") as UTF-8 text ("1, Ctrl+1"). Returns the bytes needed
+    /// (0 = unbound), -1 for a bad call. Any thread. Requires API v90+.</summary>
+    public IntPtr GetActionKeysFn;
+    /// <summary>v90: <c>void* GetIconTexture(int kind, uint id)</c>: kind 0 icon id, 1 object, 2
+    /// spell, 3 a retail UI picture at its own size, 4 a retail font's glyph sheet as white + alpha
+    /// (3 and 4 2026-11-07, no version bump): an ImGui texture
+    /// id, or null while it is made. AC's render thread, in a docked window's draw. Requires API v90+.</summary>
+    public IntPtr GetIconTextureFn;
+    /// <summary>v90: <c>int KeyCapture(int op, char* buffer, int length)</c>: op 0 waits for the next key
+    /// the player presses (it never reaches AC; Esc cancels), 1 asks (0 waiting, 1 pressed: its name
+    /// "Ctrl+F5" in the buffer, 2 cancelled), 2 stops. AC's main thread. Requires API v90+.</summary>
+    public IntPtr KeyCaptureFn;
+    /// <summary>v90: <c>int SetActionKey(const char* action, const char* key, int op, char* message, int
+    /// length)</c>: a keymap action ("UseQuickSlot_5") or engine command ("/rdef use 2") and a key: op 0
+    /// checks (0 free, 1 taken from what the message names, -1 can't), 1 binds it (off everything else,
+    /// every client follows), 2 removes it, 3 binds an engine command's key as its hotkey alone (AC's keymap
+    /// untouched; engines after 2026-10-27, older ones refuse it) (1 queued, -1 refused). Any thread.
+    /// Requires API v90+.</summary>
+    public IntPtr SetActionKeyFn;
+    /// <summary>v90: <c>int AcPanel(int id, int op)</c>: AC's own panel by the id its panel notice uses (7
+    /// the pack, 12 fellowship/allegiance, 13 spellbook, 16 the map...): op 0 asks (1 open, 0 closed, -1
+    /// none; AC's main thread), 1 toggles, 2 opens, 3 closes (1 queued, -1 refused). Requires API v90+.</summary>
+    public IntPtr AcPanelFn;
+    /// <summary>v90: <c>int PanelScale(const char* key, int percent)</c>: how big a frameless window draws
+    /// itself, 30-250% of normal (0 asks, -1 = follow the text size again); returns it, 0 = follows the
+    /// text size. Settings > Interface > In The Retail Toolbar's Place sets it too. Any thread. Requires API v90+.</summary>
+    public IntPtr PanelScaleFn;
+    /// <summary>v90: <c>uint DropTarget(const char* window, float x0, float y0, float x1, float y1, int flags,
+    /// int* dragging)</c>: the plugin window takes items dragged out of AC's UI and let go over that rect
+    /// (ImGui screen coordinates; flags 1 = accepting; published each frame it draws). Returns the object
+    /// dropped since the last call (0 = none); *dragging = 1 while an item drag is on. A claimed drop never
+    /// reaches AC. AC's main thread, in the window's draw. Requires API v90+.</summary>
+    public IntPtr DropTargetFn;
+
+    // ── v91: a floor under the world's ambient light (D3D9/AmbientLight.cs) ──
+
+    /// <summary>v91: <c>int SetAmbientLightFloor(uint rgb)</c>: the least ambient light AC may draw the
+    /// world with, 0x00RRGGBB (alpha ignored; per channel the brighter of AC's and this), 0 = none
+    /// (AC's own). Shows from the next frame, in this client only (drawing; nothing goes to the
+    /// server). Returns 1 when the engine's hook is live, 0 when it isn't (not installed, or switched
+    /// off: /rc hooks AmbientLight). One floor for all plugins (the last call wins); it goes back to 0
+    /// when the plugins unload. Any thread. Requires API v91+.</summary>
+    public IntPtr SetAmbientLightFloorFn;
+    /// <summary>v91: <c>int GetAmbientLight(uint* client, uint* applied)</c>: the ambient colour AC last
+    /// asked for and the one drawn (0xAARRGGBB; 0 before the first frame). Returns 1 when the hook is
+    /// live, 0 when it isn't (both 0). Either pointer may be null. Any thread. Requires API v91+.</summary>
+    public IntPtr GetAmbientLightFn;
+
+    // ── v93: the monster plates' health readings (ImGui/MonsterHud/MonsterHudData.cs) ──
+
+    /// <summary>v93: <c>int GetMonsterHealth(uint id, float* ratio, uint* ageMs)</c>: the last health ratio
+    /// (0..1) the SERVER sent for the object, as the monster plates keep it, and how many ms ago. That
+    /// includes the replies to the plates' own round-robin probes (HealthProbe), which plugins never get
+    /// as UpdateHealth events, and never the plates' estimates from the player's hits. Returns 1 with a
+    /// reading, 0 without (never read; *ratio = -1, *ageMs = 0xFFFFFFFF). Either pointer may be null.
+    /// Read-only, any thread, no game calls. Requires API v93+.</summary>
+    public IntPtr GetMonsterHealthFn;
+
+    // ── v94: a WebView2 web panel over the game window (WebPanel\WebPanelApi.cs) ──
+    // No call blocks its caller (AC's main thread, the plugin pump and ImGui draws all call these).
+
+    /// <summary>v94: <c>int WebPanelOpen(WebPanelOpenNative* open)</c>: opens (or replaces) the web panel.
+    /// Returns a handle &gt; 0, or BadArgs / UrlNotAllowed / NoGameWindow / Unavailable / ShuttingDown
+    /// (WebPanelCode). Requires API v94+ (provisional number).</summary>
+    public IntPtr WebPanelOpenFn;
+    /// <summary>v94: <c>int WebPanelNavigate(int handle, byte* url)</c>: 1 queued; -2 off the allowlist
+    /// (opened in the system browser when it is browser-safe); -6 stale handle.</summary>
+    public IntPtr WebPanelNavigateFn;
+    /// <summary>v94: <c>int WebPanelClose(int handle)</c>: 1 queued, 0 already closed, -6 stale handle.</summary>
+    public IntPtr WebPanelCloseFn;
+    /// <summary>v94: <c>int WebPanelGetState(int handle, WebPanelStateNative* state)</c>: the WebPanelStatusCode
+    /// (a handle that is not the live one reads 6 Superseded), -1 bad args.</summary>
+    public IntPtr WebPanelGetStateFn;
+
+    // ── v98: per-character window placements (WindowPlacementApi.cs) ──
+    /// <summary>v98: <c>int GetWindowPlacement(const char* key, float* xywh)</c>: where the player left the
+    /// plugin's own floating window <c>key</c> on this character (x, y, width, height; ImGui screen pixels,
+    /// width/height 0 = sized itself). 1 found, 0 none saved, -1 bad key or no character. Any thread.</summary>
+    public IntPtr GetWindowPlacementFn;
+    /// <summary>v98: <c>int SetWindowPlacement(const char* key, float x, float y, float w, float h)</c>: saves it,
+    /// per character (window_state.&lt;server&gt;.&lt;character&gt;.txt, not the imgui.ini every client shares).
+    /// 1 saved, 0 no character yet, -1 bad key (empty, over 96 chars, '=' or a line break). Any thread.</summary>
+    public IntPtr SetWindowPlacementFn;
+}
+
+/// <summary>v94 WebPanelOpen argument (Pack 4; 48 bytes on x86). Mirrors RynthCore.PluginSdk/WebPanelTypes.cs.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal unsafe struct WebPanelOpenNative
+{
+    /// <summary>sizeof the caller's struct; the engine accepts Size &gt;= OffsetOf(Reserved) (32 on x86).</summary>
+    public uint Size;
+    /// <summary>WebPanelFlags; unknown bits ignored.</summary>
+    public uint Flags;
+    /// <summary>UTF-8 NUL-terminated, at most 4096 bytes, must pass the URL policy's IsAllowed.</summary>
+    public byte* Url;
+    /// <summary>UTF-8, '\n'-separated allowlist (WebPanelUrlPolicy.TryParseAllowlist).</summary>
+    public byte* Allowlist;
+    /// <summary>UTF-8, may be null; at most 256 bytes.</summary>
+    public byte* ProfileKey;
+    /// <summary>UTF-8, may be null; at most 128 bytes.</summary>
+    public byte* Title;
+    /// <summary>0 = 88, else 30..100 (only when no remembered layout).</summary>
+    public int WidthPercent;
+    public int HeightPercent;
+    public fixed uint Reserved[4];
+}
+
+/// <summary>v94 WebPanelGetState result (Pack 4; 48 bytes). Mirrors RynthCore.PluginSdk/WebPanelTypes.cs.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal unsafe struct WebPanelStateNative
+{
+    public uint Size;
+    public int Handle;
+    /// <summary>WebPanelStatusCode.</summary>
+    public int Status;
+    /// <summary>1 Visible, 2 Focused, 4 OpenedInBrowser.</summary>
+    public uint Flags;
+    /// <summary>0 or a negative WebPanelCode (RuntimeMissing / CreateFailed / ProcessFailed).</summary>
+    public int Error;
+    public int LastHttpStatus;
+    public uint NavigationCount;
+    public fixed uint Reserved[5];
+}
+
+/// <summary>v94 return codes of the web panel calls. Append only.</summary>
+internal enum WebPanelCode
+{
+    Queued = 1, AlreadyClosed = 0, BadArgs = -1, UrlNotAllowed = -2, NoGameWindow = -3,
+    Unavailable = -4, ShuttingDown = -5, StaleHandle = -6, RuntimeMissing = -7, CreateFailed = -8, ProcessFailed = -9,
+}
+
+/// <summary>v94 WebPanelStateNative.Status values. Append only.</summary>
+internal enum WebPanelStatusCode
+{
+    None = 0, Starting = 1, Loading = 2, Ready = 3, Closed = 4, Failed = 5, Superseded = 6,
+}
+
+/// <summary>v89 GetUiColor tokens. Append only: plugins compiled against these numbers keep them.</summary>
+internal enum UiColorToken
+{
+    Text = 0, TextMuted = 1, Accent = 2, Highlight = 3, Button = 4, Border = 5, Field = 6, Selected = 7,
+    RowAlt = 8, Background = 9, PanelGlass = 10, AccentFill = 11, BoxBg = 12, FrameBg = 13, FrameHover = 14,
+    FrameActive = 15, Green = 16, Red = 17, TitleBar = 18, WindowBorder = 19,
+    // v90: the theme's own muted text (TextMuted is a lighter mix) and the instrument look's shades
+    // worked out from the eight colours (ThemePalette.DeriveInstrument). 0 on a v89 engine.
+    Muted = 20, KeyFace = 21, Hairline = 22, Inset = 23, Faint = 24,
+}
+
+/// <summary>v89 GetUiFont fonts. Append only.</summary>
+internal enum UiFontToken
+{
+    Ui9 = 0, Ui10 = 1, Ui11 = 2, Ui14 = 3, Ui18 = 4, UiBold11 = 5, UiBold14 = 6,
+    Mono9 = 7, Mono10 = 8, Mono12 = 9, Chat10 = 10, Chat12 = 11, Chat14 = 12,
+    // v90: Cascadia Mono (Consolas without it), the dashboard's numbers, and the narrow labels
+    // (Barlow Semi Condensed SemiBold 9/10/11, Bold 11/13). Null on a v89 engine.
+    Dash9 = 13, Dash10 = 14, Dash11 = 15, Dash14 = 16,
+    Narrow9 = 17, Narrow10 = 18, Narrow11 = 19, NarrowBold11 = 20, NarrowBold13 = 21,
 }
 
 /// <summary>v79 <see cref="TrainingInfoNative.Flags"/> bits.</summary>
@@ -1647,6 +1958,79 @@ internal unsafe delegate int GetVendorInfoCallbackDelegate(VendorInfoNative* inf
 internal unsafe delegate int GetVendorItemsCallbackDelegate(VendorItemNative* items, int maxCount);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate uint GetUiColorCallbackDelegate(int token);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate IntPtr GetUiFontCallbackDelegate(int font);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int SetPanelOpenCallbackDelegate(byte* key, int mode);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate void PanelDragWithLastItemCallbackDelegate();
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int SetPanelPopOutCallbackDelegate(byte* key, int mode);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int PanelTextSizeCallbackDelegate(byte* key, int delta);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate float RenderSettingsDrawerCallbackDelegate(byte* key, float width, float room, int flags);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetShortcutsCallbackDelegate(uint* objectIds, uint* spellIds, int max);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int ShortcutActionCallbackDelegate(int op, int slot, uint objectId);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetActionKeysCallbackDelegate(byte* action, byte* buffer, int length);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate IntPtr GetIconTextureCallbackDelegate(int kind, uint id);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int KeyCaptureCallbackDelegate(int op, byte* buffer, int length);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int SetActionKeyCallbackDelegate(byte* action, byte* key, int op, byte* message, int length);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int AcPanelCallbackDelegate(int id, int op);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int PanelScaleCallbackDelegate(byte* key, int percent);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate uint DropTargetCallbackDelegate(byte* window, float x0, float y0, float x1, float y1, int flags, int* dragging);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int SetAmbientLightFloorCallbackDelegate(uint rgb);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetAmbientLightCallbackDelegate(uint* client, uint* applied);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetMonsterHealthCallbackDelegate(uint id, float* ratio, uint* ageMs);
+internal unsafe delegate int GetWindowPlacementCallbackDelegate(byte* key, float* xywh);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int SetWindowPlacementCallbackDelegate(byte* key, float x, float y, float w, float h);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int WebPanelOpenCallbackDelegate(WebPanelOpenNative* open);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int WebPanelNavigateCallbackDelegate(int handle, byte* url);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int WebPanelCloseCallbackDelegate(int handle);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int WebPanelGetStateCallbackDelegate(int handle, WebPanelStateNative* state);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate uint VendorBuyCallbackDelegate(uint vendorId, VendorTradeEntryNative* entries, int count);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -1660,6 +2044,12 @@ internal unsafe delegate int GetVendorTradeStatusCallbackDelegate(VendorTradeSta
 internal unsafe delegate int GetMergeStackResultCallbackDelegate(uint sourceObjectId, uint targetObjectId, int* amount, int* ageMs);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int ArmConfirmationCallbackDelegate(uint type, int minPercent, int timeoutMs);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetLastConfirmationCallbackDelegate(uint* type, uint* contextId, int* percent, int* outcome, int* ageMs);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetVTankStateCallbackDelegate(int* sequence);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -1667,6 +2057,11 @@ internal unsafe delegate int GetCharacterTitlesCallbackDelegate(uint* ids, int m
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal unsafe delegate int GetServerInfoCallbackDelegate(byte* worldName, int capacity);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetServerStateJsonCallbackDelegate(byte* buffer, int capacity);
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetWieldedItemsCallbackDelegate(uint* ids, uint* locations, int max);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate int CloseContainerCallbackDelegate(uint containerId);
@@ -1688,3 +2083,21 @@ internal unsafe delegate int RaiseCallbackDelegate(uint kind, uint stype, uint r
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate int TrainSkillCallbackDelegate(uint stype, int expectedCredits);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetContainerOrderCallbackDelegate(uint containerId, int slotKind, uint* ids, int maxIds);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int PutItemInContainerCallbackDelegate(uint itemId, uint containerId, int placement);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int SalvageDirectCallbackDelegate(uint toolId, uint* itemIds, int count);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int GetObjectServerAgeCallbackDelegate(uint objectId);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int RemoveClientObjectCallbackDelegate(uint objectId);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal unsafe delegate int GetObjectPropertiesCallbackDelegate(uint objectId, byte* buffer, int bufferSize);

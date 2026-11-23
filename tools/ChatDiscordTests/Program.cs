@@ -26,14 +26,17 @@ internal static class Program
         Classify();
         Routing();
         Formatting();
-        Times();
+        Backlog();
         Packing();
         Validation();
         RequestBody();
         Settings();
-        Import();
         Secrets();
         Dedup();
+        Characters();
+        Queue();
+        FaceText();
+        ClientShutdown();   // last: it closes DiscordClient for good
 
         Console.WriteLine(_failed == 0 && _checks > 0 ? $"PASS ({_checks} checks)" : $"FAIL ({_failed} of {_checks})");
         return _failed == 0 && _checks > 0 ? 0 : 1;
@@ -131,10 +134,6 @@ internal static class Program
         Check(!DiscordFormat.MatchesKeywords("Bob hi", DiscordFormat.SplitList("loot,rare")), "keywords filter");
         Check(DiscordFormat.MatchesKeywords("anything", DiscordFormat.SplitList(" , ")), "no keywords = everything");
 
-        Check(DiscordFormat.CharacterAllowed("", "Alice"), "blank allow-list allows everyone");
-        Check(DiscordFormat.CharacterAllowed("bob, +Alice", "Alice"), "allow-list match (case, + prefix)");
-        Check(!DiscordFormat.CharacterAllowed("bob", "Alice"), "allow-list excludes others");
-        Check(!DiscordFormat.CharacterAllowed("bob", ""), "allow-list needs a character name");
 
         var s = new ChatDiscordSettings { BatchMs = 1500, MinIntervalMs = 2000 };
         var own = new DiscordRoute { CustomPace = true, BatchMs = 0, MinIntervalMs = 60_000 };
@@ -185,21 +184,42 @@ internal static class Program
         Check(DiscordFormat.SafeWebhookName(new string('n', 100)).Length == 80, "webhook names cap at 80");
     }
 
-    // ── Line times and scrollback ────────────────────────────────────────
+    // ── Scrollback, by RynthChat's seq ───────────────────────────────────
 
-    private static void Times()
+    private static void Backlog()
     {
-        var now = new DateTime(2026, 10, 11, 0, 0, 30);
-        Check(DiscordFormat.LineTime("23:59:50", now) == new DateTime(2026, 10, 10, 23, 59, 50), "a late stamp just after midnight is yesterday");
-        Check(DiscordFormat.LineTime("00:00:20", now) == new DateTime(2026, 10, 11, 0, 0, 20), "earlier today");
-        Check(DiscordFormat.LineTime("00:01:00", now) == new DateTime(2026, 10, 11, 0, 1, 0), "a little clock skew stays today");
-        Check(DiscordFormat.LineTime("noon", now) == now, "unreadable stamps are now");
-        Check(DiscordFormat.LineTime(null, now) == now, "missing stamps are now");
+        static ulong[] Seqs(ulong from, int count)
+        {
+            var a = new ulong[count];
+            for (int i = 0; i < count; i++) a[i] = from + (ulong)i;
+            return a;
+        }
+        static int Posted(bool[] post) => post.Count(p => p);
 
-        var since = new DateTime(2026, 10, 11, 10, 0, 0, 700);
-        Check(!ChatDiscordLogic.IsBacklog(new DateTime(2026, 10, 11, 10, 0, 0), since), "the start second is live");
-        Check(ChatDiscordLogic.IsBacklog(new DateTime(2026, 10, 11, 9, 59, 59), since), "older lines are scrollback");
-        Check(!ChatDiscordLogic.IsBacklog(new DateTime(2026, 10, 11, 10, 5, 0), since), "newer lines are live");
+        // Engine start or hot reload: the first read is RynthChat's whole ring (up to 500 lines).
+        var g = new DiscordBacklogGate();
+        Check(Posted(g.Admit(on: true, Seqs(1, 500))) == 0, "the first read after start is a baseline: 500 lines of scrollback, none posted");
+        Check(g.Live, "after the baseline the relay is live");
+        Check(Posted(g.Admit(on: true, Seqs(501, 3))) == 3, "lines after the baseline are posted");
+        Check(Posted(g.Admit(on: true, Seqs(502, 2))) == 0, "a line seen already isn't posted twice");
+        Check(Posted(g.Admit(on: true, new ulong[] { 503, 504, 505 })) == 2, "only the newer lines of a mixed read");
+
+        // An empty first read is still the baseline: the next line is news.
+        g = new DiscordBacklogGate();
+        Check(Posted(g.Admit(on: true, Array.Empty<ulong>())) == 0 && g.Live, "an empty first read is the baseline");
+        Check(Posted(g.Admit(on: true, Seqs(1, 1))) == 1, "the line after an empty baseline is posted");
+
+        // Off, then on again: what arrived meanwhile is history.
+        Check(Posted(g.Admit(on: false, Seqs(2, 10))) == 0 && !g.Live, "nothing is posted while off");
+        Check(Posted(g.Admit(on: true, Seqs(12, 40))) == 0, "the first read after switching on is a baseline");
+        Check(Posted(g.Admit(on: true, Seqs(52, 1))) == 1, "then new lines go");
+        g.Off();
+        Check(Posted(g.Admit(on: true, Seqs(53, 5))) == 0, "Off (the pump saw it off) re-baselines");
+
+        // RynthChat reloaded: its numbers start from 1 again.
+        g.SourceReset();
+        Check(Posted(g.Admit(on: true, Seqs(1, 4))) == 0, "after RynthChat restarts its numbering, its first read is a baseline");
+        Check(Posted(g.Admit(on: true, Seqs(5, 2))) == 2, "and its new lines go, though their numbers are low");
     }
 
     // ── Batching ─────────────────────────────────────────────────────────
@@ -239,6 +259,15 @@ internal static class Program
         string secret = new string('s', 40);
         Same(DiscordFormat.Redact("error near " + secret, secret), "error near ***", "secrets are redacted");
         Same(DiscordFormat.Redact("no secret here", ""), "no secret here", "nothing to redact");
+
+        string hookToken = FakeWebhook.Substring(FakeWebhook.LastIndexOf('/') + 1);
+        Same(DiscordFormat.Redact("Invalid Webhook Token: " + hookToken, FakeWebhook), "Invalid Webhook Token: ***",
+            "the webhook's bare token is redacted");
+        string other = "https://discord.com/api/webhooks/" + new string('2', 18) + "/" + new string('y', 68);
+        Check(!DiscordFormat.Redact("posting to " + other, FakeWebhook).Contains(new string('y', 68)), "any webhook URL's token is redacted");
+        Same(DiscordFormat.Redact("Authorization: Bot " + FakeBotToken, null), "Authorization: Bot ***", "a bare bot token is redacted without being told");
+        Same(DiscordFormat.Redact("401 for " + FakeBotToken + ".", FakeBotToken), "401 for ***.", "the bot token in use is redacted");
+        Same(DiscordFormat.Redact("HTTP 404: Unknown Webhook (v1.2.3)", FakeWebhook), "HTTP 404: Unknown Webhook (v1.2.3)", "ordinary errors are left alone");
     }
 
     // ── Request body and status handling ─────────────────────────────────
@@ -275,13 +304,12 @@ internal static class Program
         {
             string path = Path.Combine(dir, "rynthchat_discord.json");
 
-            var fresh = ChatDiscordStore.Load(path, legacyPath: null, out string n0);
-            Check(!fresh.Enabled && fresh.Routes.Length == 0 && n0.Length == 0, "no file: defaults, off");
+            var fresh = ChatDiscordStore.Load(path, out string n0);
+            Check(fresh.Characters.Length == 0 && fresh.Routes.Length == 0 && n0.Length == 0, "no file: defaults, off for everyone");
 
             var s = new ChatDiscordSettings
             {
-                Enabled = true,
-                OnlyCharacters = "Alice",
+                Characters = new[] { DiscordCharacter.Of("Aelrynth", "Alice")! },
                 SkipOwn = true,
                 TagCharacter = true,
                 BatchMs = 999_999,          // clamped on load
@@ -304,9 +332,9 @@ internal static class Program
             ChatDiscordStore.Write(path, json);
             Check(Directory.GetFiles(dir, "*.tmp").Length == 0, "the temp file is swapped in");
 
-            var back = ChatDiscordStore.Load(path, legacyPath: null, out string n1);
+            var back = ChatDiscordStore.Load(path, out string n1);
             Check(n1.Length == 0, "clean load has no note");
-            Check(back.Enabled && back.SkipOwn && back.TagCharacter && back.OnlyCharacters == "Alice", "switches round-trip");
+            Check(back.SkipOwn && back.TagCharacter && back.Characters.Length == 1 && back.Characters[0].Name == "Alice" && back.Characters[0].Server == "Aelrynth", "switches round-trip");
             Check(back.BatchMs == ChatDiscordSettings.BatchMaxMs, "batch window clamped");
             Check(back.MinIntervalMs == ChatDiscordSettings.IntervalMinMs, "message spacing clamped");
             Check(back.Routes.Length == 2, "routes round-trip");
@@ -323,7 +351,8 @@ internal static class Program
             // Hand-edited file: no speech list means the defaults; bad values repaired.
             File.WriteAllText(path, "{ \"enabled\": true, \"routes\": [ { \"name\": \"x\", \"mode\": \"carrier pigeon\", " +
                                     "\"tabs\": [\"System\", \"system\", \" \", null] }, null ], \"maxQueue\": 1 }");
-            var hand = ChatDiscordStore.Load(path, legacyPath: null, out _);
+            var hand = ChatDiscordStore.Load(path, out _);
+            Check(hand.Characters.Length == 0, "an old file's global \"enabled\" turns nobody on");
             Check(hand.Routes.Length == 1, "null routes dropped");
             Check(hand.Routes[0].Mode == DiscordRoute.ModeWebhook, "unknown modes become webhook");
             Check(hand.Routes[0].SpeechMask == DiscordRoute.DefaultSpeechMask(), "no speech list = the defaults");
@@ -332,47 +361,10 @@ internal static class Program
 
             // A damaged file: defaults, a note for the log, and a copy kept for the user.
             File.WriteAllText(path, "{ not json");
-            var bad = ChatDiscordStore.Load(path, legacyPath: null, out string n2);
-            Check(!bad.Enabled && bad.Routes.Length == 0, "damaged file: defaults");
+            var bad = ChatDiscordStore.Load(path, out string n2);
+            Check(bad.Characters.Length == 0 && bad.Routes.Length == 0, "damaged file: defaults");
             Check(n2.Contains("unreadable"), "damaged file is reported");
             Check(Directory.GetFiles(dir, "*.unreadable-*.json").Length == 1, "damaged file is kept aside");
-        }
-        finally { TryDelete(dir); }
-    }
-
-    // ── RynthAi 0.5.33 import ────────────────────────────────────────────
-
-    private static void Import()
-    {
-        string dir = TempDir();
-        try
-        {
-            string path = Path.Combine(dir, "rynthchat_discord.json");
-            string legacy = Path.Combine(dir, "discord.json");
-            // RynthAi wrote PascalCase fields.
-            File.WriteAllText(legacy, "{ \"Enabled\": true, \"SkipOwn\": true, \"BatchMs\": 3000, \"OnlyCharacters\": \"Alice\", " +
-                                      "\"ShowWindow\": true, \"Routes\": [ { \"Name\": \"Guild\", \"Enabled\": false, \"Mode\": \"bot\", " +
-                                      $"\"ChannelId\": \"{FakeChannel}\", \"BotTokenProtected\": \"blob\", \"Channels\": [\"Tell\", \"LFG\"], " +
-                                      "\"IncludeOther\": true, \"Keywords\": \"rare\" }, { \"Name\": \"Fellow\" } ] }");
-
-            var s = ChatDiscordStore.Load(path, legacy, out string note);
-            Check(note.Contains("imported 2 route"), $"import is reported (\"{note}\")");
-            Check(s.Enabled && s.SkipOwn && s.BatchMs == 3000 && s.OnlyCharacters == "Alice", "relay switches imported");
-            Check(s.Routes.Length == 2, "routes imported");
-            var g = s.Routes[0];
-            Check(!g.Enabled && g.Mode == DiscordRoute.ModeBot && g.ChannelId == FakeChannel && g.BotTokenProtected == "blob",
-                "route connection imported");
-            Check(g.SpeechMask == (ChatSpeech.Bit(SpeechChannel.Tell) | ChatSpeech.Bit(SpeechChannel.Lfg)), "channels become speech channels");
-            Check(g.Tabs.SequenceEqual(new[] { "Other" }), "IncludeOther becomes the Other tab");
-            Check(s.Routes[1].SpeechMask == DiscordRoute.DefaultSpeechMask() && s.Routes[1].Tabs.Length == 0,
-                "a route with no channel list gets the defaults");
-
-            // Once the engine has its own file, RynthAi's is never read again.
-            ChatDiscordStore.Write(path, ChatDiscordStore.Serialize(new ChatDiscordSettings()));
-            var mine = ChatDiscordStore.Load(path, legacy, out string n2);
-            Check(!mine.Enabled && mine.Routes.Length == 0 && n2.Length == 0, "the engine's own file wins");
-
-            Check(ChatDiscordStore.ImportRynthAi("null") == null, "empty import is null");
         }
         finally { TryDelete(dir); }
     }
@@ -407,6 +399,283 @@ internal static class Program
         ChatDiscordLogic.PruneRecent(recent, now: 10_000, windowMs: 5_000);
         Check(!recent.ContainsKey("old") && recent.ContainsKey("new"), "old repeat entries are pruned");
     }
+
+    // ── Per-character switch and merged saves ────────────────────────────
+
+    private static void Characters()
+    {
+        Check(DiscordCharacter.Of("Aelrynth", "  ") == null && DiscordCharacter.Of("Aelrynth", null) == null, "no name, no character");
+        var alice = DiscordCharacter.Of(" Aelrynth ", "+Alice ")!;
+        Check(alice.Server == "Aelrynth" && alice.Name == "Alice", "names are trimmed (and lose AC's +)");
+        Check(alice.Same(DiscordCharacter.Of("aelrynth", "ALICE")), "same character in any case");
+        Check(!alice.Same(DiscordCharacter.Of("Other", "Alice")), "same name on another server is another character");
+        Check(!alice.Same(null), "nobody is not Alice");
+        var bob = DiscordCharacter.Of("Aelrynth", "Bob")!;
+        var carol = DiscordCharacter.Of("Aelrynth", "Carol")!;
+
+        var s = new ChatDiscordSettings();
+        Check(!s.IsOnFor(alice) && !s.IsOnFor(null), "off for everyone by default");
+        s.Characters = new[] { alice };
+        Check(s.IsOnFor(DiscordCharacter.Of("AELRYNTH", "alice")) && !s.IsOnFor(bob), "on only for the characters listed");
+
+        var list = ChatDiscordStore.ApplyCharacterOps(new[] { alice, alice, bob }, new[]
+        {
+            new DiscordCharacterOp(carol, true), new DiscordCharacterOp(bob, false), new DiscordCharacterOp(carol, true),
+        });
+        Check(list.Length == 2 && list[0].Same(alice) && list[1].Same(carol), "switches apply in order, without repeats");
+
+        // Two clients start from the same file; each switches its own character.
+        string dir = TempDir();
+        try
+        {
+            string path = Path.Combine(dir, "rynthchat_discord.json");
+            var shared = new ChatDiscordSettings
+            {
+                Routes = new[] { new DiscordRoute { Name = "Guild", SpeechMask = ChatSpeech.Bit(SpeechChannel.Lfg), WebhookProtected = "blob" } },
+            };
+            ChatDiscordStore.Write(path, ChatDiscordStore.Serialize(shared));
+            var clientA = ChatDiscordStore.Load(path, out _);
+            var clientB = ChatDiscordStore.Load(path, out _);
+
+            string Save(ChatDiscordSettings mine, params DiscordCharacterOp[] ops)
+            {
+                string? disk = File.Exists(path) ? File.ReadAllText(path) : null;
+                string json = ChatDiscordStore.MergeForSave(ChatDiscordStore.Serialize(mine), disk, ops, out var merged);
+                ChatDiscordStore.Write(path, json);
+                mine.Characters = merged;
+                return json;
+            }
+
+            Save(clientA, new DiscordCharacterOp(alice, true));
+            Save(clientB, new DiscordCharacterOp(bob, true));      // B never saw Alice switched on
+            var now = ChatDiscordStore.Load(path, out _);
+            Check(now.IsOnFor(alice) && now.IsOnFor(bob), "B's save keeps A's switch");
+            Check(clientB.IsOnFor(alice), "a save brings the other clients' switches back");
+
+            clientA.SkipOwn = true;                                  // A, still not knowing Bob, saves an option
+            Save(clientA);
+            now = ChatDiscordStore.Load(path, out _);
+            Check(now.IsOnFor(alice) && now.IsOnFor(bob) && now.SkipOwn, "a save with no switch keeps everyone's switch");
+            Check(now.Routes.Length == 1 && now.Routes[0].RelaysSpeech(SpeechChannel.Lfg) && now.Routes[0].WebhookProtected == "blob",
+                "routes survive the merge");
+
+            Save(clientB, new DiscordCharacterOp(bob, false));
+            now = ChatDiscordStore.Load(path, out _);
+            Check(now.IsOnFor(alice) && !now.IsOnFor(bob), "turning one character off leaves the others on");
+
+            // A switch another client turned off doesn't come back from a stale list.
+            clientA.Characters = new[] { alice, bob };
+            Save(clientA);
+            Check(!ChatDiscordStore.Load(path, out _).IsOnFor(bob), "a stale in-memory list doesn't switch anyone back on");
+
+            File.WriteAllText(path, "{ damaged");
+            clientA.Characters = new[] { alice, bob };
+            string fromBad = ChatDiscordStore.MergeForSave(ChatDiscordStore.Serialize(clientA), File.ReadAllText(path),
+                new[] { new DiscordCharacterOp(carol, true) }, out var m1);
+            Check(m1.Length == 3 && fromBad.Contains("Carol"), "an unreadable file: our own list is the base");
+            ChatDiscordStore.MergeForSave(ChatDiscordStore.Serialize(new ChatDiscordSettings()), null,
+                Array.Empty<DiscordCharacterOp>(), out var m2);
+            Check(m2.Length == 0, "no file and no switch: off for everyone");
+
+            Check(ChatDiscordStore.ReadCharacters("{ \"characters\": [ { \"server\": \"S\", \"name\": \"X\" }, { \"name\": \" \" } ] }") is { Length: 1 },
+                "the list is read back without blanks");
+            Check(ChatDiscordStore.ReadCharacters("nope") == null && ChatDiscordStore.ReadCharacters(null) == null, "unreadable lists are null");
+        }
+        finally { TryDelete(dir); }
+    }
+
+    // ── A route's queue: off means off ───────────────────────────────────
+
+    private static void Queue()
+    {
+        const int Batch = 1500, Interval = 2000, Max = 200;
+        var fail = DiscordSendResult.Fail("HTTP 502");
+        var ok = new DiscordSendResult(true, 200, 0, false, string.Empty);
+
+        // Normal flow: the batch window, then one post.
+        var q = new DiscordRouteQueue();
+        q.Add("a", 1000, Max);
+        q.Add("b", 1200, Max);
+        Check(q.Next(2000, on: true, Batch, Interval) == null, "lines wait out the batch window");
+        DiscordBatch? b1 = q.Next(2600, on: true, Batch, Interval);
+        Check(b1 != null && b1.Content == "a\nb" && ReferenceEquals(q.InFlight, b1) && q.Pending.Count == 0, "the window's lines go as one message");
+        Check(q.Next(9000, on: true, Batch, Interval) == null, "one post in flight at a time");
+        Check(q.Apply(b1!, ok, 3000, Interval) == DiscordOutcome.Sent && q.MessagesSent == 1 && q.LinesSent == 2, "a sent batch counts");
+
+        // Pending lines, then the relay goes off.
+        q = new DiscordRouteQueue();
+        q.Add("x", 0, Max);
+        q.Add("y", 0, Max);
+        Check(q.Next(10_000, on: false, Batch, Interval) == null && q.Pending.Count == 0, "off drops pending lines");
+        Check(q.Dropped == 2, "dropped lines are counted");
+        q.Add("z", 20_000, Max);
+        Check(q.Stop() == 1 && q.Queued == 0, "Stop drops pending lines");
+
+        // A batch waiting to retry must not go out once the relay or route is off.
+        q = new DiscordRouteQueue();
+        q.Add("retry me", 0, Max);
+        DiscordBatch? b2 = q.Next(5000, on: true, Batch, Interval);
+        Check(q.Apply(b2!, fail, 5100, Interval) == DiscordOutcome.Retrying && ReferenceEquals(q.Retry, b2), "a network error waits to retry");
+        Check(q.Next(600_000, on: false, Batch, Interval) == null, "a waiting retry is not sent when off");
+        Check(q.Retry == null && q.Queued == 0, "off drops the waiting retry");
+
+        // Same after a rate limit.
+        q = new DiscordRouteQueue();
+        q.Add("limited", 0, Max);
+        DiscordBatch? b3 = q.Next(5000, on: true, Batch, Interval);
+        Check(q.Apply(b3!, DiscordSendResult.Fail("rate limited", status: 429, retryAfterMs: 1000), 5100, Interval) == DiscordOutcome.RateLimited,
+            "429 is a rate limit");
+        Check(q.Next(600_000, on: false, Batch, Interval) == null && q.Retry == null, "a rate-limited batch is dropped when off");
+
+        // The post in flight when it goes off: cancelled, and its result can't come back as a retry.
+        q = new DiscordRouteQueue();
+        q.Add("flying", 0, Max);
+        DiscordBatch? b4 = q.Next(5000, on: true, Batch, Interval);
+        using (var cts = new CancellationTokenSource())
+        {
+            b4!.Cancel = cts;
+            Check(q.Stop() == 1 && q.InFlight == null, "Stop drops the post in flight");
+            Check(cts.IsCancellationRequested, "the request in flight is cancelled");
+        }
+        Check(q.Apply(b4, fail, 5200, Interval) == DiscordOutcome.Ignored && q.Retry == null, "a stopped post's failure isn't retried");
+        Check(q.Apply(b4, ok, 5200, Interval) == DiscordOutcome.Ignored && q.MessagesSent == 0, "a stopped post's result is ignored");
+        Check(q.Next(600_000, on: true, Batch, Interval) == null, "nothing comes back after a stop");
+
+        // Only an explicit test gets past the switches.
+        q = new DiscordRouteQueue();
+        q.Add("chat", 0, Max);
+        q.QueueTest("test line");
+        DiscordBatch? t1 = q.Next(10, on: false, Batch, Interval);
+        Check(t1 != null && t1.IsTest && t1.Content == "test line", "a test goes while off");
+        Check(q.Pending.Count == 0, "chat queued with it doesn't");
+        Check(q.Stop() == 0 && ReferenceEquals(q.InFlight, t1), "Stop keeps a test in flight");
+        Check(q.Apply(t1!, fail, 20, Interval) == DiscordOutcome.Retrying, "a failed test retries");
+        Check(q.Next(600_000, on: false, Batch, Interval) is { IsTest: true }, "a test's retry goes while off");
+
+        q = new DiscordRouteQueue();
+        q.Add("old", 0, Max);
+        DiscordBatch? b5 = q.Next(5000, on: true, Batch, Interval);
+        q.Apply(b5!, fail, 5100, Interval);
+        q.QueueTest("test");
+        Check(q.Retry is { IsTest: true } && q.Dropped == 1, "a test replaces a waiting retry");
+
+        // Permanent errors pause; give up after the retries.
+        q = new DiscordRouteQueue();
+        q.Add("p", 0, Max);
+        DiscordBatch? b6 = q.Next(5000, on: true, Batch, Interval);
+        q.Add("later", 5001, Max);
+        Check(q.Apply(b6!, DiscordSendResult.Fail("HTTP 401", permanent: true, status: 401), 5100, Interval) == DiscordOutcome.Paused,
+            "401 pauses");
+        Check(q.Paused && q.Pending.Count == 0 && q.Next(600_000, on: true, Batch, Interval) == null, "a paused route sends nothing");
+        q.Resume();
+        Check(!q.Paused && q.LastError.Length == 0, "Resume clears a pause");
+
+        q = new DiscordRouteQueue();
+        q.Add("doomed", 0, Max);
+        long now = 5000;
+        DiscordBatch? b7 = q.Next(now, on: true, Batch, Interval);
+        DiscordOutcome last = DiscordOutcome.Ignored;
+        for (int i = 0; i < DiscordRouteQueue.MaxTransientRetries && b7 != null; i++)
+        {
+            last = q.Apply(b7, fail, now, Interval);
+            now += 120_000;
+            b7 = q.Next(now, on: true, Batch, Interval);
+        }
+        Check(last == DiscordOutcome.GaveUp && q.Dropped == 1, "gives up after the retries");
+
+        q = new DiscordRouteQueue();
+        for (int i = 0; i < 25; i++) q.Add("l" + i, 0, maxQueue: 20);
+        Check(q.Pending.Count == 20 && q.Dropped == 5 && q.Pending[0] == "l5", "the oldest lines go past the queue limit");
+
+        Check(q.NoteFresh("k", 1000) && !q.NoteFresh("k", 2000) && q.NoteFresh("k", 1000 + DiscordRouteQueue.DedupWindowMs),
+            "the repeat filter holds for its window");
+
+        // A new credential while a retry waits: the batch was for the old destination.
+        const string Hook = DiscordRoute.ModeWebhook;
+        q = new DiscordRouteQueue();
+        Check(q.Retarget(Hook, "", "blobA") == 0, "the first destination drops nothing");
+        q.Add("for A", 0, Max);
+        DiscordBatch? a1 = q.Next(5000, on: true, Batch, Interval);
+        Check(a1 != null && a1.Credential == q.Credential, "a batch remembers its destination");
+        q.Apply(a1!, fail, 5100, Interval);
+        q.Add("also for A", 5200, Max);
+        Check(q.Retarget(Hook, "", "blobA") == 0 && ReferenceEquals(q.Retry, a1), "the same destination keeps the retry");
+        Check(q.Retarget(Hook, "", new string("blobA".ToCharArray())) == 0, "an equal credential in a new string is the same destination");
+        Check(q.Retarget(Hook, "", "blobB") == 2, "a new credential drops the waiting retry and pending lines");
+        Check(q.Retry == null && q.Pending.Count == 0 && q.Next(600_000, on: true, Batch, Interval) == null,
+            "nothing queued for A goes to B");
+        q.Add("for B", 600_000, Max);
+        Check(q.Next(700_000, on: true, Batch, Interval) is { Content: "for B" }, "new lines go to the new destination");
+
+        // A post in flight to the old destination fails after the change: dropped, not retried, no pause.
+        q = new DiscordRouteQueue();
+        q.Retarget(DiscordRoute.ModeBot, FakeChannel, "tokA");
+        q.Add("to channel A", 0, Max);
+        DiscordBatch? a2 = q.Next(5000, on: true, Batch, Interval);
+        Check(q.Retarget(DiscordRoute.ModeBot, "8" + FakeChannel.Substring(1), "tokA") == 0, "a new channel with nothing waiting drops nothing");
+        Check(q.Apply(a2!, fail, 5100, Interval) == DiscordOutcome.Retargeted && q.Retry == null, "a failed post to the old destination isn't retried");
+        q.Add("x", 5200, Max);
+        DiscordBatch? a3 = q.Next(600_000, on: true, Batch, Interval);
+        q.Retarget(DiscordRoute.ModeWebhook, FakeChannel, "hook");
+        Check(q.Apply(a3!, DiscordSendResult.Fail("HTTP 404", permanent: true, status: 404), 600_100, Interval) == DiscordOutcome.Retargeted
+              && !q.Paused, "the old destination's 404 doesn't pause the new one");
+
+        // A test follows the route to its new destination.
+        q = new DiscordRouteQueue();
+        q.Retarget(Hook, "", "old");
+        q.QueueTest("t");
+        q.Retarget(Hook, "", "new");
+        Check(q.Retry is { IsTest: true } t2 && t2.Credential == q.Credential, "a waiting test goes to the new destination");
+    }
+
+    // ── Engine shutdown closes the HTTP client ───────────────────────────
+
+    /// <summary>Last: after Shutdown no client is built again, so a post fails at once, sending nothing.</summary>
+    private static void ClientShutdown()
+    {
+        DiscordClient.Shutdown();
+        DiscordClient.Shutdown();   // twice is harmless
+        var r = DiscordClient.PostWebhookAsync(FakeWebhook, "x", "", CancellationToken.None).GetAwaiter().GetResult();
+        Check(!r.Ok && !r.Permanent && r.Error.Contains("ObjectDisposedException"), $"no posts after shutdown (got \"{r.Error}\")");
+        Check(!r.Error.Contains(new string('x', 68)), "the refusal doesn't echo the webhook");
+    }
+
+    // ── The panel never formats chat ─────────────────────────────────────
+
+    // ImGui.NET passes the string of these to ImGui as a printf format: "%s%s%s" in a relayed
+    // tell crashed the client while the Discord panel's Log tab was open.
+    private static readonly System.Text.RegularExpressions.Regex RxFormatCall = new(
+        @"ImGui\.(?<fn>Text|TextWrapped|TextColored|TextDisabled|BulletText|LabelText|SetTooltip|SetItemTooltip|LogText)\(\s*(?<arg>[^\r\n]*)");
+
+    /// <summary>
+    /// The face can't run here (it needs ImGui), so this reads its source: every call to an ImGui
+    /// function that formats its text must be given a plain literal with no '%' conversions;
+    /// anything else (chat, routes, Discord's errors) goes through TextUnformatted.
+    /// </summary>
+    private static void FaceText()
+    {
+        string face = Path.GetFullPath(Path.Combine(SourceDir(), "..", "..", "src", "RynthCore.Engine", "ImGui", "Panels", "ChatDiscordFace.cs"));
+        Check(File.Exists(face), $"face source found ({face})");
+        if (!File.Exists(face)) return;
+        string src = File.ReadAllText(face);
+        int calls = 0;
+        foreach (System.Text.RegularExpressions.Match m in RxFormatCall.Matches(src))
+        {
+            calls++;
+            string arg = m.Groups["arg"].Value;
+            int line = src.Take(m.Index).Count(c => c == '\n') + 1;
+            bool literal = arg.StartsWith('"');
+            Check(literal, $"ChatDiscordFace.cs:{line}: ImGui.{m.Groups["fn"].Value} is given a non-literal (use TextUnformatted)");
+            if (literal)
+                Check(!arg.Replace("%%", "").Contains('%'), $"ChatDiscordFace.cs:{line}: '%' in a format string");
+        }
+        Check(calls > 0, "the face's tooltips are checked");
+        Check(!src.Contains("TextWrapped("), "the face has no TextWrapped");
+        Check(src.Contains("TextUnformatted("), "the face writes text with TextUnformatted");
+    }
+
+    private static string SourceDir([System.Runtime.CompilerServices.CallerFilePath] string path = "")
+        => Path.GetDirectoryName(path)!;
 
     // ── Helpers ──────────────────────────────────────────────────────────
 

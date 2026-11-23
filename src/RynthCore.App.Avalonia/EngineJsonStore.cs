@@ -7,7 +7,7 @@ namespace RynthCore.App.Avalonia;
 
 /// <summary>
 /// Read-modify-write access to %APPDATA%\RynthCore\engine.json. The launcher
-/// owns a few engine-side flags (DComp overlay toggle, plugin paths, etc.)
+/// owns a few engine-side flags (plugin paths, etc.)
 /// but the engine has its own flags that the launcher should never overwrite
 /// (EnableImGuiShell, EnableImGuiBackend, EngineHookCount, ...). This helper
 /// preserves every field it doesn't touch so those don't get clobbered when

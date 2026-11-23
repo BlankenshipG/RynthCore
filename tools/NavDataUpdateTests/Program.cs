@@ -8,7 +8,7 @@ using RynthCore.App.Avalonia;
 
 // Tests for the launcher's RynthNav tile update. A throwaway signing key signs a feed served by
 // a local HttpListener; the updater installs the archive into a temp NavData folder.
-internal static class Program
+internal static partial class Program
 {
     private static int _fails, _asserts;
     private static void Check(bool cond, string msg)
@@ -46,6 +46,13 @@ internal static class Program
             await Run(nameof(CancelledDownloadLeavesNothing), CancelledDownloadLeavesNothing);
             await Run(nameof(CancelledUnpackLeavesTilesAsTheyWere), CancelledUnpackLeavesTilesAsTheyWere);
             await Run(nameof(TamperedArchiveRefusedWithProgress), TamperedArchiveRefusedWithProgress);
+            await Run(nameof(NoMapPacksInFeed), NoMapPacksInFeed);
+            await Run(nameof(MapPacksListedInstalledAndRemoved), MapPacksListedInstalledAndRemoved);
+            await Run(nameof(MapPackNewBuildIsAnUpdate), MapPackNewBuildIsAnUpdate);
+            await Run(nameof(MapPackBadDownloadChangesNothing), MapPackBadDownloadChangesNothing);
+            await Run(nameof(MapPackBadEntriesAreSkipped), MapPackBadEntriesAreSkipped);
+            await Run(nameof(MapPackCancelLeavesNothing), MapPackCancelLeavesNothing);
+            await Run(nameof(NavDataUpdateLeavesMapPacksAlone), NavDataUpdateLeavesMapPacksAlone);
         }
         finally
         {
@@ -133,11 +140,13 @@ internal static class Program
         ["locations.json"] = "{\"locations\":[]}",
         ["navgraph.bin"] = "route graph",
         ["townnet.json"] = "{\"version\":1}",
+        ["worldmap.rmap"] = "world map",
+        ["worldmap.vec"] = "world map vectors",
     };
 
     // The feed's URLs must sit in the feed's folder: serve each test's archive under it.
     private static (RynthUpdater upd, string nav, string plugin, string state) SetupInFeedFolder(string tag, byte[]? zip, string id = "0123456789abcdef0123456789abcdef",
-        int? files = null, bool signNavData = true, bool withNavData = true, string? overrideSha = null)
+        int? files = null, bool signNavData = true, bool withNavData = true, string? overrideSha = null, object[]? mapPacks = null)
     {
         string zipName = $"{tag}/releases/1/RynthNav-NavData.zip";
         string dir = Path.Combine(_root, tag);
@@ -159,6 +168,7 @@ internal static class Program
             ["id"] = id, ["release"] = 2026100201, ["url"] = _base + zipName, ["size"] = zip.Length,
             ["sha256"] = overrideSha ?? Sha(zip), ["files"] = files ?? TileSet.Count, ["bytes"] = 1000,
         };
+        if (mapPacks != null) manifest["mappacks"] = mapPacks;
         if (withNavData && nd != null && signNavData) manifest["navdata"] = nd;
         byte[] signedPayload = JsonSerializer.SerializeToUtf8Bytes(manifest);
         if (withNavData && nd != null && !signNavData) manifest["navdata"] = nd;   // served, but not what was signed
@@ -210,6 +220,8 @@ internal static class Program
         Check(line.Contains($"{TileSet.Count} files"), "reports what it installed: " + line);
         Check(File.ReadAllText(Path.Combine(nav, "navgraph.bin")) == "route graph", "the route graph ships with the tiles");
         Check(File.ReadAllText(Path.Combine(nav, "townnet.json")) == "{\"version\":1}", "the Town Network ships with the tiles");
+        Check(File.ReadAllText(Path.Combine(nav, "worldmap.rmap")) == "world map", "the World Map's tiles ship with the tiles");
+        Check(File.ReadAllText(Path.Combine(nav, "worldmap.vec")) == "world map vectors", "the World Map's buildings and roads ship with the tiles");
         Check(File.ReadAllText(Path.Combine(nav, "nav_A9B4.tile")) == "tile A9B4 v2", "the tile is the new one");
         Check(File.Exists(Path.Combine(nav, "nav_AAB4.tile")), "new tiles are there");
         Check(!File.Exists(Path.Combine(nav, "nav_0101.tile")), "a stale tile from the old set is gone (old and new don't link)");

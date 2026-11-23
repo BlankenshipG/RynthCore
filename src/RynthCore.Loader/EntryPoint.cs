@@ -32,8 +32,8 @@ public static class EntryPoint
     // Unified log path — must stay in sync with RynthCore.Engine.LogPaths.
     // The loader cannot reference the engine assembly (it loads it
     // dynamically), so the constants are mirrored here.
-    // Installer-chosen RynthCore folder (falls back to C:\Games\RynthCore).
-    private static readonly string UnifiedLogDirectory = RynthInstallPaths.CoreLogsDir;
+    // A property, not a field: resolved when the first log line is written, never in the type initializer.
+    private static string UnifiedLogDirectory => RynthCore.Install.RynthInstallPaths.CoreLogsDir; // C:\Games\RynthCore\Logs by default
     private const string UnifiedLogFileName = "RynthCore.log";
     /// <summary>
     /// Subdirectory beside the loader where reload-generation copies of the

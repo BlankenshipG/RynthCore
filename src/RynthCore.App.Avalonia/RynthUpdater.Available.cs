@@ -65,14 +65,23 @@ internal sealed partial class RynthUpdater
         ["RynthNav"] = "Walks you to coordinates and towns, with route planning and the Atlas. Downloads its map (about 540 MB).",
         ["RynthVision"] = "Shows unclimbable slopes, impassable water and your radar range in the world.",
         ["RynthLua"] = "Lua scripting for metas and your own scripts.",
-        ["RynthOracle"] = "Quests, character, titles and leaderboards.",
+        ["RynthOracle"] = "Quests, character and titles.",
         ["RynthInventory"] = "Search every character's items.",
+        ["RynthSort"] = "Keeps your packs sorted: new loot goes to the pack its rule names.",
+        ["RynthILT"] = "Infinite Leaftide only: the ILT Hub, the Guardian, bounty tracking and progression planning.",
+        ["RynthThreads"] = "DreamWeave only: records Fragment Press results and works out what each component brings.",
+        ["RynthNet"] = "Links your characters on this PC: broadcast commands, shared vitals and the Characters panel.",
+        ["RynthDefective"] = "A shortcut bar with AC's own keys, buttons for AC's panels and the Selection, in place of the retail toolbar.",
     };
 
     /// <summary>The feed's description, else the launcher's own line, else "".</summary>
     public static string DescribePlugin(PluginEntry e) =>
         e.Description.Length > 0 ? e.Description
         : BuiltInDescriptions.TryGetValue(e.Name, out string? d) ? d : "";
+
+    /// <summary>The launcher's own line for a RynthSuite plugin by name (no feed entry at hand), else "".</summary>
+    public static string DescribeByName(string name) =>
+        BuiltInDescriptions.TryGetValue(name, out string? d) ? d : "";
 
     private string? _suiteDirOverride;
     /// <summary>Tests: the folder to use when no plugin in the list shows where RynthSuite lives.</summary>
